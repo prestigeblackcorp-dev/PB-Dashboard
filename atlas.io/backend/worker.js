@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04v';
+const ATLAS_BUILD = '2026.08.04w';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -4712,7 +4712,7 @@ export default {
       // Public return page for the platform TEST checkout (Stripe redirects the browser here, no auth).
       if (path === '/api/pay-testdone' && method === 'GET') {
         const paid = url.searchParams.get('ok') === '1';
-        const body = '<div class="card"><h2>' + (paid ? 'Test payment complete' : 'Test checkout cancelled') + '</h2><p class="muted">' + (paid ? 'That fake charge is now on your TEST Stripe. Back in the master dashboard, click <b>Check payment readiness</b> and it will appear under Recent payments. No real money moved.' : 'No charge was made.') + '</p></div>';
+        const body = '<div class="card"><h2>' + (paid ? 'Test payment complete' : 'Test checkout cancelled') + '</h2><p class="muted">' + (paid ? 'That fake charge is now on your TEST Stripe -- it appears under Recent payments in the readiness check. No real money moved.' : 'No charge was made.') + '</p><p style="text-align:center;margin-top:18px"><a href="/admin.html" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 22px;border-radius:10px">Back to master dashboard</a></p></div>';
         return new Response(_pageDoc('Test payment', '#1E6E4E', body, ''), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       }
 
@@ -5377,7 +5377,7 @@ function doReset(){
         const _liveSig = secret ? await stripeVerify(raw, sig, secret) : false;
         const _testSig = (!_liveSig && secretTest) ? await stripeVerify(raw, sig, secretTest) : false;
         const _sigOk = _liveSig || _testSig;
-        if (!_sigOk) return err(400, 'Invalid signature.');
+        if (!_sigOk) { try { const _fev = JSON.parse(raw); await _pcfgSet(env, (_fev && _fev.livemode === false) ? 'stripe_webhook_fail_test' : 'stripe_webhook_fail_live', String(Date.now())); } catch (e) {} return err(400, 'Invalid signature.'); }   // #diag: a bad-signature delivery PROVES Stripe is REACHING us but the secret does not match THIS endpoint. Surfaced in the payments self-test so "Revenue 0 while Stripe charges succeed" is diagnosed instantly instead of read as "no webhook".
         try { await _pcfgSet(env, _liveSig ? 'stripe_webhook_ok_live' : 'stripe_webhook_ok_test', String(Date.now())); } catch (e) {}   // proof-of-receipt: a signature-verified event PROVES the endpoint works. The payment self-test reads this because Stripe's API can't list Sandbox/Workbench event-destinations (they'd otherwise read as "no webhook").
         let evt = {}; try { evt = JSON.parse(raw); } catch (e) { return err(400, 'Bad payload.'); }
         const obj = (evt.data && evt.data.object) || {};
@@ -6707,7 +6707,15 @@ function doReset(){
           // can't list Sandbox/Workbench event-destinations, so auto-detect alone reads a real, working endpoint as "missing" -- a received
           // signed event is definitive, so go green on it.
           if (!out.checks.webhook_endpoint_configured) { const _wok = parseInt(await _pcfgGet(env, _testMode ? 'stripe_webhook_ok_test' : 'stripe_webhook_ok_live', '0'), 10) || 0; if (_wok && (Date.now() - _wok) < 90 * 86400000) { out.checks.webhook_endpoint_configured = true; out.webhook = { url: out.expected_webhook_url, kind: 'verified_by_received_event', last_event_at: _wok }; out.notes.push('Webhook VERIFIED by a real received event -- a signature-verified ' + (_testMode ? 'test' : 'live') + ' event reached ' + out.expected_webhook_url + ' on ' + new Date(_wok).toISOString().slice(0, 10) + '. (Stripe\'s API does not list newer Sandbox/Workbench endpoints, so the auto-detect above found nothing -- this receipt is the real proof.)'); } }
-          if (!out.checks.webhook_endpoint_configured) out.notes.push('Could not auto-detect a webhook at ' + out.expected_webhook_url + ', and no signed event has reached it recently. If you just added the endpoint, complete one test checkout (card 4242 4242 4242 4242) and re-run this -- the received event flips this green.');
+          if (!out.checks.webhook_endpoint_configured) {
+            const _wfail = parseInt(await _pcfgGet(env, _testMode ? 'stripe_webhook_fail_test' : 'stripe_webhook_fail_live', '0'), 10) || 0;
+            if (_wfail && (Date.now() - _wfail) < 30 * 86400000) {   // Stripe IS delivering, but the signature fails -> the single most useful diagnosis (secret mismatch), not "no webhook"
+              out.checks.webhook_signature_failing = true;
+              out.notes.push('Stripe IS reaching your worker, but its events FAIL signature verification (last failure ' + new Date(_wfail).toISOString().slice(0, 16).replace('T', ' ') + ' UTC). That means ' + (_testMode ? 'STRIPE_WEBHOOK_SECRET_TEST' : 'STRIPE_WEBHOOK_SECRET') + ' does NOT match this endpoint. Fix: in Stripe open Developers > Webhooks > your endpoint, reveal its Signing secret (whsec_...), and set it as that worker secret. This is almost certainly why Revenue shows 0 while charges succeed in Stripe.');
+            } else {
+              out.notes.push('No signed event has reached ' + out.expected_webhook_url + ' recently, and none has FAILED here either -- so Stripe is not delivering to it at all. Check that the webhook is in the SAME Stripe environment as your key (you are on ' + out.mode + ' mode -- classic Test mode is NOT the same as a Sandbox; a Sandbox webhook never sees Test-mode charges), that the URL is EXACTLY ' + out.expected_webhook_url + ', and that it is subscribed to invoice.paid + customer.subscription.updated. Then run one test charge and re-check.');
+            }
+          }
           if (out.checks.key_valid && !out.checks.charges_enabled) out.notes.push('Charges are not enabled on this Stripe account yet -- finish Stripe onboarding (business + bank details).');
           // Recent payments (read-only) so you can WATCH a test (or live) charge land after a checkout -- the loop, full circle.
           if (out.checks.key_valid) { const ch = await stripeApi(pk, 'GET', 'charges?limit=8', null); if (ch.ok && Array.isArray(ch.j.data)) out.recent_payments = ch.j.data.map(function (c) { return { amount: c.amount, currency: c.currency, status: c.status, paid: !!c.paid, refunded: !!c.refunded, created: (c.created || 0) * 1000, desc: String(c.description || (c.metadata && (c.metadata.booking || c.metadata.kind)) || '').slice(0, 80) }; }); }
@@ -6717,8 +6725,8 @@ function doReset(){
           else if (out.checks.webhook_events_ok === true && out.webhook && out.webhook.missing_recommended && out.webhook.missing_recommended.length) out.notes.push('Webhook has every REQUIRED event. Recommended to also add (chargebacks / trial reminder): ' + out.webhook.missing_recommended.join(', ') + '.');
           else if (out.checks.webhook_events_ok === true) out.notes.push('Webhook is subscribed to every required event.');
           else if (out.checks.webhook_endpoint_configured && out.checks.webhook_events_ok === undefined) out.notes.push('Endpoint found, but its event list was not readable here -- confirm it includes: ' + WH_REQUIRED.join(', ') + '.');
-          out.ready_for_live = out.mode === 'live' && out.checks.key_valid && out.checks.charges_enabled && out.checks.webhook_secret_set && out.checks.webhook_endpoint_configured && out.checks.webhook_events_ok !== false;
-          out.test_ready = out.mode === 'test' && out.checks.key_valid && out.checks.webhook_endpoint_configured && out.checks.webhook_events_ok !== false;   // the full-circle sandbox loop will complete
+          out.ready_for_live = out.mode === 'live' && out.checks.key_valid && out.checks.charges_enabled && out.checks.webhook_secret_set && out.checks.webhook_endpoint_configured && out.checks.webhook_events_ok !== false && !out.checks.webhook_signature_failing;
+          out.test_ready = out.mode === 'test' && out.checks.key_valid && out.checks.webhook_endpoint_configured && out.checks.webhook_events_ok !== false && !out.checks.webhook_signature_failing;   // the full-circle sandbox loop will complete
           if (out.mode === 'test') out.notes.push('Test mode (Sandbox): run a booking and pay with card 4242 4242 4242 4242 (any future expiry / any CVC / any ZIP). The charge appears below and flows through the webhook to Purchases + revenue -- no real money moves.');
           if (out.mode === 'test' && !out.checks.webhook_endpoint_configured) out.notes.push('For the loop to close (booking -> paid), add a TEST-mode webhook in Stripe pointed at ' + out.expected_webhook_url + '.');
           if (out.ready_for_live) out.notes.push('Ready for live: run one real end-to-end charge -> refund -> payout to confirm settlement.');
