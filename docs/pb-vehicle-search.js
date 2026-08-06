@@ -344,7 +344,7 @@
     var _steal=shown.filter(function(l){return l.steal;}).length;
     var _clean=shown.filter(function(l){return /clean/i.test(l.title||'');}).length;
     var _salv =shown.filter(function(l){return /salvage|rebuilt|junk|non/i.test(l.title||'');}).length;
-    var _unk  =shown.filter(function(l){return !l.title;}).length;
+    var _unk  =shown.filter(function(l){return !l.title && !l.gov;}).length;
     var _bnow =shown.filter(function(l){return l.priceType==='buynow'||l.priceType==='bin';}).length;
     var _chase=shown.filter(function(l){return l.verdict==='chase'||l.verdict==='good';}).length;
     h+='<div class="pbvs-card" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">'+
@@ -375,11 +375,15 @@
              : (du===null ? 'Not yet scheduled' : (du<0?'sale passed':(du===0?'sells TODAY':'sells in '+du+' day'+(du===1?'':'s'))));
     var price = l.price ? ('$'+Number(l.price).toLocaleString('en-US')+(l.priceType==='buynow'||l.priceType==='bin'?' buy-now':' bid')) : 'no bid yet';
     var facts=[];
-    // ALWAYS show title status (color-coded): green=clean, amber=salvage/rebuilt, red=unknown/verify
-    var _tc = /clean/i.test(l.title||'') ? 'border-color:rgba(34,197,94,.45);color:#22c55e'
-            : (l.title ? 'border-color:rgba(245,158,11,.5);color:#f59e0b'
-            : 'border-color:rgba(239,68,68,.5);color:#ef4444');
-    facts.push('<span class="pbvs-pill" style="font-weight:700;'+_tc+'">'+(l.title?esc(l.title)+' title':'title: verify')+'</span>');
+    if(l.gov){
+      facts.push('<span class="pbvs-pill" style="font-weight:700;border-color:rgba(96,165,250,.55);color:#60a5fa">&#127963; GOV FLEET</span>');
+    } else {
+      // ALWAYS show title status (color-coded): green=clean, amber=salvage/rebuilt, red=unknown/verify
+      var _tc = /clean/i.test(l.title||'') ? 'border-color:rgba(34,197,94,.45);color:#22c55e'
+              : (l.title ? 'border-color:rgba(245,158,11,.5);color:#f59e0b'
+              : 'border-color:rgba(239,68,68,.5);color:#ef4444');
+      facts.push('<span class="pbvs-pill" style="font-weight:700;'+_tc+'">'+(l.title?esc(l.title)+' title':'title: verify')+'</span>');
+    }
     if(l.miles!=null) facts.push('<span class="pbvs-pill">'+Number(l.miles).toLocaleString('en-US')+' mi'+(l.milesActual===false?' (not actual)':'')+'</span>');
     if(l.keys) facts.push('<span class="pbvs-pill">keys</span>');
     if(l.runDrive) facts.push('<span class="pbvs-pill">run &amp; drive</span>');
