@@ -629,7 +629,7 @@
       var t=e.target.closest('[data-act]'); if(!t) return; var act=t.getAttribute('data-act');
       if(act==='sub'){ PBVS.sub=t.getAttribute('data-k'); _lsSet(LSK_SUB,PBVS.sub); render(); }
       else if(act==='watchview'){ PBVS._inWatch=true; ensureShell(); renderWatch(); }
-      else if(act==='backleads'||act==='refresh'){ if(act==='refresh') fetchFeed(true); PBVS.sub='leads'; _lsSet(LSK_SUB,'leads'); render(); }
+      else if(act==='backleads'||act==='refresh'){ if(act==='refresh') forceRefresh(); PBVS.sub='leads'; _lsSet(LSK_SUB,'leads'); render(); }
       else if(act==='toggleact'){ PBVS.actionable=!PBVS.actionable; _lsSet(LSK_ACT,PBVS.actionable); renderLeads(); }
       else if(act==='showall'){ PBVS.actionable=false; _lsSet(LSK_ACT,false); renderLeads(); }
       else if(act==='clearfilter'){ PBVS.fMake=PBVS.fModel=PBVS.fYear=''; renderLeads(); }
@@ -726,6 +726,15 @@
   }
 
   // ---- live feed (worker) with graceful fallback -----------------------------
+  // "Refresh feed" -> force the worker to RE-SCRAPE now (POST /refresh), then re-load
+  function forceRefresh(){
+    var w=_worker(); if(!w){ fetchFeed(true); return; }
+    _toast('Re-scanning all sources&#8230;');
+    fetch(w+'/vehicle-leads/refresh',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth())})
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(d){ if(d&&d.count!=null) _toast('&#10004; Re-scanned: '+d.count+' leads'); fetchFeed(true); })
+      .catch(function(){ fetchFeed(true); });
+  }
   function fetchFeed(manual){
     var w=_worker(); if(!w){ if(manual) _toast('Showing starter set'); return; }
     try{
