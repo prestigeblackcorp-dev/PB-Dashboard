@@ -33,7 +33,7 @@
   function looksLikePart(s){ s=String(s||'').trim(); return s.length>=4 && /\d/.test(s) && /[A-Za-z0-9][-A-Za-z0-9. ]{3,}/.test(s) && !/\s{2,}/.test(s) && s.split(' ').length<=3; }
 
   // ---- persisted state (own keys; never in the bookings blob) ----------------
-  var LSK_CRIT='pbvs_criteria', LSK_WATCH='pbvs_watch', LSK_SUB='pbvs_sub', LSK_ACT='pbvs_actionable';
+  var LSK_CRIT='pbvs_criteria', LSK_WATCH='pbvs_watch', LSK_SUB='pbvs_sub', LSK_ACT='pbvs_actionable', LSK_CART='pbvs_cart';
   function _lsGet(k,f){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):f; }catch(e){ return f; } }
   function _lsSet(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }
 
@@ -50,6 +50,7 @@
     actionable: _lsGet(LSK_ACT,true),
     criteria: _lsGet(LSK_CRIT, DEFAULT_CRITERIA),
     watch:    _lsGet(LSK_WATCH, []),      // [{...lead, addedAt}]
+    cart:     _lsGet(LSK_CART, []),        // parts cart + order log
     leads:    [],                          // live feed if worker returns one
     feedSrc:  'starter',
     feedAt:   0,
@@ -66,7 +67,7 @@
     try{
       fetch(w+'/vehicle-search/state',{method:'PUT',
         headers:Object.assign({'Content-Type':'application/json'},_auth()),
-        body:JSON.stringify({criteria:PBVS.criteria,watch:PBVS.watch})}).catch(function(){});
+        body:JSON.stringify({criteria:PBVS.criteria,watch:PBVS.watch,cart:PBVS.cart})}).catch(function(){});
     }catch(e){}
   }
 
@@ -125,6 +126,16 @@
       '.pbvs-lead:hover{border-color:rgba(201,169,98,.4);background:rgba(255,255,255,.035)}',
       '.pbvs-lead.pbvs-steal{border-color:#f0a020;box-shadow:0 0 0 1px #f0a020,0 0 22px rgba(240,160,32,.30);background:linear-gradient(180deg,rgba(240,160,32,.11),rgba(255,255,255,.02))}',
       '.pbvs-badge-steal{color:#111;background:linear-gradient(90deg,#f0b429,#ef4444);border:none;font-weight:800;letter-spacing:.04em;box-shadow:0 0 10px rgba(240,160,32,.5)}',
+      '.pbvs-thumb{width:100%;max-height:150px;object-fit:cover;border-radius:9px;margin-bottom:9px;border:1px solid var(--border);background:#0c0e11}',
+      '.pbvs-modal{display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.74);align-items:flex-start;justify-content:center;padding:22px 12px;overflow:auto}',
+      '.pbvs-modbox{background:#14181d;border:1px solid #323e4a;border-radius:16px;max-width:780px;width:100%;box-shadow:0 24px 70px rgba(0,0,0,.6)}',
+      '.pbvs-modinner{padding:18px 20px}',
+      '.pbvs-modhead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:6px}',
+      '.pbvs-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(108px,1fr));gap:8px;margin:8px 0}',
+      '.pbvs-gallery img{width:100%;height:86px;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:#0c0e11}',
+      '.pbvs-preprow{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;padding:9px 0;border-bottom:1px dashed var(--border)}',
+      '.pbvs-check{flex:none;width:24px;height:24px;border-radius:6px;border:1.5px solid #323e4a;background:#0c0e11;color:#fff;cursor:pointer;font-weight:800;line-height:1;display:grid;place-items:center}',
+      '.pbvs-check.on{background:#22c55e;border-color:#22c55e}',
       '.pbvs-heart{position:absolute;top:12px;right:12px;background:none;border:none;font-size:20px;cursor:pointer;line-height:1;color:#555;transition:.12s}',
       '.pbvs-heart.on{color:#ef4444;transform:scale(1.12)}',
       '.pbvs-title{font-weight:800;font-size:15px;color:#fff;padding-right:34px}',
@@ -229,8 +240,8 @@
   function sources(v, part){
     var veh=vehStr(v), kw=(veh+' '+(part||'')).trim(), euro=/audi|bmw|mercedes|porsche|ferrari|lamborghini|mclaren|bentley|rolls|maserati|aston|jaguar|land rover|volkswagen|volvo|alfa/i.test(v.make||'');
     var isPart=looksLikePart(part), out=[];
-    out.push({label:'eBay Motors &middot; Used', url:'https://www.ebay.com/sch/i.html?_nkw='+q(kw)+'&_sacat=6028&LH_ItemCondition=3000&LH_BIN=1'});
-    out.push({label:'eBay Motors &middot; New', url:'https://www.ebay.com/sch/i.html?_nkw='+q(kw)+'&_sacat=6028&LH_ItemCondition=1000'});
+    // used/new ONLY (condition 1000|3000 excludes "for parts / not working" 7000), sorted cheapest-first (_sop=15)
+    out.push({label:'eBay &middot; used/new, cheapest', gold:true, url:'https://www.ebay.com/sch/i.html?_nkw='+q(kw)+'&_sacat=6028&LH_ItemCondition=1000%7C3000&_sop=15'});
     if(isPart) out.push({label:'eBay by Part #', gold:true, url:'https://www.ebay.com/sch/i.html?_nkw='+q(part)});
     out.push({label:'Amazon', url:'https://www.amazon.com/s?k='+q(kw)+'&i=automotive'});
     out.push({label:'Google Shopping', url:'https://www.google.com/search?tbm=shop&q='+q(kw)});
@@ -270,12 +281,14 @@
         subBtn('leads','&#128293; Current Leads')+
         subBtn('parts','&#128736; Parts Search')+
         subBtn('kit','&#128203; Outreach &amp; Watch-list Kit')+
+        subBtn('cart','&#128722; Parts Cart'+(_cartN()?' ('+_cartN()+')':''))+
         '<div style="flex:1"></div>'+
         '<button class="pbvs-subbtn" data-act="watchview" title="Your saved vehicles">&#10084; Watchlist ('+PBVS.watch.length+')</button>'+
       '</div>'+
       '<div id="pbvsBody"></div>';
     if(s==='parts') renderParts();
     else if(s==='kit') renderKit();
+    else if(s==='cart') renderCart();
     else renderLeads();
     wire(host);
   }
@@ -284,7 +297,11 @@
   // ---- Current Leads ---------------------------------------------------------
   function daysUntil(d){ if(!d||d==='future') return null; var t=Date.parse(d+'T12:00:00'); if(isNaN(t)) return null; return Math.round((t-Date.now())/86400000); }
   function isActionable(l){ if(l.steal) return true; var pt=(l.priceType||''); if(pt==='buynow'||pt==='bin'||pt==='cash') return true; var du=daysUntil(l.saleDate); if(du===null) return true; /* not-yet-scheduled: keep */ return du<=3 && du>=-1; }
-  function activeFeed(){ return (PBVS.leads&&PBVS.leads.length)?PBVS.leads:SEED_LEADS; }
+  function activeFeed(){ return _dedup((PBVS.leads&&PBVS.leads.length)?PBVS.leads:SEED_LEADS); }
+  // no double-feed: drop exact id repeats AND soft duplicates (same year+make+model+location/state)
+  function _dedup(arr){ var byId={}, soft={}, out=[]; (arr||[]).forEach(function(l){ if(!l||!l.id||byId[l.id]) return;
+    var k=(l.dedupKey||((l.year||'')+'|'+(l.make||'')+'|'+(l.model||'')+'|'+(l.location||l.state||''))).toLowerCase();
+    if(soft[k]) return; byId[l.id]=1; soft[k]=1; out.push(l); }); return out; }
   function watchHas(id){ return PBVS.watch.some(function(w){ return w.id===id; }); }
 
   function renderLeads(){
@@ -367,11 +384,13 @@
     var _stealB = l.steal ? '<span class="pbvs-badge pbvs-badge-steal">&#128293; STEAL</span> ' : '';
     return '<div class="pbvs-lead'+(l.steal?' pbvs-steal':'')+'">'+
       '<button class="pbvs-heart'+(watchHas(l.id)?' on':'')+'" data-act="heart" data-id="'+esc(l.id)+'" title="Save to watchlist + get alerts">'+(watchHas(l.id)?'&#10084;':'&#9825;')+'</button>'+
+      (l.image?'<img class="pbvs-thumb" src="'+esc(l.image)+'" loading="lazy" onerror="this.style.display=\'none\'">':'')+
       '<div class="pbvs-title">'+_stealB+esc(vehStr(l))+' <span class="pbvs-badge" style="color:'+vd.c+';background:'+vd.bg+';border:1px solid '+vd.b+'">'+vd.t+'</span></div>'+
       '<div class="pbvs-meta"><b>'+esc(l.damage)+'</b> &middot; '+esc(l.location)+' &middot; <b>'+price+'</b> &middot; '+when+'</div>'+
       '<div>'+facts.join(' ')+'</div>'+
       (l.note?'<div class="pbvs-note">'+l.note+'</div>':'')+
       '<div class="pbvs-src"><a class="gold" href="'+esc(l.url)+'" target="_blank" rel="noopener">Open listing &#8599;</a>'+
+        '<button class="pbvs-srcbtn" data-act="report" data-id="'+esc(l.id)+'">&#128736; Parts report</button>'+
         '<button class="pbvs-srcbtn" data-act="heart" data-id="'+esc(l.id)+'">'+(watchHas(l.id)?'&#10004; Watching':'&#10084; Watch')+'</button>'+
       '</div>'+
     '</div>';
@@ -571,6 +590,11 @@
       else if(act==='copy'){ doCopy(t); }
       else if(act==='addcrit'){ addCrit(); }
       else if(act==='delcrit'){ PBVS.criteria.splice(+t.getAttribute('data-i'),1); saveCrit(); renderKit(); }
+      else if(act==='report'){ openReport(t.getAttribute('data-id')); }
+      else if(act==='partcart'){ _addManualPartToCart(); }
+      else if(act==='ordertoggle'){ var _c=PBVS.cart[+t.getAttribute('data-i')]; if(_c){ _c.status=(_c.status==='ordered')?'to-order':'ordered'; _c.orderedAt=(_c.status==='ordered')?Date.now():null; saveCart(); renderCart(); } }
+      else if(act==='cartremove'){ PBVS.cart.splice(+t.getAttribute('data-i'),1); saveCart(); renderCart(); }
+      else if(act==='clearordered'){ PBVS.cart=PBVS.cart.filter(function(c){return c.status!=='ordered';}); saveCart(); renderCart(); }
     });
     host.addEventListener('keydown', function(e){
       if(e.key!=='Enter') return;
@@ -605,6 +629,7 @@
     var isPart=looksLikePart(part);
     var html='<div class="pbvs-hint" style="margin-bottom:8px">'+(v.make?('Searching <b style="color:#fff">'+esc(vehStr(v))+'</b>'):'Searching')+(part?(' for <b style="color:#fff">'+esc(part)+'</b>'+(isPart?' <span class="pbvs-pill" style="color:#c9a962;border-color:rgba(201,169,98,.4)">part # detected</span>':'')):'')+' &mdash; open any:</div>'+
       '<div class="pbvs-src">'+list.map(function(s){ return '<a class="'+(s.gold?'gold':'')+'" href="'+s.url+'" target="_blank" rel="noopener">'+s.label+' &#8599;</a>'; }).join('')+'</div>';
+    if(part) html+='<div style="margin-top:10px"><button class="pbvs-srcbtn" data-act="partcart">&#128722; Add \''+esc(part)+'\' to Parts Cart</button></div>';
     var r=el('psResults'); if(r) r.innerHTML=html;
   }
 
@@ -660,6 +685,131 @@
       if(n.price!=null) w.price=n.price; if(n.saleDate) w.saleDate=n.saleDate;
     });
     if(changed.length){ _lsSet(LSK_WATCH,PBVS.watch); _toast('&#128276; Watchlist: '+changed[0]+(changed.length>1?(' (+'+(changed.length-1)+' more)'):'')); }
+  }
+
+  // ============================================================================
+  //  PARTS CART + LISTING REPORT
+  // ============================================================================
+  function _cartN(){ return (PBVS.cart||[]).filter(function(c){return c.status!=='ordered';}).length; }
+  function saveCart(){ _lsSet(LSK_CART, PBVS.cart); _pushState(); updateCartCount(); }
+  function updateCartCount(){ var host=el('vehSearchContent'); if(host){ var b=host.querySelector('[data-act="sub"][data-k="cart"]'); if(b) b.innerHTML='&#128722; Parts Cart'+(_cartN()?' ('+_cartN()+')':''); } }
+
+  // client-side damage-type checklist (mirrors the worker) so a report ALWAYS works
+  function _fallbackParts(damage){
+    var d=String(damage||'').toLowerCase();
+    var F=[{name:'Front bumper cover',priority:'critical'},{name:'Energy absorber + impact bar',priority:'critical'},{name:'Grille',priority:'recommended'},{name:'Headlight assembly (L/R)',priority:'critical'},{name:'Radiator core support',priority:'critical'},{name:'Radiator + A/C condenser',priority:'recommended'},{name:'Fender (L/R)',priority:'recommended'},{name:'Hood',priority:'recommended'}];
+    var R=[{name:'Rear bumper cover',priority:'critical'},{name:'Rear absorber + rebar',priority:'critical'},{name:'Tail light assembly (L/R)',priority:'critical'},{name:'Decklid / trunk',priority:'recommended'}];
+    var S=[{name:'Door shell / skin',priority:'critical'},{name:'Side mirror assembly',priority:'recommended'},{name:'Rocker panel',priority:'inspect'},{name:'Window regulator + glass',priority:'recommended'}];
+    var U=[{name:'Control arms (upper/lower)',priority:'critical'},{name:'Steering knuckle / upright',priority:'critical'},{name:'Wheel hub + bearing',priority:'recommended'},{name:'Tie rod end',priority:'recommended'}];
+    var out=[]; if(/front/.test(d))out=out.concat(F); if(/rear/.test(d))out=out.concat(R); if(/side|door/.test(d))out=out.concat(S); if(/undercarriage|suspension/.test(d))out=out.concat(U); if(!out.length)out=F;
+    return out.map(function(p){ return {name:p.name,priority:p.priority,why:'typical for '+(damage||'this')+' damage',oem:'',search:p.name}; });
+  }
+  // condition-filtered (used/new only), cheapest-first buy links for one part
+  function partLinks(v, part){
+    var kw=(vehStr(v)+' '+(part.search||part.name)).trim();
+    var euro=/audi|bmw|mercedes|porsche|ferrari|lamborghini|mclaren|bentley|rolls|maserati|aston|jaguar|land rover|volkswagen|volvo|alfa/i.test(v.make||'');
+    var out=[
+      {label:'eBay used/new (cheapest)', gold:true, url:'https://www.ebay.com/sch/i.html?_nkw='+q(kw)+'&_sacat=6028&LH_ItemCondition=1000%7C3000&_sop=15'},
+      {label:'Amazon', url:'https://www.amazon.com/s?k='+q(kw)+'&i=automotive'},
+      {label:'RockAuto', url: part.oem ? ('https://www.rockauto.com/en/partsearch/?partnum='+q(part.oem)) : ('https://www.rockauto.com/en/catalog/'+q(v.make)+','+q(v.year)+','+q(v.model))},
+      {label:'Car-Part yards', url:'https://www.google.com/search?q='+q('site:car-part.com '+kw)}
+    ];
+    if(euro) out.push({label:'FCP Euro', url:'https://www.fcpeuro.com/search?q='+q(kw)});
+    return out;
+  }
+  function addToCart(item){
+    var key=((item.name||'')+'|'+(item.vehicle||'')).toLowerCase();
+    if((PBVS.cart||[]).some(function(c){ return ((c.name||'')+'|'+(c.vehicle||'')).toLowerCase()===key; })) return false;
+    PBVS.cart.push(Object.assign({status:'to-order', addedAt:Date.now()}, item));
+    saveCart(); return true;
+  }
+
+  var _reportCache={}, _modalCtx=null;
+  function openReport(id){
+    var l=activeFeed().concat(SEED_LEADS, PBVS.watch||[]).filter(function(x){return x&&x.id===id;})[0];
+    if(!l){ _toast('Lead not found'); return; }
+    _showReportModal(l, null, true);
+    if(_reportCache[id]){ _showReportModal(l, _reportCache[id], false); return; }
+    var v={year:l.year,make:l.make,model:l.model};
+    var done=function(rep){ _reportCache[id]=rep; _showReportModal(l, rep, false); };
+    var w=_worker();
+    if(w){
+      fetch(w+'/vehicle-report',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth()),body:JSON.stringify({id:id,url:l.url||'',vehicle:v,damage:l.damage||'',title:l.title||''})})
+        .then(function(r){ return r.ok?r.json():null; })
+        .then(function(rep){ done((rep&&rep.parts&&rep.parts.length)?rep:_clientReport(l)); })
+        .catch(function(){ done(_clientReport(l)); });
+    } else done(_clientReport(l));
+  }
+  function _clientReport(l){ return {id:l.id, vehicle:vehStr(l), damage:l.damage||'', images:(l.image?[l.image]:[]), provider:'fallback', summary:'Damage-type checklist (server report unavailable) -- verify against the listing photos.', parts:_fallbackParts(l.damage)}; }
+
+  function _ensureModal(){
+    var m=el('pbvsModal'); if(m) return m;
+    m=document.createElement('div'); m.id='pbvsModal'; m.className='pbvs-modal'; document.body.appendChild(m);
+    m.addEventListener('click', function(e){
+      if(e.target===m){ m.style.display='none'; return; }
+      var t=e.target.closest('[data-act]'); if(!t) return; var act=t.getAttribute('data-act');
+      if(act==='closemodal'){ m.style.display='none'; }
+      else if(act==='addcart'){ if(_cartFromReport(+t.getAttribute('data-i'))){ t.textContent='\u2713'; t.disabled=true; } else { t.textContent='in cart'; } }
+      else if(act==='sendall'){ _sendAllToCart(); t.textContent='\u2713 All added'; }
+    });
+    return m;
+  }
+  function _cartFromReport(i){ if(!_modalCtx) return false; var p=_modalCtx.parts[i]; if(!p) return false; return addToCart({name:p.name, vehicle:vehStr(_modalCtx.lead), oem:p.oem||'', links:partLinks(_modalCtx.vehicle,p)}); }
+  function _sendAllToCart(){ if(!_modalCtx) return; var n=0; _modalCtx.parts.forEach(function(p){ if(addToCart({name:p.name,vehicle:vehStr(_modalCtx.lead),oem:p.oem||'',links:partLinks(_modalCtx.vehicle,p)})) n++; }); _toast(n+' part'+(n===1?'':'s')+' added to cart'); }
+
+  function _showReportModal(l, rep, loading){
+    var m=_ensureModal(); var v={year:l.year,make:l.make,model:l.model}; var body;
+    if(loading){ body='<div class="pbvs-modinner"><div class="pbvs-modhead"><b style="color:#fff;font-size:16px">'+esc(vehStr(l))+'</b><button class="pbvs-srcbtn" data-act="closemodal">Close</button></div><div class="pbvs-empty">Reading listing + photos and building the parts list&#8230;</div></div>'; }
+    else {
+      _modalCtx={ lead:l, vehicle:v, parts:rep.parts||[] };
+      var prio={critical:'#ef4444',recommended:'#c9a962',inspect:'#8b939e'};
+      var imgs=(rep.images||[]).slice(0,10).map(function(u){ return '<a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" loading="lazy" onerror="this.parentNode.style.display=\'none\'"></a>'; }).join('');
+      var rows=(rep.parts||[]).map(function(p,i){
+        var links=partLinks(v,p).map(function(s){ return '<a class="'+(s.gold?'gold':'')+'" href="'+s.url+'" target="_blank" rel="noopener">'+esc(s.label)+' &#8599;</a>'; }).join('');
+        return '<div class="pbvs-preprow"><div style="flex:1;min-width:0"><b>'+esc(p.name)+'</b> <span class="pbvs-pill" style="color:'+(prio[p.priority]||'#8b939e')+'">'+esc(p.priority||'')+'</span>'+(p.oem?' <span class="pbvs-pill">OEM '+esc(p.oem)+'</span>':'')+
+          (p.why?'<div class="pbvs-hint">'+esc(p.why)+'</div>':'')+'<div class="pbvs-src" style="margin-top:5px">'+links+'</div></div>'+
+          '<button class="pbvs-srcbtn" data-act="addcart" data-i="'+i+'">+ Cart</button></div>';
+      }).join('');
+      body='<div class="pbvs-modinner">'+
+        '<div class="pbvs-modhead"><div><b style="font-size:16px;color:#fff">'+esc(vehStr(l))+'</b> &mdash; parts report <span class="pbvs-pill">'+(rep.provider==='claude'?'AI + photos':'checklist')+'</span></div><button class="pbvs-srcbtn" data-act="closemodal">Close</button></div>'+
+        (rep.summary?'<div class="pbvs-hint" style="margin:4px 0 10px">'+esc(rep.summary)+'</div>':'')+
+        (imgs?'<div class="pbvs-gallery">'+imgs+'</div>':'<div class="pbvs-hint">No listing photos available &mdash; <a href="'+esc(l.url||'#')+'" target="_blank" rel="noopener" style="color:#c9a962">open the listing &#8599;</a></div>')+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 4px;gap:10px"><div class="pbvs-sec" style="margin:0">Itemized parts ('+(rep.parts||[]).length+')</div>'+
+          '<button class="btn" data-act="sendall" style="background:#c9a962;border-color:#c9a962;color:#111;font-weight:800;white-space:nowrap">&#128722; Send all to cart</button></div>'+
+        rows+'</div>';
+    }
+    m.innerHTML='<div class="pbvs-modbox">'+body+'</div>';
+    m.style.display='flex';
+  }
+
+  function renderCart(){
+    var body=el('pbvsBody'); if(!body) return;
+    var todo=(PBVS.cart||[]).filter(function(c){return c.status!=='ordered';});
+    var done=(PBVS.cart||[]).filter(function(c){return c.status==='ordered';});
+    var h='<div class="pbvs-card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">'+
+      '<div><div style="font-weight:800;color:#fff;font-size:15px">&#128722; Parts Cart</div><div class="pbvs-count">'+todo.length+' to order &middot; '+done.length+' ordered. Add from a vehicle report or Parts Search; check off as you buy &mdash; the ordered log is kept.</div></div>'+
+      (done.length?'<button class="pbvs-srcbtn" data-act="clearordered">Clear ordered log</button>':'')+'</div>';
+    if(!todo.length && !done.length){ h+='<div class="pbvs-empty">Cart is empty. Open a vehicle&#8217;s &#128736; Parts report and &#8220;Send all to cart&#8221;, or add parts from Parts Search.</div>'; }
+    else{
+      if(todo.length){ h+='<div class="pbvs-sec">To order ('+todo.length+')</div>'+todo.map(cartRow).join(''); }
+      if(done.length){ h+='<div class="pbvs-sec" style="margin-top:16px">Ordered log ('+done.length+')</div>'+done.map(cartRow).join(''); }
+    }
+    body.innerHTML=h;
+  }
+  function cartRow(c){
+    var i=PBVS.cart.indexOf(c); var ordered=c.status==='ordered';
+    var links=(c.links||[]).map(function(s){ return '<a class="'+(s.gold?'gold':'')+'" href="'+s.url+'" target="_blank" rel="noopener">'+esc(s.label)+' &#8599;</a>'; }).join('');
+    return '<div class="pbvs-lead" style="display:flex;gap:12px;align-items:flex-start">'+
+      '<button class="pbvs-check'+(ordered?' on':'')+'" data-act="ordertoggle" data-i="'+i+'" title="Mark ordered">'+(ordered?'&#10004;':'')+'</button>'+
+      '<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:14px;color:#fff'+(ordered?';opacity:.55;text-decoration:line-through':'')+'">'+esc(c.name)+'</div>'+
+        '<div class="pbvs-hint">'+esc(c.vehicle||'')+(ordered?' &middot; ordered':'')+'</div>'+
+        (!ordered&&links?'<div class="pbvs-src" style="margin-top:5px">'+links+'</div>':'')+'</div>'+
+      '<button class="pbvs-x" data-act="cartremove" data-i="'+i+'" title="Remove">&#10006;</button></div>';
+  }
+  function _addManualPartToCart(){
+    var p=el('psPart'); var part=p?p.value.trim():''; if(!part){ _toast('Type a part first'); return; }
+    var v={year:partsSel.year,make:partsSel.make,model:partsSel.model,vin:partsSel.vin};
+    if(addToCart({name:part, vehicle:vehStr(v)||'(no car selected)', oem:looksLikePart(part)?part:'', links:partLinks(v,{name:part,search:part})})) _toast('&#10004; Added to cart'); else _toast('Already in cart');
   }
 
   // ---- public entry ----------------------------------------------------------
