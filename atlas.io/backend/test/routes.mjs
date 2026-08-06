@@ -2016,7 +2016,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           if (/MIN\(created_at\)/.test(sql)) return { m: Date.now() - 200 * 86400000 };
           if (/amount_cents.*platform_transactions WHERE created_at>=\? AND created_at<\?/.test(sql)) return { c: 100000 };
           if (/amount_cents.*platform_transactions WHERE created_at>=\?/.test(sql)) return { c: 150000 };
-          if (/amount_cents.*FROM platform_transactions/.test(sql) && !/WHERE/.test(sql)) return { c: 500000 };
+          if (/amount_cents.*FROM platform_transactions/.test(sql) && !/created_at/.test(sql)) return { c: 500000 };   // all-time total: no date filter (the mode-aware WHERE COALESCE(livemode,0)=? may be present, so key on absence of created_at, not absence of WHERE)
           if (/cost_micros.*platform_ai_spend WHERE day>=\? AND day<=\?/.test(sql)) return { cm: 1000000, it: 5000, ot: 2000 };
           if (/cost_micros.*platform_ai_spend WHERE day>=\?/.test(sql)) return { cm: 1500000 };
           if (/cost_micros.*FROM platform_ai_spend/.test(sql) && !/WHERE/.test(sql)) return { cm: 5000000 };
