@@ -213,7 +213,16 @@
       '.pbvs-x{background:none;border:none;color:#ef4444;cursor:pointer;font-size:15px;padding:8px 10px;min-height:34px;border-radius:8px;line-height:1}',
       '.pbvs-hint,.pbvs-count,.pbvs-meta{color:#a7afba}',   /* brighter than --muted -> clears AA contrast */
       '.pbvs-subbtn:focus-visible,.pbvs-srcbtn:focus-visible,.pbvs-chip:focus-visible,.pbvs-heart:focus-visible,.pbvs-check:focus-visible,.pbvs-x:focus-visible,.pbvs-copy:focus-visible,.pbvs-src a:focus-visible{outline:2px solid #c9a962;outline-offset:2px}',
-      '@media(max-width:768px){.pbvs-src a,.pbvs-srcbtn,.pbvs-chip{padding:9px 12px}.pbvs-x{min-width:40px;min-height:40px}.pbvs-check{width:34px;height:34px}}'
+      '@media(max-width:768px){.pbvs-src a,.pbvs-srcbtn,.pbvs-chip{padding:9px 12px}.pbvs-x{min-width:40px;min-height:40px}.pbvs-check{width:34px;height:34px}}',
+      '.pbvs-scorewrap{display:flex;gap:14px;align-items:center;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin:6px 0 10px}',
+      '.pbvs-score{flex:none;width:72px;height:72px;border-radius:50%;border:3px solid;display:grid;place-items:center;text-align:center}',
+      '.pbvs-scoreN{font-size:25px;font-weight:800;line-height:1}',
+      '.pbvs-scoreL{font-size:9px;letter-spacing:.06em;text-transform:uppercase;opacity:.85}',
+      '.pbvs-risk{border:1px solid var(--border);border-radius:11px;padding:10px 13px;margin:8px 0;background:rgba(255,255,255,.02)}',
+      '.pbvs-riskrow{padding:5px 0;border-bottom:1px dashed var(--border);font-size:12.5px;line-height:1.5}',
+      '.pbvs-riskrow:last-child{border-bottom:none}',
+      '.pbvs-deep{margin:0;padding-left:18px}',
+      '.pbvs-deep li{font-size:12.5px;color:#a7afba;line-height:1.6;margin-bottom:3px}'
     ].join('\n');
     document.head.appendChild(s);
   }
@@ -913,10 +922,14 @@
     // name-based keyword -- robust even when an AI-suggested OEM number is wrong (a wrong # dead-ends the search)
     var kw=(vehStr(v)+' '+(part.name||part.search||'')).trim();
     var euro=/audi|bmw|mercedes|porsche|ferrari|lamborghini|mclaren|bentley|rolls|maserati|aston|jaguar|land rover|volkswagen|volvo|alfa/i.test(v.make||'');
+    // LEAD with the sources that show REAL prices with NO API: Google Shopping + eBay cheapest + parts-store site: search
     var out=[
+      {label:'$ Live prices', gold:true, url:'https://www.google.com/search?tbm=shop&q='+q(kw)},
       {label:'eBay used/new (cheapest)', gold:true, url:'https://www.ebay.com/sch/i.html?_nkw='+q(kw)+'&_sacat=6028&LH_ItemCondition=1000%7C3000&_sop=15'},
-      {label:'Amazon', url:'https://www.amazon.com/s?k='+q(kw)+'&i=automotive'},
+      {label:'Parts stores', gold:true, url:'https://www.google.com/search?q='+q(kw+' (site:rockauto.com OR site:autozone.com OR site:oreillyauto.com OR site:napaonline.com OR site:advanceautoparts.com OR site:partsgeek.com OR site:summitracing.com OR site:1aauto.com)')},
+      {label:'Junkyards', gold:true, url:'https://www.google.com/search?q='+q(kw+' (site:car-part.com OR site:row52.com OR site:lkqonline.com OR site:pullapart.com)')},
       {label:'RockAuto catalog', url:'https://www.rockauto.com/en/catalog/'+q(v.make)+','+q(v.year)+','+q(v.model)},
+      {label:'Amazon', url:'https://www.amazon.com/s?k='+q(kw)+'&i=automotive'},
       {label:'Car-Part yards', url:'https://www.google.com/search?q='+q('site:car-part.com '+kw)}
     ];
     // AI-suggested OEM numbers are NOT guaranteed to fit this exact car -- offer them clearly labeled "verify"
@@ -924,12 +937,6 @@
       out.push({label:'RockAuto #'+part.oem+' (verify)', url:'https://www.rockauto.com/en/partsearch/?partnum='+q(part.oem)});
       out.push({label:'eBay #'+part.oem+' (verify)', url:'https://www.ebay.com/sch/i.html?_nkw='+q(part.oem)});
     }
-    // parts STORES (AutoZone/O'Reilly/NAPA/Advance/PartsGeek/Summit/1A/RockAuto) + JUNKYARDS
-    // (Car-Part/Row52/LKQ/Pull-A-Part) via Google site: -> always real, in-stock findings
-    out.push({label:'Parts stores', gold:true, url:'https://www.google.com/search?q='+q(kw+' (site:rockauto.com OR site:autozone.com OR site:oreillyauto.com OR site:napaonline.com OR site:advanceautoparts.com OR site:partsgeek.com OR site:summitracing.com OR site:1aauto.com)')});
-    out.push({label:'Junkyards', gold:true, url:'https://www.google.com/search?q='+q(kw+' (site:car-part.com OR site:row52.com OR site:lkqonline.com OR site:pullapart.com)')});
-    out.push({label:'Whole web', url:'https://www.google.com/search?q='+q(kw+' for sale')});
-    out.push({label:'Shopping', url:'https://www.google.com/search?tbm=shop&q='+q(kw)});
     if(euro) out.push({label:'FCP Euro', url:'https://www.fcpeuro.com/search?q='+q(kw)});
     return out;
   }
@@ -949,17 +956,59 @@
     if(!l){ _toast('Lead not found'); return; }
     _showReportModal(l, null, true);
     if(_reportCache[id]){ _showReportModal(l, _reportCache[id], false); return; }
-    var v={year:l.year,make:l.make,model:l.model};
+    var v={year:l.year,make:l.make,model:l.model,trim:l.trim||''};
     var done=function(rep){ _reportCache[id]=rep; _showReportModal(l, rep, false); };
     var w=_worker();
     if(w){
-      fetch(w+'/vehicle-report',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth()),body:JSON.stringify({id:id,url:l.url||'',vehicle:v,damage:l.damage||'',title:l.title||''})})
+      // send the full context so the scanner can price + SCORE it (miles / ask price / location / title)
+      var payload={id:id,url:l.url||'',vehicle:v,damage:l.damage||'',title:l.title||'',miles:(l.miles!=null?l.miles:''),price:l.price||0,buyNow:l.buyNow||0,priceType:l.priceType||'',location:l.location||''};
+      _fetchT(w+'/vehicle-report',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth()),body:JSON.stringify(payload)},48000)
         .then(function(r){ return r.ok?r.json():null; })
         .then(function(rep){ done((rep&&rep.parts&&rep.parts.length)?rep:_clientReport(l)); })
         .catch(function(){ done(_clientReport(l)); });
     } else done(_clientReport(l));
   }
-  function _clientReport(l){ return {id:l.id, vehicle:vehStr(l), damage:l.damage||'', images:(l.image?[l.image]:[]), provider:'fallback', summary:'Damage-type checklist (server report unavailable) -- verify against the listing photos.', parts:_fallbackParts(l.damage)}; }
+  // ---- opportunity scoring + risk sections (client mirror of the worker heuristic) ----
+  function _heuristicScore(l){
+    var tl=String(l.title||'').toLowerCase(), d=String(l.damage||'').toLowerCase(), miles=Number(l.miles||0), s=62;
+    if(/clean/.test(tl)) s+=16; else if(/rebuil/.test(tl)) s+=2; else if(/non-repair|nonrepair|junk|destruction/.test(tl)) s-=30; else if(/flood|water/.test(tl)) s-=34; else if(/fire|burn/.test(tl)) s-=34; else if(/salvage/.test(tl)) s-=4; else s-=8;
+    if(/front|rear/.test(d)) s+=6; if(/side|door|quarter/.test(d)) s-=4; if(/roof|pillar|frame|structural|rollover/.test(d)) s-=16; if(/under|suspension/.test(d)) s-=8; if(/burn|fire|flood/.test(d)) s-=30; if(/multiple|all over/.test(d)) s-=8;
+    if(miles>0&&miles<30000) s+=8; else if(miles>=80000) s-=8; else if(!miles) s-=3;
+    return Math.max(6,Math.min(93,Math.round(s)));
+  }
+  function _genericConcerns(l){
+    var d=String(l.damage||'').toLowerCase(), mk=String(l.make||'').toLowerCase();
+    var deep=['Pull the full auction condition report + every photo (corners, engine bay, undercarriage, dash powered ON).','Verify the VIN + exact title brand IN HAND before bidding.','If airbags deployed: budget SRS modules + seatbelt pretensioners + a crash-locked control module (dealer-coded).'];
+    var flags=[];
+    if(/side|door/.test(d)) flags.push({flag:'Side impact',impact:'B-pillar / rocker / floor intrusion can be structural; on an R8 the carbon side-blade + sill are dealer-only.'});
+    if(/under|suspension/.test(d)) flags.push({flag:'Undercarriage / suspension',impact:'A bent subframe or cracked mount hides cost; budget a corner rebuild + alignment.'});
+    if(/roof|pillar|frame|structural|rollover/.test(d)) flags.push({flag:'Possible structural',impact:'Roof / pillar / frame on a monocoque or carbon-tub car often exceeds rebuild value.'});
+    if(/mclaren/.test(mk)) flags.push({flag:'McLaren carbon tub',impact:'Any tub crack is non-repairable and totals the car.'});
+    if(!/clean/.test(String(l.title||'').toLowerCase())) flags.push({flag:'Branded-title tax',impact:'Salvage/rebuilt caps resale ~20-40% under clean -- price the exit.'});
+    return {deepDive:deep, redFlags:flags, visibleConcerns:[{item:'Cosmetic scuffs / curb rash likely in the photos',note:'wheels + lower lips not itemized above',estLow:400,estHigh:2500}]};
+  }
+  function _clientReport(l){ var g=_genericConcerns(l); return {id:l.id, vehicle:vehStr(l), damage:l.damage||'', images:(l.image?[l.image]:[]), provider:'fallback', summary:'Damage-type estimate (server report unavailable) -- verify against the listing photos.', opportunityScore:_heuristicScore(l), scoreRationale:'Heuristic from title, damage area + miles; deploy the worker for the full AI photo scan.', askPrice:(Number(l.buyNow||l.price||0)||null), parts:_fallbackParts(l.damage), deepDive:g.deepDive, redFlags:g.redFlags, visibleConcerns:g.visibleConcerns}; }
+  // report render helpers
+  function _money(n){ return '$'+Number(n||0).toLocaleString('en-US'); }
+  function _range(a,b){ a=Number(a||0); b=Number(b||0); if(a&&b) return _money(a)+'-'+_money(b); if(a) return '~'+_money(a); if(b) return '~'+_money(b); return ''; }
+  function _scoreColor(s){ return s>=70?'#22c55e':s>=45?'#c9a962':'#ef4444'; }
+  function _scoreBlock(rep){
+    if(rep.opportunityScore==null) return '';
+    var sc=Math.round(rep.opportunityScore), col=_scoreColor(sc), pills=[];
+    if(rep.allInLow||rep.allInHigh) pills.push('<span class="pbvs-pill">All-in rebuild <b style="color:#fff">'+_range(rep.allInLow,rep.allInHigh)+'</b></span>');
+    else if(rep.partsCostLow||rep.partsCostHigh) pills.push('<span class="pbvs-pill">Parts <b style="color:#fff">'+_range(rep.partsCostLow,rep.partsCostHigh)+'</b></span>');
+    if(rep.estValueClean) pills.push('<span class="pbvs-pill">Clean value ~<b style="color:#22c55e">'+_money(rep.estValueClean)+'</b></span>');
+    if(rep.askPrice) pills.push('<span class="pbvs-pill">Ask <b style="color:#fff">'+_money(rep.askPrice)+'</b></span>');
+    if(rep.laborHours) pills.push('<span class="pbvs-pill">~'+rep.laborHours+' labor hrs</span>');
+    return '<div class="pbvs-scorewrap"><div class="pbvs-score" style="border-color:'+col+';color:'+col+'"><div class="pbvs-scoreN">'+sc+'</div><div class="pbvs-scoreL">opportunity</div></div>'+
+      '<div style="flex:1;min-width:0">'+(rep.scoreRationale?'<div class="pbvs-hint" style="color:#cdd3da;margin-bottom:6px">'+esc(rep.scoreRationale)+'</div>':'')+'<div style="display:flex;flex-wrap:wrap;gap:5px">'+pills.join('')+'</div></div></div>';
+  }
+  function _flagsBlock(rep){ var f=(rep.redFlags||[]); if(!f.length) return '';
+    return '<div class="pbvs-risk"><div class="pbvs-sec" style="color:#ef4444;margin:0 0 6px">&#9888; Red flags &mdash; could lower the score</div>'+f.map(function(x){ return '<div class="pbvs-riskrow"><b style="color:#f59e0b">'+esc(x.flag||'')+'</b>'+(x.impact?' &mdash; <span style="color:#a7afba">'+esc(x.impact)+'</span>':'')+'</div>'; }).join('')+'</div>'; }
+  function _visBlock(rep){ var v=(rep.visibleConcerns||[]); if(!v.length) return '';
+    return '<div class="pbvs-risk"><div class="pbvs-sec" style="margin:0 0 6px">&#128065; Visible in photos, not precisely quotable</div>'+v.map(function(x){ var r=_range(x.estLow,x.estHigh); return '<div class="pbvs-riskrow"><b>'+esc(x.item||'')+'</b>'+(r?' <span class="pbvs-pill" style="color:#c9a962">'+r+'</span>':'')+(x.note?'<div class="pbvs-hint">'+esc(x.note)+'</div>':'')+'</div>'; }).join('')+'</div>'; }
+  function _deepBlock(rep){ var d=(rep.deepDive||[]); if(!d.length) return '';
+    return '<div class="pbvs-risk"><div class="pbvs-sec" style="margin:0 0 6px">&#128269; Deep-dive before you bid</div><ul class="pbvs-deep">'+d.map(function(x){ return '<li>'+esc(x)+'</li>'; }).join('')+'</ul></div>'; }
 
   function _ensureModal(){
     var m=el('pbvsModal'); if(m) return m;
@@ -1014,16 +1063,18 @@
       var imgs=(rep.images||[]).slice(0,10).map(function(u){ return '<a href="'+esc(u)+'" target="_blank" rel="noopener"><img src="'+esc(u)+'" loading="lazy" onerror="this.parentNode.style.display=\'none\'"></a>'; }).join('');
       var rows=(rep.parts||[]).map(function(p,i){
         var links=partLinks(v,p).map(function(s){ return '<a class="'+(s.gold?'gold':'')+'" href="'+s.url+'" target="_blank" rel="noopener">'+esc(s.label)+' &#8599;</a>'; }).join('');
-        return '<div class="pbvs-preprow"><div style="flex:1;min-width:0"><b>'+esc(p.name)+'</b> <span class="pbvs-pill" style="color:'+(prio[p.priority]||'#8b939e')+'">'+esc(p.priority||'')+'</span>'+(p.oem?' <span class="pbvs-pill" style="color:#f59e0b" title="AI-suggested OEM number -- verify it fits before ordering">OEM '+esc(p.oem)+' &middot; verify</span>':'')+
+        return '<div class="pbvs-preprow"><div style="flex:1;min-width:0"><b>'+esc(p.name)+'</b> <span class="pbvs-pill" style="color:'+(prio[p.priority]||'#8b939e')+'">'+esc(p.priority||'')+'</span>'+(p.oem?' <span class="pbvs-pill" style="color:#f59e0b" title="AI-suggested OEM number -- verify it fits before ordering">OEM '+esc(p.oem)+' &middot; verify</span>':'')+((p.estLow||p.estHigh)?' <span class="pbvs-pill" style="color:#c9a962" title="AI price estimate -- tap $ Live prices for the real current price">est '+_range(p.estLow,p.estHigh)+'</span>':'')+
           (p.why?'<div class="pbvs-hint">'+esc(p.why)+'</div>':'')+'<div class="pbvs-src" style="margin-top:5px">'+links+(ebayOff?'':'<button class="pbvs-srcbtn" data-act="bestprice" data-i="'+i+'">$ Best price</button>')+'</div>'+
           '<div id="best-'+i+'" class="pbvs-hint" style="margin-top:4px"></div></div>'+
           '<button class="pbvs-srcbtn" data-act="addcart" data-i="'+i+'">+ Cart</button></div>';
       }).join('');
       body='<div class="pbvs-modinner">'+
         '<div class="pbvs-modhead"><div><b style="font-size:16px;color:#fff">'+esc(vehStr(l))+'</b> &mdash; parts report <span class="pbvs-pill">'+(rep.provider==='claude'?(hasImgs?'AI + photos':'AI (no photos)'):'checklist')+'</span></div><button class="pbvs-srcbtn" data-act="closemodal">Close</button></div>'+
+        _scoreBlock(rep)+
         (rep.summary?'<div class="pbvs-hint" style="margin:4px 0 10px">'+esc(rep.summary)+'</div>':'')+
-        (ebayOff?'<div class="pbvs-hint" style="color:#f59e0b;margin:2px 0 8px">Live eBay best-price needs your eBay API key in the worker &mdash; the buy-links on each part still work.</div>':'')+
+        (ebayOff?'<div class="pbvs-hint" style="color:#a7afba;margin:2px 0 8px">Each part shows the AI\'s price <b>estimate</b>; tap <b style="color:#c9a962">$ Live prices</b> (Google Shopping) or <b style="color:#c9a962">eBay</b> for the real current price &mdash; no API needed. Inline live prices auto-fill once an eBay API key is added.</div>':'')+
         (imgs?'<div class="pbvs-gallery">'+imgs+'</div>':'<div class="pbvs-hint">No listing photos available &mdash; <a href="'+esc(l.url||'#')+'" target="_blank" rel="noopener" style="color:#c9a962">open the listing &#8599;</a></div>')+
+        _flagsBlock(rep)+_visBlock(rep)+_deepBlock(rep)+
         '<div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0 4px;gap:10px"><div class="pbvs-sec" style="margin:0">Itemized parts ('+(rep.parts||[]).length+')</div>'+
           '<button class="btn" data-act="sendall" style="background:#c9a962;border-color:#c9a962;color:#111;font-weight:800;white-space:nowrap">&#128722; Send all to cart</button></div>'+
         rows+'</div>';
