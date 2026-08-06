@@ -397,7 +397,12 @@
     var vd=VERDICT[l.verdict]||VERDICT.watch, du=daysUntil(l.saleDate);
     var when = (l.priceType==='buynow'||l.priceType==='bin') ? 'Buy-Now available'
              : (du===null ? 'Not yet scheduled' : (du<0?'sale passed':(du===0?'sells TODAY':'sells in '+du+' day'+(du===1?'':'s'))));
-    var price = l.price ? ('$'+Number(l.price).toLocaleString('en-US')+(l.priceType==='buynow'||l.priceType==='bin'?' buy-now':' bid')) : 'no bid yet';
+    // live bids are JS-hydrated on the auction site (not in the scraped HTML), so for a bid-only
+    // lot we point to the listing rather than claim "no bid yet" (which wrongly implies $0).
+    var price = (Number(l.buyNow)>0) ? ('$'+Number(l.buyNow).toLocaleString('en-US')+' buy-now')
+              : (Number(l.bid)>0) ? ('$'+Number(l.bid).toLocaleString('en-US')+' bid')
+              : (Number(l.price)>0 && l.priceType!=='bid') ? ('$'+Number(l.price).toLocaleString('en-US')+' buy-now')
+              : 'live bid &mdash; open listing';
     var facts=[];
     if(l.gov){
       facts.push('<span class="pbvs-pill" style="font-weight:700;border-color:rgba(96,165,250,.55);color:#60a5fa">&#127963; GOV FLEET</span>');
@@ -755,7 +760,9 @@
       var n=byId[w.id]; if(!n) return;
       if(Number(n.price)!==Number(w.price)) changed.push(vehStr(w)+': price '+ (w.price?('$'+w.price):'-') +' -> '+(n.price?('$'+n.price):'-'));
       else if(n.saleDate!==w.saleDate) changed.push(vehStr(w)+': sale date '+w.saleDate+' -> '+n.saleDate);
-      if(n.price!=null) w.price=n.price; if(n.saleDate) w.saleDate=n.saleDate;
+      else if(String(n.title||'')!==String(w.title||'')) changed.push(vehStr(w)+': title '+(w.title||'?')+' -> '+(n.title||'?'));
+      // self-heal the saved snapshot from the freshest feed (corrected title / photo / price / etc.)
+      ['price','buyNow','bid','saleDate','title','image','damage','miles','milesActual','location','steal'].forEach(function(k){ if(n[k]!=null) w[k]=n[k]; });
     });
     if(changed.length){ _lsSet(LSK_WATCH,PBVS.watch); _toast('&#128276; Watchlist: '+changed[0]+(changed.length>1?(' (+'+(changed.length-1)+' more)'):'')); }
   }
