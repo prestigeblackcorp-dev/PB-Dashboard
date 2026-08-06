@@ -5663,6 +5663,8 @@ const Atlas = (function(){
     } else { a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.editBooking(\''+b.id+'\')">Edit</button><button class="btn btn--sm btn--danger" onclick="Atlas.deleteBooking(\''+b.id+'\')">Delete</button>'; }
     a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkRepeat(\''+b.id+'\')"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M3 8a5 5 0 019-3M13 8a5 5 0 01-9 3M11 2v3H8M5 14v-3h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Repeat</button>';
     a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalLink(\''+b.id+'\')" title="Copy this customer\'s signing + payment link"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M6.6 9.4l2.8-2.8M7 4.6l.8-.8a2.4 2.4 0 013.4 3.4l-.8.8M9 11.4l-.8.8a2.4 2.4 0 01-3.4-3.4l.8-.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg> Portal link</button>';
+    if(b.portalRevoked) a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalRevoke(\''+b.id+'\',true)" title="Re-enable this customer\'s portal + signing link">Restore link</button>';
+    else a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalRevoke(\''+b.id+'\',false)" title="Immediately disable this customer\'s portal link -- use if the link was forwarded, screenshotted, or sent to the wrong person">Revoke link</button>';
     var contact=esc(b.custEmail||''); if(b.phone) contact+=(contact?' &middot; ':'')+esc(b.phone);
     openModal('<div class="modal__head"><h3>'+b.id+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +_bkCommandBar(b)
@@ -5940,6 +5942,16 @@ const Atlas = (function(){
     _api('/api/bookings/'+encodeURIComponent(id)+'/portal-link',{method:'POST',body:{}}).then(function(res){
       if(res.json&&res.json.url){ try{ navigator.clipboard.writeText(res.json.url); }catch(e){} toast('Portal link copied \u2014 signing + payment for this booking'); }
       else toast((res.json&&(res.json.error||res.json.message))||'Could not get the portal link'); }).catch(function(){ toast('Network error'); }); }
+  // #14 SECURITY: owner kill-switch for a booking's customer portal link. Revoking makes the shared link stop opening
+  // the portal AND stop unlocking the customer's ID/license photo immediately (server _portalLive honors d.portalRevoked).
+  // Reversible -- restore re-enables the SAME link. Use when a link was forwarded, screenshotted, or sent to the wrong person.
+  function bkPortalRevoke(id,restore){ if(!_guard('bookEdit','Managing bookings'))return;
+    if(!ATLAS_BACKEND||!_apiCsrf){ toast('Connect your Atlas backend to manage portal links.'); return; }
+    var b=_getBooking(id); if(!b)return;
+    if(!restore && !confirm('Disable this customer\u2019s portal link now? They will not be able to open the portal or sign until you restore it. The link can be restored anytime.')) return;
+    _api('/api/bookings/'+encodeURIComponent(id)+'/portal-revoke',{method:'POST',body:{restore:!!restore}}).then(function(res){
+      if(res.json&&res.json.ok){ b.portalRevoked=!restore; _upsertBooking(b); save(); openBooking(id); toast(restore?'Portal link restored':'Portal link revoked \u2014 the old link no longer works'); }
+      else toast((res.json&&(res.json.error||res.json.message))||'Could not update the portal link'); }).catch(function(){ toast('Network error'); }); }
   // ---- Recurring / subscription rentals: clone a booking into a future series ----
   function bkRepeat(id){ if(!_guard('bookEdit','Creating bookings'))return; var b=_getBooking(id); if(!b)return;
     openModal('<div class="modal__head"><h3>Repeat this booking</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -7727,10 +7739,16 @@ const Atlas = (function(){
   }
   // Confirmation with a copyable single-use link (works whether or not the mailer is on).
   function _inviteSentModal(email, link, emailed){
+    // #sec: when the email actually sent, the server no longer returns the accept token to us -- it lives ONLY in the
+    // invitee's inbox (so it can't be self-accepted to squat an address). Show the copyable link ONLY in the mailer-down
+    // fallback, where the server still returns it so the owner can share it out-of-band.
+    var _linkUI = (!emailed && link)
+      ? ('<div class="field"><label>Invite link (single-use)</label><input class="input" id="invLink" readonly value="'+esc(link)+'" onclick="this.select()" style="font-size:12.5px"></div>'
+         +'<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn--ghost btn--sm" onclick="Atlas.closeModal()">Done</button><button class="btn btn--primary btn--sm" onclick="Atlas.copyInviteLink()">Copy link</button></div>')
+      : ('<div style="display:flex;justify-content:flex-end"><button class="btn btn--primary btn--sm" onclick="Atlas.closeModal()">Done</button></div>');
     openModal('<div class="modal__head"><h3>Invite sent</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<p style="font-size:13.5px;line-height:1.6;margin:0 0 12px">'+(emailed?('We emailed <b>'+esc(email)+'</b> a link to set their password and join your team.'):('Email sending is off, so copy this single-use link and send it to <b>'+esc(email)+'</b> yourself:'))+'</p>'
-      +'<div class="field"><label>Invite link (single-use)</label><input class="input" id="invLink" readonly value="'+esc(link||'')+'" onclick="this.select()" style="font-size:12.5px"></div>'
-      +'<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn--ghost btn--sm" onclick="Atlas.closeModal()">Done</button><button class="btn btn--primary btn--sm" onclick="Atlas.copyInviteLink()">Copy link</button></div>'
+      +'<p style="font-size:13.5px;line-height:1.6;margin:0 0 12px">'+(emailed?('We emailed <b>'+esc(email)+'</b> a link to set their password and join your team. For their security the link is only in their inbox.'):('Email sending is off, so copy this single-use link and send it to <b>'+esc(email)+'</b> yourself:'))+'</p>'
+      +_linkUI
       +'<p class="hint" style="margin-top:12px">They set their own password, then sign in at your Atlas login. You can fine-tune exactly what they see and do any time under <b>Edit access</b>.</p>'
       +'</div>');
   }
@@ -12872,7 +12890,7 @@ const Atlas = (function(){
     goAuth,authSubmit,authTogglePass,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,exportBkIcs,viewCustomer,saveCustNote,emailCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,addLead,saveLead,leadStage,leadToBooking,rmLead,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
-    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkVoidFlow,doVoid,unvoidBooking,bkVoidReport,bkEvidence,bkPortalLink,bkExtendFlow,bkExtendAmt,bkExtendPreview,bkExtendSave,bkExtRemove,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,_mtOverage,bkFuel,saveFuel,_flHint,bkLate,saveLate,_ltHint,bkDriver,saveDriver,bkRmDriver,bkInsurance,saveInsurance,bkBlacklistToggle,blacklistBlockToggle,holdAuth,holdRelease,holdCapture,doCapture,bkCheckIn,doCheckIn,bkCloseOut,doCloseOut,_coCalc,
+    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkVoidFlow,doVoid,unvoidBooking,bkVoidReport,bkEvidence,bkPortalLink,bkPortalRevoke,bkExtendFlow,bkExtendAmt,bkExtendPreview,bkExtendSave,bkExtRemove,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,_mtOverage,bkFuel,saveFuel,_flHint,bkLate,saveLate,_ltHint,bkDriver,saveDriver,bkRmDriver,bkInsurance,saveInsurance,bkBlacklistToggle,blacklistBlockToggle,holdAuth,holdRelease,holdCapture,doCapture,bkCheckIn,doCheckIn,bkCloseOut,doCloseOut,_coCalc,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,

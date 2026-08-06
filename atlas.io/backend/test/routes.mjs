@@ -244,6 +244,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
       const api = {
         bind: (...x) => { a = x; return api; },
         first: async () => {
+          // #sec single-use reset: _resetSig now binds the user's CURRENT pw_salt, so the worker looks it up both at
+          // send time (SELECT pw_salt ... WHERE id=?) and at verify time (... WHERE id=? AND lower(email)=?). Both must
+          // return the SAME salt so the send-time and verify-time signatures match; after a reset the salt changes and a
+          // replayed link stops verifying. Check the id+email shape FIRST (it also matches the looser id=? regex).
+          if (/FROM users WHERE id=\? AND lower\(email\)=\?/.test(sql)) { const u = users.get(String(a[1]).toLowerCase()); return (u && u.id === a[0]) ? u : null; }
+          if (/FROM users WHERE id=\?/.test(sql)) { for (const u of users.values()) { if (u.id === a[0]) return u; } return null; }
           if (/FROM users WHERE email=\?/.test(sql)) return users.get(a[0]) || null;
           if (/FROM rate_limits/.test(sql)) return null;
           if (/sqlite_master/.test(sql)) return { n: 25 };
@@ -316,6 +322,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     ok(gpr.status === 200 && gpj.ok === true, 'POST reset: genuine token + an 8+ char password -> ok:true');
     ok(users.get('known@x.com').pw_hash !== 'p2$old', 'POST reset: pw_hash actually changed');
     ok(sessionsRevokedFor.indexOf('u_pw1') >= 0, 'POST reset: every session for that user is revoked (UPDATE sessions SET revoked_at)');
+
+    // 7) SINGLE-USE (#10/#11/#29): replaying the SAME genuine link after the reset above is now rejected. The reset
+    //    minted a fresh pw_salt (hashPassword), and _resetSig binds pw_salt, so the old link's signature no longer
+    //    re-derives -- the link is dead the instant the password changes, with no token table.
+    const hashAfterReset = users.get('known@x.com').pw_hash;
+    const qr = new URLSearchParams(goodQ);
+    let rp = await worker.fetch(pReq('POST', '/api/auth/reset', { uid: qr.get('uid'), e: qr.get('e'), exp: qr.get('exp'), s: qr.get('s'), password: 'replayAttempt99' }), pwEnv, ctx);
+    ok(rp.status >= 400, 'POST reset: REPLAY of an already-used link is rejected (single-use via pw_salt binding)');
+    ok(users.get('known@x.com').pw_hash === hashAfterReset, 'POST reset: the rejected replay left the (already-reset) password untouched');
   }
 
   globalThis.fetch = _origFetch;

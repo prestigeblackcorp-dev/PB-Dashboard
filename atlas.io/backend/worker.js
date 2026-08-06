@@ -99,15 +99,14 @@ function _ctEq(a, b) {                  // constant-time string compare (no earl
 }
 async function verifyPassword(password, saltB64, storedHash) {
   const salt = unb64(saltB64 || b64(new Uint8Array(16)));
-  let expected;
-  if (typeof storedHash === 'string' && storedHash.slice(0, 3) === 'p2$') {   // current 600k scheme
-    let bits = enc(password);
-    for (let i = 0; i < PBKDF2_ROUNDS; i++) bits = await _pbkdf2(bits, salt);
-    expected = 'p2$' + b64(bits);
-  } else {                                                                     // legacy single-100k hash
-    expected = b64(await _pbkdf2(enc(password), salt));
-  }
-  return _ctEq(expected, storedHash);
+  // #sec: ALWAYS do the full 6-round work regardless of which scheme the stored hash uses, so the login
+  // handler's timing-safe no-enumeration guarantee holds. The legacy single-100k value is exactly round 1's
+  // output, so we capture it as we go rather than taking an early, cheaper branch that a legacy account could
+  // be timed by (a 6x work difference was observable and re-enabled user enumeration on the login path).
+  let bits = enc(password), legacyExpected = null;
+  for (let i = 0; i < PBKDF2_ROUNDS; i++) { bits = await _pbkdf2(bits, salt); if (i === 0) legacyExpected = b64(bits); }
+  const isModern = typeof storedHash === 'string' && storedHash.slice(0, 3) === 'p2$';
+  return _ctEq(isModern ? ('p2$' + b64(bits)) : legacyExpected, storedHash);
 }
 // A stored hash lacking the 'p2$' tag predates the 600k scheme -> re-hash on next successful login.
 function pwNeedsUpgrade(storedHash) { return !(typeof storedHash === 'string' && storedHash.slice(0, 3) === 'p2$'); }
@@ -589,7 +588,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.05b';
+const ATLAS_BUILD = '2026.08.05c';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -1895,10 +1894,14 @@ async function _verifySig(env, uid, email, exp) {
 }
 // Password-reset link signature: the SAME stateless HMAC scheme as _verifySig (uid|email|expiry|purpose), just tagged
 // 'reset' instead of 'verify' so a verify-email link and a reset-password link can never be swapped for the other's purpose.
-async function _resetSig(env, uid, email, exp) {
+async function _resetSig(env, uid, email, exp, pwSalt) {
   if (!env.SESSION_KEY) return '';
   try { var key = await crypto.subtle.importKey('raw', enc(env.SESSION_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    var s = await crypto.subtle.sign('HMAC', key, enc(String(uid) + '|' + String(email) + '|' + String(exp) + '|reset'));
+    // #sec: pwSalt is folded into the signed material so the link becomes SINGLE-USE without a token table --
+    // hashPassword() mints a fresh random salt on every successful reset, so the moment the password changes the
+    // salt changes, and any copy of the same emailed link (replay, or a second click after the real user reset)
+    // recomputes to a different signature and is rejected. Callers pass the user's CURRENT pw_salt (fresh from DB).
+    var s = await crypto.subtle.sign('HMAC', key, enc(String(uid) + '|' + String(email) + '|' + String(exp) + '|' + String(pwSalt || '') + '|reset'));
     return Array.prototype.map.call(new Uint8Array(s), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('').slice(0, 40);
   } catch (e) { return ''; }
 }
@@ -1918,7 +1921,8 @@ async function _sendVerifyEmail(env, uid, email) {
 async function _sendResetEmail(env, uid, email) {
   var origin = env.APP_ORIGIN || 'https://atlasrental.io';
   var exp = Date.now() + 3600 * 1000;
-  var sig = await _resetSig(env, uid, email, exp);
+  var _urow = null; try { _urow = await env.DB.prepare('SELECT pw_salt FROM users WHERE id=?').bind(uid).first(); } catch (e) {}
+  var sig = await _resetSig(env, uid, email, exp, _urow && _urow.pw_salt);   // #sec: bind to current pw_salt -> link self-invalidates on first successful reset
   var link = origin + '/api/auth/reset?uid=' + encodeURIComponent(uid) + '&e=' + encodeURIComponent(email) + '&exp=' + exp + '&s=' + sig;
   var html = '<h2 style="margin:0 0 10px">Reset your password</h2>'
     + '<p>We got a request to reset the password for <b>' + esc(email) + '</b> on Atlas Rental.io.</p>'
@@ -2137,12 +2141,12 @@ async function _mfaSendEmailCode(env, user) {
 }
 async function _mfaCheckEmailCode(env, uid, code) {
   try {
-    const row = await env.DB.prepare('SELECT code_hash, expires_at FROM mfa_codes WHERE uid=?').bind(uid).first();
-    if (!row || !row.expires_at || row.expires_at < Date.now()) return false;
     const h = await _sha256Hex(uid + ':' + String(code || '').trim());
-    if (!_ctEq(h, row.code_hash)) return false;
-    await env.DB.prepare('DELETE FROM mfa_codes WHERE uid=?').bind(uid).run();   // single-use
-    return true;
+    // #sec: check-and-consume in ONE atomic statement so two concurrent requests can't both spend the same
+    // emailed code -- only the row whose code_hash matches AND is unexpired is deleted, and only the request
+    // that actually removed it (meta.changes===1) is accepted. Replaces the old non-atomic SELECT-then-DELETE.
+    const del = await env.DB.prepare('DELETE FROM mfa_codes WHERE uid=? AND code_hash=? AND expires_at>=?').bind(uid, h, Date.now()).run();
+    return !!(del && del.meta && del.meta.changes);
   } catch (e) { return false; }
 }
 async function _mfaCheckTotp(env, user, code) {
@@ -2165,16 +2169,19 @@ async function _mfaCheckTotp(env, user, code) {
 }
 async function _mfaCheckBackupCode(env, user, code) {
   try {
-    if (!user.mfa_backup_json) return false;
-    const list = jparse(user.mfa_backup_json, []); if (!Array.isArray(list) || !list.length) return false;
+    const prev = user.mfa_backup_json;
+    if (!prev) return false;
+    const list = jparse(prev, []); if (!Array.isArray(list) || !list.length) return false;
     const norm = _normBackupCode(code); if (!norm) return false;
     const h = await _sha256Hex(user.id + ':' + norm);
     let found = -1;
     for (let i = 0; i < list.length; i++) { if (!list[i].used && _ctEq(list[i].h, h)) { found = i; break; } }
     if (found < 0) return false;
     list[found].used = true; list[found].usedAt = Date.now();
-    await env.DB.prepare('UPDATE users SET mfa_backup_json=? WHERE id=?').bind(JSON.stringify(list), user.id).run();
-    return true;
+    // #sec: optimistic CAS on the EXACT prior blob so two concurrent logins can't both spend the same one-time
+    // backup code -- the write only lands (meta.changes===1) if no other request has already rewritten the row.
+    const upd = await env.DB.prepare('UPDATE users SET mfa_backup_json=? WHERE id=? AND mfa_backup_json=?').bind(JSON.stringify(list), user.id, prev).run();
+    return !!(upd && upd.meta && upd.meta.changes);
   } catch (e) { return false; }
 }
 // Tries every factor for this uid -- emailed code, TOTP (+-1 step), backup code -- so a TOTP user can always fall
@@ -4940,7 +4947,10 @@ export default {
             const fuser = await env.DB.prepare('SELECT id,email FROM users WHERE email=?').bind(femail).first();
             // The platform-owner email is Cloudflare-token-gated ONLY -- it is NEVER sent an emailed reset link (recover
             // by rotating OWNER_SETUP_TOKEN + re-running setup). Still returns the same GENERIC response, so this leaks nothing.
-            if (fuser && !_isOwnerEmail(env, femail)) { try { await _sendResetEmail(env, fuser.id, fuser.email); await audit(env, null, req, 'auth.forgot_password', { email: fuser.email }); } catch (e) {} }
+            if (fuser && !_isOwnerEmail(env, femail)) {   // #sec: defer send+audit off the request path (waitUntil) so registered and unregistered emails take the SAME minimal time -- closes the timing side-channel that re-enabled enumeration despite the identical body
+              const _work = (async () => { try { await _sendResetEmail(env, fuser.id, fuser.email); await audit(env, null, req, 'auth.forgot_password', { email: fuser.email }); } catch (e) {} })();
+              if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_work); else if (_work && _work.catch) _work.catch(function () {});
+            }
           }
         } catch (e) { /* DB hiccup: still answer generically -- an error here must never leak account existence */ }
         return json(GENERIC);
@@ -4950,7 +4960,8 @@ export default {
       if (path === '/api/auth/reset' && method === 'GET') {
         const ru = url.searchParams.get('uid') || '', re = (url.searchParams.get('e') || '').toLowerCase(),
           rx = parseInt(url.searchParams.get('exp') || '0', 10) || 0, rs = url.searchParams.get('s') || '';
-        const rOk = !!(ru && re && rx && rs && (rx > Date.now()) && _ctEq(rs, await _resetSig(env, ru, re, rx)));
+        const _rrow = (ru && re) ? await env.DB.prepare('SELECT pw_salt FROM users WHERE id=? AND lower(email)=?').bind(ru, re).first() : null;   // #sec: current salt re-derives the single-use signature (absent user -> fail closed, same generic page)
+        const rOk = !!(ru && re && rx && rs && (rx > Date.now()) && _rrow && _ctEq(rs, await _resetSig(env, ru, re, rx, _rrow.pw_salt)));
         if (!rOk) {
           const badBody = '<div class="card"><h2>Link expired</h2><p class="muted">This reset link is invalid or has expired. Request a new one from the sign-in screen.</p></div>';
           return new Response(_pageDoc('Reset password', '#1E6E4E', badBody, ''), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
@@ -4993,7 +5004,8 @@ function doReset(){
         if (!ru) return err(400, 'This reset link is invalid or has expired.');
         if (re && _isOwnerEmail(env, re)) return err(400, 'This reset link is invalid or has expired.');   // owner email is Cloudflare-token-gated ONLY -- never email-resettable (same generic message, so nothing leaks)
         if (!await rateLimit(env, 'rpw:' + ru, 10, 3600000)) { await audit(env, null, req, 'auth.rate_limited', { kind: 'reset_password', key: ru }); return err(429, 'Too many attempts. Try again later.'); }
-        const rOk = !!(ru && re && rx && rs && (rx > Date.now()) && _ctEq(rs, await _resetSig(env, ru, re, rx)));
+        const _prow = (ru && re) ? await env.DB.prepare('SELECT pw_salt FROM users WHERE id=? AND lower(email)=?').bind(ru, re).first() : null;   // #sec: single-use -- signature is bound to the CURRENT salt; after the UPDATE below mints a new one, this link no longer verifies
+        const rOk = !!(ru && re && rx && rs && (rx > Date.now()) && _prow && _ctEq(rs, await _resetSig(env, ru, re, rx, _prow.pw_salt)));
         if (!rOk) return err(400, 'This reset link is invalid or has expired.');
         if (!vStr(body.password, 200) || body.password.length < 8) return err(400, 'Password must be at least 8 characters.');
         const { hash, salt } = await hashPassword(body.password);
@@ -8538,7 +8550,7 @@ function doReset(){
         if (existing) return err(409, existing.tenant_id === ctx.tenant_id ? 'That person is already on your team.' : 'That email already has an Atlas account.');
         const uid = 'U' + randId(14), token = randId(28), now = Date.now();
         await env.DB.prepare("INSERT INTO users (id,email,pw_hash,pw_salt,tenant_id,role,caps,invite_token,invited_by,status,email_verified,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
-          .bind(uid, email, '', '', ctx.tenant_id, role, caps, token, ctx.user.email, 'invited', 1, now).run();   // pw_hash/pw_salt are NOT NULL -> use '' (invitee has no password until they accept; the accept flow UPDATEs the real hash). null here threw D1 NOT NULL constraint -> invites silently failed.
+          .bind(uid, email, '', '', ctx.tenant_id, role, caps, token, ctx.user.email, 'invited', 0, now).run();   // #sec: email_verified starts 0 (was pre-set to 1). An invited-but-not-accepted row must NOT count as a proven mailbox -- accept-invite flips it to 1, and since accept requires the emailed token (see below) that click IS the proof of inbox control. pw_hash/pw_salt are NOT NULL -> use '' (invitee has no password until they accept; the accept flow UPDATEs the real hash).
         await audit(env, ctx, req, 'team.invite', { email: email, role: role });
         const origin = env.APP_ORIGIN || 'https://atlasrental.io';
         const link = origin + '/?invite=' + token;
@@ -8549,7 +8561,12 @@ function doReset(){
           const r = await sendEmail(env, { to: email, transactional: true, fromName: 'Atlas Rental.io', subject: 'You are invited to ' + bname + ' on Atlas', html: _atlasEmailShell('<h2>Join ' + esc(bname) + ' on Atlas Rental.io</h2><p>' + esc(ctx.user.email) + ' added you to the team as <b>' + esc(role) + '</b>. Set your password to get started -- this link is single-use:</p><p style="text-align:center;margin:22px 0"><a href="' + esc(link) + '" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:10px">Accept invite &amp; set password</a></p><p style="color:#8a8a8a;font-size:12px;word-break:break-all">Or paste this link into your browser: ' + esc(link) + '</p>') });
           emailed = !!(r && r.sent);
         } catch (e) { /* email is best-effort; the owner still gets the copyable link below */ }
-        return json({ ok: true, id: uid, email: email, role: role, emailed: emailed, link: link });   // link returned so the owner can copy/share it when the mailer is off or the invite bounces
+        // #sec: only hand the accept token back to the inviter when the mailer is DOWN (the documented copy/share fallback).
+        // On a successful send the token lives ONLY in the invitee's inbox -- so an inviter can't self-accept it to squat an
+        // arbitrary third-party email (which, combined with email_verified=0 above, is what made this a real takeover-adjacent gap).
+        const _invResp = { ok: true, id: uid, email: email, role: role, emailed: emailed };
+        if (!emailed) _invResp.link = link;
+        return json(_invResp);
       }
       if (path === '/api/team' && (method === 'PUT' || method === 'DELETE')) {
         if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
@@ -9273,6 +9290,23 @@ function doReset(){
         let tok = row.portal_token;
         if (!tok) { tok = randId(24); await env.DB.prepare('UPDATE bookings SET portal_token=?, updated_at=? WHERE id=? AND tenant_id=?').bind(tok, Date.now(), plm[1], ctx.tenant_id).run(); }
         return json({ ok: true, url: (env.APP_ORIGIN || 'https://atlasrental.io') + '/api/portal/' + tok, token: tok });
+      }
+
+      // ---- #14: revoke (or restore) a booking's customer portal link. _portalLive() already reads d.portalRevoked,
+      // so flipping it makes the shared link stop resolving the portal AND stop unlocking the KYC ID/license photo
+      // immediately -- the owner's kill-switch for a link that was forwarded, screenshotted, or sent to the wrong person.
+      // POST {restore:true} re-enables the SAME token. bookEdit + CSRF gated; scoped to the tenant; CAS write via _bkPatch. ----
+      const prv = path.match(/^\/api\/bookings\/([\w-]+)\/portal-revoke$/);
+      if (prv && method === 'POST') {
+        if (!csrfOk(req, ctx)) return err(403, 'Bad CSRF token.');
+        if (!_can(ctx, 'bookEdit')) return err(403, 'Permission required.');
+        const row = await env.DB.prepare('SELECT id FROM bookings WHERE id=? AND tenant_id=?').bind(prv[1], ctx.tenant_id).first();
+        if (!row) return err(404, 'Booking not found.');
+        const _rb = await req.json().catch(function () { return {}; });
+        const _restore = !!_rb.restore;
+        await _bkPatch(env, prv[1], ctx.tenant_id, function (fd) { if (_restore) { fd.portalRevoked = false; fd.portalRestoredAt = Date.now(); } else { fd.portalRevoked = true; fd.portalRevokedAt = Date.now(); } fd._t = Date.now(); });
+        await audit(env, ctx, req, _restore ? 'booking.portal_restore' : 'booking.portal_revoke', { id: prv[1] });
+        return json({ ok: true, revoked: !_restore, id: prv[1] });
       }
 
       // ---- CORE-LOOP: cancel a booking WITH a REAL Stripe refund per the owner's policy. keepCents = fee retained;
