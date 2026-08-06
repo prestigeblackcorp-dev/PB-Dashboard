@@ -598,7 +598,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.05e';
+const ATLAS_BUILD = '2026.08.05f';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -3753,10 +3753,11 @@ function _ownerEntryHtml() {
     'input:focus{border-color:#c9a227}' +
     'button{width:100%;margin-top:22px;padding:13px;border:0;border-radius:10px;background:#c9a227;color:#0a0b0d;font-size:15px;font-weight:600;cursor:pointer}' +
     'button:disabled{opacity:.55;cursor:default}' +
+    'a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid #c9a227;outline-offset:2px}@media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;transition-duration:.001ms!important}}' +
     '.err{color:#ef6a6a;font-size:13px;margin-top:14px;min-height:18px;text-align:center}' +
     '.hint{color:#8a9098;font-size:12px;text-align:center;margin:10px 0 0}' +
     '.hidden{display:none}' +
-    '</style></head><body><div class="box">' +
+    '</style></head><body><div class="box" role="main">' +
     '<p class="brand">Atlas HQ</p>' +
     '<h1 id="ttl">Sign in</h1><p class="sub" id="sub">Secure console access</p>' +
     '<div id="step1">' +
@@ -12454,7 +12455,7 @@ function _m(c) { return '$' + ((Math.round(Number(c) || 0) / 100).toLocaleString
 // Print-friendly, self-contained receipt / agreement documents the customer can save as PDF from the portal.
 function _portalDocHtml(pr, title, inner) {
   var color = (pr.brand && pr.brand.color) || '#1E6E4E';
-  return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(title) + '</title><style>body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1a1a1a;max-width:640px;margin:0 auto;padding:24px;line-height:1.5}h1{font-size:20px;margin:0 0 2px}h3{font-size:15px;margin:16px 0 4px}.mut{color:#777;font-size:13px}.rowr{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid #eee;font-size:14px}.totr{display:flex;justify-content:space-between;gap:12px;padding:10px 0;font-weight:700;font-size:16px;border-top:2px solid #222;margin-top:4px}.bar{height:4px;background:' + esc(color) + ';border-radius:4px;margin:14px 0}.noprint{margin:20px 0}@media print{.noprint{display:none}}.pbtn{background:' + esc(color) + ';color:#fff;border:0;border-radius:8px;padding:11px 20px;font-weight:700;cursor:pointer;font-size:14px}pre{white-space:pre-wrap;font:inherit;background:#f7f7f7;border:1px solid #eee;border-radius:8px;padding:12px;font-size:13px}</style></head><body>' + inner + '<div class="noprint"><button class="pbtn" onclick="window.print()">Print / Save as PDF</button></div></body></html>';
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(title) + '</title><style>body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1a1a1a;max-width:640px;margin:0 auto;padding:24px;line-height:1.5}h1{font-size:20px;margin:0 0 2px}h3{font-size:15px;margin:16px 0 4px}.mut{color:#777;font-size:13px}.rowr{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid #eee;font-size:14px}.totr{display:flex;justify-content:space-between;gap:12px;padding:10px 0;font-weight:700;font-size:16px;border-top:2px solid #222;margin-top:4px}.bar{height:4px;background:' + esc(color) + ';border-radius:4px;margin:14px 0}.noprint{margin:20px 0}@media print{.noprint{display:none}}.pbtn{background:' + esc(color) + ';color:#fff;border:0;border-radius:8px;padding:11px 20px;font-weight:700;cursor:pointer;font-size:14px}pre{white-space:pre-wrap;font:inherit;background:#f7f7f7;border:1px solid #eee;border-radius:8px;padding:12px;font-size:13px}a:focus-visible,button:focus-visible{outline:2px solid ' + esc(color) + ';outline-offset:2px}@media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;transition-duration:.001ms!important}}</style></head><body><main>' + inner + '</main><div class="noprint"><button type="button" class="pbtn" onclick="window.print()">Print / Save as PDF</button></div></body></html>';
 }
 function _receiptBodyHtml(pr, brow, d, q, paid, got, due) {
   var rows = '<div class="rowr"><span>' + esc(d.asset || 'Rental') + ' x ' + (d.periods || 1) + '</span><span>' + _m(q.subtotalCents || 0) + '</span></div>';
