@@ -33,7 +33,8 @@
   function looksLikePart(s){ s=String(s||'').trim(); return s.length>=4 && /\d/.test(s) && /[A-Za-z0-9][-A-Za-z0-9. ]{3,}/.test(s) && !/\s{2,}/.test(s) && s.split(' ').length<=3; }
 
   // ---- persisted state (own keys; never in the bookings blob) ----------------
-  var LSK_CRIT='pbvs_criteria', LSK_WATCH='pbvs_watch', LSK_SUB='pbvs_sub', LSK_ACT='pbvs_actionable', LSK_CART='pbvs_cart';
+  var LSK_CRIT='pbvs_criteria', LSK_WATCH='pbvs_watch', LSK_SUB='pbvs_sub', LSK_ACT='pbvs_actionable', LSK_CART='pbvs_cart', LSK_CFG='pbvs_config';
+  var _DEF_CFG={ yearMin:2015, maxPrice:30000, maxMiles:0, title:'Any', excludeDamage:'burn,fire,flood,rollover', snipeDays:1, stealOn:true, snipeOn:true, heartOn:true };
   function _lsGet(k,f){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):f; }catch(e){ return f; } }
   function _lsSet(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }
 
@@ -51,6 +52,7 @@
     criteria: _lsGet(LSK_CRIT, DEFAULT_CRITERIA),
     watch:    _lsGet(LSK_WATCH, []),      // [{...lead, addedAt}]
     cart:     _lsGet(LSK_CART, []),        // parts cart + order log
+    config:   _lsGet(LSK_CFG, {}),         // hunt filters (merged with _DEF_CFG)
     leads:    [],                          // live feed if worker returns one
     feedSrc:  'starter',
     feedAt:   0,
@@ -62,12 +64,19 @@
 
   // Best-effort cross-device mirror (Phase 2 worker endpoint). Falls back to
   // localStorage-only; never blocks or throws.
+  function cfg(){ return Object.assign({}, _DEF_CFG, PBVS.config||{}); }
+  function saveConfig(){ _lsSet(LSK_CFG, PBVS.config); _pushState(); }
   function _pushState(){
     var w=_worker(); if(!w) return;
+    var C=cfg();
+    // map the owner-facing settings to the worker's config field names
+    var wcfg={ yearMin:+C.yearMin||0, maxBuyNow:+C.maxPrice||0, maxMiles:+C.maxMiles||0,
+      requireCleanTitle:(C.title==='Clean'), excludeDamage:C.excludeDamage||'', snipeDays:+C.snipeDays||1,
+      stealEnabled:C.stealOn!==false, snipeEnabled:C.snipeOn!==false, heartEnabled:C.heartOn!==false };
     try{
       fetch(w+'/vehicle-search/state',{method:'PUT',
         headers:Object.assign({'Content-Type':'application/json'},_auth()),
-        body:JSON.stringify({criteria:PBVS.criteria,watch:PBVS.watch,cart:PBVS.cart})}).catch(function(){});
+        body:JSON.stringify({criteria:PBVS.criteria,watch:PBVS.watch,cart:PBVS.cart,config:wcfg})}).catch(function(){});
     }catch(e){}
   }
 
@@ -305,6 +314,15 @@
   // ---- Current Leads ---------------------------------------------------------
   function daysUntil(d){ if(!d||d==='future') return null; var t=Date.parse(d+'T12:00:00'); if(isNaN(t)) return null; return Math.round((t-Date.now())/86400000); }
   function isActionable(l){ if(l.steal) return true; var pt=(l.priceType||''); if(pt==='buynow'||pt==='bin'||pt==='cash') return true; var du=daysUntil(l.saleDate); if(du===null) return true; /* not-yet-scheduled: keep */ return du<=3 && du>=-1; }
+  // owner Hunt-Settings filters applied to the displayed leads (instant; also synced to the sniper)
+  function _passCfg(l,C){
+    if(C.yearMin && l.year && l.year < +C.yearMin) return false;
+    if(+C.maxPrice>0 && (l.buyNow||0) > +C.maxPrice) return false;
+    if(+C.maxMiles>0 && l.miles>0 && l.miles > +C.maxMiles) return false;
+    if(!l.gov && C.title && C.title!=='Any' && String(l.title||'').toLowerCase().indexOf(String(C.title).toLowerCase())<0) return false;
+    if(!l.gov && C.excludeDamage){ var ex=String(C.excludeDamage).toLowerCase().split(/[\s,]+/).filter(Boolean); var d=String(l.damage||'').toLowerCase(); for(var i=0;i<ex.length;i++){ if(ex[i]&&d.indexOf(ex[i])>=0) return false; } }
+    return true;
+  }
   function activeFeed(){ return _dedup((PBVS.leads&&PBVS.leads.length)?PBVS.leads:SEED_LEADS); }
   // no double-feed: drop exact id repeats AND soft duplicates (same year+make+model+location/state)
   function _dedup(arr){ var byId={}, soft={}, out=[]; (arr||[]).forEach(function(l){ if(!l||!l.id||byId[l.id]) return;
@@ -319,10 +337,12 @@
     var makes=uniq(feed.map(function(l){return l.make;}));
     var models=uniq(feed.filter(function(l){return !PBVS.fMake||l.make===PBVS.fMake;}).map(function(l){return l.model;}));
     var years=uniq(feed.map(function(l){return String(l.year);})).sort().reverse();
+    var _C=cfg();
     var shown=feed.filter(function(l){
       if(PBVS.fMake && l.make!==PBVS.fMake) return false;
       if(PBVS.fModel && l.model!==PBVS.fModel) return false;
       if(PBVS.fYear && String(l.year)!==PBVS.fYear) return false;
+      if(!_passCfg(l,_C)) return false;
       if(PBVS.actionable && !isActionable(l)) return false;
       return true;
     }).sort(function(a,b){ if(!!b.steal!==!!a.steal) return b.steal?1:-1; var r=(VRANK[a.verdict]||9)-(VRANK[b.verdict]||9); if(r) return r; var da=daysUntil(a.saleDate), db=daysUntil(b.saleDate); da=(da===null?999:da); db=(db===null?999:db); return da-db; });
@@ -543,8 +563,26 @@
        '<pre class="pbvs-pre" id="k-owner">'+esc(owner)+'</pre></div>';
 
     // criteria editor (what the daily hunt targets)
-    h+='<div class="pbvs-card"><div class="pbvs-sec">Daily hunt criteria (makes / models / years being searched)</div>'+
-       '<div class="pbvs-hint" style="margin-bottom:8px">These drive Current Leads. Add any real make/model/year; each row gets one-click live searches across the pools.</div>'+
+    var C=cfg();
+    h+='<div class="pbvs-card"><div class="pbvs-sec">Hunt settings &mdash; filters on your leads + the sniper</div>'+
+       '<div class="pbvs-row">'+
+         '<div class="pbvs-fld"><label>Min year</label><input id="cfYearMin" class="finput" style="width:78px" value="'+esc(C.yearMin)+'"></div>'+
+         '<div class="pbvs-fld"><label>Max price $</label><input id="cfMaxPrice" class="finput" style="width:100px" value="'+esc(C.maxPrice)+'" placeholder="any"></div>'+
+         '<div class="pbvs-fld"><label>Max miles</label><input id="cfMaxMiles" class="finput" style="width:90px" value="'+esc(C.maxMiles||'')+'" placeholder="any"></div>'+
+         '<div class="pbvs-fld"><label>Title</label><select id="cfTitle" class="finput">'+['Any','Clean','Salvage','Rebuilt'].map(function(o){return '<option'+(C.title===o?' selected':'')+'>'+o+'</option>';}).join('')+'</select></div>'+
+         '<div class="pbvs-fld" style="flex:1;min-width:170px"><label>Exclude damage (comma list)</label><input id="cfExDmg" class="finput" style="width:100%;box-sizing:border-box" value="'+esc(C.excludeDamage||'')+'" placeholder="burn, flood, rollover"></div>'+
+       '</div>'+
+       '<div class="pbvs-row" style="margin-top:8px;align-items:center">'+
+         '<div class="pbvs-fld"><label>Selling-soon within (days)</label><input id="cfSnipeDays" class="finput" style="width:66px" value="'+esc(C.snipeDays)+'"></div>'+
+         '<label class="pbvs-chip'+(C.stealOn!==false?' on':'')+'" data-act="cfToggle" data-k="stealOn">&#128293; STEAL push</label>'+
+         '<label class="pbvs-chip'+(C.snipeOn!==false?' on':'')+'" data-act="cfToggle" data-k="snipeOn">&#9200; Selling-soon push</label>'+
+         '<label class="pbvs-chip'+(C.heartOn!==false?' on':'')+'" data-act="cfToggle" data-k="heartOn">&#10084; Watchlist push</label>'+
+         '<button class="pbvs-srcbtn" data-act="cfReset">Reset</button>'+
+       '</div>'+
+       '<div class="pbvs-hint" style="margin-top:6px">Applies to your leads instantly and syncs to the sniper so alerts match. Price caps only priced (buy-now) listings; bid-only lots still show.</div>'+
+      '</div>';
+    h+='<div class="pbvs-card"><div class="pbvs-sec">Daily hunt targets (makes / models / years being searched)</div>'+
+       '<div class="pbvs-hint" style="margin-bottom:8px">These drive Current Leads. Add/remove any real make/model/year; each row gets one-click live searches across the pools.</div>'+
        '<div id="critList">'+PBVS.criteria.map(critRow).join('')+'</div>'+
        '<div class="pbvs-row" style="margin-top:10px;border-top:1px dashed var(--border);padding-top:12px">'+
          fldSelRaw('Make','ncMake',(PBVS.nMakes||CURATED_MAKES),'')+
@@ -609,6 +647,8 @@
       else if(act==='cartremove'){ PBVS.cart.splice(+t.getAttribute('data-i'),1); saveCart(); renderCart(); }
       else if(act==='clearordered'){ PBVS.cart=PBVS.cart.filter(function(c){return c.status!=='ordered';}); saveCart(); renderCart(); }
       else if(act==='dldismiss'){ PBVS._deepLink=null; render(); }
+      else if(act==='cfToggle'){ var _k=t.getAttribute('data-k'); PBVS.config[_k]=(cfg()[_k]===false); saveConfig(); renderKit(); }
+      else if(act==='cfReset'){ PBVS.config={}; saveConfig(); renderKit(); }
     });
     host.addEventListener('keydown', function(e){
       if(e.key!=='Enter') return;
@@ -628,6 +668,12 @@
       else if(id==='fdModel'){ findSel.model=e.target.value; }
       else if(id==='fdYmin'){ findSel.yearMin=e.target.value; }
       else if(id==='fdYmax'){ findSel.yearMax=e.target.value; }
+      else if(id==='cfYearMin'){ PBVS.config.yearMin=e.target.value; saveConfig(); }
+      else if(id==='cfMaxPrice'){ PBVS.config.maxPrice=e.target.value; saveConfig(); }
+      else if(id==='cfMaxMiles'){ PBVS.config.maxMiles=e.target.value; saveConfig(); }
+      else if(id==='cfTitle'){ PBVS.config.title=e.target.value; saveConfig(); }
+      else if(id==='cfExDmg'){ PBVS.config.excludeDamage=e.target.value; saveConfig(); }
+      else if(id==='cfSnipeDays'){ PBVS.config.snipeDays=e.target.value; saveConfig(); }
     });
   }
   function ensureShell(){ if(!el('pbvsBody')) render(); }
