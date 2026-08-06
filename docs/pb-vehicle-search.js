@@ -123,6 +123,8 @@
       '@media(min-width:820px){.pbvs-leadgrid{grid-template-columns:1fr 1fr}}',
       '.pbvs-lead{border:1px solid var(--border);border-radius:13px;background:rgba(255,255,255,.02);padding:14px 15px;position:relative;transition:.14s}',
       '.pbvs-lead:hover{border-color:rgba(201,169,98,.4);background:rgba(255,255,255,.035)}',
+      '.pbvs-lead.pbvs-steal{border-color:#f0a020;box-shadow:0 0 0 1px #f0a020,0 0 22px rgba(240,160,32,.30);background:linear-gradient(180deg,rgba(240,160,32,.11),rgba(255,255,255,.02))}',
+      '.pbvs-badge-steal{color:#111;background:linear-gradient(90deg,#f0b429,#ef4444);border:none;font-weight:800;letter-spacing:.04em;box-shadow:0 0 10px rgba(240,160,32,.5)}',
       '.pbvs-heart{position:absolute;top:12px;right:12px;background:none;border:none;font-size:20px;cursor:pointer;line-height:1;color:#555;transition:.12s}',
       '.pbvs-heart.on{color:#ef4444;transform:scale(1.12)}',
       '.pbvs-title{font-weight:800;font-size:15px;color:#fff;padding-right:34px}',
@@ -281,7 +283,7 @@
 
   // ---- Current Leads ---------------------------------------------------------
   function daysUntil(d){ if(!d||d==='future') return null; var t=Date.parse(d+'T12:00:00'); if(isNaN(t)) return null; return Math.round((t-Date.now())/86400000); }
-  function isActionable(l){ var pt=(l.priceType||''); if(pt==='buynow'||pt==='bin'||pt==='cash') return true; var du=daysUntil(l.saleDate); if(du===null) return true; /* not-yet-scheduled: keep */ return du<=3 && du>=-1; }
+  function isActionable(l){ if(l.steal) return true; var pt=(l.priceType||''); if(pt==='buynow'||pt==='bin'||pt==='cash') return true; var du=daysUntil(l.saleDate); if(du===null) return true; /* not-yet-scheduled: keep */ return du<=3 && du>=-1; }
   function activeFeed(){ return (PBVS.leads&&PBVS.leads.length)?PBVS.leads:SEED_LEADS; }
   function watchHas(id){ return PBVS.watch.some(function(w){ return w.id===id; }); }
 
@@ -298,7 +300,7 @@
       if(PBVS.fYear && String(l.year)!==PBVS.fYear) return false;
       if(PBVS.actionable && !isActionable(l)) return false;
       return true;
-    }).sort(function(a,b){ var r=(VRANK[a.verdict]||9)-(VRANK[b.verdict]||9); if(r) return r; var da=daysUntil(a.saleDate), db=daysUntil(b.saleDate); da=(da===null?999:da); db=(db===null?999:db); return da-db; });
+    }).sort(function(a,b){ if(!!b.steal!==!!a.steal) return b.steal?1:-1; var r=(VRANK[a.verdict]||9)-(VRANK[b.verdict]||9); if(r) return r; var da=daysUntil(a.saleDate), db=daysUntil(b.saleDate); da=(da===null?999:da); db=(db===null?999:db); return da-db; });
 
     var feedNote = (PBVS.leads&&PBVS.leads.length)
       ? 'Live daily feed &middot; '+shown.length+' shown'
@@ -318,13 +320,14 @@
     var _mmy=feed.filter(function(l){ if(PBVS.fMake&&l.make!==PBVS.fMake)return false; if(PBVS.fModel&&l.model!==PBVS.fModel)return false; if(PBVS.fYear&&String(l.year)!==PBVS.fYear)return false; return true; });
     var _hidden = PBVS.actionable ? Math.max(0,_mmy.length - shown.length) : 0;
     function _sc(n,label,color){ return '<span class="pbvs-pill" style="font-weight:700;color:'+color+'"><b style="font-size:14px">'+n+'</b> '+label+'</span>'; }
+    var _steal=shown.filter(function(l){return l.steal;}).length;
     var _clean=shown.filter(function(l){return /clean/i.test(l.title||'');}).length;
     var _salv =shown.filter(function(l){return /salvage|rebuilt|junk|non/i.test(l.title||'');}).length;
     var _unk  =shown.filter(function(l){return !l.title;}).length;
     var _bnow =shown.filter(function(l){return l.priceType==='buynow'||l.priceType==='bin';}).length;
     var _chase=shown.filter(function(l){return l.verdict==='chase'||l.verdict==='good';}).length;
     h+='<div class="pbvs-card" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">'+
-        _sc(shown.length,'shown','#c9a962')+_sc(_clean,'clean title','#22c55e')+_sc(_salv,'salvage/rebuilt','#f59e0b')+_sc(_unk,'title: verify','#ef4444')+_sc(_bnow,'buy-now','#c9a962')+_sc(_chase,'chase-rated','#22c55e')+
+        (_steal>0?_sc(_steal,'&#128293; STEALS','#f0a020'):'')+_sc(shown.length,'shown','#c9a962')+_sc(_clean,'clean title','#22c55e')+_sc(_salv,'salvage/rebuilt','#f59e0b')+_sc(_unk,'title: verify','#ef4444')+_sc(_bnow,'buy-now','#c9a962')+_sc(_chase,'chase-rated','#22c55e')+
         (_hidden>0?'<span class="pbvs-hint" style="margin-left:auto">'+_hidden+' hidden by &#8804;3-day filter &middot; <button class="pbvs-srcbtn" data-act="showall" style="padding:3px 9px">Show all</button></span>':'')+
       '</div>';
 
@@ -361,9 +364,10 @@
     if(l.runDrive) facts.push('<span class="pbvs-pill">run &amp; drive</span>');
     if(l.airbags==='intact') facts.push('<span class="pbvs-pill" style="border-color:rgba(34,197,94,.4);color:#22c55e">airbags intact</span>');
     facts.push('<span class="pbvs-pill">'+esc(l.pool)+'</span>');
-    return '<div class="pbvs-lead">'+
+    var _stealB = l.steal ? '<span class="pbvs-badge pbvs-badge-steal">&#128293; STEAL</span> ' : '';
+    return '<div class="pbvs-lead'+(l.steal?' pbvs-steal':'')+'">'+
       '<button class="pbvs-heart'+(watchHas(l.id)?' on':'')+'" data-act="heart" data-id="'+esc(l.id)+'" title="Save to watchlist + get alerts">'+(watchHas(l.id)?'&#10084;':'&#9825;')+'</button>'+
-      '<div class="pbvs-title">'+esc(vehStr(l))+' <span class="pbvs-badge" style="color:'+vd.c+';background:'+vd.bg+';border:1px solid '+vd.b+'">'+vd.t+'</span></div>'+
+      '<div class="pbvs-title">'+_stealB+esc(vehStr(l))+' <span class="pbvs-badge" style="color:'+vd.c+';background:'+vd.bg+';border:1px solid '+vd.b+'">'+vd.t+'</span></div>'+
       '<div class="pbvs-meta"><b>'+esc(l.damage)+'</b> &middot; '+esc(l.location)+' &middot; <b>'+price+'</b> &middot; '+when+'</div>'+
       '<div>'+facts.join(' ')+'</div>'+
       (l.note?'<div class="pbvs-note">'+l.note+'</div>':'')+
