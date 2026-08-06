@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04x';
+const ATLAS_BUILD = '2026.08.04y';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2914,6 +2914,21 @@ async function _cancelSiblingPlanSubs(env, pk, customerId, keepSubId) {
     return n;
   } catch (e) { return 0; }
 }
+// Owner CLEANUP for pre-existing duplicates the live prevention can't reach (they only clean on the next confirm): for ONE
+// customer, keep the NEWEST live plan/trial sub and cancel the rest. Returns {kept, cancelled:[]}. Add-on subs untouched.
+async function _dedupTenantSubs(env, pk, customerId) {
+  try {
+    if (!pk || !customerId) return { kept: null, cancelled: [] };
+    const r = await stripeApi(pk, 'GET', 'subscriptions?customer=' + encodeURIComponent(customerId) + '&status=all&limit=100', null);
+    if (!r.ok || !r.j || !Array.isArray(r.j.data)) return { kept: null, cancelled: [] };
+    const live = r.j.data.filter(function (s) { return s && s.id && ['active', 'trialing', 'past_due', 'unpaid'].indexOf(String(s.status || '')) >= 0 && ['plan', 'trial'].indexOf((s.metadata && s.metadata.billing) || '') >= 0; });
+    if (live.length <= 1) return { kept: live[0] ? live[0].id : null, cancelled: [] };
+    live.sort(function (a, b) { return (b.created || 0) - (a.created || 0); });   // newest first -> keep [0]
+    const keep = live[0].id, cancelled = [];
+    for (let i = 1; i < live.length; i++) { try { const d = await stripeApi(pk, 'DELETE', 'subscriptions/' + encodeURIComponent(live[i].id), null); if (d.ok) cancelled.push(live[i].id); } catch (e) {} }
+    return { kept: keep, cancelled: cancelled };
+  } catch (e) { return { kept: null, cancelled: [] }; }
+}
 
 // ---- Atlas PLATFORM billing (Atlas gets paid): server-authoritative prices for the SaaS subscription + one-time purchases,
 // charged on the platform's OWN Stripe account (env.PLATFORM_STRIPE_KEY), separate from each tenant's connected Stripe. ----
@@ -4067,7 +4082,7 @@ function _alert(env, ectx, o) {
 // analytics/ + monitor/ added: /api/admin/analytics/* (cohorts, segmented funnel) + /api/admin/monitor/* (uptime) all
 // surface CROSS-TENANT aggregates (MRR/LTV, every tenant's site status) -- same owner-only tier as funnel/seo-health/
 // site-uptime above, never reachable by a support/analyst staff token.
-const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/(testcharge|testsub)|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|owners?|owner\/)/;
+const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/(testcharge|testsub|dedup-subs)|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|owners?|owner\/)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
 // #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
 // Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
@@ -5732,7 +5747,7 @@ function doReset(){
               if (st === 'active') await env.DB.prepare("UPDATE tenants SET plan='active', delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, tier=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #281: belt-and-suspenders clear alongside invoice.paid's (this can fire first/instead on some recoveries). PART A4: dunning cleared here too -- this can be the FIRST signal of a recovery on some retries.
               else if (st === 'trialing') await env.DB.prepare("UPDATE tenants SET tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(md.tier || null, obj.customer || null, obj.id || null, Date.now(), md.tenant).run();
               else if (st === 'past_due') await env.DB.prepare("UPDATE tenants SET plan='past_due', delinquent_since=COALESCE(delinquent_since,?), stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(Date.now(), obj.customer || null, obj.id || null, Date.now(), md.tenant).run();   // #276: Stripe dunning -> delinquent; keep the sub id so update-card/change-plan still work. invoice.paid flips back to 'active'. #281: stamp delinquent_since ONCE (COALESCE) so a repeat past_due webhook never resets the 3-day takedown grace clock. (dunning_invoice/dunning_next are stamped by invoice.payment_failed, not here -- this event alone carries no invoice id to chase.)
-              else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) await env.DB.prepare("UPDATE tenants SET plan='trial', delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // PART A4: stop dunning a subscription that no longer exists in this state. LAUNCH-FIX (sweep): also clear delinquent_since so a lapsed->cancelled tenant's public site is never left taken down under a stale timestamp.
+              else if (['canceled', 'unpaid', 'incomplete_expired'].indexOf(st) >= 0) { const _curu = await env.DB.prepare('SELECT stripe_sub FROM tenants WHERE id=?').bind(md.tenant).first(); if (_curu && _curu.stripe_sub && obj.id && _curu.stripe_sub !== obj.id) { try { await audit(env, { tenant_id: md.tenant }, req, 'billing.old_sub_replaced', { cancelled: obj.id, kept: _curu.stripe_sub, status: st, reason: 'upgrade/re-subscribe' }); } catch (e) {} } else { await env.DB.prepare("UPDATE tenants SET plan='trial', delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run(); } }   // #dup: only downgrade if the terminal sub IS the tenant's current one -- an older/replaced sub going canceled (via the upgrade cleanup) must NOT reset an actively-subscribed tenant. PART A4: stop dunning; LAUNCH-FIX: clear delinquent_since so a lapsed public site isn't left down.
             } else if (md.tenant && md.billing === 'asset_unlock') {
               // DELINQUENCY RELOCK: the $11.99/mo per-asset unlock sub went terminal-unpaid (Stripe exhausted its
               // retries) -> relock that specific over-cap asset now (drop it by SUB id, survives an asset rename). An
@@ -5750,8 +5765,15 @@ function doReset(){
               }
             }
           } else if (T === 'customer.subscription.deleted' && (md.billing === 'plan' || md.billing === 'trial') && md.tenant) {
-            await env.DB.prepare("UPDATE tenants SET plan='trial', stripe_sub=NULL, delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // clear the dead sub id so a later change-plan falls through to a fresh checkout instead of 502-ing on the deleted sub. PART A4: also stop dunning -- a deleted subscription can never be paid via the old invoice again. LAUNCH-FIX (sweep): also clear delinquent_since so a lapsed->cancelled tenant's public site isn't left taken down under a stale timestamp.
-            await audit(env, { tenant_id: md.tenant }, req, 'billing.cancelled', { tier: md.tier });
+            // #dup: an UPGRADE / re-subscribe cancels the OLD sub via _cancelSiblingPlanSubs -> that cancellation's deleted event must NOT
+            // downgrade the tenant, whose CURRENT (newer) sub is still live. Only downgrade when the deleted sub IS the tenant's current one.
+            const _curd = await env.DB.prepare('SELECT stripe_sub FROM tenants WHERE id=?').bind(md.tenant).first();
+            if (_curd && _curd.stripe_sub && obj.id && _curd.stripe_sub !== obj.id) {
+              await audit(env, { tenant_id: md.tenant }, req, 'billing.old_sub_replaced', { cancelled: obj.id, kept: _curd.stripe_sub, tier: md.tier, reason: 'upgrade/re-subscribe' });   // owner-visible: this was an UPGRADE cancellation, not churn
+            } else {
+              await env.DB.prepare("UPDATE tenants SET plan='trial', stripe_sub=NULL, delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=? WHERE id=?").bind(Date.now(), md.tenant).run();   // clear the dead sub id so a later change-plan falls through to a fresh checkout instead of 502-ing on the deleted sub. PART A4: also stop dunning -- a deleted subscription can never be paid via the old invoice again. LAUNCH-FIX (sweep): also clear delinquent_since so a lapsed->cancelled tenant's public site isn't left taken down under a stale timestamp.
+              await audit(env, { tenant_id: md.tenant }, req, 'billing.cancelled', { tier: md.tier });
+            }
           } else if (T === 'customer.subscription.deleted' && md.billing === 'website' && md.tenant) {
             // #278: the monthly website-addon subscription was cancelled -- clear the entitlement, but ONLY if it is
             // still exactly 'mo' (never clobber a separate one-time 'once' purchase or a 'grandfathered' legacy site
@@ -6879,6 +6901,21 @@ function doReset(){
           out.note = 'Test mode only -- no real money moved; the subscription + customer were auto-deleted. This exercised the exact invoice.paid / customer.subscription.* handlers a real trial-end charge uses.';
           await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.payments.testsub', { ok: out.ok, sub: subId || null, charged: !!(out.subscription && out.subscription.amount_paid) });
           return json(out);
+        }
+
+        // CLEANUP: cancel DUPLICATE plan/trial subscriptions (keep the newest per customer) across all tenants, in the CURRENT
+        // payment mode (test key in test mode, live key otherwise). This reaches pre-existing dupes the live prevention can't
+        // (it only cleans on the next confirm). Consequential -> owner-only (OWNER_ONLY) + explicit confirm:1. Add-ons untouched.
+        if (path === '/api/admin/payments/dedup-subs' && method === 'POST') {
+          const pk = await _platStripe(env);
+          if (!pk) return json({ ok: false, message: 'Platform billing is not configured yet.' });
+          const b = await req.json().catch(function () { return {}; });
+          if (b.confirm !== 1 && b.confirm !== '1' && b.confirm !== true) return json({ ok: false, message: 'Pass confirm:1 to cancel duplicate subscriptions.' });
+          const rows = ((await env.DB.prepare('SELECT id, stripe_customer FROM tenants WHERE deleted_at IS NULL AND stripe_customer IS NOT NULL LIMIT 500').all()).results) || [];
+          let scanned = 0, cancelledTotal = 0; const details = [];
+          for (let i = 0; i < rows.length; i++) { scanned++; try { const d = await _dedupTenantSubs(env, pk, rows[i].stripe_customer); if (d.cancelled.length) { cancelledTotal += d.cancelled.length; details.push({ tenant: rows[i].id, kept: d.kept, cancelled: d.cancelled }); } } catch (e) {} }
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.payments.dedup_subs', { scanned: scanned, cancelled: cancelledTotal });
+          return json({ ok: true, mode: /_test_/.test(pk) ? 'test' : (/_live_/.test(pk) ? 'live' : 'unknown'), scanned: scanned, cancelled: cancelledTotal, details: details.slice(0, 50) });
         }
 
         // ---- Competitor watchlist (owner-managed). The cron fetches each URL + snapshots it; the AI brief diffs them. ----
