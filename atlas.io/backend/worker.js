@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04y';
+const ATLAS_BUILD = '2026.08.04z';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -4082,7 +4082,7 @@ function _alert(env, ectx, o) {
 // analytics/ + monitor/ added: /api/admin/analytics/* (cohorts, segmented funnel) + /api/admin/monitor/* (uptime) all
 // surface CROSS-TENANT aggregates (MRR/LTV, every tenant's site status) -- same owner-only tier as funnel/seo-health/
 // site-uptime above, never reachable by a support/analyst staff token.
-const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/(testcharge|testsub|dedup-subs)|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|owners?|owner\/)/;
+const OWNER_ONLY = /^\/api\/admin\/(delete|purge|grant|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/(testcharge|testsub|dedup-subs)|payments-ledger|domains\/testregister|competitors|ai\/|counsel\/(act|run)|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|owners?|owner\/)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
 // #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
 // Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
@@ -6266,6 +6266,39 @@ function doReset(){
           const kinds = {}; let grand = 0, gcount = 0; (byk.results || []).forEach(function (r) { const k = (r.kind === 'plan') ? 'subscription' : (r.kind || 'other'); kinds[k] = kinds[k] || { n: 0, c: 0 }; kinds[k].n += r.n; kinds[k].c += r.c; grand += r.c; gcount += r.n; });
           const items = rows.results || []; const shown = items.reduce(function (s, r) { return s + (r.amount_cents || 0); }, 0);
           return json({ ok: true, range: { key: range.key, label: range.label }, items: items, count: items.length, shown_total_cents: shown, by_kind: kinds, grand_total_cents: grand, grand_count: gcount });
+        }
+
+        // FULL payments ledger straight from Stripe (the source of truth), in the CURRENT payment mode (test key in test mode,
+        // live otherwise). Unlike /purchases (platform_transactions = SUCCESSES only), this shows EVERY charge + its real
+        // status -- succeeded, refunded, disputed, failed/declined (with reason), pending -- plus the card, the plain-English
+        // item, and the subscription BILLING PERIOD (from the matching invoice line). Read-only (GETs), owner-only, bounded.
+        if (path === '/api/admin/payments-ledger' && method === 'GET') {
+          const pk = await _platStripe(env);
+          if (!pk) return json({ ok: true, mode: 'none', items: [], count: 0, note: 'Platform billing is not configured yet.' });
+          const mode = /_test_/.test(pk) ? 'test' : (/_live_/.test(pk) ? 'live' : 'unknown');
+          // Invoice periods -> map by invoice id AND by charge id, so a charge can show "Aug 10 - Sep 10".
+          const invMap = {};
+          try { const inv = await stripeApi(pk, 'GET', 'invoices?limit=100', null); if (inv.ok && inv.j && Array.isArray(inv.j.data)) inv.j.data.forEach(function (v) { const ln = (v.lines && v.lines.data && v.lines.data[0]) || null; const per = (ln && ln.period) ? ln.period : null; const rec = { start: per ? (per.start || 0) : 0, end: per ? (per.end || 0) : 0, tier: (v.metadata && v.metadata.tier) || (ln && ln.metadata && ln.metadata.tier) || '', billing: (v.metadata && v.metadata.billing) || '' }; if (v.id) invMap['inv:' + v.id] = rec; const chId = (v.charge && v.charge.id) || v.charge; if (chId) invMap['ch:' + chId] = rec; }); } catch (e) {}
+          const out2 = [];
+          try {
+            const ch = await stripeApi(pk, 'GET', 'charges?limit=100', null);
+            if (ch.ok && ch.j && Array.isArray(ch.j.data)) ch.j.data.forEach(function (c) {
+              const card = (c.payment_method_details && c.payment_method_details.card) || {};
+              const invId = (typeof c.invoice === 'string') ? c.invoice : (c.invoice && c.invoice.id) || '';
+              const per = invMap['ch:' + c.id] || (invId ? invMap['inv:' + invId] : null) || null;
+              const md = c.metadata || {};
+              const status = c.refunded ? 'refunded' : (c.disputed ? 'disputed' : ((c.status === 'succeeded') ? 'succeeded' : ((c.status === 'failed') ? 'failed' : (c.status || 'pending'))));
+              out2.push({ id: c.id, created: (c.created || 0) * 1000, amount: c.amount || 0, currency: c.currency || 'usd', status: status, paid: !!c.paid, refunded: !!c.refunded, disputed: !!c.disputed,
+                email: (c.billing_details && c.billing_details.email) || c.receipt_email || md.email || '',
+                method: card.brand ? ((card.brand + '').replace(/^\w/, function (m) { return m.toUpperCase(); }) + (card.last4 ? (' ****' + card.last4) : '')) : ((c.payment_method_details && c.payment_method_details.type) || ''),
+                billing: md.billing || (per && per.billing) || '', tier: md.tier || (per && per.tier) || '', pack: md.pack || '', domain: md.domain || '',
+                period_start: per ? per.start * 1000 : 0, period_end: per ? per.end * 1000 : 0,
+                desc: String(c.description || '').slice(0, 90),
+                decline: (c.status === 'failed') ? String(c.failure_message || (c.outcome && c.outcome.seller_message) || 'Declined').slice(0, 90) : '' });
+            });
+          } catch (e) {}
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.payments.ledger', { mode: mode, n: out2.length });
+          return json({ ok: true, mode: mode, items: out2, count: out2.length });
         }
         // #286 Platform P&L: Revenue (platform_transactions, same source as /api/admin/overview) minus Expenses
         // (real metered AI-API spend from platform_ai_spend + the owner's fixed monthly costs) = Net. OWNER_ONLY
