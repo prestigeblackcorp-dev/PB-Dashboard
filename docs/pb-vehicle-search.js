@@ -765,20 +765,21 @@
   function _cartFromReport(i){ if(!_modalCtx) return false; var p=_modalCtx.parts[i]; if(!p) return false; return addToCart({name:p.name, vehicle:vehStr(_modalCtx.lead), oem:p.oem||'', links:partLinks(_modalCtx.vehicle,p)}); }
   function _sendAllToCart(){ if(!_modalCtx) return; var n=0; _modalCtx.parts.forEach(function(p){ if(addToCart({name:p.name,vehicle:vehStr(_modalCtx.lead),oem:p.oem||'',links:partLinks(_modalCtx.vehicle,p)})) n++; }); _toast(n+' part'+(n===1?'':'s')+' added to cart'); }
   // live best-price via the worker eBay Browse endpoint (auto-upgrades once EBAY keys exist)
-  function _bestPrice(i, btn){
-    if(!_modalCtx) return; var p=_modalCtx.parts[i]; if(!p) return;
+  function _bestPrice(i, btn, cascade){
+    if(!_modalCtx || PBVS._ebayOff) return; var p=_modalCtx.parts[i]; if(!p) return;
     var box=el('best-'+i); if(box) box.innerHTML='Finding cheapest good-condition&#8230;'; if(btn) btn.disabled=true;
-    var w=_worker(); var kw=(vehStr(_modalCtx.vehicle)+' '+(p.search||p.name)).trim();
-    if(!w){ if(box) box.innerHTML='Best-price lookup needs the worker deployed. Use the cheapest-sorted links above.'; if(btn) btn.disabled=false; return; }
+    var w=_worker(); var kw=(vehStr(_modalCtx.vehicle)+' '+(p.oem||p.search||p.name)).trim();
+    if(!w){ if(box) box.innerHTML='Best-price needs the worker deployed.'; if(btn) btn.disabled=false; return; }
     fetch(w+'/parts-best',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth()),body:JSON.stringify({q:kw})})
       .then(function(r){ return r.ok?r.json():null; })
       .then(function(d){ if(btn) btn.disabled=false; if(!box) return;
-        if(d&&d.notConfigured){ box.innerHTML='Add an eBay API key for live best-price ranking (the &ldquo;used/new cheapest&rdquo; link above is sorted low-to-high in the meantime).'; return; }
+        if(d&&d.notConfigured){ PBVS._ebayOff=true; box.innerHTML='<span style="color:var(--muted)">Live prices &amp; real listings appear here once your eBay API key is in the worker.</span>'; return; }
         var items=(d&&d.items)||[];
-        if(!items.length){ box.innerHTML='No good-condition listing found right now.'; return; }
-        box.innerHTML=items.slice(0,3).map(function(it){ return '<div style="margin-top:3px">'+esc(it.condition||'')+' &middot; <b style="color:#22c55e">$'+esc(it.price)+'</b>'+(it.seller?(' &middot; '+esc(it.seller)+'% seller'):'')+' &middot; <a href="'+esc(it.url)+'" target="_blank" rel="noopener" style="color:#c9a962">'+esc(String(it.title||'').slice(0,58))+' &#8599;</a></div>'; }).join('');
+        if(!items.length){ box.innerHTML='<span style="color:var(--muted)">No good-condition listing found right now.</span>'; }
+        else box.innerHTML='<div style="font-weight:700;color:#22c55e;margin-top:2px">Best prices (used/new only):</div>'+items.slice(0,3).map(function(it){ return '<div style="margin-top:2px">'+esc(it.condition||'')+' &middot; <b style="color:#22c55e">$'+esc(it.price)+'</b>'+(it.seller?(' &middot; '+esc(it.seller)+'%'):'')+' &middot; <a href="'+esc(it.url)+'" target="_blank" rel="noopener" style="color:#c9a962">'+esc(String(it.title||'').slice(0,54))+' &#8599;</a></div>'; }).join('');
+        if(cascade && items.length){ (_modalCtx.parts||[]).forEach(function(pp,j){ if(j!==i) setTimeout(function(){ _bestPrice(j,null,false); }, 80+j*220); }); }  // eBay live -> auto-price every part
       })
-      .catch(function(){ if(btn) btn.disabled=false; if(box) box.innerHTML='Lookup failed.'; });
+      .catch(function(){ if(btn) btn.disabled=false; if(box) box.innerHTML='<span style="color:var(--muted)">Lookup failed.</span>'; });
   }
 
   function _showReportModal(l, rep, loading){
@@ -805,6 +806,8 @@
     }
     m.innerHTML='<div class="pbvs-modbox">'+body+'</div>';
     m.style.display='flex';
+    // auto-run eBay best-price: probe part 0; if live it cascades to every part
+    if(!loading && rep && rep.parts && rep.parts.length && !PBVS._ebayOff && _worker()){ setTimeout(function(){ _bestPrice(0, null, true); }, 140); }
   }
 
   function renderCart(){
