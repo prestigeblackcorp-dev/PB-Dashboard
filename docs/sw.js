@@ -1,4 +1,4 @@
-const CACHE = 'pb-v314';
+const CACHE = 'pb-v315';
 const ASSETS = ['./index.html', './icon.png', './obsidian.html', './driver.html', './pb-config.js', './pb-vehicle-search.js'];
 
 self.addEventListener('install', function(e) {
@@ -82,7 +82,11 @@ self.addEventListener('push', function(e){
       // Owner (dashboard) device: fetch the newest owner alert and show it. Unique rideId -> notifications stack.
       return fetch(auth.worker+'/owner-alerts?_='+Date.now(), {headers:{'Authorization':'Bearer '+auth.token}, cache:'no-store'})
         .then(function(r){ return r.json(); })
-        .then(function(d){ var a=d&&d.alerts&&d.alerts[0]; data={app:'./index.html', rideId:'ow'+Date.now()}; title='Prestige Black'; body=(a&&a.text)?a.text:'New booking activity on your dashboard'; return show(); })
+        .then(function(d){ var a=d&&d.alerts&&d.alerts[0];
+          var vsUrl=(a&&a.url)||''; var app=vsUrl?('./index.html?vsurl='+encodeURIComponent(vsUrl)):'./index.html';
+          data={app:app, vsUrl:vsUrl, rideId:'ow'+Date.now()};
+          title=(a&&a.kind==='steal')?'\ud83d\udd25 STEAL deal':(a&&a.kind==='soon')?'\u23f0 Selling soon':(a&&a.kind==='snipe')?'\u23f1 Auction ending':'Prestige Black';
+          body=(a&&a.text)?a.text:'New booking activity on your dashboard'; return show(); })
         .catch(function(){ title='Prestige Black'; body='New booking activity'; data={app:'./index.html', rideId:'ow'+Date.now()}; return show(); });
     }
     if(auth && auth.role==='driver' && auth.worker && auth.token){
@@ -145,10 +149,12 @@ self.addEventListener('push', function(e){
 
 self.addEventListener('notificationclick', function(e){
   e.notification.close();
-  var url=(e.notification.data && e.notification.data.app) || './obsidian.html';
-  var want=url.replace('./','');
+  var d=e.notification.data||{};
+  var url=d.app||'./obsidian.html';
+  var want=String(d.app||'').replace('./','').split('?')[0];
+  var vsUrl=d.vsUrl||'';
   e.waitUntil(clients.matchAll({type:'window', includeUncontrolled:true}).then(function(cl){
-    for(var i=0;i<cl.length;i++){ if(cl[i].url.indexOf(want)>=0 && 'focus' in cl[i]) return cl[i].focus(); }
+    for(var i=0;i<cl.length;i++){ if(cl[i].url.indexOf(want)>=0 && 'focus' in cl[i]){ if(vsUrl){ try{ cl[i].postMessage({type:'pb-vs-open', url:vsUrl}); }catch(_e){} } return cl[i].focus(); } }
     if(clients.openWindow) return clients.openWindow(url);
   }));
 });

@@ -279,7 +279,8 @@
     injectCSS();
     var host=el('vehSearchContent'); if(!host) return;
     var s=PBVS.sub; PBVS._inWatch=false;
-    host.innerHTML =
+    var _dlB = PBVS._deepLink ? '<div class="pbvs-card" style="border-color:#c9a962;background:rgba(201,169,98,.13);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px"><div style="font-weight:800;color:#fff">&#128276; From your alert &mdash; your listing is ready</div><div style="display:flex;gap:8px"><a class="pbvs-srcbtn" style="border-color:#c9a962;color:#c9a962;font-weight:700" href="'+esc(PBVS._deepLink)+'" target="_blank" rel="noopener">Open listing &#8599;</a><button class="pbvs-srcbtn" data-act="dldismiss">Dismiss</button></div></div>' : '';
+    host.innerHTML = _dlB +
       '<div class="pbvs-subnav">'+
         subBtn('leads','&#128293; Current Leads')+
         subBtn('parts','&#128736; Parts Search')+
@@ -598,6 +599,7 @@
       else if(act==='ordertoggle'){ var _c=PBVS.cart[+t.getAttribute('data-i')]; if(_c){ _c.status=(_c.status==='ordered')?'to-order':'ordered'; _c.orderedAt=(_c.status==='ordered')?Date.now():null; saveCart(); renderCart(); } }
       else if(act==='cartremove'){ PBVS.cart.splice(+t.getAttribute('data-i'),1); saveCart(); renderCart(); }
       else if(act==='clearordered'){ PBVS.cart=PBVS.cart.filter(function(c){return c.status!=='ordered';}); saveCart(); renderCart(); }
+      else if(act==='dldismiss'){ PBVS._deepLink=null; render(); }
     });
     host.addEventListener('keydown', function(e){
       if(e.key!=='Enter') return;
@@ -841,4 +843,11 @@
     render();
     if(!PBVS.__feedTried){ PBVS.__feedTried=true; fetchFeed(false); }
   };
+
+  // ---- deep-link from a push notification: tap alert -> (unlock) -> this tab -> listing ----
+  function _gotoVehTab(){ try{ if(typeof switchTab==='function') switchTab('vehsearch'); else if(window.renderVehSearchTab) window.renderVehSearchTab(); }catch(e){} }
+  try{ var _dlm=/[?&]vsurl=([^&#]+)/.exec(location.search||''); if(_dlm){ PBVS._deepLink=decodeURIComponent(_dlm[1]); } }catch(e){}
+  try{ if(navigator.serviceWorker && navigator.serviceWorker.addEventListener){ navigator.serviceWorker.addEventListener('message', function(ev){ if(ev && ev.data && ev.data.type==='pb-vs-open' && ev.data.url){ PBVS._deepLink=ev.data.url; _gotoVehTab(); } }); } }catch(e){}
+  // jump to the tab shortly after load, and again after a typical PIN-unlock delay
+  if(PBVS._deepLink){ setTimeout(_gotoVehTab, 900); setTimeout(_gotoVehTab, 3200); }
 })();
