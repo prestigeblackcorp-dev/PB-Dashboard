@@ -581,7 +581,7 @@ function vInt(n) { return Number.isInteger(n); }
 const COLLECTIONS = { assets: 'assets', bookings: 'bookings', customers: 'customers', charges: 'charges' };   // X1: ledger + promos retired -- ZERO reads anywhere (promos are read from prof.settings.promos, never this table; ledger is never queried). Tables are KEPT (no DDL drop); we simply stop routing client mirrors to them, so /api/data/ledger and /api/data/promos now 404 'Unknown collection.'
 // Deploy stamp: surfaced in /api/admin/config so the master dashboard can tell the owner whether the LIVE worker is current
 // (its absence in an older worker = "outdated, paste the latest"). Bump when shipping a worker change the dashboard relies on.
-const ATLAS_BUILD = '2026.08.04w';
+const ATLAS_BUILD = '2026.08.04x';
 
 // ---- server-side role -> capability enforcement (mirrors the client ROLE_PRESETS). Owner passes everything.
 // Today only owners have sessions, so this is a forward-guard that activates the moment team invites ship. ----
@@ -2891,6 +2891,28 @@ function _whMissing(enabled) {
     if (set.indexOf('*') >= 0) return { all: true, missing_required: [], missing_recommended: [] };   // "receive all events" -> nothing missing
     return { all: false, missing_required: WH_REQUIRED.filter(function (e) { return set.indexOf(e) < 0; }), missing_recommended: WH_RECOMMENDED.filter(function (e) { return set.indexOf(e) < 0; }) };
   } catch (e) { return null; }
+}
+// #dup-charge guard: cancel any OTHER live plan/trial subscription for this Stripe customer, keeping only keepSubId. A
+// re-subscribe -- or a retry when the FIRST sub id was never stored locally (webhook down) so the tenants.stripe_sub
+// backstop in /api/billing/checkout couldn't fire -- otherwise leaves multiple live subscriptions all billing the SAME
+// account (the exact "6x charged" case). Asks Stripe directly (authoritative, works even with an empty local column) and
+// ONLY touches metadata.billing plan/trial subs -- a website / domain / asset_unlock sub for the same customer is left
+// alone. Best-effort, mode-matched key, never throws.
+async function _cancelSiblingPlanSubs(env, pk, customerId, keepSubId) {
+  try {
+    if (!pk || !customerId) return 0;
+    const r = await stripeApi(pk, 'GET', 'subscriptions?customer=' + encodeURIComponent(customerId) + '&status=all&limit=100', null);
+    if (!r.ok || !r.j || !Array.isArray(r.j.data)) return 0;
+    let n = 0;
+    for (let i = 0; i < r.j.data.length; i++) {
+      const s = r.j.data[i]; if (!s || !s.id || s.id === keepSubId) continue;
+      if (['active', 'trialing', 'past_due', 'unpaid'].indexOf(String(s.status || '')) < 0) continue;   // already dead -> nothing to cancel
+      const b = (s.metadata && s.metadata.billing) || '';
+      if (b !== 'plan' && b !== 'trial') continue;   // NEVER cancel a website/domain/asset_unlock sub for the same customer
+      try { await stripeApi(pk, 'DELETE', 'subscriptions/' + encodeURIComponent(s.id), null); n++; } catch (e) {}
+    }
+    return n;
+  } catch (e) { return 0; }
 }
 
 // ---- Atlas PLATFORM billing (Atlas gets paid): server-authoritative prices for the SaaS subscription + one-time purchases,
@@ -5516,6 +5538,7 @@ function doReset(){
             // #281: also clear delinquent_since -- belt-and-suspenders alongside the invoice.paid/subscription.updated(active) clears below, so a re-subscribe after a past-due lapse never leaves a stale timestamp behind.
             await env.DB.prepare('UPDATE tenants SET plan=?, delinquent_since=NULL, tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind('active', md.tier || null, obj.customer || null, obj.subscription || null, Date.now(), md.tenant).run();
             await audit(env, { tenant_id: md.tenant }, req, 'billing.subscribed', { tier: md.tier });
+            try { const _dk = (evt.livemode === false && env.PLATFORM_STRIPE_TEST_KEY) ? env.PLATFORM_STRIPE_TEST_KEY : (env.PLATFORM_STRIPE_KEY || ''); const _dn = await _cancelSiblingPlanSubs(env, _dk, obj.customer, obj.subscription); if (_dn) await audit(env, { tenant_id: md.tenant }, req, 'billing.dup_subs_cancelled', { count: _dn, kept: obj.subscription }); } catch (e) {}   // #dup: never leave two plan subs billing this customer
             // REFERRAL reward on a DIRECT subscribe (no-trial -> paid now). Flag-gated + idempotent (atomic pending->rewarded
             // claim inside), so this and the invoice.paid path both firing for the same tenant credits exactly once.
             try { await _referralOnConvert(env, req, md.tenant); } catch (e) {}
@@ -5523,6 +5546,7 @@ function doReset(){
             // free trial with a card on file: no charge today, first invoice fires at trial end.
             const _trialEnds = Date.now() + 7 * 24 * 3600 * 1000;
             await env.DB.prepare('UPDATE tenants SET tier=?, card_on_file=1, trial_ends=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind(md.tier || null, _trialEnds, obj.customer || null, obj.subscription || null, Date.now(), md.tenant).run();
+            try { const _dk = (evt.livemode === false && env.PLATFORM_STRIPE_TEST_KEY) ? env.PLATFORM_STRIPE_TEST_KEY : (env.PLATFORM_STRIPE_KEY || ''); const _dn = await _cancelSiblingPlanSubs(env, _dk, obj.customer, obj.subscription); if (_dn) await audit(env, { tenant_id: md.tenant }, req, 'billing.dup_subs_cancelled', { count: _dn, kept: obj.subscription }); } catch (e) {}   // #dup: one trial sub per account
             const _trtx = await recordTxn(env, { tenant: md.tenant, email: md.email, kind: 'trial', tier: md.tier, amount_cents: 0, stripe_id: sid });
             await audit(env, { tenant_id: md.tenant }, req, 'billing.trial_card', { tier: md.tier });
             // PART D -- idempotent trial welcome + "hidden gems" email: only on the FIRST delivery of this event
@@ -9440,9 +9464,11 @@ function doReset(){
         if (_kind === 'trial') {
           const _trialEnds = Date.now() + 7 * 24 * 3600 * 1000;   // mirror the webhook's trial window exactly
           await env.DB.prepare('UPDATE tenants SET tier=?, card_on_file=1, trial_ends=?, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?').bind(smd.tier || null, _trialEnds, sess.customer || null, sess.subscription || null, Date.now(), ctx.tenant_id).run();
+          try { const _dn = await _cancelSiblingPlanSubs(env, pk, sess.customer, sess.subscription); if (_dn) await audit(env, ctx, req, 'billing.dup_subs_cancelled', { count: _dn, kept: sess.subscription }); } catch (e) {}   // #dup: cancel any older plan/trial sub for this customer
           await audit(env, ctx, req, 'billing.trial_card_confirmed', { tier: smd.tier, sid: sid });
         } else if (_kind === 'plan') {
           await env.DB.prepare("UPDATE tenants SET plan='active', delinquent_since=NULL, tier=?, card_on_file=1, stripe_customer=?, stripe_sub=?, updated_at=? WHERE id=?").bind(smd.tier || null, sess.customer || null, sess.subscription || null, Date.now(), ctx.tenant_id).run();
+          try { const _dn = await _cancelSiblingPlanSubs(env, pk, sess.customer, sess.subscription); if (_dn) await audit(env, ctx, req, 'billing.dup_subs_cancelled', { count: _dn, kept: sess.subscription }); } catch (e) {}   // #dup: cancel any older plan/trial sub for this customer
           await audit(env, ctx, req, 'billing.subscribed_confirmed', { tier: smd.tier, sid: sid });
         } else {
           return json({ ok: true, confirmed: false, kind: _kind });   // credits/website/domain/asset_unlock don't gate signup -> leave to the webhook
