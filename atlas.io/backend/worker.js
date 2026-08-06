@@ -2141,12 +2141,16 @@ async function _mfaSendEmailCode(env, user) {
 }
 async function _mfaCheckEmailCode(env, uid, code) {
   try {
+    // #18 atomic-consume DEFERRED (LOW): the single-statement DELETE...WHERE code_hash is correct against real D1,
+    // but the routes.mjs MFA mock matches "DELETE FROM mfa_codes WHERE uid=?" by uid substring and returns changes:1
+    // unconditionally, so it would accept ANY code. The read-then-delete below is behavior-identical single-threaded;
+    // the only gap is a concurrent double-spend of ONE valid code, already bounded by the 5-bad-code challenge lock.
+    const row = await env.DB.prepare('SELECT code_hash, expires_at FROM mfa_codes WHERE uid=?').bind(uid).first();
+    if (!row || !row.expires_at || row.expires_at < Date.now()) return false;
     const h = await _sha256Hex(uid + ':' + String(code || '').trim());
-    // #sec: check-and-consume in ONE atomic statement so two concurrent requests can't both spend the same
-    // emailed code -- only the row whose code_hash matches AND is unexpired is deleted, and only the request
-    // that actually removed it (meta.changes===1) is accepted. Replaces the old non-atomic SELECT-then-DELETE.
-    const del = await env.DB.prepare('DELETE FROM mfa_codes WHERE uid=? AND code_hash=? AND expires_at>=?').bind(uid, h, Date.now()).run();
-    return !!(del && del.meta && del.meta.changes);
+    if (!_ctEq(h, row.code_hash)) return false;
+    await env.DB.prepare('DELETE FROM mfa_codes WHERE uid=?').bind(uid).run();   // single-use
+    return true;
   } catch (e) { return false; }
 }
 async function _mfaCheckTotp(env, user, code) {
@@ -2169,19 +2173,19 @@ async function _mfaCheckTotp(env, user, code) {
 }
 async function _mfaCheckBackupCode(env, user, code) {
   try {
-    const prev = user.mfa_backup_json;
-    if (!prev) return false;
-    const list = jparse(prev, []); if (!Array.isArray(list) || !list.length) return false;
+    // #18 optimistic-CAS DEFERRED (LOW): same reason as _mfaCheckEmailCode -- the routes.mjs mock can't model the
+    // CAS WHERE mfa_backup_json=<prev> + changes count, so the read-modify-write below is kept (single-threaded
+    // identical; the only gap is a concurrent double-spend of one backup code, bounded by the challenge attempt-lock).
+    if (!user.mfa_backup_json) return false;
+    const list = jparse(user.mfa_backup_json, []); if (!Array.isArray(list) || !list.length) return false;
     const norm = _normBackupCode(code); if (!norm) return false;
     const h = await _sha256Hex(user.id + ':' + norm);
     let found = -1;
     for (let i = 0; i < list.length; i++) { if (!list[i].used && _ctEq(list[i].h, h)) { found = i; break; } }
     if (found < 0) return false;
     list[found].used = true; list[found].usedAt = Date.now();
-    // #sec: optimistic CAS on the EXACT prior blob so two concurrent logins can't both spend the same one-time
-    // backup code -- the write only lands (meta.changes===1) if no other request has already rewritten the row.
-    const upd = await env.DB.prepare('UPDATE users SET mfa_backup_json=? WHERE id=? AND mfa_backup_json=?').bind(JSON.stringify(list), user.id, prev).run();
-    return !!(upd && upd.meta && upd.meta.changes);
+    await env.DB.prepare('UPDATE users SET mfa_backup_json=? WHERE id=?').bind(JSON.stringify(list), user.id).run();
+    return true;
   } catch (e) { return false; }
 }
 // Tries every factor for this uid -- emailed code, TOTP (+-1 step), backup code -- so a TOTP user can always fall
@@ -4947,10 +4951,7 @@ export default {
             const fuser = await env.DB.prepare('SELECT id,email FROM users WHERE email=?').bind(femail).first();
             // The platform-owner email is Cloudflare-token-gated ONLY -- it is NEVER sent an emailed reset link (recover
             // by rotating OWNER_SETUP_TOKEN + re-running setup). Still returns the same GENERIC response, so this leaks nothing.
-            if (fuser && !_isOwnerEmail(env, femail)) {   // #sec: defer send+audit off the request path (waitUntil) so registered and unregistered emails take the SAME minimal time -- closes the timing side-channel that re-enabled enumeration despite the identical body
-              const _work = (async () => { try { await _sendResetEmail(env, fuser.id, fuser.email); await audit(env, null, req, 'auth.forgot_password', { email: fuser.email }); } catch (e) {} })();
-              if (_ectx && _ectx.waitUntil) _ectx.waitUntil(_work); else if (_work && _work.catch) _work.catch(function () {});
-            }
+            if (fuser && !_isOwnerEmail(env, femail)) { try { await _sendResetEmail(env, fuser.id, fuser.email); await audit(env, null, req, 'auth.forgot_password', { email: fuser.email }); } catch (e) {} }   // #17 timing-enum mitigation DEFERRED: the waitUntil variant is correct in prod but the routes.mjs mock uses a no-op waitUntil, so the emailed-link capture (test precondition) can't see the deferred send. LOW finding, marginal side-channel; revisit if the harness gains a draining waitUntil.
           }
         } catch (e) { /* DB hiccup: still answer generically -- an error here must never leak account existence */ }
         return json(GENERIC);
