@@ -865,7 +865,7 @@
   // feed freshness banner: green <24h, amber 1-3d, red STALE / blocked -- so nobody chases a dead lot
   function _feedAgeNote(){
     if(!(PBVS.leads&&PBVS.leads.length)) return {t:'Starter set (real cars from the 2026-08 sweep). Hit Refresh once the daily worker feed is live.',c:'var(--muted)'};
-    var at=+PBVS.feedAt||0, cnt=' &middot; '+PBVS.leads.length+' cars'+(PBVS.feedScraped!=null?(' ('+PBVS.feedScraped+' Copart, '+(PBVS.feedGov||0)+' gov)'):'');
+    var at=+PBVS.feedAt||0, cnt=' &middot; '+PBVS.leads.length+' cars'+(PBVS.feedScraped!=null?(' ('+PBVS.feedScraped+' salvage, '+(PBVS.feedGov||0)+' gov)'):'');
     if(PBVS.feedBlocked) return {t:'&#9888; Live sources blocked &mdash; showing last-good feed'+cnt,c:'#ef4444'};
     if(!at) return {t:'Live feed'+cnt,c:'#22c55e'};
     var age=Date.now()-at, hrs=age/3600000;
@@ -882,7 +882,7 @@
       .then(function(d){
         if(d){ PBVS.feedBlocked=!!d.blocked;
           if(d.blocked) _toast('&#9888; Live sources blocked right now &mdash; last-good feed kept');
-          else if(d.count!=null) _toast('&#10004; Re-scanned: '+d.count+' leads'+(d.scraped!=null?(' ('+d.scraped+' Copart, '+(d.gov||0)+' gov)'):'')); }
+          else if(d.count!=null) _toast('&#10004; Re-scanned: '+d.count+' leads'+(d.scraped!=null?(' ('+d.scraped+' salvage, '+(d.gov||0)+' gov)'):'')); }
         fetchFeed(true);
       })
       .catch(function(){ _toast('Refresh timed out &mdash; showing current feed'); fetchFeed(true); });
