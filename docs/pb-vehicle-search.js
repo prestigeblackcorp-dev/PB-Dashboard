@@ -704,6 +704,7 @@
     topH+='<div class="pbvs-card"><div class="pbvs-sec">Daily hunt targets (makes / models / years being searched)</div>'+
        '<div class="pbvs-hint" style="margin-bottom:8px">These drive Current Leads. The daily scrape pools each make (~25 cars/make) and keeps the exotics + your models &mdash; <b>more makes = a bigger pool</b>.</div>'+
        '<div style="margin-bottom:10px"><button class="pbvs-srcbtn" data-act="addtopexotics" style="border-color:rgba(201,169,98,.55);color:#c9a962;font-weight:700">&#10024; Add top exotics (Lambo, Bentley, Maserati, AMG GT, GT-R, Corvette, Aston, Rolls)</button></div>'+
+       _makesNote()+
        '<div id="critList">'+PBVS.criteria.map(critRow).join('')+'</div>'+
        '<div class="pbvs-row" style="margin-top:10px;border-top:1px dashed var(--border);padding-top:12px">'+
          fldSelRaw('Make','ncMake',(PBVS.nMakes||CURATED_MAKES),'')+
@@ -714,6 +715,15 @@
        '</div></div>';
     body.innerHTML=topH+'<div class="pbvs-sec" style="margin:16px 2px 8px">&#128203; Sourcing &amp; outreach kit</div>'+h;
     getMakes(function(){ var sel=el('ncMake'); if(sel){ fillSelect(sel,PBVS.nMakes,''); } });
+  }
+  // unique makes in the hunt vs the worker's per-run scrape cap. _VS_MAKE_CAP MUST match _vsScrape's
+  // `slice(0, 22)` in the worker -- the scrape pools by make and only the first N unique makes run each day.
+  var _VS_MAKE_CAP=22;
+  function _makesNote(){
+    var seen={},n=0; (PBVS.criteria||[]).forEach(function(c){ if(c&&c.make){ var k=String(c.make).trim(); if(k&&!seen[k]){ seen[k]=1; n++; } } });
+    if(!n) return '';
+    if(n<=_VS_MAKE_CAP) return '<div class="pbvs-hint" style="margin:2px 0 10px;color:var(--muted)">Hunting <b style="color:#fff">'+n+'</b> make'+(n===1?'':'s')+' &mdash; all scraped every day.</div>';
+    return '<div class="pbvs-hint" style="margin:2px 0 10px;color:#f59e0b">&#9888; You have <b>'+n+'</b> makes &mdash; only the first <b>'+_VS_MAKE_CAP+'</b> are scraped each day. Remove '+(n-_VS_MAKE_CAP)+' to be sure none are skipped.</div>';
   }
   function critRow(c,i){
     var ls=liveSearches(c).map(function(s){ return '<a href="'+s.url+'" target="_blank" rel="noopener">'+esc(s.label)+' &#8599;</a>'; }).join('');
