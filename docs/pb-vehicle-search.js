@@ -854,7 +854,7 @@
     if(i>=0){ PBVS.watch.splice(i,1); _toast('Removed from watchlist'); }
     else{
       var l=activeFeed().concat(SEED_LEADS, PBVS.findLeads||[]).filter(function(x){return x&&x.id===id;})[0];
-      if(l){ var c=JSON.parse(JSON.stringify(l)); c.addedAt=Date.now(); PBVS.watch.push(c); _toast('&#10004; Watching -- you\'ll be alerted on changes'); }
+      if(l){ var c=JSON.parse(JSON.stringify(l)); c.addedAt=Date.now(); PBVS.watch.push(c); _toast('\u2714 Watching -- you\'ll be alerted on changes'); }
     }
     saveWatch();
     if(PBVS._inWatch) renderWatch();
@@ -870,7 +870,7 @@
     var have={}; PBVS.criteria.forEach(function(c){ have[((c.make||'')+'|'+(c.model||'')).toLowerCase()]=1; });
     var added=0; TOP.forEach(function(t){ var k=(t.make+'|'+t.model).toLowerCase(); if(!have[k]){ PBVS.criteria.push({make:t.make,model:t.model,yearMin:'',yearMax:'',note:''}); have[k]=1; added++; } });
     saveCrit(); renderKit();
-    _toast(added?('&#10004; Added '+added+' exotic makes &mdash; hit Refresh feed to pull them'):'All top exotics already in your hunt');
+    _toast(added?('\u2714 Added '+added+' exotic makes \u2014 hit Refresh feed to pull them'):'All top exotics already in your hunt');
   }
   function addCrit(){
     var mk=el('ncMake'), md=el('ncModel'), y0=el('ncYmin'), y1=el('ncYmax');
@@ -887,7 +887,7 @@
     toAdd.forEach(function(model){ var k=(make+'|'+model).toLowerCase(); if(have[k]) return; PBVS.criteria.push({make:make,model:model,yearMin:ymin,yearMax:ymax,note:''}); have[k]=1; added++; });
     if(!added){ _toast('Already in your hunt'); return; }
     saveCrit(); renderKit();
-    _toast('&#10004; Added '+added+' target'+(added>1?'s':'')+' for '+esc(make));
+    _toast('\u2714 Added '+added+' target'+(added>1?'s':'')+' for '+esc(make));
   }
   function doCopy(btn){
     var id=btn.getAttribute('data-t'), pre=el(id); if(!pre) return;
@@ -916,18 +916,18 @@
   function forceRefresh(){
     var w=_worker(); if(!w){ fetchFeed(true); return; }
     var beforeAt=+PBVS.feedAt||0;
-    _toast('Re-scanning all sources&#8230;');
+    _toast('Re-scanning all sources\u2026');
     _fetchT(w+'/vehicle-leads/refresh',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth())},22000)
       .then(function(r){ return r.ok?r.json():null; })
       .then(function(d){
-        if(d&&d.scanning){ _toast('&#128269; Scanning your hunt list &mdash; a big list takes ~30-60s'); _pollRefresh(beforeAt,0); return; }
+        if(d&&d.scanning){ _toast('\ud83d\udd0d Scanning your hunt list \u2014 a big list takes ~30-60s'); _pollRefresh(beforeAt,0); return; }
         // legacy synchronous worker (small list / pre-background build)
         if(d){ PBVS.feedBlocked=!!d.blocked;
-          if(d.blocked) _toast('&#9888; Live sources blocked right now &mdash; last-good feed kept');
-          else if(d.count!=null) _toast('&#10004; Re-scanned: '+d.count+' leads'+(d.scraped!=null?(' ('+d.scraped+' salvage, '+(d.gov||0)+' gov)'):'')); }
+          if(d.blocked) _toast('\u26a0 Live sources blocked right now \u2014 last-good feed kept');
+          else if(d.count!=null) _toast('\u2714 Re-scanned: '+d.count+' leads'+(d.scraped!=null?(' ('+d.scraped+' salvage, '+(d.gov||0)+' gov)'):'')); }
         fetchFeed(true);
       })
-      .catch(function(){ _toast('Refresh timed out &mdash; showing current feed'); fetchFeed(true); });
+      .catch(function(){ _toast('Refresh timed out \u2014 showing current feed'); fetchFeed(true); });
   }
   // The re-scrape runs in the BACKGROUND and STREAMS in make-by-make (a 50+ hunt takes a couple minutes). Poll
   // the feed and show it filling; keep going while the feed is still 'partial'; stop when it's complete, or when
@@ -936,10 +936,10 @@
     var delays=[10000,10000,12000,14000,16000,18000];   // cumulative ~10/20/32/46/62/80s
     if(n>=delays.length){
       fetchFeed(false, function(len){
-        if(PBVS.feedPartial) _toast('&#10004; '+len+' leads so far &mdash; still filling in; refresh again shortly for the rest.');
-        else if(len>0 && (+PBVS.feedAt||0)>beforeAt) _toast('&#10004; '+len+' leads loaded.');
-        else if(PBVS.feedBlocked) _toast('&#9888; Live sources were busy &mdash; kept your last-good feed. Hit Refresh again shortly.');
-        else _toast('Still scanning &mdash; hit Refresh again in a moment for the full pool.');
+        if(PBVS.feedPartial) _toast('\u2714 '+len+' leads so far \u2014 still filling in; refresh again shortly for the rest.');
+        else if(len>0 && (+PBVS.feedAt||0)>beforeAt) _toast('\u2714 '+len+' leads loaded.');
+        else if(PBVS.feedBlocked) _toast('\u26a0 Live sources were busy \u2014 kept your last-good feed. Hit Refresh again shortly.');
+        else _toast('Still scanning \u2014 hit Refresh again in a moment for the full pool.');
         if(PBVS.sub==='leads') renderLeads();
       });
       return;
@@ -948,8 +948,8 @@
       fetchFeed(false, function(len){
         if(len>0 && (+PBVS.feedAt||0)>beforeAt){
           if(PBVS.sub==='leads') renderLeads();
-          if(PBVS.feedPartial){ _toast('&#128269; '+len+' leads and counting&#8230;'); _pollRefresh(beforeAt,n+1); }   // still streaming -> keep watching it fill
-          else _toast('&#10004; Updated: '+len+' leads'+(PBVS.feedScraped!=null?(' ('+PBVS.feedScraped+' salvage, '+(PBVS.feedGov||0)+' gov)'):''));
+          if(PBVS.feedPartial){ _toast('\ud83d\udd0d '+len+' leads and counting\u2026'); _pollRefresh(beforeAt,n+1); }   // still streaming -> keep watching it fill
+          else _toast('\u2714 Updated: '+len+' leads'+(PBVS.feedScraped!=null?(' ('+PBVS.feedScraped+' salvage, '+(PBVS.feedGov||0)+' gov)'):''));
         } else { _pollRefresh(beforeAt,n+1); }
       });
     }, delays[n]);
@@ -961,7 +961,7 @@
         .then(function(r){ return r.ok?r.json():null; })
         .then(function(d){
           var arr=(d&&(d.leads||d.vehicles))||null;
-          if(arr&&arr.length){ PBVS.leads=arr; PBVS.feedSrc='live'; PBVS.feedAt=(d&&d.updatedAt)||Date.now(); PBVS.feedScraped=(d&&d.scraped!=null)?d.scraped:null; PBVS.feedGov=(d&&d.gov!=null)?d.gov:null; PBVS.feedBlocked=!!(d&&d.blocked); PBVS.feedPartial=!!(d&&d.partial); PBVS.feedLastAttempt=(d&&d.lastAttemptAt)||0; diffWatch(arr); if(PBVS.sub==='leads') renderLeads(); if(manual) _toast('&#10004; Feed refreshed ('+arr.length+')'); if(onDone) onDone(arr.length); }
+          if(arr&&arr.length){ PBVS.leads=arr; PBVS.feedSrc='live'; PBVS.feedAt=(d&&d.updatedAt)||Date.now(); PBVS.feedScraped=(d&&d.scraped!=null)?d.scraped:null; PBVS.feedGov=(d&&d.gov!=null)?d.gov:null; PBVS.feedBlocked=!!(d&&d.blocked); PBVS.feedPartial=!!(d&&d.partial); PBVS.feedLastAttempt=(d&&d.lastAttemptAt)||0; diffWatch(arr); if(PBVS.sub==='leads') renderLeads(); if(manual) _toast('\u2714 Feed refreshed ('+arr.length+')'); if(onDone) onDone(arr.length); }
           else { if(manual) _toast('No live feed yet -- showing starter set'); if(onDone) onDone(0); }
         }).catch(function(){ if(manual) _toast('Feed offline -- showing starter set'); if(onDone) onDone(-1); });
     }catch(e){ if(onDone) onDone(-1); }
@@ -989,7 +989,7 @@
       }
     });
     if(dirty) _lsSet(LSK_WATCH,PBVS.watch);
-    if(changed.length){ _toast('&#128276; Watchlist: '+changed[0]+(changed.length>1?(' (+'+(changed.length-1)+' more)'):'')); }
+    if(changed.length){ _toast('\ud83d\udd14 Watchlist: '+changed[0]+(changed.length>1?(' (+'+(changed.length-1)+' more)'):'')); }
   }
 
   // ============================================================================
@@ -1235,7 +1235,7 @@
   function _addManualPartToCart(){
     var p=el('psPart'); var part=p?p.value.trim():''; if(!part){ _toast('Type a part first'); return; }
     var v={year:partsSel.year,make:partsSel.make,model:partsSel.model,vin:partsSel.vin};
-    addToCart({name:part, vehicle:vehStr(v)||'(no car selected)', oem:looksLikePart(part)?part:'', links:partLinks(v,{name:part,search:part})}); _toast('&#10004; Added to cart');
+    addToCart({name:part, vehicle:vehStr(v)||'(no car selected)', oem:looksLikePart(part)?part:'', links:partLinks(v,{name:part,search:part})}); _toast('\u2714 Added to cart');
   }
 
   // ============================================================================
