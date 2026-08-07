@@ -707,10 +707,10 @@
        '<div id="critList">'+PBVS.criteria.map(critRow).join('')+'</div>'+
        '<div class="pbvs-row" style="margin-top:10px;border-top:1px dashed var(--border);padding-top:12px">'+
          fldSelRaw('Make','ncMake',(PBVS.nMakes||CURATED_MAKES),'')+
-         fldSelRaw('Model','ncModel',[],'')+
-         '<div class="pbvs-fld"><label>Year min</label><input id="ncYmin" class="finput" style="width:90px" placeholder="2010"></div>'+
-         '<div class="pbvs-fld"><label>Year max</label><input id="ncYmax" class="finput" style="width:90px" placeholder="2018"></div>'+
-         '<button class="pbvs-srcbtn" data-act="addcrit">+ Add target</button>'+
+         fldMultiRaw('Models','ncModel')+
+         '<div class="pbvs-fld"><label>Year min</label><input id="ncYmin" class="finput" style="width:90px" placeholder="2015"></div>'+
+         '<div class="pbvs-fld"><label>Year max</label><input id="ncYmax" class="finput" style="width:90px" placeholder="open"></div>'+
+         '<button class="pbvs-srcbtn" data-act="addcrit">+ Add target(s)</button>'+
        '</div></div>';
     body.innerHTML=topH+'<div class="pbvs-sec" style="margin:16px 2px 8px">&#128203; Sourcing &amp; outreach kit</div>'+h;
     getMakes(function(){ var sel=el('ncMake'); if(sel){ fillSelect(sel,PBVS.nMakes,''); } });
@@ -719,7 +719,7 @@
     var ls=liveSearches(c).map(function(s){ return '<a href="'+s.url+'" target="_blank" rel="noopener">'+esc(s.label)+' &#8599;</a>'; }).join('');
     var yrLbl = c.yearMin ? (c.yearMax ? (c.yearMin+'-'+c.yearMax) : (c.yearMin+'+')) : (c.yearMax ? ('to '+c.yearMax) : '2015+');
     return '<div class="pbvs-brk" style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">'+
-      '<div style="flex:1;min-width:200px"><h5>'+esc(c.make+' '+c.model)+' <span class="pbvs-pill">'+esc(yrLbl)+'</span>'+(c.note?' <span class="pbvs-hint">'+esc(c.note)+'</span>':'')+'</h5>'+
+      '<div style="flex:1;min-width:200px"><h5>'+esc(c.make+(c.model?(' '+c.model):' (all models)'))+' <span class="pbvs-pill">'+esc(yrLbl)+'</span>'+(c.note?' <span class="pbvs-hint">'+esc(c.note)+'</span>':'')+'</h5>'+
       '<div class="pbvs-src">'+ls+'</div></div>'+
       '<button class="pbvs-x" data-act="delcrit" data-i="'+i+'" title="Remove">&#10006;</button></div>';
   }
@@ -729,6 +729,9 @@
   function fldSel(label,id,opts){ return '<div class="pbvs-fld"><label>'+label+'</label><select id="'+id+'" class="finput" style="min-width:120px">'+opts.map(function(o){return '<option value="'+esc(o)+'">'+(o===''?'All':esc(o))+'</option>';}).join('')+'</select></div>'; }
   function fldSelRaw(label,id,opts,val){ return '<div class="pbvs-fld"><label>'+label+'</label><select id="'+id+'" class="finput" style="min-width:130px"><option value="">--</option>'+opts.map(function(o){return '<option value="'+esc(o)+'"'+(String(o)===String(val)?' selected':'')+'>'+esc(o)+'</option>';}).join('')+'</select></div>'; }
   function fillSelect(sel,opts,val){ if(!sel)return; sel.innerHTML='<option value="">--</option>'+opts.map(function(o){return '<option value="'+esc(o)+'"'+(String(o)===String(val)?' selected':'')+'>'+esc(o)+'</option>';}).join(''); }
+  // multi-select for the hunt add-row: pick several models of one make at once (none = whole make)
+  function fldMultiRaw(label,id){ return '<div class="pbvs-fld"><label>'+label+' <span class="pbvs-hint" style="font-weight:400">pick 1+ (none = whole make)</span></label><select id="'+id+'" class="finput" multiple size="6" style="min-width:170px;height:auto;padding:4px"></select></div>'; }
+  function fillMulti(sel,opts){ if(!sel)return; sel.innerHTML=(opts||[]).map(function(o){return '<option value="'+esc(o)+'">'+esc(o)+'</option>';}).join(''); }
   function syncSelects(){ ['fMake','fModel','fYear'].forEach(function(k){ var s=el(k); if(s) s.value=PBVS[k]||''; }); }
 
   function fleetCars(){
@@ -797,7 +800,7 @@
       else if(id==='psYear'){ partsSel.year=e.target.value; partsSel.vin=''; refreshPartsModels(); updateVehLine(); }
       else if(id==='psMake'){ partsSel.make=e.target.value; partsSel.model=''; partsSel.vin=''; refreshPartsModels(); updateVehLine(); }
       else if(id==='psModel'){ partsSel.model=e.target.value; updateVehLine(); }
-      else if(id==='ncMake'){ getModels(e.target.value, (el('ncYmin')&&el('ncYmin').value)||'', function(arr){ var s=el('ncModel'); if(s) fillSelect(s,arr,''); }); }
+      else if(id==='ncMake'){ getModels(e.target.value, (el('ncYmin')&&el('ncYmin').value)||'', function(arr){ var s=el('ncModel'); if(s) fillMulti(s,arr); }); }
       else if(id==='fdMake'){ findSel.make=e.target.value; findSel.model=''; getModels(findSel.make, findSel.yearMin||'', function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,''); }); renderFindDeepLinks(); }
       else if(id==='fdModel'){ findSel.model=e.target.value; renderFindDeepLinks(); }
       else if(id==='fdYmin'){ findSel.yearMin=e.target.value; renderFindDeepLinks(); }   // year fields are RANGE bounds -> don't re-query models to one year (all-years lookup already ran on make change)
@@ -861,10 +864,20 @@
   }
   function addCrit(){
     var mk=el('ncMake'), md=el('ncModel'), y0=el('ncYmin'), y1=el('ncYmax');
-    var make=mk?mk.value:'', model=md?md.value:'';
-    if(!make||!model){ _toast('Pick a make and model'); return; }
-    PBVS.criteria.push({make:make,model:model,yearMin:(y0&&+y0.value)||'',yearMax:(y1&&+y1.value)||'',note:''});
+    var make=mk?mk.value:'';
+    if(!make){ _toast('Pick a make'); return; }
+    var models=[];
+    if(md&&md.options){ for(var i=0;i<md.options.length;i++){ if(md.options[i].selected) models.push(md.options[i].value); } }   // MULTI: every highlighted model becomes its own hunt row
+    var cy=new Date().getFullYear();
+    var ymin=(y0&&+y0.value)||''; if(ymin&&ymin<2015) ymin=2015;   // hunt floor is 2015+ (matches _migrateCrit)
+    var ymax=(y1&&+y1.value)||''; if(ymax&&ymax<cy) ymax='';       // no stale upper cap -> open-ended
+    var have={}; PBVS.criteria.forEach(function(c){ have[((c.make||'')+'|'+(c.model||'')).toLowerCase()]=1; });
+    var toAdd=models.length?models:[''];   // no model picked = hunt the whole make (keeps all exotics of it)
+    var added=0;
+    toAdd.forEach(function(model){ var k=(make+'|'+model).toLowerCase(); if(have[k]) return; PBVS.criteria.push({make:make,model:model,yearMin:ymin,yearMax:ymax,note:''}); have[k]=1; added++; });
+    if(!added){ _toast('Already in your hunt'); return; }
     saveCrit(); renderKit();
+    _toast('&#10004; Added '+added+' target'+(added>1?'s':'')+' for '+esc(make));
   }
   function doCopy(btn){
     var id=btn.getAttribute('data-t'), pre=el(id); if(!pre) return;
@@ -892,10 +905,13 @@
   // "Refresh feed" -> force the worker to RE-SCRAPE now (POST /refresh), then re-load
   function forceRefresh(){
     var w=_worker(); if(!w){ fetchFeed(true); return; }
+    var beforeAt=+PBVS.feedAt||0;
     _toast('Re-scanning all sources&#8230;');
     _fetchT(w+'/vehicle-leads/refresh',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth())},22000)
       .then(function(r){ return r.ok?r.json():null; })
       .then(function(d){
+        if(d&&d.scanning){ _toast('&#128269; Scanning your hunt list &mdash; a big list takes ~30-60s'); _pollRefresh(beforeAt,0); return; }
+        // legacy synchronous worker (small list / pre-background build)
         if(d){ PBVS.feedBlocked=!!d.blocked;
           if(d.blocked) _toast('&#9888; Live sources blocked right now &mdash; last-good feed kept');
           else if(d.count!=null) _toast('&#10004; Re-scanned: '+d.count+' leads'+(d.scraped!=null?(' ('+d.scraped+' salvage, '+(d.gov||0)+' gov)'):'')); }
@@ -903,17 +919,38 @@
       })
       .catch(function(){ _toast('Refresh timed out &mdash; showing current feed'); fetchFeed(true); });
   }
-  function fetchFeed(manual){
-    var w=_worker(); if(!w){ if(manual) _toast('Showing starter set'); return; }
+  // The re-scrape runs in the BACKGROUND (a 20+ make hunt is spaced/retried, so it takes 30-60s). Poll the
+  // feed a few times and stop as soon as fresh results land; if the sources were busy, keep last-good + say so.
+  function _pollRefresh(beforeAt,n){
+    var delays=[12000,16000,18000,20000];   // cumulative ~12s / 28s / 46s / 66s
+    if(n>=delays.length){
+      fetchFeed(false, function(){
+        if(PBVS.feedBlocked) _toast('&#9888; Live sources were busy &mdash; kept your last-good feed. Hit Refresh again shortly.');
+        else _toast('Still scanning &mdash; hit Refresh again in a moment for the full pool.');
+        if(PBVS.sub==='leads') renderLeads();
+      });
+      return;
+    }
+    setTimeout(function(){
+      fetchFeed(false, function(len){
+        if(len>0 && (+PBVS.feedAt||0)>beforeAt){
+          _toast('&#10004; Updated: '+len+' leads'+(PBVS.feedScraped!=null?(' ('+PBVS.feedScraped+' salvage, '+(PBVS.feedGov||0)+' gov)'):''));
+          if(PBVS.sub==='leads') renderLeads();
+        } else { _pollRefresh(beforeAt,n+1); }
+      });
+    }, delays[n]);
+  }
+  function fetchFeed(manual, onDone){
+    var w=_worker(); if(!w){ if(manual) _toast('Showing starter set'); if(onDone) onDone(0); return; }
     try{
       _fetchT(w+'/vehicle-leads?_='+Date.now(),{cache:'no-store',headers:_auth()},15000)
         .then(function(r){ return r.ok?r.json():null; })
         .then(function(d){
           var arr=(d&&(d.leads||d.vehicles))||null;
-          if(arr&&arr.length){ PBVS.leads=arr; PBVS.feedSrc='live'; PBVS.feedAt=(d&&d.updatedAt)||Date.now(); PBVS.feedScraped=(d&&d.scraped!=null)?d.scraped:null; PBVS.feedGov=(d&&d.gov!=null)?d.gov:null; PBVS.feedBlocked=!!(d&&d.blocked); diffWatch(arr); if(PBVS.sub==='leads') renderLeads(); if(manual) _toast('&#10004; Feed refreshed ('+arr.length+')'); }
-          else if(manual){ _toast('No live feed yet -- showing starter set'); }
-        }).catch(function(){ if(manual) _toast('Feed offline -- showing starter set'); });
-    }catch(e){}
+          if(arr&&arr.length){ PBVS.leads=arr; PBVS.feedSrc='live'; PBVS.feedAt=(d&&d.updatedAt)||Date.now(); PBVS.feedScraped=(d&&d.scraped!=null)?d.scraped:null; PBVS.feedGov=(d&&d.gov!=null)?d.gov:null; PBVS.feedBlocked=!!(d&&d.blocked); PBVS.feedLastAttempt=(d&&d.lastAttemptAt)||0; diffWatch(arr); if(PBVS.sub==='leads') renderLeads(); if(manual) _toast('&#10004; Feed refreshed ('+arr.length+')'); if(onDone) onDone(arr.length); }
+          else { if(manual) _toast('No live feed yet -- showing starter set'); if(onDone) onDone(0); }
+        }).catch(function(){ if(manual) _toast('Feed offline -- showing starter set'); if(onDone) onDone(-1); });
+    }catch(e){ if(onDone) onDone(-1); }
   }
   function _wkey(l){ if(l&&l.vin) return ('vin:'+l.vin).toLowerCase(); var st=(l&&l.state)||''; if(!st){ var m=String((l&&l.location)||'').toUpperCase().match(/\b[A-Z]{2}\b/); st=m?m[0]:''; } return ((l&&l.year||'')+'|'+(l&&l.make||'')+'|'+(l&&l.model||'')+'|'+st).toLowerCase(); }
   // local diff so watched cars alert you the moment the feed changes (pre-worker-cron)
