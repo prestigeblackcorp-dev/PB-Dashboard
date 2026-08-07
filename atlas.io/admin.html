@@ -387,11 +387,13 @@
       </div>
       <p class="cr-p"><b>30-agent doc-truth + Fortune-500 audit (Aug 6, 2026).</b> The platform is built to a high bar and every exploitable security gap is closed; the enterprise-compliance score is low because it grades signed attestations (SOC 2, pen test, cyber-insurance, executed DPA/MSA) -- most of which only you and outside parties can complete. This pass corrected 39 present-tense overstatements across the legal/compliance docs (0 fabrications), added 12 new Fortune-500 documents, and fixed served-page accessibility (build 2026.08.05g).</p>
       <div class="cr-links">
+        <button class="chip" type="button" onclick="openReport('compliance')">Full compliance report</button>
+        <button class="chip" type="button" onclick="openReport('audit-findings')">39-claim findings ledger</button>
         <a class="chip" href="/trust" target="_blank" rel="noopener">Trust Center (public)</a>
         <a class="chip" href="/privacy" target="_blank" rel="noopener">Privacy</a>
         <a class="chip" href="/terms" target="_blank" rel="noopener">Terms</a>
       </div>
-      <div class="cr-note">The full compliance report, the 39-claim audit-findings ledger, and the document set (DPA, MSA, RoPA, Incident-Response Plan, VPAT, Sub-Processor List, Data-Retention Schedule, and more) are kept owner-only in your Atlas-Compliance-Roadmap folder + the atlas-legal-docs repo -- not published publicly.</div>
+      <div class="cr-note">The compliance report + 39-claim ledger open in a new tab, served only to your logged-in owner session (never published publicly). The full document set (DPA, MSA, RoPA, Incident-Response Plan, VPAT, Sub-Processor List, Data-Retention Schedule, and more) is in your Atlas-Compliance-Roadmap folder + the atlas-legal-docs repo.</div>
     </div>
   </div>
   <div class="card" id="secCard" style="display:none">
@@ -725,6 +727,13 @@ function toast(msg){ var t=$('toast'); t.innerHTML='<svg width="15" height="15" 
 function api(path, opts){ opts=opts||{}; var h={'Content-Type':'application/json','X-Admin-Token':_tok};
   return fetch(ATLAS_API+path,{method:opts.method||'GET',headers:h,credentials:'same-origin',body:opts.body?JSON.stringify(opts.body):undefined})
     .then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ return {status:r.status,json:j}; }); }); }
+/* Open an owner-gated compliance/audit report (HTML) in a new tab. Opens the tab synchronously (popup-safe), then fills it from the token-authed worker route so the report is never public. */
+function openReport(key){ var w=window.open('','_blank');
+  try{ if(w) w.document.write('<!doctype html><meta name="color-scheme" content="light dark"><title>Loading report</title><body style="font:16px system-ui;padding:30px;color:#666">Loading report...</body>'); }catch(e){}
+  fetch(ATLAS_API+'/api/admin/report/'+key,{headers:{'X-Admin-Token':_tok},credentials:'same-origin'})
+    .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.text(); })
+    .then(function(html){ if(w){ w.document.open(); w.document.write(html); w.document.close(); } else { toast('Popup blocked -- allow popups to view the report'); } })
+    .catch(function(e){ try{ if(w) w.close(); }catch(_){} toast('Could not load report (owner login required)'); }); }
 /* Analytics/monitor endpoints return their payload WITHOUT an `ok` flag; accept any 200 JSON object that isn't an explicit error so a not-yet-deployed 404 (empty {}) is ignored and last-good data survives a blip. */
 function _ok200(r){ return !!(r && r.status===200 && r.json && typeof r.json==='object' && r.json.ok!==false && !r.json.error); }
 
@@ -1160,7 +1169,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.08.05g';
+var ATLAS_EXPECT_BUILD='2026.08.05h';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
