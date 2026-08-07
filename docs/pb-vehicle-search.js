@@ -717,8 +717,8 @@
     getMakes(function(){ var sel=el('ncMake'); if(sel){ fillSelect(sel,PBVS.nMakes,''); } });
   }
   // unique makes in the hunt vs the worker's per-run scrape cap. _VS_MAKE_CAP MUST match _vsScrape's
-  // `slice(0, 22)` in the worker -- the scrape pools by make and only the first N unique makes run each day.
-  var _VS_MAKE_CAP=22;
+  // `slice(0, 60)` in the worker -- the scrape pools by make (6-wide concurrent + retry) and covers this many.
+  var _VS_MAKE_CAP=60;
   function _makesNote(){
     var seen={},n=0; (PBVS.criteria||[]).forEach(function(c){ if(c&&c.make){ var k=String(c.make).trim(); if(k&&!seen[k]){ seen[k]=1; n++; } } });
     if(!n) return '';
@@ -929,13 +929,16 @@
       })
       .catch(function(){ _toast('Refresh timed out &mdash; showing current feed'); fetchFeed(true); });
   }
-  // The re-scrape runs in the BACKGROUND (a 20+ make hunt is spaced/retried, so it takes 30-60s). Poll the
-  // feed a few times and stop as soon as fresh results land; if the sources were busy, keep last-good + say so.
+  // The re-scrape runs in the BACKGROUND and STREAMS in make-by-make (a 50+ hunt takes a couple minutes). Poll
+  // the feed and show it filling; keep going while the feed is still 'partial'; stop when it's complete, or when
+  // the window ends (the feed keeps filling server-side either way -- a later refresh shows the rest).
   function _pollRefresh(beforeAt,n){
-    var delays=[12000,16000,18000,20000];   // cumulative ~12s / 28s / 46s / 66s
+    var delays=[10000,10000,12000,14000,16000,18000];   // cumulative ~10/20/32/46/62/80s
     if(n>=delays.length){
-      fetchFeed(false, function(){
-        if(PBVS.feedBlocked) _toast('&#9888; Live sources were busy &mdash; kept your last-good feed. Hit Refresh again shortly.');
+      fetchFeed(false, function(len){
+        if(PBVS.feedPartial) _toast('&#10004; '+len+' leads so far &mdash; still filling in; refresh again shortly for the rest.');
+        else if(len>0 && (+PBVS.feedAt||0)>beforeAt) _toast('&#10004; '+len+' leads loaded.');
+        else if(PBVS.feedBlocked) _toast('&#9888; Live sources were busy &mdash; kept your last-good feed. Hit Refresh again shortly.');
         else _toast('Still scanning &mdash; hit Refresh again in a moment for the full pool.');
         if(PBVS.sub==='leads') renderLeads();
       });
@@ -944,8 +947,9 @@
     setTimeout(function(){
       fetchFeed(false, function(len){
         if(len>0 && (+PBVS.feedAt||0)>beforeAt){
-          _toast('&#10004; Updated: '+len+' leads'+(PBVS.feedScraped!=null?(' ('+PBVS.feedScraped+' salvage, '+(PBVS.feedGov||0)+' gov)'):''));
           if(PBVS.sub==='leads') renderLeads();
+          if(PBVS.feedPartial){ _toast('&#128269; '+len+' leads and counting&#8230;'); _pollRefresh(beforeAt,n+1); }   // still streaming -> keep watching it fill
+          else _toast('&#10004; Updated: '+len+' leads'+(PBVS.feedScraped!=null?(' ('+PBVS.feedScraped+' salvage, '+(PBVS.feedGov||0)+' gov)'):''));
         } else { _pollRefresh(beforeAt,n+1); }
       });
     }, delays[n]);
@@ -957,7 +961,7 @@
         .then(function(r){ return r.ok?r.json():null; })
         .then(function(d){
           var arr=(d&&(d.leads||d.vehicles))||null;
-          if(arr&&arr.length){ PBVS.leads=arr; PBVS.feedSrc='live'; PBVS.feedAt=(d&&d.updatedAt)||Date.now(); PBVS.feedScraped=(d&&d.scraped!=null)?d.scraped:null; PBVS.feedGov=(d&&d.gov!=null)?d.gov:null; PBVS.feedBlocked=!!(d&&d.blocked); PBVS.feedLastAttempt=(d&&d.lastAttemptAt)||0; diffWatch(arr); if(PBVS.sub==='leads') renderLeads(); if(manual) _toast('&#10004; Feed refreshed ('+arr.length+')'); if(onDone) onDone(arr.length); }
+          if(arr&&arr.length){ PBVS.leads=arr; PBVS.feedSrc='live'; PBVS.feedAt=(d&&d.updatedAt)||Date.now(); PBVS.feedScraped=(d&&d.scraped!=null)?d.scraped:null; PBVS.feedGov=(d&&d.gov!=null)?d.gov:null; PBVS.feedBlocked=!!(d&&d.blocked); PBVS.feedPartial=!!(d&&d.partial); PBVS.feedLastAttempt=(d&&d.lastAttemptAt)||0; diffWatch(arr); if(PBVS.sub==='leads') renderLeads(); if(manual) _toast('&#10004; Feed refreshed ('+arr.length+')'); if(onDone) onDone(arr.length); }
           else { if(manual) _toast('No live feed yet -- showing starter set'); if(onDone) onDone(0); }
         }).catch(function(){ if(manual) _toast('Feed offline -- showing starter set'); if(onDone) onDone(-1); });
     }catch(e){ if(onDone) onDone(-1); }
