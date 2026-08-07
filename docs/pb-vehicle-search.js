@@ -698,7 +698,8 @@
        '<div class="pbvs-hint" style="margin-top:6px">Applies to your leads instantly and syncs to the sniper so alerts match. Price caps only priced (buy-now) listings; bid-only lots still show.</div>'+
       '</div>';
     h+='<div class="pbvs-card"><div class="pbvs-sec">Daily hunt targets (makes / models / years being searched)</div>'+
-       '<div class="pbvs-hint" style="margin-bottom:8px">These drive Current Leads. Add/remove any real make/model/year; each row gets one-click live searches across the pools.</div>'+
+       '<div class="pbvs-hint" style="margin-bottom:8px">These drive Current Leads. The daily scrape pools each make (~25 cars/make) and keeps the exotics + your models &mdash; <b>more makes = a bigger pool</b>.</div>'+
+       '<div style="margin-bottom:10px"><button class="pbvs-srcbtn" data-act="addtopexotics" style="border-color:rgba(201,169,98,.55);color:#c9a962;font-weight:700">&#10024; Add top exotics (Lambo, Bentley, Maserati, AMG GT, GT-R, Corvette, Aston, Rolls)</button></div>'+
        '<div id="critList">'+PBVS.criteria.map(critRow).join('')+'</div>'+
        '<div class="pbvs-row" style="margin-top:10px;border-top:1px dashed var(--border);padding-top:12px">'+
          fldSelRaw('Make','ncMake',(PBVS.nMakes||CURATED_MAKES),'')+
@@ -760,6 +761,7 @@
       else if(act==='findgo'){ runFind(); }
       else if(act==='copy'){ doCopy(t); }
       else if(act==='addcrit'){ addCrit(); }
+      else if(act==='addtopexotics'){ addTopExotics(); }
       else if(act==='delcrit'){ PBVS.criteria.splice(+t.getAttribute('data-i'),1); saveCrit(); renderKit(); }
       else if(act==='report'){ openReport(t.getAttribute('data-id')); }
       else if(act==='partcart'){ _addManualPartToCart(); }
@@ -844,6 +846,14 @@
   }
   function updateWatchCount(){ var host=el('vehSearchContent'); if(host){ var b=host.querySelector('[data-act="watchview"]'); if(b) b.innerHTML='&#10084; Watchlist ('+PBVS.watch.length+')'; } }
 
+  function addTopExotics(){
+    // one-tap: load the high-yield exotic makes so the daily make-level scrape pulls large pools
+    var TOP=[{make:'Lamborghini',model:'Huracan'},{make:'Lamborghini',model:'Urus'},{make:'Bentley',model:'Continental'},{make:'Maserati',model:'GranTurismo'},{make:'Aston Martin',model:'Vantage'},{make:'Rolls-Royce',model:'Wraith'},{make:'Mercedes-Benz',model:'AMG GT'},{make:'Nissan',model:'GT-R'},{make:'Chevrolet',model:'Corvette'},{make:'Ford',model:'GT'}];
+    var have={}; PBVS.criteria.forEach(function(c){ have[((c.make||'')+'|'+(c.model||'')).toLowerCase()]=1; });
+    var added=0; TOP.forEach(function(t){ var k=(t.make+'|'+t.model).toLowerCase(); if(!have[k]){ PBVS.criteria.push({make:t.make,model:t.model,yearMin:'',yearMax:'',note:''}); have[k]=1; added++; } });
+    saveCrit(); renderKit();
+    _toast(added?('&#10004; Added '+added+' exotic makes &mdash; hit Refresh feed to pull them'):'All top exotics already in your hunt');
+  }
   function addCrit(){
     var mk=el('ncMake'), md=el('ncModel'), y0=el('ncYmin'), y1=el('ncYmax');
     var make=mk?mk.value:'', model=md?md.value:'';
