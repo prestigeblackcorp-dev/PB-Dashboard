@@ -40,11 +40,11 @@
   function _lsSet(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }
 
   var DEFAULT_CRITERIA = [
-    {make:'Audi',    model:'R8',         yearMin:2010, yearMax:2016, note:'V10 5.2 priority'},
-    {make:'Porsche', model:'911',        yearMin:2012, yearMax:2019, note:'Carrera S / Turbo / GTS'},
-    {make:'Ferrari', model:'California',  yearMin:2009, yearMax:2017, note:'California / T'},
-    {make:'McLaren', model:'570S',       yearMin:2015, yearMax:2020, note:''},
-    {make:'McLaren', model:'650S',       yearMin:2014, yearMax:2017, note:''}
+    {make:'Audi',    model:'R8',         yearMin:2015, yearMax:'', note:'V10 5.2 priority'},
+    {make:'Porsche', model:'911',        yearMin:2015, yearMax:'', note:'Carrera S / Turbo / GTS'},
+    {make:'Ferrari', model:'California',  yearMin:2015, yearMax:'', note:'California / T'},
+    {make:'McLaren', model:'570S',       yearMin:2015, yearMax:'', note:''},
+    {make:'McLaren', model:'650S',       yearMin:2015, yearMax:'', note:''}
   ];
 
   var PBVS = {
@@ -63,6 +63,9 @@
     fMake:'', fModel:'', fYear:'',        // leads filter
     nMakes:null, nModels:{}                // NHTSA caches
   };
+  // Normalize any saved sub-2015 / year-capped hunt target to 2015+ OPEN (owner rule: 2015+, no upper cap).
+  function _migrateCrit(arr){ var cy=new Date().getFullYear(), ch=false; (arr||[]).forEach(function(c){ if(!c)return; if(c.yearMin&&+c.yearMin<2015){c.yearMin=2015;ch=true;} if(c.yearMax&&+c.yearMax<cy){c.yearMax='';ch=true;} }); return ch; }
+  if(_migrateCrit(PBVS.criteria)) _lsSet(LSK_CRIT,PBVS.criteria);
   function _touch(){ PBVS.savedAt=Math.max(Date.now(),(PBVS.savedAt||0)+1); _lsSet(LSK_SAVED,PBVS.savedAt); }   // MONOTONIC so clock-skew can't drop a real edit
   function saveCrit(){ _lsSet(LSK_CRIT,PBVS.criteria); _touch(); _pushState(); }
   function saveWatch(){ _lsSet(LSK_WATCH,PBVS.watch); _touch(); _pushState(); }
@@ -111,6 +114,7 @@
             var ui=st.config&&st.config.ui; if(ui&&typeof ui==='object'){ PBVS.config=ui; _lsSet(LSK_CFG,PBVS.config); }
           }
           if(srvAt>PBVS.savedAt){ PBVS.savedAt=srvAt; _lsSet(LSK_SAVED,srvAt); }
+          if(_migrateCrit(PBVS.criteria)){ _lsSet(LSK_CRIT,PBVS.criteria); PBVS._pendingPush=true; }   // normalize adopted targets to 2015+ open + resync
         }
         PBVS._merged=true; PBVS._hydrated=true; PBVS._hydrating=false;
         if(PBVS._pendingPush){ PBVS._pendingPush=false; _pushState(); }
@@ -357,7 +361,7 @@
         subBtn('leads','&#128293; Current Leads')+
         subBtn('find','&#128269; Vehicle Search')+
         subBtn('parts','&#128736; Parts Search')+
-        subBtn('kit','&#128203; Outreach &amp; Watch-list Kit')+
+        subBtn('kit','&#9881; Hunt Setup &amp; Kit')+
         subBtn('cart','&#128722; Parts Cart'+(_cartN()?' ('+_cartN()+')':''))+
         '<div style="flex:1"></div>'+
         '<button class="pbvs-subbtn" data-act="watchview" title="Your saved vehicles">&#10084; Watchlist ('+PBVS.watch.length+')</button>'+
@@ -659,7 +663,8 @@
       {n:'CARS4.BID', u:'https://cars4.bid/'},
       {n:'Campo Brokers', u:'https://campobroker.com/en/'}
     ];
-    var h='';
+    var h='', topH='';
+    var C=cfg();
     h+='<div class="pbvs-card"><div class="pbvs-sec">Broker setup (do this first -- you have no dealer license)</div>'+
        '<div class="pbvs-hint">Copart pool = <b>salvagereseller</b> links; IAAI pool = <b>iaai / sca</b> links. One broker usually covers both.</div>'+
        '<div class="pbvs-src" style="margin-top:8px">'+brokers.map(function(b){return '<a href="'+b.u+'" target="_blank" rel="noopener">'+esc(b.n)+' &#8599;</a>';}).join('')+'</div></div>';
@@ -678,9 +683,8 @@
        '<div style="display:flex;justify-content:flex-end;margin-bottom:6px"><button class="pbvs-copy" data-act="copy" data-t="k-owner">Copy</button></div>'+
        '<pre class="pbvs-pre" id="k-owner">'+esc(owner)+'</pre></div>';
 
-    // criteria editor (what the daily hunt targets)
-    var C=cfg();
-    h+='<div class="pbvs-card"><div class="pbvs-sec">Hunt settings &mdash; filters on your leads + the sniper</div>'+
+    // WHAT'S HUNTED -- built into topH so it shows FIRST (this is the "Edit what's hunted" destination)
+    topH+='<div class="pbvs-card" id="pbvsHuntCfg"><div class="pbvs-sec">&#9881; Hunt settings &mdash; filters on your leads + the sniper</div>'+
        '<div class="pbvs-row">'+
          '<div class="pbvs-fld"><label>Min year</label><input id="cfYearMin" class="finput" style="width:78px" value="'+esc(+C.yearMin||'')+'" placeholder="any"></div>'+
          '<div class="pbvs-fld"><label>Max price $</label><input id="cfMaxPrice" class="finput" style="width:100px" value="'+esc(+C.maxPrice||'')+'" placeholder="any"></div>'+
@@ -697,7 +701,7 @@
        '</div>'+
        '<div class="pbvs-hint" style="margin-top:6px">Applies to your leads instantly and syncs to the sniper so alerts match. Price caps only priced (buy-now) listings; bid-only lots still show.</div>'+
       '</div>';
-    h+='<div class="pbvs-card"><div class="pbvs-sec">Daily hunt targets (makes / models / years being searched)</div>'+
+    topH+='<div class="pbvs-card"><div class="pbvs-sec">Daily hunt targets (makes / models / years being searched)</div>'+
        '<div class="pbvs-hint" style="margin-bottom:8px">These drive Current Leads. The daily scrape pools each make (~25 cars/make) and keeps the exotics + your models &mdash; <b>more makes = a bigger pool</b>.</div>'+
        '<div style="margin-bottom:10px"><button class="pbvs-srcbtn" data-act="addtopexotics" style="border-color:rgba(201,169,98,.55);color:#c9a962;font-weight:700">&#10024; Add top exotics (Lambo, Bentley, Maserati, AMG GT, GT-R, Corvette, Aston, Rolls)</button></div>'+
        '<div id="critList">'+PBVS.criteria.map(critRow).join('')+'</div>'+
@@ -708,13 +712,14 @@
          '<div class="pbvs-fld"><label>Year max</label><input id="ncYmax" class="finput" style="width:90px" placeholder="2018"></div>'+
          '<button class="pbvs-srcbtn" data-act="addcrit">+ Add target</button>'+
        '</div></div>';
-    body.innerHTML=h;
+    body.innerHTML=topH+'<div class="pbvs-sec" style="margin:16px 2px 8px">&#128203; Sourcing &amp; outreach kit</div>'+h;
     getMakes(function(){ var sel=el('ncMake'); if(sel){ fillSelect(sel,PBVS.nMakes,''); } });
   }
   function critRow(c,i){
     var ls=liveSearches(c).map(function(s){ return '<a href="'+s.url+'" target="_blank" rel="noopener">'+esc(s.label)+' &#8599;</a>'; }).join('');
+    var yrLbl = c.yearMin ? (c.yearMax ? (c.yearMin+'-'+c.yearMax) : (c.yearMin+'+')) : (c.yearMax ? ('to '+c.yearMax) : '2015+');
     return '<div class="pbvs-brk" style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">'+
-      '<div style="flex:1;min-width:200px"><h5>'+esc(c.make+' '+c.model)+' <span class="pbvs-pill">'+esc((c.yearMin||'?')+'-'+(c.yearMax||'?'))+'</span>'+(c.note?' <span class="pbvs-hint">'+esc(c.note)+'</span>':'')+'</h5>'+
+      '<div style="flex:1;min-width:200px"><h5>'+esc(c.make+' '+c.model)+' <span class="pbvs-pill">'+esc(yrLbl)+'</span>'+(c.note?' <span class="pbvs-hint">'+esc(c.note)+'</span>':'')+'</h5>'+
       '<div class="pbvs-src">'+ls+'</div></div>'+
       '<button class="pbvs-x" data-act="delcrit" data-i="'+i+'" title="Remove">&#10006;</button></div>';
   }
