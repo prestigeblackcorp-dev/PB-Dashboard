@@ -31,6 +31,7 @@
   function _worker(){ try{ return (typeof WORKER_URL!=='undefined'&&WORKER_URL)?WORKER_URL:''; }catch(e){ return ''; } }
   function _auth(){ try{ return (typeof _authHeader==='function')?_authHeader():{}; }catch(e){ return {}; } }
   function looksLikePart(s){ s=String(s||'').trim(); return s.length>=4 && /\d/.test(s) && /[A-Za-z0-9][-A-Za-z0-9. ]{3,}/.test(s) && !/\s{2,}/.test(s) && s.split(' ').length<=3; }
+  function _safeUrl(u){ u=String(u||''); return /^https?:\/\//i.test(u)?u:'#'; }   // block javascript:/data: schemes from any scraped/eBay url
 
   // ---- persisted state (own keys; never in the bookings blob) ----------------
   var LSK_CRIT='pbvs_criteria', LSK_WATCH='pbvs_watch', LSK_SUB='pbvs_sub', LSK_ACT='pbvs_actionable', LSK_CART='pbvs_cart', LSK_CFG='pbvs_config', LSK_SAVED='pbvs_saved_at';
@@ -62,7 +63,7 @@
     fMake:'', fModel:'', fYear:'',        // leads filter
     nMakes:null, nModels:{}                // NHTSA caches
   };
-  function _touch(){ PBVS.savedAt=Date.now(); _lsSet(LSK_SAVED,PBVS.savedAt); }
+  function _touch(){ PBVS.savedAt=Math.max(Date.now(),(PBVS.savedAt||0)+1); _lsSet(LSK_SAVED,PBVS.savedAt); }   // MONOTONIC so clock-skew can't drop a real edit
   function saveCrit(){ _lsSet(LSK_CRIT,PBVS.criteria); _touch(); _pushState(); }
   function saveWatch(){ _lsSet(LSK_WATCH,PBVS.watch); _touch(); _pushState(); }
 
@@ -377,6 +378,7 @@
   // owner Hunt-Settings filters applied to the displayed leads (instant; also synced to the sniper)
   function _passCfg(l,C){
     if(l.steal) return true;   // a worker-flagged STEAL already passed the sniper caps -- never let a display cap hide it
+    if(_SEED_IDS[l.id] && !(PBVS.leads&&PBVS.leads.length)) return true;   // show the FULL curated starter set on first open; caps teach on the live feed
     if(C.yearMin && l.year && l.year < +C.yearMin) return false;
     var _bn=(Number(l.buyNow)>0)?Number(l.buyNow):((l.priceType==='buynow'||l.priceType==='bin'||l.priceType==='cash')?Number(l.price||0):0);
     if(+C.maxPrice>0 && _bn > +C.maxPrice) return false;
@@ -533,8 +535,8 @@
       '<div class="pbvs-title">'+_stealB+esc(vehStr(l))+' <span class="pbvs-badge" style="color:'+vd.c+';background:'+vd.bg+';border:1px solid '+vd.b+'">'+vd.t+'</span></div>'+
       '<div class="pbvs-meta"><b>'+esc(l.damage)+'</b> &middot; '+esc(l.location)+' &middot; <b>'+price+'</b> &middot; '+when+'</div>'+
       '<div>'+facts.join(' ')+'</div>'+
-      (l.note?'<div class="pbvs-note">'+l.note+'</div>':'')+
-      '<div class="pbvs-src"><a class="gold" href="'+esc(l.url)+'" target="_blank" rel="noopener">Open listing &#8599;</a>'+
+      (l.note?'<div class="pbvs-note">'+String(l.note).replace(/<[^>]+>/g,'')+'</div>':'')+
+      '<div class="pbvs-src"><a class="gold" href="'+esc(_safeUrl(l.url))+'" target="_blank" rel="noopener">Open listing &#8599;</a>'+
         '<button class="pbvs-srcbtn" data-act="report" data-id="'+esc(l.id)+'">&#128736; Parts report</button>'+
         '<button class="pbvs-srcbtn" data-act="heart" data-id="'+esc(l.id)+'">'+(watchHas(l.id)?'&#10004; Watching':'&#10084; Watch')+'</button>'+
       '</div>'+
@@ -679,8 +681,8 @@
     var C=cfg();
     h+='<div class="pbvs-card"><div class="pbvs-sec">Hunt settings &mdash; filters on your leads + the sniper</div>'+
        '<div class="pbvs-row">'+
-         '<div class="pbvs-fld"><label>Min year</label><input id="cfYearMin" class="finput" style="width:78px" value="'+esc(C.yearMin)+'"></div>'+
-         '<div class="pbvs-fld"><label>Max price $</label><input id="cfMaxPrice" class="finput" style="width:100px" value="'+esc(C.maxPrice)+'" placeholder="any"></div>'+
+         '<div class="pbvs-fld"><label>Min year</label><input id="cfYearMin" class="finput" style="width:78px" value="'+esc(+C.yearMin||'')+'" placeholder="any"></div>'+
+         '<div class="pbvs-fld"><label>Max price $</label><input id="cfMaxPrice" class="finput" style="width:100px" value="'+esc(+C.maxPrice||'')+'" placeholder="any"></div>'+
          '<div class="pbvs-fld"><label>Max miles</label><input id="cfMaxMiles" class="finput" style="width:90px" value="'+esc(C.maxMiles||'')+'" placeholder="any"></div>'+
          '<div class="pbvs-fld"><label>Title</label><select id="cfTitle" class="finput">'+['Any','Clean','Salvage','Rebuilt'].map(function(o){return '<option'+(C.title===o?' selected':'')+'>'+o+'</option>';}).join('')+'</select></div>'+
          '<div class="pbvs-fld" style="flex:1;min-width:170px"><label>Exclude damage (comma list)</label><input id="cfExDmg" class="finput" style="width:100%;box-sizing:border-box" value="'+esc(C.excludeDamage||'')+'" placeholder="burn, flood, rollover"></div>'+
@@ -781,7 +783,7 @@
     });
     host.addEventListener('change', function(e){
       var id=e.target.id;
-      if(id==='fMake'){ PBVS.fMake=e.target.value; PBVS.fModel=''; renderLeads(); }
+      if(id==='fMake'){ PBVS.fMake=e.target.value; PBVS.fModel=''; PBVS.fYear=''; renderLeads(); }   // clear a stale Year too, else it ghosts an invisible filter
       else if(id==='fModel'){ PBVS.fModel=e.target.value; renderLeads(); }
       else if(id==='fYear'){ PBVS.fYear=e.target.value; renderLeads(); }
       else if(id==='psYear'){ partsSel.year=e.target.value; partsSel.vin=''; refreshPartsModels(); updateVehLine(); }
@@ -790,7 +792,7 @@
       else if(id==='ncMake'){ getModels(e.target.value, (el('ncYmin')&&el('ncYmin').value)||'', function(arr){ var s=el('ncModel'); if(s) fillSelect(s,arr,''); }); }
       else if(id==='fdMake'){ findSel.make=e.target.value; findSel.model=''; getModels(findSel.make, findSel.yearMin||'', function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,''); }); renderFindDeepLinks(); }
       else if(id==='fdModel'){ findSel.model=e.target.value; renderFindDeepLinks(); }
-      else if(id==='fdYmin'){ findSel.yearMin=e.target.value; if(findSel.make){ getModels(findSel.make, findSel.yearMin, function(arr){ findSel._models=arr; var s=el('fdModel'); if(s) fillSelect(s,arr,findSel.model); }); } renderFindDeepLinks(); }
+      else if(id==='fdYmin'){ findSel.yearMin=e.target.value; renderFindDeepLinks(); }   // year fields are RANGE bounds -> don't re-query models to one year (all-years lookup already ran on make change)
       else if(id==='fdYmax'){ findSel.yearMax=e.target.value; renderFindDeepLinks(); }
       else if(id==='fdMax'){ findSel.maxPrice=e.target.value; renderFindDeepLinks(); }
       else if(id==='fdTitle'){ findSel.title=e.target.value; renderFindDeepLinks(); }
@@ -927,7 +929,7 @@
   //  PARTS CART + LISTING REPORT
   // ============================================================================
   function _cartN(){ return (PBVS.cart||[]).filter(function(c){return c.status!=='ordered';}).length; }
-  function saveCart(){ _lsSet(LSK_CART, PBVS.cart); _pushState(); updateCartCount(); }
+  function saveCart(){ _lsSet(LSK_CART, PBVS.cart); _touch(); _pushState(); updateCartCount(); }   // _touch so a cart DELETE carries a newer savedAt and actually persists
   function updateCartCount(){ var host=el('vehSearchContent'); if(host){ var b=host.querySelector('[data-act="sub"][data-k="cart"]'); if(b) b.innerHTML='&#128722; Parts Cart'+(_cartN()?' ('+_cartN()+')':''); } }
 
   // client-side damage-type checklist (mirrors the worker) so a report ALWAYS works
@@ -977,10 +979,11 @@
   function openReport(id){
     var l=activeFeed().concat(SEED_LEADS, PBVS.watch||[], PBVS.findLeads||[]).filter(function(x){return x&&x.id===id;})[0];
     if(!l){ _toast('Lead not found'); return; }
+    PBVS._openReportId=id;
     _showReportModal(l, null, true);
     if(_reportCache[id]){ _showReportModal(l, _reportCache[id], false); return; }
     var v={year:l.year,make:l.make,model:l.model,trim:l.trim||''};
-    var done=function(rep){ _reportCache[id]=rep; _showReportModal(l, rep, false); };
+    var done=function(rep){ _reportCache[id]=rep; if(PBVS._openReportId===id) _showReportModal(l, rep, false); };   // don't reopen a modal the user dismissed during load
     var w=_worker();
     if(w){
       // send the full context so the scanner can price + SCORE it (miles / ask price / location / title)
@@ -1032,14 +1035,14 @@
       // rough margin vs a TITLE-ADJUSTED exit (branded titles resell ~25% under clean)
       var branded=!!(l && !/clean/i.test(String(l.title||'')));
       var exit=branded?Math.round(rep.estValueClean*0.75):rep.estValueClean;
-      if(ask && rHi){ var mLo=exit-(ask+rHi), mHi=exit-(ask+rLo), mc=(mLo>0)?'#22c55e':(mHi>0?'#c9a962':'#ef4444');
+      if(ask && rHi){ var mLo=exit-(ask+rHi), mHi=exit-(ask+rLo), mc=isBid?'#c9a962':((mLo>0)?'#22c55e':(mHi>0?'#c9a962':'#ef4444'));
         pills.push('<span class="pbvs-pill" style="color:'+mc+'" title="'+(branded?'exit discounted 25% for a branded title':'clean-title exit')+'">Est. margin '+_range(mLo,mHi)+'</span>'); }
     }
     if(rep.laborHours) pills.push('<span class="pbvs-pill">~'+rep.laborHours+' labor hrs</span>');
     return '<div class="pbvs-scorewrap"><div class="pbvs-score" style="border-color:'+col+';color:'+col+'"><div class="pbvs-scoreN">'+sc+'</div><div class="pbvs-scoreL">opportunity</div></div>'+
       '<div style="flex:1;min-width:0">'+(rep.scoreRationale?'<div class="pbvs-hint" style="color:#cdd3da;margin-bottom:6px">'+esc(rep.scoreRationale)+'</div>':'')+
       '<div style="display:flex;flex-wrap:wrap;gap:5px">'+pills.join('')+'</div>'+
-      '<div class="pbvs-hint" style="margin-top:5px;font-size:11px">Score 70+ chase &middot; 45-69 verify &middot; under 45 walk. Margin = title-adjusted clean retail minus (buy + rebuild) &mdash; estimates, not a guarantee.</div>'+
+      '<div class="pbvs-hint" style="margin-top:5px;font-size:11px">Score 70+ chase &middot; 45-69 verify &middot; under 45 walk. Margin = title-adjusted clean retail minus (buy + rebuild) &mdash; estimates, not a guarantee.'+(isBid?' <b style="color:#f59e0b">Bid lot: the buy price is the CURRENT bid and will climb, so real margin is lower.</b>':'')+'</div>'+
       '</div></div>';
   }
   function _flagsBlock(rep){ var f=(rep.redFlags||[]); if(!f.length) return '';
@@ -1052,7 +1055,7 @@
   function _ensureModal(){
     var m=el('pbvsModal'); if(m) return m;
     m=document.createElement('div'); m.id='pbvsModal'; m.className='pbvs-modal'; document.body.appendChild(m);
-    var _close=function(){ try{ if(_modalCtx&&_modalCtx._timers) _modalCtx._timers.forEach(function(t){ clearTimeout(t); }); }catch(e){} _modalCtx=null; m.style.display='none'; };
+    var _close=function(){ try{ if(_modalCtx&&_modalCtx._timers) _modalCtx._timers.forEach(function(t){ clearTimeout(t); }); }catch(e){} _modalCtx=null; PBVS._openReportId=null; m.style.display='none'; };
     m.addEventListener('click', function(e){
       if(e.target===m){ _close(); return; }
       var t=e.target.closest('[data-act]'); if(!t) return; var act=t.getAttribute('data-act');
@@ -1118,8 +1121,9 @@
           '<button class="btn" data-act="sendall" style="background:#c9a962;border-color:#c9a962;color:#111;font-weight:800;white-space:nowrap">&#128722; Send all to cart</button></div>'+
         rows+'</div>';
     }
-    m.innerHTML='<div class="pbvs-modbox">'+body+'</div>';
+    m.innerHTML='<div class="pbvs-modbox" role="dialog" aria-modal="true" aria-label="'+esc(vehStr(l))+' parts report">'+body+'</div>';
     m.style.display='flex';
+    try{ var _cb=m.querySelector('[data-act="closemodal"]'); if(_cb) _cb.focus(); }catch(e){}
     // image fallback: if EVERY gallery photo fails to load, swap in an open-listing hint
     if(!loading){ var gal=m.querySelector('.pbvs-gallery'); if(gal){ var ims=gal.querySelectorAll('img'), tot=ims.length, okc=0, dn=0; var chk=function(){ dn++; if(dn>=tot&&okc===0&&gal.parentNode){ var fb=document.createElement('div'); fb.className='pbvs-hint'; fb.innerHTML='No listing photos loaded &mdash; <a href="'+esc(l.url||'#')+'" target="_blank" rel="noopener" style="color:#c9a962">open the listing &#8599;</a>'; gal.parentNode.replaceChild(fb,gal); } }; ims.forEach(function(im){ if(im.complete){ if(im.naturalWidth>0) okc++; chk(); } else { im.addEventListener('load',function(){ okc++; chk(); }); im.addEventListener('error',chk); } }); } }
     // auto-price the first parts only (capped so casual browsing never burns the eBay quota); the rest price on demand
