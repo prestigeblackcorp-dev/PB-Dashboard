@@ -309,11 +309,12 @@
   function sources(v, part){
     var veh=vehStr(v), kw=(veh+' '+(part||'')).trim(), euro=/audi|bmw|mercedes|porsche|ferrari|lamborghini|mclaren|bentley|rolls|maserati|aston|jaguar|land rover|volkswagen|volvo|alfa/i.test(v.make||'');
     var isPart=looksLikePart(part), out=[];
+    // LEAD with Google Shopping (real prices shown in-results, NO API), consistent with the parts report
+    out.push({label:'$ Live prices', gold:true, url:'https://www.google.com/search?tbm=shop&q='+q(kw)});
     // used/new ONLY (condition 1000|3000 excludes "for parts / not working" 7000), sorted cheapest-first (_sop=15)
     out.push({label:'eBay &middot; used/new, cheapest', gold:true, url:'https://www.ebay.com/sch/i.html?_nkw='+q(kw)+'&_sacat=6028&LH_ItemCondition=1000%7C3000&_sop=15'});
     if(isPart) out.push({label:'eBay by Part #', gold:true, url:'https://www.ebay.com/sch/i.html?_nkw='+q(part)});
     out.push({label:'Amazon', url:'https://www.amazon.com/s?k='+q(kw)+'&i=automotive'});
-    out.push({label:'Google Shopping', url:'https://www.google.com/search?tbm=shop&q='+q(kw)});
     if(isPart) out.push({label:'RockAuto by Part #', gold:true, url:'https://www.rockauto.com/en/partsearch/?partnum='+q(part)});
     out.push({label:'RockAuto catalog', url:'https://www.rockauto.com/en/catalog/'+q(v.make)+','+q(v.year)+','+q(v.model)});
     if(euro) out.push({label:'FCP Euro', url:'https://www.fcpeuro.com/search?q='+q(kw)});
