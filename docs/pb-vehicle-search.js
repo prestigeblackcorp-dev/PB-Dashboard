@@ -920,6 +920,7 @@
     _fetchT(w+'/vehicle-leads/refresh',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth())},22000)
       .then(function(r){ return r.ok?r.json():null; })
       .then(function(d){
+        if(d&&d.cooldown){ PBVS.feedBlocked=!!d.blocked; _toast('Just scanned \u2014 sources cool down between pulls; try again in ~'+(d.nextInMin||5)+' min. Daily auto-scan keeps it fresh.'); fetchFeed(true); return; }
         if(d&&d.scanning){ _toast('\ud83d\udd0d Scanning your hunt list \u2014 a big list takes ~30-60s'); _pollRefresh(beforeAt,0); return; }
         // legacy synchronous worker (small list / pre-background build)
         if(d){ PBVS.feedBlocked=!!d.blocked;
