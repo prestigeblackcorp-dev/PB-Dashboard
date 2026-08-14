@@ -1,0 +1,107 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Verify driver-scope self-test</title>
+<style>
+  body{font-family:system-ui,-apple-system,sans-serif;padding:18px;max-width:900px}
+  h2{margin:0 0 4px} .sub{color:#666;font-size:13px;margin-bottom:14px}
+  .pass{color:#16a34a;font-weight:700}.fail{color:#dc2626;font-weight:800}
+  #status{font-size:18px;margin:10px 0}
+  table{border-collapse:collapse;width:100%}td{border:1px solid #ddd;padding:6px 9px;font-size:12.5px;vertical-align:top}
+  code{font-size:11px;color:#555;word-break:break-all}
+</style></head><body>
+<h2>Verify driver-scope self-test</h2>
+<div class="sub">Drives the REAL dashboard functions (openVerify / openDriverVerify / afterCloudLoad / saveVerify / applyStripeVerification) and asserts the primary renter's ID can never land on an additional driver (and vice-versa). Regression guard for the afterCloudLoad leak fixed in v335.</div>
+<div id="status">Loading the dashboard&hellip;</div>
+<table id="results"></table>
+<iframe id="app" src="../docs/index.html?selftest=1" style="position:absolute;left:-9999px;width:1200px;height:800px;border:0"></iframe>
+<script>
+var W, results=[];
+function assert(name, cond, detail){ results.push({name:name, pass:!!cond, detail:detail||''}); }
+function g(id){ return W.document.getElementById(id).value; }
+function fields(){ return {name:g('vIdName'),dob:g('vIdDob'),num:g('vIdNumber'),state:g('vIdState'),exp:g('vIdExpiry'),addr:g('vIdAddress')}; }
+function hasPrimary(f){ return /PRIMARY|1980-01-01|PRIMARY-DL|2030-01-01|1 PRIMARY/.test([f.dob,f.num,f.state,f.exp,f.addr].join('|')); }
+function mkBooking(over){
+  var b={id:'SELFTEST', name:'PRIMARY PERSON', vehicle:'Test', email:'p@t.com', phone:'5550', date:'2026-08-10', status:'confirmed',
+    verify:{idVerified:true, idName:'PRIMARY PERSON', idDob:'1980-01-01', idType:'Driver License', idNumber:'PRIMARY-DL-999', idState:'CA', idExpiry:'2030-01-01', idAddress:'1 PRIMARY ST'},
+    extraDrivers:[{name:'DRIVER A', idVerified:true, idName:'DRIVER A'}]};
+  if(over) for(var k in over) b[k]=over[k];
+  var i=W.bookings.findIndex(function(x){return x.id==='SELFTEST';}); if(i>=0) W.bookings[i]=b; else W.bookings.push(b);
+  return b;
+}
+function bk(){ return W.bookings.find(function(x){return x.id==='SELFTEST';}); }
+function openModalPrimaryBlank(){
+  W.verifyId='SELFTEST'; W.verifyDriverIdx=null;
+  ['vIdName','vIdDob','vIdNumber','vIdState','vIdExpiry','vIdAddress'].forEach(function(id){W.document.getElementById(id).value='';});
+  W.document.getElementById('verifyModal').classList.add('open');
+}
+function run(){
+  try{
+    // Neutralize side effects (network/alert/email) so the record-routing logic runs unblocked.
+    W.alert=function(){}; W.confirm=function(){return true;};
+    ['_pushDriverVerifyToCloud','sendDriverVerifiedEmail','sendConfirmationEmail','cloudSave','flushCloudSave','sendDriverStripeVerify'].forEach(function(fn){ try{ W[fn]=function(){}; }catch(e){} });
+
+    // T1 -- the fixed bug: background sync in DRIVER mode must not pull the primary's ID
+    mkBooking({extraDrivers:[{name:'EXTRA', idVerified:true, idName:'EXTRA'}]});
+    W.openDriverVerify('SELFTEST',0);
+    W.afterCloudLoad(true);
+    var f1=fields(); assert('T1 afterCloudLoad(driver) does NOT leak primary', !hasPrimary(f1) && f1.name==='EXTRA', JSON.stringify(f1));
+
+    // T2 -- regression: background sync in PRIMARY mode still auto-fills from the primary
+    mkBooking(); openModalPrimaryBlank(); W.afterCloudLoad(true);
+    var f2=fields(); assert('T2 afterCloudLoad(primary) still fills from primary', f2.name==='PRIMARY PERSON' && f2.num==='PRIMARY-DL-999', JSON.stringify(f2));
+
+    // T3 -- openDriverVerify loads the driver's OWN saved data, not the primary's
+    mkBooking({extraDrivers:[{name:'DRIVER A', idVerified:true, idName:'DRIVER A', idNumber:'DRVA-1', idDob:'1990-05-05'}]});
+    W.openDriverVerify('SELFTEST',0);
+    var f3=fields(); assert('T3 openDriverVerify loads driver not primary', f3.name==='DRIVER A' && f3.num==='DRVA-1' && !hasPrimary(f3), JSON.stringify(f3));
+
+    // T4 -- saveVerify(driver) writes ONLY to extraDrivers[0]; primary untouched
+    mkBooking({extraDrivers:[{name:'EXTRA', idVerified:true, idName:'EXTRA'}]});
+    W.openDriverVerify('SELFTEST',0);
+    W.document.getElementById('vIdNumber').value='DRIVER-ENTERED-77';
+    W.saveVerify();
+    var b4=bk();
+    assert('T4a saveVerify writes the driver slot', b4.extraDrivers[0].idNumber==='DRIVER-ENTERED-77', JSON.stringify(b4.extraDrivers[0]));
+    assert('T4b saveVerify leaves primary intact', b4.verify.idNumber==='PRIMARY-DL-999', JSON.stringify(b4.verify));
+
+    // T5 -- applyStripeVerification routing + cross-modal guard
+    mkBooking({extraDrivers:[{name:'EXTRA', idVerified:false, idName:'EXTRA'}]});
+    try{ W.closeVerify(); }catch(e){} W.verifyId=null; W.verifyDriverIdx=null;
+    W.applyStripeVerification({status:'verified', id:'s-d', _extracted:{fullName:'DRIVER STRIPE', idNumber:'DS-1'}}, 'SELFTEST', 0);
+    var b5=bk();
+    assert('T5a applyStripe(driver) routes to driver slot only', b5.extraDrivers[0].idName==='DRIVER STRIPE' && b5.verify.idNumber==='PRIMARY-DL-999', JSON.stringify({driver:b5.extraDrivers[0].idName, primary:b5.verify.idNumber}));
+    W.openDriverVerify('SELFTEST',0);
+    W.applyStripeVerification({status:'verified', id:'s-p', _extracted:{fullName:'PRIMARY STRIPE', idNumber:'PS-999'}}, 'SELFTEST', null);
+    assert('T5b applyStripe(primary) does NOT fill an open driver modal', g('vIdNumber')!=='PS-999', 'field='+g('vIdNumber'));
+
+    // T6 -- FULL repro persistence: name-only driver -> sync -> override -> save -> record stays clean
+    mkBooking({extraDrivers:[{name:'REPRO DRV', idVerified:true, idName:'REPRO DRV'}]});
+    W.openDriverVerify('SELFTEST',0);
+    W.afterCloudLoad(true);
+    if(W._overrideVerifyId) W._overrideVerifyId();
+    W.saveVerify();
+    var b6=bk();
+    assert('T6 override+save leaves NO primary data on the driver', b6.extraDrivers[0].idName==='REPRO DRV' && !/PRIMARY-DL|1980-01-01|1 PRIMARY/.test(JSON.stringify(b6.extraDrivers[0])), JSON.stringify(b6.extraDrivers[0]));
+
+    // T7 -- multi-driver isolation: editing driver #2 pulls neither the primary nor driver #1
+    mkBooking({extraDrivers:[{name:'DRIVER A', idVerified:true, idName:'DRIVER A', idNumber:'AAA-1', idDob:'1991-01-01'},{name:'DRIVER B', idVerified:true, idName:'DRIVER B'}]});
+    W.openDriverVerify('SELFTEST',1);
+    W.afterCloudLoad(true);
+    var f7=fields(); assert('T7 multi-driver isolation (driver #2 not primary/driver #1)', f7.name==='DRIVER B' && !hasPrimary(f7) && f7.num!=='AAA-1', JSON.stringify(f7));
+
+    var ci=W.bookings.findIndex(function(x){return x.id==='SELFTEST';}); if(ci>=0) W.bookings.splice(ci,1);
+    try{ W.closeVerify(); }catch(e){}
+  }catch(e){ assert('HARNESS ERROR', false, String((e&&e.stack)||e)); }
+  render();
+}
+function render(){
+  var pass=results.filter(function(r){return r.pass;}).length, fail=results.length-pass;
+  window.__selftest={allPass: fail===0 && results.length>0, pass:pass, fail:fail, total:results.length, results:results};
+  document.getElementById('status').innerHTML = (window.__selftest.allPass?'<span class=pass>&#10004; ALL '+pass+' CHECKS PASS</span>':'<span class=fail>&#10008; '+fail+' FAILED / '+pass+' passed</span>');
+  document.getElementById('results').innerHTML = '<tr><td><b>#</b></td><td><b>Check</b></td><td><b>Detail</b></td></tr>'+results.map(function(r,i){ return '<tr><td>'+(r.pass?'<span class=pass>PASS</span>':'<span class=fail>FAIL</span>')+'</td><td>'+r.name+'</td><td><code>'+r.detail+'</code></td></tr>'; }).join('');
+}
+var _tries=0, _iv=setInterval(function(){
+  try{ W=document.getElementById('app').contentWindow; }catch(e){}
+  if(W && typeof W.afterCloudLoad==='function' && typeof W.openDriverVerify==='function' && typeof W.saveVerify==='function' && Array.isArray(W.bookings)){
+    clearInterval(_iv); setTimeout(run, 400);
+  } else if(++_tries>150){ clearInterval(_iv); document.getElementById('status').innerHTML='<span class=fail>dashboard did not load</span>'; window.__selftest={allPass:false, error:'load timeout'}; }
+}, 100);
+</script></body></html>
