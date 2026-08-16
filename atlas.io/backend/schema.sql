@@ -187,8 +187,13 @@ CREATE TABLE IF NOT EXISTS domains_sold (
   domain        TEXT NOT NULL,
   tld           TEXT,
   cost_cents    INTEGER,                     -- wholesale we paid
-  price_cents   INTEGER,                     -- retail customer paid
-  status        TEXT DEFAULT 'pending',      -- pending|registered|failed
+  price_cents   INTEGER,                     -- retail customer paid (legacy; worker writes paid_cents below)
+  paid_cents    INTEGER DEFAULT 0,           -- retail customer paid (the column the worker's INSERT uses)
+  margin_cents  INTEGER DEFAULT 0,           -- our profit = retail (ex-tax) - wholesale
+  buyer_email   TEXT,                        -- orderer email (required by the domain-purchase INSERT)
+  buyer_name    TEXT,                        -- orderer / tenant business name on the order record
+  stripe_sub    TEXT,                        -- yearly domain renewal subscription id
+  status        TEXT DEFAULT 'pending',      -- pending|registering|registered|pending_registrar|renew_failed|canceled
   registrar_ref TEXT,                        -- provider order id
   registrar     TEXT DEFAULT 'dynadot',
   created_at    INTEGER NOT NULL,
@@ -196,6 +201,8 @@ CREATE TABLE IF NOT EXISTS domains_sold (
   FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 );
 CREATE INDEX IF NOT EXISTS idx_domains_tenant ON domains_sold(tenant_id);
+-- claim-before-register idempotency: one row per (tenant, domain). Matches the worker's ensurePlatformSchema.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dsold_td ON domains_sold(tenant_id, domain);
 
 -- ---- Integrations: tenant "bring your own key" (stored ENCRYPTED) ------------
 CREATE TABLE IF NOT EXISTS integrations (
