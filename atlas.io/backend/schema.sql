@@ -315,6 +315,13 @@ CREATE TABLE IF NOT EXISTS platform_payment_events (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ppe_dedupe ON platform_payment_events(stripe_id, type);
 CREATE INDEX IF NOT EXISTS idx_ppe_tenant ON platform_payment_events(tenant_id, created_at);
 
+-- Atlas 'never process for free' owed-fee ledger: per-tenant carried-over fee (from refunds/chargebacks), collected on next charge.
+CREATE TABLE IF NOT EXISTS gmv_tenant_balance (
+  tenant_id   TEXT PRIMARY KEY,
+  owed_cents  INTEGER DEFAULT 0,
+  updated_at  INTEGER
+);
+
 -- Bug reports & optimization ideas users send from inside the app, into the owner's inbox.
 CREATE TABLE IF NOT EXISTS platform_feedback (
   id            TEXT PRIMARY KEY,
