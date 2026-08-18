@@ -289,10 +289,31 @@ CREATE TABLE IF NOT EXISTS platform_transactions (
   amount_cents  INTEGER DEFAULT 0,
   currency      TEXT DEFAULT 'usd',
   stripe_id     TEXT,                        -- Stripe object id (session/invoice) — the dedup key
-  created_at    INTEGER
+  created_at    INTEGER,
+  livemode      INTEGER                      -- 1=live / 0=test (mode-aware revenue charts)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ptxn_stripe ON platform_transactions(stripe_id);
 CREATE INDEX IF NOT EXISTS idx_ptxn_tenant ON platform_transactions(tenant_id, created_at);
+
+-- Atlas-processing (Stripe Connect) payment-events ledger: one row per lifecycle event on a tenant's connected account,
+-- with the full money breakdown (gross -> Stripe fee -> Atlas 3.5% -> net to tenant). Feeds the tenant Money Center + analytics.
+CREATE TABLE IF NOT EXISTS platform_payment_events (
+  id               TEXT PRIMARY KEY,
+  tenant_id        TEXT,
+  booking_id       TEXT,
+  type             TEXT,                     -- succeeded|failed|refunded|dispute|chargeback|payout|fee
+  gross_cents      INTEGER DEFAULT 0,
+  stripe_fee_cents INTEGER DEFAULT 0,
+  atlas_fee_cents  INTEGER DEFAULT 0,
+  net_cents        INTEGER DEFAULT 0,
+  currency         TEXT DEFAULT 'usd',
+  stripe_id        TEXT,
+  detail           TEXT,                     -- JSON: card brand/last4, decline/dispute reason, customer, etc.
+  livemode         INTEGER,
+  created_at       INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ppe_dedupe ON platform_payment_events(stripe_id, type);
+CREATE INDEX IF NOT EXISTS idx_ppe_tenant ON platform_payment_events(tenant_id, created_at);
 
 -- Bug reports & optimization ideas users send from inside the app, into the owner's inbox.
 CREATE TABLE IF NOT EXISTS platform_feedback (
