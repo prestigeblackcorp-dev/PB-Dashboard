@@ -2208,7 +2208,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20a';
+  var APP_VERSION='2026.7.20b';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -5796,6 +5796,7 @@ const Atlas = (function(){
       +'<div class="cond-sec"><div class="cond-hd"><span>Charges to portal</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCharge(\''+b.id+'\')">+ Send a charge</button></div>'
         +'<div class="cond-sub">Bill '+esc((b.cust||'the customer').split(' ')[0])+' for extras, damage, cleaning, late fees or anything else &mdash; it appears in their portal to pay online.</div>'
         +_chargesOwnerHtml(b)+'</div>'
+      +'<div class="cond-sec"><div class="cond-hd"><span>Card on file</span></div>'+_cardOnFileHtml(b)+'</div>'
       +'<div class="cond-sec"><div class="cond-hd"><span>Renter ID &amp; documents</span></div>'
         +'<div class="cond-sub">Government ID, license and insurance '+esc((b.cust||'the customer').split(' ')[0])+' uploaded from their portal &mdash; review them before pickup.</div>'
         +_portalDocsOwnerHtml(b)+'</div>'
@@ -5840,6 +5841,27 @@ const Atlas = (function(){
   // Booking G2: act on a customer's portal change-request in-app (was only visible in an email). Turn it into a charge (reuses Send a charge) or dismiss it.
   function bkReqCharge(id,ri){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b||!b.portal||!b.portal.requests||!b.portal.requests[ri])return; var rq=b.portal.requests[ri]; rq.status='charged'; _upsertBooking(b); save(); bkAddCharge(id); setTimeout(function(){ var l=document.getElementById('chLabel'); if(l) l.value=(rq.extra||'Requested change'); },60); }
   function bkReqDone(id,ri){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b||!b.portal||!b.portal.requests||!b.portal.requests[ri])return; b.portal.requests[ri].status='dismissed'; _upsertBooking(b); save(); openBooking(id); toast('Request dismissed'); }
+  // ---- MONEY STACK (card-on-file): owner saves a customer's card + charges it later for incidentals/damage. Server DOUBLE-GATES
+  // (money_stack_enabled + tenant opt-in) so this is inert until Atlas processing is live or the tenant connects their own Stripe.
+  function _cardOnFileHtml(b){
+    var ms=(S.payments&&S.payments.moneyStack)||{};
+    if(!ms.on || !ms.cardOnFile){
+      return '<div class="cond-sub">Save a customer\u2019s card on file and charge it later for incidentals, damage or extras \u2014 no chasing a payment. Works with Atlas processing or your own connected Stripe.</div>'
+        +'<div style="margin-top:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.setMoneyStack(\''+b.id+'\',true)">Enable card on file</button></div>';
+    }
+    var sc=b.savedCard;
+    if(sc && sc.pm && !sc.pending){
+      var brand=String(sc.brand||'card'); brand=brand.charAt(0).toUpperCase()+brand.slice(1);
+      var l4=sc.last4?(' \u2022\u2022\u2022\u2022 '+esc(String(sc.last4))):'';
+      return '<div class="cond-sub">On file: <b>'+esc(brand)+l4+'</b>. Charge it for an incidental or damage \u2014 billed off-session, straight onto the receipt.</div>'
+        +'<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--brand btn--sm" onclick="Atlas.bkChargeCard(\''+b.id+'\')">Charge this card</button><button class="btn btn--ghost btn--sm" onclick="Atlas.bkSaveCard(\''+b.id+'\')">Replace card</button></div>';
+    }
+    return '<div class="cond-sub">No card saved yet. Open a secure Stripe page \u2014 with '+esc((b.cust||'the customer').split(' ')[0])+' present, or send them the link \u2014 to put a card on file, then charge it later.</div>'
+      +'<div style="margin-top:8px"><button class="btn btn--brand btn--sm" onclick="Atlas.bkSaveCard(\''+b.id+'\')">Save a card on file</button>'+((sc&&sc.pending)?' <span class="chip chip--muted">setup started</span>':'')+'</div>';
+  }
+  function setMoneyStack(id,on){ if(!_canMod('settings'))return; if(!S.payments)S.payments={}; var ms=S.payments.moneyStack||{}; ms.on=!!on; ms.cardOnFile=!!on; S.payments.moneyStack=ms; save(); if(id)openBooking(id); toast(on?'Card on file enabled':'Card on file turned off'); }
+  function bkSaveCard(id){ var b=_getBooking(id); if(!b)return; toast('Opening secure card setup...'); _api('/api/booking/setup-card',{method:'POST',body:{bookingId:id}}).then(function(r){ var j=(r&&r.json)||{}; if(j.ok&&j.url){ try{ window.open(j.url,'_blank'); }catch(e){ location.href=j.url; } toast('Secure card page opened \u2014 the saved card shows here once entered.'); } else { toast(j.message||'Could not start card setup.'); } }).catch(function(){ toast('Could not reach the payment server.'); }); }
+  function bkChargeCard(id){ var b=_getBooking(id); if(!b||!b.savedCard)return; var amt=prompt('Amount to charge the card on file (e.g. 75.00):'); if(amt==null)return; var cents=Math.round(parseFloat(amt)*100); if(!(cents>=50)){ toast('Enter an amount of at least $0.50'); return; } var note=prompt('What is this charge for? (shown on the receipt)','Incidental charge')||'Card-on-file charge'; toast('Charging the card on file...'); _api('/api/booking/charge-saved',{method:'POST',body:{bookingId:id,amountCents:cents,note:note}}).then(function(r){ var j=(r&&r.json)||{}; if(j.ok){ toast('Charged $'+((j.amountCents||cents)/100).toFixed(2)+' to the card on file'); try{ if(typeof _srvHydrate==='function'&&store.session()) _srvHydrate(store.session().tenantId); }catch(e){} setTimeout(function(){ try{ openBooking(id); }catch(e){} },700); } else { toast(j.message||'The card could not be charged.'); } }).catch(function(){ toast('Could not reach the payment server.'); }); }
   // ---- Cancellation-policy engine: cancel with a smart fee (kept via the reconciled portal-charge model) ----
   function _cxWindow(){ return (S.money&&S.money.cancelWindowHrs!=null)?S.money.cancelWindowHrs:48; }
   // === VOID / early-termination: contract broken -> KEEP earnings (+ any captured deposit) as revenue, free the asset the
@@ -13022,12 +13044,14 @@ const Atlas = (function(){
     _applyTheme();   // honor the saved light/dark choice on every load, before anything renders
     _initPWA();
     buildLanding();
+    try{ var _csv=new URLSearchParams(location.search).get('cardsaved'); if(_csv){ try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){} setTimeout(function(){ try{ toast('Card saved on file \u2014 it will appear on the booking shortly.'); }catch(e){} },500); } }catch(e){}
     try{ var _ssoQ=new URLSearchParams(location.search).get('sso');
       if(_ssoQ){ try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){}
         if(_ssoQ==='1'){ if(typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND){ _api('/api/auth/me',{method:'GET'}).then(function(res){
               if(res&&res.json&&res.json.user&&res.json.tenant&&res.json.tenant.id){ try{ _lsSet(SK,{email:_emailKey(res.json.user.email),tenantId:res.json.tenant.id}); }catch(e){} location.reload(); }
               else { try{ toast('Sign-in could not be completed. Please try again.'); }catch(e){} }
             }).catch(function(){}); return; } }
+        if(_ssoQ==='cardsaved'){ setTimeout(function(){ try{ toast('Card saved on file \u2014 it will appear on the booking shortly.'); }catch(e){} }, 400); }
         var _ssoM={nouser:'No Atlas account matches that sign-in \u2014 create an account first.',unverified:'That email is not verified with the provider.',unconfigured:'That sign-in method is not enabled yet.',badstate:'Sign-in expired \u2014 please try again.',err:'Sign-in could not be completed. Please try again.'};
         if(_ssoM[_ssoQ]) setTimeout(function(){ try{ toast(_ssoM[_ssoQ]); }catch(e){} }, 400);
       }
@@ -13091,7 +13115,7 @@ const Atlas = (function(){
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
     setBrandName,setBrandColor,setBrandColorHex,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,revOptApply,revOptAsk,setAutoPrice,autoPriceRevertAll,autoPriceRevertOne,
-    goAuth,authSubmit,authTogglePass,ssoLogin,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
+    goAuth,authSubmit,authTogglePass,ssoLogin,setMoneyStack,bkSaveCard,bkChargeCard,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,exportBkIcs,viewCustomer,saveCustNote,emailCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,addLead,saveLead,leadStage,leadToBooking,rmLead,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkVoidFlow,doVoid,unvoidBooking,bkVoidReport,bkEvidence,bkPortalLink,bkPortalRevoke,bkExtendFlow,bkExtendAmt,bkExtendPreview,bkExtendSave,bkExtRemove,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,_mtOverage,bkFuel,saveFuel,_flHint,bkLate,saveLate,_ltHint,bkDriver,saveDriver,bkRmDriver,bkInsurance,saveInsurance,bkBlacklistToggle,blacklistBlockToggle,holdAuth,holdRelease,holdCapture,doCapture,bkCheckIn,doCheckIn,bkCloseOut,doCloseOut,_coCalc,
