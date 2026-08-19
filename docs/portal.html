@@ -569,6 +569,19 @@
 <script>
 const WORKER = (typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
 
+// S1 security: resolve the signing-link token for a booking. Deep-links (?sign=..&t=..) carry it in the URL;
+// portal-loaded bookings carry _signToken from /portal/data. /signing/load + /signing/save verify it. The
+// token rides along invisibly -- the customer's signing steps are unchanged. (14-day grace covers old links.)
+function _sigTokenFor(bookingId){
+  try{
+    var urlTok = (new URLSearchParams(location.search)).get('t') || '';
+    if(urlTok) return urlTok;
+    var bs = (typeof state!=='undefined' && state && state.bookings) ? state.bookings : [];
+    for(var i=0;i<bs.length;i++){ if(bs[i] && bs[i].id===bookingId && bs[i]._signToken) return bs[i]._signToken; }
+  }catch(e){}
+  return '';
+}
+
 // --- State -----------------------------------------------------------------
 var _initEmail = ''; try{ _initEmail = localStorage.getItem('pb_portal_email')||''; }catch(e){}
 var _initToken = ''; try{ _initToken = localStorage.getItem('pb_portal_token')||''; }catch(e){}
@@ -1102,7 +1115,7 @@ async function _portalDownloadSignedContract(bookingId, btnEl, extId){
   if(btnEl){ try{ _lbl=btnEl.textContent; btnEl.disabled=true; btnEl.textContent='Preparing...'; }catch(e){} }
   function _restore(){ if(btnEl){ try{ btnEl.disabled=false; if(_lbl!=null) btnEl.textContent=_lbl; }catch(e){} } }
   try{
-    var r=await fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'});
+    var r=await fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'});
     var data=r&&r.ok?await r.json():null;
     if(!data||!data.booking){ toast('Could not load your contract.'); _restore(); return; }
     var bk=data.booking;
@@ -1151,7 +1164,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
   document.getElementById('sign-tag').textContent = _smDriverIdx !== null ? 'Additional Driver Agreement' : 'Rental Agreement';
   var body = document.getElementById('signing-body');
 
-  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'})
   .then(r => r.ok ? r.json() : null)
   .then(function(data){
     if(!data||!data.booking){
@@ -1526,7 +1539,7 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx, fromPortal){
   document.getElementById('sign-tag').textContent = _exIsDrv ? 'Extension \u2014 Additional Driver' : 'Extension Agreement';
   var body = document.getElementById('signing-body');
 
-  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'})
   .then(r => r.ok ? r.json() : null)
   .then(function(data){
     if(!data||!data.booking){
@@ -1741,13 +1754,13 @@ function _smSubmitSig(bookingId, driverIdx){
     document.getElementById('smSigMsg').textContent = msg||'Network error \u2014 please try again.';
   }
 
-  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'})
   .then(r => r.ok?r.json():null)
   .then(function(freshData){
     var _freshBk = freshData&&freshData.booking ? freshData.booking : null;
     if(!_freshBk){ _showSaveErr('Error loading data \u2014 please refresh.'); return; }
     var _signerName = _isDriver ? ((_freshBk.extraDrivers&&_freshBk.extraDrivers[_dIdx]&&_freshBk.extraDrivers[_dIdx].name)||'Driver').split(' ')[0] : (_freshBk.name||'').split(' ')[0]||'there';
-    var _savePayload = {bookingId, sig, sigDate};
+    var _savePayload = {bookingId, sig, sigDate, t:_sigTokenFor(bookingId)};
     if(_isDriver) _savePayload.driverIdx = _dIdx;
     return fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_savePayload)})
       .then(r => r.json())
@@ -1799,12 +1812,12 @@ function _smSubmitExtSig(bookingId, extId, driverIdx){
     document.getElementById('smSigMsg').textContent = msg||'Network error \u2014 please try again.';
   }
 
-  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'})
   .then(r => r.ok?r.json():null)
   .then(function(freshData){
     var bkFresh = freshData&&freshData.booking ? freshData.booking : null;
     if(!bkFresh){ _showSaveErr('Error loading data \u2014 please refresh.'); return; }
-    var _exPayload={bookingId,sig,sigDate,extId}; if(_exIsDrv) _exPayload.driverIdx=_exDIdx;
+    var _exPayload={bookingId,sig,sigDate,extId,t:_sigTokenFor(bookingId)}; if(_exIsDrv) _exPayload.driverIdx=_exDIdx;
     return fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_exPayload)})
       .then(r => r.json())
       .then(function(res){
@@ -2132,7 +2145,7 @@ function showApp(){
 
 async function loadPortalData(){
   try{
-    const r = await fetch(`${WORKER}/portal/data?email=${encodeURIComponent(state.email)}&token=${encodeURIComponent(state.token)}`);
+    const r = await fetch(`${WORKER}/portal/data`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token})});
     if(r.status === 401){ return 'unauthorized'; }   // only real auth failure clears session
     if(!r.ok){ return 'error'; }                     // network/server error \u2014 keep session
     const d = await r.json();
@@ -2555,7 +2568,7 @@ function showDrivers(b){
     const isDenied  = d.status === 'denied';
     const isApproved = d.status === 'approved';
     const initial   = (d.name||'?')[0].toUpperCase();
-    const sigUrl    = `${sigBase}?sign=${encodeURIComponent(b.id)}&driver=${i}`;
+    const sigUrl    = `${sigBase}?sign=${encodeURIComponent(b.id)}&driver=${i}${b._signToken?('&t='+encodeURIComponent(b._signToken)):''}`;
     // Badge
     let badgeHtml;
     if(isPending){
