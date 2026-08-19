@@ -216,6 +216,15 @@
       '.pbvs-brk{border:1px solid var(--border);border-radius:11px;padding:12px 14px;margin-bottom:10px;background:rgba(255,255,255,.02)}',
       '.pbvs-brk h5{margin:0 0 6px;font-size:13.5px;color:#fff;font-weight:800}',
       '.pbvs-brk .parts{font-size:12px;color:var(--muted);line-height:1.7}',
+      '.pbvs-ebay{display:flex;gap:11px;align-items:flex-start;border:1px solid var(--border);border-radius:11px;padding:10px 11px;margin-bottom:8px;background:rgba(255,255,255,.02)}',
+      '.pbvs-ebimg{width:76px;height:76px;object-fit:cover;border-radius:8px;flex:none;background:#0d0f13;border:1px solid var(--border)}',
+      '.pbvs-ebttl{color:#e9edf5;font-weight:600;font-size:12.5px;display:block;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none}',
+      '.pbvs-ebttl:hover{color:#c9a962}',
+      '.pbvs-brkt{border-collapse:collapse;font-size:11.5px;margin-top:2px}',
+      '.pbvs-brkt td{padding:1px 0;color:var(--muted)}',
+      '.pbvs-brkt td:last-child{text-align:right;padding-left:18px;color:var(--text);font-variant-numeric:tabular-nums}',
+      '.pbvs-brkt tr.tot td{padding-top:3px;font-weight:800;color:#22c55e;font-size:12.5px;border-top:1px solid var(--border)}',
+      '.pbvs-ebcart{flex:none;align-self:center}',
       '.pbvs-pre{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.6;color:var(--text);white-space:pre-wrap;background:rgba(0,0,0,.25);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin:0}',
       '.pbvs-copy{font-size:11px;font-weight:700;padding:6px 12px;border-radius:8px;border:1px solid var(--border);background:rgba(255,255,255,.03);color:var(--muted);cursor:pointer}',
       '.pbvs-copy:hover{border-color:rgba(201,169,98,.5);color:#c9a962}',
@@ -783,6 +792,7 @@
       else if(act==='delcrit'){ PBVS.criteria.splice(+t.getAttribute('data-i'),1); saveCrit(); renderKit(); }
       else if(act==='report'){ openReport(t.getAttribute('data-id')); }
       else if(act==='partcart'){ _addManualPartToCart(); }
+      else if(act==='ebaycart'){ _ebayToCart(t); }
       else if(act==='ordertoggle'){ var _c=PBVS.cart[+t.getAttribute('data-i')]; if(_c){ if(_c.status==='ordered'){ _c.status='to-order'; } else { _c.status='ordered'; _c.orderedAt=_c.orderedAt||Date.now(); } saveCart(); renderCart(); } }
       else if(act==='qtyinc'){ var _qi=PBVS.cart[+t.getAttribute('data-i')]; if(_qi){ _qi.qty=(+_qi.qty||1)+1; saveCart(); renderCart(); } }
       else if(act==='qtydec'){ var _qd=PBVS.cart[+t.getAttribute('data-i')]; if(_qd){ _qd.qty=Math.max(1,(+_qd.qty||1)-1); saveCart(); renderCart(); } }
@@ -836,6 +846,71 @@
     try{ var vi=VEHICLE_INFO[key]||{}; partsSel={year:vi.year||'',make:vi.make||'',model:vi.model||'',trim:'',vin:vi.vin||'',_models:partsSel._models,part:keepPart}; }catch(e){}
     renderParts();
   }
+  // ---- Live eBay Browse (worker /parts-best) with full delivered-price breakdown ----------------
+  var PBVS_TAX = 0.0825;   // Dallas, TX combined sales-tax estimate; eBay charges the exact ship-to rate at checkout
+  var _psEbayCache = {};
+  function _money(n){ n=Number(n)||0; return '$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  function _ebayTotals(it){
+    var item=Number(it.price)||0;
+    var shipKnown=(it.shipping!=null && it.shipping!=='');
+    var ship=it.shipFree?0:(shipKnown?(Number(it.shipping)||0):0);
+    var sub=item+ship;
+    var tax=Math.round(sub*PBVS_TAX*100)/100;
+    var total=Math.round((sub+tax)*100)/100;
+    return {item:item, ship:ship, shipKnown:shipKnown, shipFree:!!it.shipFree, tax:tax, total:total};
+  }
+  function _ebayCard(it){
+    var t=_ebayTotals(it);
+    var url=_safeUrl(it.url);
+    var img=it.img?('<img src="'+esc(it.img)+'" loading="lazy" onerror="this.style.visibility=\'hidden\'" class="pbvs-ebimg">'):'<div class="pbvs-ebimg"></div>';
+    var shipLine=it.shipFree?'<span style="color:#22c55e;font-weight:700">FREE</span>':(t.shipKnown?_money(t.ship):'<span style="color:var(--muted)">calc at checkout</span>');
+    var meta=[esc(it.condition||''), it.seller?(esc(it.seller)+'% seller'):'', (it.loc&&String(it.loc).toUpperCase()!=='US')?esc(it.loc):''].filter(Boolean).join(' &middot; ');
+    var ttl=esc(String(it.title||'').slice(0,90));
+    return '<div class="pbvs-ebay">'+img+
+      '<div style="flex:1;min-width:0">'+
+        '<a href="'+url+'" target="_blank" rel="noopener" class="pbvs-ebttl" title="'+ttl+'">'+ttl+' &#8599;</a>'+
+        (meta?'<div class="pbvs-count" style="margin:2px 0 5px">'+meta+'</div>':'')+
+        '<table class="pbvs-brkt">'+
+          '<tr><td>Item</td><td>'+_money(t.item)+'</td></tr>'+
+          '<tr><td>Shipping</td><td>'+shipLine+'</td></tr>'+
+          '<tr><td>Est. tax <span style="opacity:.55">(TX 8.25%)</span></td><td>'+_money(t.tax)+'</td></tr>'+
+          '<tr class="tot"><td>Total delivered</td><td>'+_money(t.total)+'</td></tr>'+
+        '</table>'+
+      '</div>'+
+      '<button class="pbvs-srcbtn pbvs-ebcart" data-act="ebaycart" data-nm="'+ttl+'" data-price="'+t.total+'" data-url="'+esc(_safeUrl(it.url))+'" data-img="'+esc(it.img||'')+'" title="Add to Parts Cart">+ Cart</button>'+
+    '</div>';
+  }
+  function _ebayResultsHTML(items, kw){
+    var see='<a href="https://www.ebay.com/sch/i.html?_nkw='+encodeURIComponent(kw||'')+'" target="_blank" rel="noopener" style="color:#c9a962">'+((items&&items.length)?'All results':'search eBay directly')+' &#8599;</a>';
+    if(!items||!items.length) return '<div class="pbvs-hint" style="color:var(--muted)">No fixed-price eBay listing found right now &mdash; '+see+'</div>';
+    var ranked=items.slice().map(function(it){ return {it:it, tot:_ebayTotals(it).total}; }).sort(function(a,b){ return a.tot-b.tot; }).slice(0,6);
+    return ranked.map(function(r){ return _ebayCard(r.it); }).join('')+
+      '<div class="pbvs-hint" style="margin-top:7px;color:var(--muted)">Ranked by cheapest <b style="color:#fff">total delivered</b>. Tax est. at Dallas 8.25% (eBay charges the exact ship-to rate at checkout). '+see+'</div>';
+  }
+  function _loadEbayParts(kw){
+    var box=el('psEbay'); if(!box) return;
+    if(PBVS._ebayOff){ box.innerHTML=''; return; }
+    var w=_worker();
+    if(!w||!kw){ box.innerHTML=''; return; }
+    if(_psEbayCache[kw]){ box.innerHTML=_psEbayCache[kw]; return; }
+    box.innerHTML='<div class="pbvs-hint">&#128269; Finding live eBay listings + delivered totals&#8230;</div>';
+    _fetchT(w+'/parts-best',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_auth()),body:JSON.stringify({q:kw})},15000)
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(d){
+        var b=el('psEbay'); if(!b) return;
+        if(d&&d.notConfigured){ PBVS._ebayOff=true; b.innerHTML='<div class="pbvs-hint" style="color:var(--muted)">Live eBay prices show here once your eBay API key (EBAY_APP_ID / EBAY_CERT_ID) is added to the worker.</div>'; return; }
+        var html='<div class="pbvs-sec" style="margin:2px 0 8px">&#128230; Live eBay &middot; cheapest delivered</div>'+_ebayResultsHTML((d&&d.items)||[], kw);
+        _psEbayCache[kw]=html; b.innerHTML=html;
+      })
+      .catch(function(){ var b=el('psEbay'); if(b) b.innerHTML='<div class="pbvs-hint" style="color:var(--muted)">eBay lookup failed &mdash; tap Search again.</div>'; });
+  }
+  function _ebayToCart(t){
+    var ok=addToCart({ name:t.getAttribute('data-nm')||'eBay part', vehicle:'', oem:'', source:'eBay',
+      price:(+t.getAttribute('data-price')||0), img:t.getAttribute('data-img')||'',
+      links:[{label:'eBay listing', url:_safeUrl(t.getAttribute('data-url')), gold:true}] });
+    if(ok){ t.textContent='\u2713 in cart'; t.disabled=true; }
+  }
+
   function runPartsSearch(){
     var partEl=el('psPart'); var part=partEl?partEl.value.trim():''; partsSel.part=part;
     var vinEl=el('psVin'); if(vinEl && vinEl.value.trim()) partsSel.vin=vinEl.value.trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
@@ -845,8 +920,10 @@
     var isPart=looksLikePart(part);
     var html='<div class="pbvs-hint" style="margin-bottom:8px">'+(v.make?('Searching <b style="color:#fff">'+esc(vehStr(v))+'</b>'):'Searching')+(part?(' for <b style="color:#fff">'+esc(part)+'</b>'+(isPart?' <span class="pbvs-pill" style="color:#c9a962;border-color:rgba(201,169,98,.4)">part # detected</span>':'')):'')+' &mdash; open any:</div>'+
       '<div class="pbvs-src">'+list.map(function(s){ return '<a class="'+(s.gold?'gold':'')+'" href="'+s.url+'" target="_blank" rel="noopener">'+s.label+' &#8599;</a>'; }).join('')+'</div>';
+    var _kw = looksLikePart(part) ? (part+(v.make?(' '+v.make):'')).trim() : ((v.make?vehStr(v)+' ':'')+part).trim();
     if(part) html+='<div style="margin-top:10px"><button class="pbvs-srcbtn" data-act="partcart">&#128722; Add \''+esc(part)+'\' to Parts Cart</button></div>';
-    var r=el('psResults'); if(r) r.innerHTML=html;
+    var r=el('psResults'); if(r) r.innerHTML='<div id="psEbay" style="margin-bottom:12px"></div>'+html;
+    if(part) _loadEbayParts(_kw);
   }
 
   function toggleHeart(id){
@@ -1132,6 +1209,7 @@
       else if(act==='addcart'){ if(_cartFromReport(+t.getAttribute('data-i'))){ t.textContent='\u2713'; t.disabled=true; } else { t.textContent='in cart'; } }
       else if(act==='sendall'){ _sendAllToCart(); t.textContent='\u2713 All added'; }
       else if(act==='bestprice'){ _bestPrice(+t.getAttribute('data-i'), t); }
+      else if(act==='ebaycart'){ _ebayToCart(t); }
     });
     document.addEventListener('keydown', function(e){ if(e.key==='Escape' && m.style.display==='flex') _close(); });
     return m;
@@ -1156,9 +1234,7 @@
         mctx._inflight[i]=0; if(btn) btn.disabled=false; var b2=el('best-'+i); if(!b2) return;
         if(d&&d.notConfigured){ PBVS._ebayOff=true; b2.innerHTML='<span style="color:var(--muted)">Live prices appear here once your eBay API key is in the worker.</span>'; return; }
         var items=(d&&d.items)||[];
-        var html = items.length
-          ? ('<div style="font-weight:700;color:#22c55e;margin-top:2px">Best prices (used/new/reman):</div>'+items.slice(0,3).map(function(it){ return '<div style="margin-top:2px">'+esc(it.condition||'')+' &middot; <b style="color:#22c55e">$'+esc(it.price)+'</b>'+(it.seller?(' &middot; '+esc(it.seller)+'%'):'')+' &middot; <a href="'+esc(it.url)+'" target="_blank" rel="noopener" style="color:#c9a962">'+esc(String(it.title||'').slice(0,54))+' &#8599;</a></div>'; }).join(''))
-          : '<span style="color:var(--muted)">No good-condition listing found right now.</span>';
+        var html = items.length ? _ebayResultsHTML(items, kw) : '<span style="color:var(--muted)">No good-condition listing found right now.</span>';
         _bestCache[ck]=html; b2.innerHTML=html;
       })
       .catch(function(){ if(mctx!==_modalCtx) return; mctx._inflight[i]=0; if(btn) btn.disabled=false; var b3=el('best-'+i); if(b3) b3.innerHTML='<span style="color:var(--muted)">Lookup failed.</span>'; });
