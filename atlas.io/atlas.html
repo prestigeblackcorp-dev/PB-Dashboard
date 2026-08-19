@@ -1467,6 +1467,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
       <div id="ssoBlock" style="display:none;margin-top:14px">
         <div style="display:flex;align-items:center;gap:10px;margin:2px 0 12px;color:var(--muted);font-size:12px"><span style="flex:1;height:1px;background:var(--line)"></span>or continue with<span style="flex:1;height:1px;background:var(--line)"></span></div>
         <div id="ssoBtns" style="display:flex;flex-direction:column;gap:8px"></div>
+        <div id="ssoTos" style="display:none;font-size:11px;color:var(--muted);text-align:center;margin-top:9px">By continuing you agree to the <a href="/terms" target="_blank" rel="noopener" style="color:var(--muted);text-decoration:underline">Terms</a> &amp; <a href="/privacy" target="_blank" rel="noopener" style="color:var(--muted);text-decoration:underline">Privacy Policy</a>.</div>
       </div>
       <p style="text-align:center;font-size:13.5px;color:var(--muted);margin-top:18px" id="authSwitch"></p>
     </div>
@@ -2208,7 +2209,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20b';
+  var APP_VERSION='2026.7.20c';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -3081,7 +3082,7 @@ const Atlas = (function(){
   var _ssoHtml=null;   // null=unfetched; ''=none configured; else the buttons markup
   function _ssoInit(){
     var blk=document.getElementById('ssoBlock'), host=document.getElementById('ssoBtns'); if(!blk||!host) return;
-    var apply=function(){ if(_ssoHtml && _authMode==='login'){ host.innerHTML=_ssoHtml; blk.style.display='block'; } else { blk.style.display='none'; } };
+    var apply=function(){ var _t=document.getElementById('ssoTos'); if(_ssoHtml && _authMode==='login'){ host.innerHTML=_ssoHtml; blk.style.display='block'; if(_t)_t.style.display='block'; } else { blk.style.display='none'; if(_t)_t.style.display='none'; } };
     if(_ssoHtml!==null){ apply(); return; }
     if(typeof ATLAS_BACKEND==='undefined' || !ATLAS_BACKEND){ _ssoHtml=''; apply(); return; }
     _api('/api/auth/sso/config',{method:'GET'}).then(function(res){
@@ -13047,12 +13048,12 @@ const Atlas = (function(){
     try{ var _csv=new URLSearchParams(location.search).get('cardsaved'); if(_csv){ try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){} setTimeout(function(){ try{ toast('Card saved on file \u2014 it will appear on the booking shortly.'); }catch(e){} },500); } }catch(e){}
     try{ var _ssoQ=new URLSearchParams(location.search).get('sso');
       if(_ssoQ){ try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){}
-        if(_ssoQ==='1'){ if(typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND){ _api('/api/auth/me',{method:'GET'}).then(function(res){
-              if(res&&res.json&&res.json.user&&res.json.tenant&&res.json.tenant.id){ try{ _lsSet(SK,{email:_emailKey(res.json.user.email),tenantId:res.json.tenant.id}); }catch(e){} location.reload(); }
+        if(_ssoQ==='1'||_ssoQ==='new'){ if(typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND){ _api('/api/auth/me',{method:'GET'}).then(function(res){
+              if(res&&res.json&&res.json.user&&res.json.tenant&&res.json.tenant.id){ _srvAuthSettle(res.json.user.email, res.json.tenant.id).then(function(){ location.reload(); }).catch(function(){ location.reload(); }); }   // _srvAuthSettle creates a fresh onboarding state for a brand-new SSO account + hydrates a returning one -> boot then routes to onboarding or dashboard
               else { try{ toast('Sign-in could not be completed. Please try again.'); }catch(e){} }
             }).catch(function(){}); return; } }
         if(_ssoQ==='cardsaved'){ setTimeout(function(){ try{ toast('Card saved on file \u2014 it will appear on the booking shortly.'); }catch(e){} }, 400); }
-        var _ssoM={nouser:'No Atlas account matches that sign-in \u2014 create an account first.',unverified:'That email is not verified with the provider.',unconfigured:'That sign-in method is not enabled yet.',badstate:'Sign-in expired \u2014 please try again.',err:'Sign-in could not be completed. Please try again.'};
+        var _ssoM={nouser:'We could not finish creating your account \u2014 please try again.',unverified:'That email is not verified with the provider.',unconfigured:'That sign-in method is not enabled yet.',blocked:'Sign-ups are not available from this location right now.',badstate:'Sign-in expired \u2014 please try again.',err:'Sign-in could not be completed. Please try again.'};
         if(_ssoM[_ssoQ]) setTimeout(function(){ try{ toast(_ssoM[_ssoQ]); }catch(e){} }, 400);
       }
     }catch(e){}
