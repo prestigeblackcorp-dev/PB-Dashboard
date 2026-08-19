@@ -2209,7 +2209,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20i';
+  var APP_VERSION='2026.7.20j';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -2464,20 +2464,18 @@ const Atlas = (function(){
   function _giftHtml(b){ var rs=b.giftRedemptions||[];
     if(!rs.length) return '<div class="bk-lenhint" style="margin:0">No gift card applied. Redeem one and it credits toward what is due.</div>';
     return rs.map(function(r,idx){ return '<div style="display:flex;align-items:center;gap:9px;padding:8px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b class="mono" style="color:var(--ink);font-size:13px">'+esc(r.code)+'</b><div style="font-size:11.5px;color:var(--muted)">'+money(r.amt)+' applied &middot; '+_stamp(r.at)+'</div></div><button class="icon-btn" style="color:var(--danger)" title="Remove" onclick="Atlas.bkRemoveGift(\''+b.id+'\','+idx+')"><svg viewBox="0 0 18 18" fill="none" width="15" height="15"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>'; }).join(''); }
-  function bkApplyGift(id){ var b=_getBooking(id); if(!b)return; var code=prompt('Gift card code:'); if(code===null)return; var g=_findGift(code);
-    if(!g){ toast('No gift card with that code'); return; }
-    if(g.disabled){ toast('That gift card is turned off'); return; }
-    if(_giftAvail(g)<=0){ toast('That gift card has no balance left'); return; }
-    var q=b.quote||{}; var netDue=Math.max(0, _r2(q.dueNow||q.total||0) - _giftApplied(b));
-    var amt=Math.round(Math.min(_giftAvail(g), netDue)*100)/100;   // cap at TRUE remaining (owner-net minus portal redemptions) so the owner can't over-redeem a card a customer already partly used online
-    if(amt<=0){ toast('Nothing left due on this booking'); return; }
-    g.balance=Math.round((g.balance-amt)*100)/100; g.redeemed=g.redeemed||[]; g.redeemed.push({bookingId:b.id,amt:amt,at:Date.now()});
-    b.giftRedemptions=b.giftRedemptions||[]; b.giftRedemptions.push({code:g.code,amt:amt,at:Date.now(),via:'owner'});
-    _upsertBooking(b); save(); _logEvent('gift','Gift card '+g.code+' redeemed '+money(amt)+' on '+b.id,{booking:b.id,code:g.code}); openBooking(id); toast(money(amt)+' gift credit applied'); }
+  function bkApplyGift(id){ var b=_getBooking(id); if(!b)return; var code=prompt('Gift card code:'); if(code===null)return; code=String(code).trim(); if(!code)return;
+    // SERVER-authoritative: the worker atomically claims the redemption against the card value (gift_uses, both channels) so the
+    // owner can never over-redeem a card a customer already used online. The client just mirrors the server-returned entry (by id).
+    _api('/api/booking/gift-redeem',{method:'POST',body:{bookingId:b.id,code:code}}).then(function(res){ var j=res.json||{};
+      if(j.ok&&j.redemption){ b.giftRedemptions=b.giftRedemptions||[]; b.giftRedemptions.push(j.redemption); _upsertBooking(b); save(); var _amt=Math.round(j.appliedCents||0)/100; _logEvent('gift','Gift card '+String(code).toUpperCase()+' redeemed '+money(_amt)+' on '+b.id,{booking:b.id,code:String(code).toUpperCase()}); openBooking(id); toast(money(_amt)+' gift credit applied'); }
+      else { toast(j.message||'Could not apply that gift card'); } }).catch(function(){ toast('Network error - please try again'); }); }
   function bkRemoveGift(id,idx){ var b=_getBooking(id); if(!b||!b.giftRedemptions||!b.giftRedemptions[idx])return; var r=b.giftRedemptions[idx];
-    if(r&&r.via==='portal'){ toast('This is a customer self-redemption -- it is tracked server-side and cannot be reversed from here.'); return; }
-    var g=_findGift(r.code); if(g){ g.balance=Math.round(((g.balance||0)+(r.amt||0))*100)/100; if(g.redeemed){ for(var i=g.redeemed.length-1;i>=0;i--){ if(g.redeemed[i].bookingId===b.id && g.redeemed[i].amt===r.amt){ g.redeemed.splice(i,1); break; } } } }
-    b.giftRedemptions.splice(idx,1); _upsertBooking(b); save(); _logEvent('gift','Gift redemption removed on '+b.id+' (refunded '+money(r.amt)+')',{booking:b.id}); openBooking(id); toast('Gift credit removed &mdash; '+money(r.amt)+' back on the card'); }
+    if(!r.id){ toast('This is an older redemption with no server id and cannot be removed here -- turn the card OFF via Edit if needed.'); return; }   // pre-unification entries lack an id
+    // SERVER reverses the redemption AND releases the gift_uses reservation (works for BOTH owner and customer-portal redemptions).
+    _api('/api/booking/gift-unredeem',{method:'POST',body:{bookingId:b.id,redemptionId:r.id}}).then(function(res){ var j=res.json||{};
+      if(j.ok){ b.giftRedemptions.splice(idx,1); _upsertBooking(b); save(); _logEvent('gift','Gift redemption removed on '+b.id+' (restored '+money(r.amt||0)+')',{booking:b.id}); openBooking(id); toast('Gift credit removed &mdash; '+money(r.amt||0)+' back on the card'); }
+      else { toast(j.message||'Could not remove that redemption'); } }).catch(function(){ toast('Network error - please try again'); }); }
   function _giftCertHtml(g){ var biz=(S.brand&&S.brand.name)||'Your rental business', city=(S.brand&&S.brand.city)||'';
     return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gift Card &mdash; '+esc(biz)+'</title>'
       +'<style>*{box-sizing:border-box}body{margin:0;padding:30px;background:#eef2ef;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#14201a}'
