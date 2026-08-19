@@ -2209,7 +2209,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20c';
+  var APP_VERSION='2026.7.20d';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -6094,7 +6094,7 @@ const Atlas = (function(){
   // ---- Payment plans / partial payments: split a booking total into a tracked schedule ----
   function _planHtml(b){ var p=b.plan; if(!p||!p.installments||!p.installments.length) return '<div class="bk-lenhint" style="margin:0">Paid in full. Split it into installments if the customer prefers.</div>';
     var paidN=p.installments.filter(function(x){return x.paidAt;}).length;
-    return '<div style="font-size:11.5px;color:var(--muted);margin-bottom:2px">'+paidN+' of '+p.installments.length+' paid</div>'+p.installments.map(function(x){ var paid=!!x.paidAt; return '<div style="display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.label)+' &middot; '+money(x.amount)+'</b><div style="font-size:11.5px;color:var(--muted)">'+(paid?('Paid '+_stamp(x.paidAt)):('Due '+_fmtWhen(x.dueTs)))+'</div></div>'+(paid?'<span class="chip chip--ok"><span class="dot"></span>Paid</span>':'<button class="btn btn--primary btn--sm" onclick="Atlas.bkPlanPaid(\''+b.id+'\',\''+x.id+'\')">Mark paid</button>')+'</div>'; }).join(''); }
+    return '<div style="font-size:11.5px;color:var(--muted);margin-bottom:2px">'+paidN+' of '+p.installments.length+' paid'+(p.autopay?' <span style="color:var(--brand);font-weight:600">\u00b7 auto-charging card on file</span>':'')+'</div>'+p.installments.map(function(x){ var paid=!!x.paidAt; return '<div style="display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.label)+' &middot; '+money(x.amount)+'</b><div style="font-size:11.5px;color:var(--muted)">'+(paid?('Paid '+_stamp(x.paidAt)):('Due '+_fmtWhen(x.dueTs)))+'</div></div>'+(paid?'<span class="chip chip--ok"><span class="dot"></span>Paid</span>':'<button class="btn btn--primary btn--sm" onclick="Atlas.bkPlanPaid(\''+b.id+'\',\''+x.id+'\')">Mark paid</button>')+'</div>'; }).join(''); }
   // Custom payment-plan builder: owner adds/removes installment rows and edits each amount / due date / label; must sum to the total.
   var _ppTotal=0, _ppRows=[];
   function _ppDefaultRows(total){ var h=_r2(total/2); return [{label:'Deposit', amount:h, due:_ymd(new Date())},{label:'Balance', amount:_r2(total-h), due:_ymd(new Date(Date.now()+30*86400000))}]; }
@@ -6117,6 +6117,7 @@ const Atlas = (function(){
       +'<div class="bk-lenhint" style="margin:0 0 12px">Split '+money(total)+' into a schedule for '+esc(b.cust||'this customer')+'. They pay each part in their portal (or you mark it paid).</div>'
       +'<div class="field"><label>Plan</label><select class="select" id="ppType" onchange="Atlas._ppTypeChange()"><option value="none">Pay in full (no plan)</option><option value="half">50% now &middot; 50% before pickup</option><option value="3">3 monthly installments</option><option value="4">4 monthly installments</option><option value="custom"'+(isC?' selected':'')+'>Custom schedule</option></select></div>'
       +'<div id="ppCustomWrap" style="display:'+(isC?'block':'none')+';margin-bottom:12px"><div id="ppRows"></div><button class="btn btn--ghost btn--sm" onclick="Atlas._ppAddRow()">+ Add installment</button><div class="bk-lenhint" id="ppSum" style="margin:8px 0 0"></div></div>'
+      +'<label class="cfg-check" style="display:flex;gap:9px;align-items:flex-start;font-size:12.5px;color:var(--muted);margin:2px 0 12px;text-align:left"><input type="checkbox" id="ppAuto"'+((cur&&cur.autopay)?' checked':'')+' style="margin-top:2px;flex:none"><span>Auto-charge each installment from the customer\u2019s <b>card on file</b> on its due date (needs a saved card + Atlas processing or your own Stripe).</span></label>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.savePlan(\''+id+'\')">Save plan</button></div>');
     if(isC) setTimeout(function(){ _ppRenderRows(total); }, 20); }
   function savePlan(id){ var b=_getBooking(id); if(!b)return; var t=val('ppType'); var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount}); var total=_r2(q.total||0), start=Number(b.startTs)||Date.now(), mo=30*86400000;
@@ -6127,7 +6128,8 @@ const Atlas = (function(){
       var csum=Math.round(cins.reduce(function(s,x){return s+x.amount;},0)*100)/100; if(Math.abs(csum-total)>0.01){ toast('Installments must total '+money(total)+' (now '+money(csum)+')'); return; }
       b.plan={type:'custom',installments:cins}; }
     else { var n=parseInt(t)||3, each=_r2(total/n), ins=[]; for(var i=0;i<n;i++){ ins.push({id:'pi'+(i+1),label:'Installment '+(i+1)+' of '+n,amount:(i===n-1?_r2(total-each*(n-1)):each),dueTs:Date.now()+i*mo,paidAt:0}); } b.plan={type:t,installments:ins}; }
-    _upsertBooking(b); _logEvent('booking','Payment plan '+(t==='none'?'cleared':'set ('+t+')')+' on '+b.id,{booking:b.id}); save(); closeModal(); openBooking(id); toast(t==='none'?'Plan cleared':'Payment plan saved'); }
+    if(b.plan){ var _ap=document.getElementById('ppAuto'); b.plan.autopay=!!(_ap&&_ap.checked); }
+    _upsertBooking(b); _logEvent('booking','Payment plan '+(t==='none'?'cleared':'set ('+t+')')+(b.plan&&b.plan.autopay?' auto-pay':'')+' on '+b.id,{booking:b.id}); save(); closeModal(); openBooking(id); toast(t==='none'?'Plan cleared':(b.plan&&b.plan.autopay?'Payment plan saved \u2014 auto-charging from card on file':'Payment plan saved')); }
   function bkPlanPaid(id,pid){ var b=_getBooking(id); if(!b||!b.plan)return; var x=(b.plan.installments||[]).filter(function(y){return y.id===pid;})[0]; if(x)x.paidAt=Date.now(); _upsertBooking(b); _logEvent('booking','Plan installment paid on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Marked paid'); }
   // ---- Metered / run-hour billing: bill exact hours or miles used at return ----
   function _meterHtml(b){ var m=b.meter; if(!m) return '<div class="bk-lenhint" style="margin:0">For usage-based assets (generators, tools, hourly gear) &mdash; bill the exact hours or miles used.</div>';
