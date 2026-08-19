@@ -4486,10 +4486,15 @@ function logNotif(type, label, to, bookingId){
 // charge.dispute.created). Hidden once every dispute reaches a terminal state. ASCII-safe.
 function _disputeBadge(b){
   if(!b || !Array.isArray(b.disputes) || !b.disputes.length) return '';
-  var _term={won:1,lost:1,charge_refunded:1,warning_closed:1};
-  var _open=b.disputes.some(function(d){ return !_term[String((d&&d.status)||'').toLowerCase()]; });
-  if(!_open) return '';
-  return '<span class="badge" title="Payment dispute / chargeback opened \u2014 open this booking to submit evidence" style="background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.45);font-weight:800;margin-left:4px">\u26A0 Disputed</span>';
+  var st=b.disputes.map(function(d){ return String((d&&d.status)||'').toLowerCase(); });
+  var _term={won:1,charge_refunded:1,warning_closed:1};
+  var open=st.some(function(s){ return s!=='lost' && !_term[s]; });
+  var lost=st.some(function(s){ return s==='lost'; });
+  var bg,col,br,label;
+  if(open){ bg='rgba(239,68,68,.15)'; col='var(--red)'; br='rgba(239,68,68,.5)'; label='\u26A0 Disputed'; }
+  else if(lost){ bg='rgba(239,68,68,.1)'; col='var(--red)'; br='rgba(239,68,68,.35)'; label='Dispute lost'; }
+  else { bg='rgba(34,197,94,.12)'; col='var(--green)'; br='rgba(34,197,94,.35)'; label='\u2713 Dispute won'; }
+  return '<span class="badge" title="This booking has a payment dispute / chargeback \u2014 open it for the evidence report" style="background:'+bg+';color:'+col+';border:1px solid '+br+';font-weight:800;margin-left:4px">'+label+'</span>';
 }
 function _bookingCommLog(b){
   if(!b) return [];
@@ -4895,7 +4900,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v343';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v344';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -12161,7 +12166,7 @@ function tripCard(b, showCountdown){
       addrBlock+
       '<div class="trip-customer">'+esc(b.name)+repeatBadge+webBadge+portalBadge+(b.phone?' \u00B7 '+esc(b.phone):'')+' '+verBadges+'</div>'+
       '<div style="font-size:10px;color:var(--muted);margin-top:2px;letter-spacing:.5px">\uD83D\uDD16 PBR-'+(b.id||'').slice(-6).toUpperCase()+'</div>'+
-      '<div style="margin-top:5px"><span class="badge '+esc(b.type)+'">'+esc(b.type)+'</span> <span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span></div>'+
+      '<div style="margin-top:5px"><span class="badge '+esc(b.type)+'">'+esc(b.type)+'</span> <span class="badge '+esc(b.status)+'">'+esc(b.status)+'</span>'+_disputeBadge(b)+'</div>'+
       (addonsArr.length?'<div class="trip-extras">'+addonsArr.map(function(a){return'<span class="extra-chip">'+a+'</span>';}).join('')+'</div>':'')+
       (b.depositKept?'<div class="trip-extras"><span class="extra-chip" style="background:rgba(168,85,247,.15);color:#a855f7">\uD83D\uDD12 Kept '+$$(b.depositKept)+'</span></div>':'')+
       noDepositChip+
@@ -18367,9 +18372,13 @@ function _evAgreement(b){
     var bd={}; try{ bd=_buildContractBreakdown(b); }catch(e){ bd={}; }
     var vi=(typeof VEHICLE_INFO!=='undefined'&&VEHICLE_INFO[b.vehicle])?VEHICLE_INFO[b.vehicle]:{}; var v=b.verify||{};
     var dd=Number(b.days)||1; var dur=dd+' '+((b.type==='hourly'||b.type==='chauffeur')?'hour':'day')+(dd!==1?'s':'');
-    var map={customer_name:b.name||'',today:(b.customerSigDate||''),vehicle:b.vehicle||'',rental_type:b.type||'daily',pickup_date:b.pickupDate||b.date||'',pickup_time:b.pickupTime||'',dropoff_date:b.dropoffDate||'',dropoff_time:b.dropoffTime||'',duration:dur,total_revenue:_evFmtMoney(bd.subtotal!=null?bd.subtotal:(b.revenue||0)),deposit_amount:_evFmtMoney(bd.depositAmt||0),balance_due:_evFmtMoney(bd.balanceDue||0),vehicle_model:vi.model||'',vehicle_color:vi.color||b.customerSigColor||'',vehicle_vin:vi.vin||'',license_number:v.idNumber||'',license_state:v.idState||'',license_type:v.idType||'',license_expiry:v.idExpiry||'',customer_dob:v.idDob||'',verified_name:v.idName||'',license_address:v.idAddress||''};
+    var _ps=(typeof _evPrimarySig==='function')?_evPrimarySig(b):null;
+    var _sd=_ps?((_ps.date||'')||((typeof _cdt==='function')?_cdt(_ps.at):'')):(b.customerSigDate||'');
+    var _csig=(_ps&&_ps.sig)?'<img src="'+_ps.sig+'" style="max-height:60px;max-width:260px;object-fit:contain;display:inline-block;vertical-align:bottom">':'';
+    var _osig=(typeof OWNER_SIGNATURE!=='undefined'&&OWNER_SIGNATURE&&String(OWNER_SIGNATURE).indexOf('data:image/')===0)?'<img src="'+OWNER_SIGNATURE+'" style="max-height:60px;max-width:260px;object-fit:contain;display:inline-block;vertical-align:bottom">':'Jalen Nguyen';
+    var map={customer_name:b.name||'',today:_sd,customer_signed_date:_sd,customer_signature:_csig,signature:_csig,owner_signature:_osig,vehicle:b.vehicle||'',rental_type:b.type||'daily',pickup_date:b.pickupDate||b.date||'',pickup_time:b.pickupTime||'',dropoff_date:b.dropoffDate||'',dropoff_time:b.dropoffTime||'',duration:dur,total_revenue:_evFmtMoney(bd.subtotal!=null?bd.subtotal:(b.revenue||0)),deposit_amount:_evFmtMoney(bd.depositAmt||0),balance_due:_evFmtMoney(bd.balanceDue||0),vehicle_model:vi.model||'',vehicle_color:vi.color||b.customerSigColor||'',vehicle_vin:vi.vin||'',license_number:v.idNumber||'',license_state:v.idState||'',license_type:v.idType||'',license_expiry:v.idExpiry||'',customer_dob:v.idDob||'',verified_name:v.idName||'',license_address:v.idAddress||''};
     var merged=String(tpl).replace(/<script[\s\S]*?<\/script>/gi,'').replace(/\{\{\s*([a-zA-Z_]+)\s*\}\}/g,function(mm,k){ k=k.toLowerCase(); return (map[k]!=null&&map[k]!=='')?String(map[k]):'________'; });
-    var isHtml=/<(div|p|table|br|span|h[1-6])\b/i.test(merged);
+    var isHtml=/<(div|p|table|br|span|h[1-6]|img)\b/i.test(merged);
     out+='<h2>Full Executed Agreement Text</h2><div style="border:1px solid #ddd;border-radius:6px;padding:16px;font-size:12px;'+(isHtml?'':'white-space:pre-wrap;')+'background:#fcfcfc;overflow-wrap:anywhere">'+(isHtml?merged:esc(merged))+'</div>';
   }
   return out;
