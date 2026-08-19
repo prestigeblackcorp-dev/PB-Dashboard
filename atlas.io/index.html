@@ -2200,7 +2200,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19u';
+  var APP_VERSION='2026.7.19v';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -3725,6 +3725,7 @@ const Atlas = (function(){
       +'<div class="bk-lenhint" id="spPreview" style="margin-top:12px">'+_spPreviewHtml()+'</div>';
     return out; }
   /* ---- Booking-model builder (Settings > Bookings): edit the base for your preference ---- */
+  function setTurnaround(v){ if(!_canMod('settings'))return; S.turnaroundMin=Math.max(0,parseInt(v,10)||0); save(); renderSet(); toast(S.turnaroundMin?'Turnaround buffer saved':'Turnaround buffer off'); }
   function setBookingCfg(path,v){ if(!S.money.booking) S.money.booking={time:true,durationMode:'end',fields:{phone:true,notes:true}};
     var bk=S.money.booking; bk.fields=bk.fields||{phone:true,notes:true};
     if(path==='rateModel') S.money.rateModel=v;
@@ -5541,13 +5542,13 @@ const Atlas = (function(){
   // Returns {type:'blackout'|'booking', reason} or null. Wired into BOTH createBooking (owner, override-able) and webBookNow (website, hard block).
   function _rangesOverlap(a1,a2,b1,b2){ return a1 < b2 && b1 < a2; }
   function _availabilityConflict(assetName, startTs, endTs, excludeId){
-    startTs=Number(startTs)||0; endTs=Number(endTs)||(startTs+_periodMs()); if(endTs<=startTs) endTs=startTs+_periodMs();
+    startTs=Number(startTs)||0; endTs=Number(endTs)||(startTs+_periodMs()); if(endTs<=startTs) endTs=startTs+_periodMs(); var _buf=Math.max(0,Number(S.turnaroundMin||0))*60000;   // Availability Engine: turnaround/buffer between same-asset rentals (matches the worker gate); 0 => exact overlap
     var a=(DATA.assets||[]).filter(function(x){return x.name===assetName;})[0]; var _aid=(a&&a.id)||'';   // #367: prefer the STABLE id so a renamed asset's own bookings still register as conflicts (name is the fallback)
     if(a && a.status==='Maintenance') return {type:'maintenance', reason:'in maintenance'};   // fix: a unit marked out of service is not bookable (owner can still knowingly override the confirm in createBooking)
     if(a && a.blackouts){ for(var i=0;i<a.blackouts.length;i++){ var bl=a.blackouts[i], f=Number(bl.from)||0, t=Number(bl.to)||0; if(t<f){var x=f;f=t;t=x;}
       if(_rangesOverlap(startTs,endTs,f,t+86400000)) return {type:'blackout', reason:(bl.reason||'blocked dates')}; } }   // blackout is a day range -> include the whole end day
     var c=(DATA.bookings||[]).filter(function(b){ return b.id!==excludeId && ((_aid&&b.assetId)?(String(b.assetId)===_aid):(b.asset===assetName)) && b.status!=='Cancelled' && b.status!=='Completed' && b.status!=='Voided'; })   // #void: a voided (early-terminated) trip frees the asset the same day
-      .filter(function(b){ var s=Number(b.startTs)||0, e=_bkEffectiveEndTs(b); if(!(e>s))e=s+_periodMs(); return _rangesOverlap(startTs,endTs,s,e); })[0];   // occupancy runs to the EFFECTIVE end (incl. active extensions) so an extended rental blocks the added time
+      .filter(function(b){ var s=Number(b.startTs)||0, e=_bkEffectiveEndTs(b); if(!(e>s))e=s+_periodMs(); return _rangesOverlap(startTs,endTs,s-_buf,e+_buf); })[0];   // occupancy runs to the EFFECTIVE end (incl. active extensions) so an extended rental blocks the added time
     if(c) return {type:'booking', reason:c.id+(c.cust?(' \u2014 '+c.cust):'')};
     return null; }
   function _bookingForm(existing){
@@ -8127,6 +8128,17 @@ const Atlas = (function(){
           <option value="end" ${bc.durationMode==='end'?'selected':''}>They pick an end date (length auto-calculated)</option></select>
           <div class="hint">Guests choose a start ${bc.time?'date + time':'date'}${bc.durationMode==='end'?(', then an end '+(bc.time?'date + time':'date')+' &mdash; the '+_perUnit()+' are worked out for them.'):(', then how many '+_perUnit()+'.')}</div></div>
       </div>
+      <div class="set-block"><h3>Turnaround time <span style="color:var(--muted);font-weight:500;font-size:13px">&mdash; buffer between rentals</span></h3><div class="desc">Automatically hold a gap after each rental ends before the same ${esc(S.fleet.noun)} can be booked again &mdash; time to clean, inspect and reset. It applies everywhere: your website, the member portal and your own booking form.</div>
+        <div class="field" style="margin-bottom:0"><label>Gap after each booking</label><select class="select" onchange="Atlas.setTurnaround(this.value)">
+          <option value="0" ${!(+S.turnaroundMin)?'selected':''}>No buffer (back-to-back allowed)</option>
+          <option value="30" ${(+S.turnaroundMin)===30?'selected':''}>30 minutes</option>
+          <option value="60" ${(+S.turnaroundMin)===60?'selected':''}>1 hour</option>
+          <option value="120" ${(+S.turnaroundMin)===120?'selected':''}>2 hours</option>
+          <option value="240" ${(+S.turnaroundMin)===240?'selected':''}>4 hours</option>
+          <option value="720" ${(+S.turnaroundMin)===720?'selected':''}>12 hours</option>
+          <option value="1440" ${(+S.turnaroundMin)===1440?'selected':''}>1 full day</option>
+        </select><div class="hint">A new booking cannot start until this much time has passed after an existing one ends (and the reverse). Multi-unit ${esc(S.fleet.nouns)} still book up to their unit count at once.</div></div>
+      </div>
       <div class="set-block" data-bkb="fields"><h3>Fields to collect</h3><div class="desc">Turn optional fields on or off. Name, email and ${cap(S.fleet.noun)} are always asked.</div>
         <label class="cfg-check"><input type="checkbox" ${bc.fields.phone?'checked':''} onchange="Atlas.setBookingCfg('fields.phone',this.checked)">Phone number</label>
         <label class="cfg-check" style="margin-bottom:0"><input type="checkbox" ${bc.fields.notes?'checked':''} onchange="Atlas.setBookingCfg('fields.notes',this.checked)">Internal notes</label>
@@ -9895,10 +9907,10 @@ const Atlas = (function(){
   // construction: the card only reports "on" when a provider can actually run, and the automated in-portal flow is Stripe.
   var _idvSrv={loaded:false,stripeConnected:false,connected:{}};
   function _idvCfg(){ var c=(S&&S.idv)||{}; return {enabled:!!c.enabled, provider:c.provider||'manual'}; }
-  function _idvStatusLoad(){ try{ if(!ATLAS_BACKEND||typeof _api!=='function') return; _api('/api/tenant/idv/status').then(function(j){ if(j&&j.ok){ _idvSrv={loaded:true,stripeConnected:!!j.stripeConnected,connected:j.connected||{}}; var el=document.getElementById('idvState'); if(el) el.innerHTML=_idvStateHtml(); } }).catch(function(){}); }catch(e){} }
+  function _idvStatusLoad(){ try{ if(!ATLAS_BACKEND||typeof _api!=='function') return; _api('/api/tenant/idv/status').then(function(r){ var j=r&&r.json; if(j&&j.ok){ _idvSrv={loaded:true,stripeConnected:!!j.stripeConnected,atlasManaged:!!j.atlasManaged,connected:j.connected||{}}; var el=document.getElementById('idvState'); if(el) el.innerHTML=_idvStateHtml(); } }).catch(function(){}); }catch(e){} }
   function _idvStateHtml(){
     var cfg=_idvCfg(), prov=cfg.provider, on=cfg.enabled;
-    var stripeReady=_idvSrv.stripeConnected || !!(S.integrations&&S.integrations.stripe);
+    var stripeReady=_idvSrv.stripeConnected || _idvSrv.atlasManaged || !!(S.integrations&&S.integrations.stripe);
     var opts=[
       ['stripe','Stripe Identity','Automatic &middot; recommended','Renter scans their ID and takes a selfie; verified in seconds. About $1.50 per check, billed by Stripe to your account.'],
       ['manual','Manual review','You check it &middot; free','Renter uploads a photo of their ID; you review it yourself. Always on as a backup.'],
@@ -9911,8 +9923,8 @@ const Atlas = (function(){
     var body='';
     if(prov==='stripe'){
       if(stripeReady){
-        body='<label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-size:14px;font-weight:600"><input type="checkbox" '+(on?'checked':'')+' onchange="Atlas.idvToggle(this.checked)" style="margin-top:2px;width:18px;height:18px"><span>Ask every new renter to verify their ID in their booking portal</span></label>'
-          +'<div class="bk-lenhint" style="margin:10px 0 0">'+(on?'<b style="color:var(--ok,#12813f)">On.</b> New bookings get a &ldquo;Verify my ID&rdquo; step. You are emailed the moment each renter passes, with their ID expiry saved on the booking. A verified renter is carried forward, so they are not re-asked next time while their ID is still valid.':'Ready. Flip the switch above whenever you want renters to start verifying.')+'</div>';
+        var _mgd=(_idvSrv.atlasManaged && !_idvSrv.stripeConnected && !(S.integrations&&S.integrations.stripe)); body='<label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-size:14px;font-weight:600"><input type="checkbox" '+(on?'checked':'')+' onchange="Atlas.idvToggle(this.checked)" style="margin-top:2px;width:18px;height:18px"><span>Ask every new renter to verify their ID in their booking portal</span></label>'
+          +'<div class="bk-lenhint" style="margin:10px 0 0">'+(on?'<b style="color:var(--ok,#12813f)">On.</b> New bookings get a &ldquo;Verify my ID&rdquo; step. You are emailed the moment each renter passes, with their ID expiry saved on the booking. A verified renter is carried forward, so they are not re-asked next time while their ID is still valid.':'Ready. Flip the switch above whenever you want renters to start verifying.')+'</div>'+(_mgd?'<div class="bk-lenhint" style="margin:8px 0 0">These checks run on <b>your Atlas processing account</b> &mdash; no separate Stripe key to connect. Verification fees appear on your Atlas processor.</div>':'');
       } else {
         body='<div class="bk-lenhint" style="margin:0;border-color:#c9a227"><b>One quick step first.</b> Stripe Identity uses your Stripe account, so connect Stripe under <b>Payments &amp; POS</b> above (you probably already use it to get paid). Then switch this on here &mdash; that is the whole setup.</div>';
       }
@@ -12960,7 +12972,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,connectAtlas,idvSetProvider,idvToggle,setPassFee,setTaxOn,syncTax,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setPassFee,setTaxOn,syncTax,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
