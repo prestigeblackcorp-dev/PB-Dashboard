@@ -2865,6 +2865,75 @@ function _chFmtCountdown(ms){
 }
 
 // -- Enhance Your Trip: ONE card, ONE pay button covering add-time hours + extras --
+// -- Add Days: client self-service day extension for SELF-DRIVE rentals (before or during trip) --------
+// Priced at the booking's own effective per-day rate (carries promo/special). Not signed yet -> folds into
+// the balance; already signed -> creates a pending extension, pays first (existing payCharge), then signs
+// (existing extension signing). The worker re-computes + authorises everything.
+function showRentalAddDays(b){
+  if(!b) return '';
+  var t=(b.type||'').toLowerCase();
+  if(t==='chauffeur'||t==='event') return '';
+  var s=(b.status||'').toLowerCase();
+  if(['cancelled','completed','voided'].indexOf(s)!==-1) return '';
+  var bd; try{ bd=_buildContractBreakdown(b); }catch(e){ return ''; }
+  var rate=Math.round(((bd&&bd.dailyRateNum)||0)*100)/100;
+  if(rate<1) return '';
+  var bid=b.id;
+  var signed=!!(b.customerSig&&String(b.customerSig).indexOf('data:image/')===0);
+  var drop=b.dropoffDate||b.pickupDate||b.date||'';
+  var base1=Math.round(rate*1*100)/100, tot1=signed?Math.round(base1*1.1325*100)/100:base1;
+  var ret1=drop?new Date(new Date(drop+'T12:00:00Z').getTime()+86400000).toISOString().slice(0,10):'';
+  var totLabel=signed?'Total (5% fee + 8.25% tax)':'Added to your balance';
+  return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">'+
+    '<div style="background:rgba(201,169,98,.05);border:1px solid rgba(201,169,98,.22);border-radius:12px;padding:14px 16px;">'+
+      '<div style="font-size:14px;font-weight:800;color:#fff;margin-bottom:3px;">\uD83D\uDCC5 Add Days</div>'+
+      '<div style="font-size:11px;color:rgba(255,255,255,.5);line-height:1.5;margin-bottom:12px;">Keep your <strong style="color:#C9A962;">'+esc(b.vehicle||'rental')+'</strong> longer at your rate of <strong style="color:#C9A962;">$'+rate.toLocaleString()+'/day</strong>.</div>'+
+      '<div style="display:flex;align-items:center;gap:14px;justify-content:center;margin:4px 0 12px;">'+
+        '<button type="button" onclick="_radStep(\''+bid+'\',-1)" aria-label="Fewer days" style="width:40px;height:40px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,.05);color:#fff;font-size:22px;font-weight:800;cursor:pointer;line-height:1;">\u2212</button>'+
+        '<div style="text-align:center;min-width:66px;"><div id="radN_'+bid+'" style="font-size:28px;font-weight:800;color:#C9A962;line-height:1;">1</div><div id="radNl_'+bid+'" style="font-size:10px;color:rgba(255,255,255,.5);letter-spacing:.04em;">DAY</div></div>'+
+        '<button type="button" onclick="_radStep(\''+bid+'\',1)" aria-label="More days" style="width:40px;height:40px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,.05);color:#fff;font-size:22px;font-weight:800;cursor:pointer;line-height:1;">+</button>'+
+      '</div>'+
+      '<div style="display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,.6);margin-bottom:3px;"><span>New return</span><span id="radRet_'+bid+'" style="color:#fff;font-weight:600;">'+esc(ret1)+'</span></div>'+
+      '<div style="display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,.6);"><span>'+totLabel+'</span><span id="radTot_'+bid+'" style="color:#fff;font-weight:800;font-size:15px;">$'+tot1.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span></div>'+
+      '<button type="button" onclick="rentalAddDaysGo(\''+bid+'\')" id="radBtn_'+bid+'" data-rate="'+rate+'" data-signed="'+(signed?'1':'0')+'" data-drop="'+esc(drop)+'" style="width:100%;margin-top:12px;padding:12px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;letter-spacing:.02em;">Add to my trip</button>'+
+    '</div></div>';
+}
+function _radStep(bid,delta){
+  var el=document.getElementById('radN_'+bid); if(!el) return;
+  var n=Math.max(1,Math.min(60,(parseInt(el.textContent,10)||1)+(delta||0)));
+  el.textContent=n; var l=document.getElementById('radNl_'+bid); if(l) l.textContent=(n===1?'DAY':'DAYS');
+  _radRecalc(bid);
+}
+function _radRecalc(bid){
+  var el=document.getElementById('radN_'+bid), btn=document.getElementById('radBtn_'+bid); if(!el||!btn) return;
+  var n=Math.max(1,parseInt(el.textContent,10)||1);
+  var rate=Number(btn.getAttribute('data-rate'))||0, signed=btn.getAttribute('data-signed')==='1', drop=btn.getAttribute('data-drop')||'';
+  var base=Math.round(rate*n*100)/100, total=signed?Math.round(base*1.1325*100)/100:base;
+  var ret=drop?new Date(new Date(drop+'T12:00:00Z').getTime()+n*86400000).toISOString().slice(0,10):'';
+  var rEl=document.getElementById('radRet_'+bid); if(rEl) rEl.textContent=ret;
+  var tEl=document.getElementById('radTot_'+bid); if(tEl) tEl.textContent='$'+total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+async function rentalAddDaysGo(bid){
+  var el=document.getElementById('radN_'+bid), btn=document.getElementById('radBtn_'+bid); if(!btn) return;
+  var n=Math.max(1,parseInt((el&&el.textContent)||'1',10)||1);
+  btn.disabled=true; var _t=btn.textContent; btn.textContent='Working\u2026';
+  try{
+    var r=await fetch(WORKER+'/portal/add-days',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,bookingId:bid,addDays:n})});
+    var d=await r.json().catch(function(){return{};});
+    if(r.status===401){ if(typeof _portalSessionExpired==='function'){_portalSessionExpired();return;} }
+    if(!r.ok||!d.ok){ toast((d&&d.error)||'Could not add days \u2014 call (214) 207-2481.','error'); btn.disabled=false; btn.textContent=_t; return; }
+    if(d.mode==='extension' && d.chargeId){
+      toast('Extension created \u2014 opening secure payment; you\'ll sign it right after.','success');
+      if(typeof payCharge==='function'){ payCharge(bid, d.chargeId); return; }
+      toast('Extension added \u2014 pay it in the Charges section, then sign.','success');
+    } else {
+      toast('\u2705 '+n+' day'+(n!==1?'s':'')+' added \u2014 new return '+(d.newDropoff||'')+'. Your balance was updated.','success');
+    }
+    if(typeof loadPortalData==='function'){ try{ await loadPortalData(); }catch(e){} }
+    if(typeof renderBookings==='function') renderBookings();
+  }catch(e){ toast('Network error \u2014 please try again.','error'); btn.disabled=false; btn.textContent=_t; }
+}
+
 function showChauffeurEnhance(b){
   if(!_chPortalOn() || !b || b.type!=='chauffeur') return '';
   var s=(b.status||'').toLowerCase(); if(['cancelled','completed'].indexOf(s)!==-1) return '';
@@ -3050,6 +3119,7 @@ function renderBookings(){
       ${showSignContract(b)}
       ${showAddUnlimited(b)}
       ${showChauffeurEnhance(b)}
+      ${showRentalAddDays(b)}
       ${showPayBalance(b)}
       ${showPendingCharges(b)}
       ${showMileageTracker(b)}
