@@ -2824,6 +2824,7 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
       <button class="btn btn-sm" id="bdVoidBtn" onclick="" style="display:none;border-color:rgba(239,68,68,.55);color:#fff;background:rgba(239,68,68,.8)">&#9940; Void</button>
       <button class="btn btn-sm" id="bdVoidReportBtn" onclick="" style="display:none;border-color:rgba(239,68,68,.4);color:#f87171">&#128196; Void Report</button>
       <button class="btn btn-sm" id="bdEvidenceBtn" onclick="" style="border-color:rgba(56,132,204,.45);color:#5aa9e6" title="Downloadable proof this transaction was authorized + fulfilled, to defend a false chargeback">&#128737;&#65039; Evidence</button>
+      <button class="btn btn-sm" id="bdBackfillBtn" onclick="" style="border-color:rgba(99,91,255,.45);color:#8b86ff" title="Pull the exact Stripe charge, payment-intent and dispute ids from Stripe onto this booking (for the evidence report)">&#128260; Backfill Stripe IDs</button>
       <button class="btn btn-sm" id="bdUnvoidBtn" onclick="" style="display:none;border-color:rgba(201,169,98,.4);color:var(--gold)">&#8617; Un-void</button>
       <button class="btn btn-sm" id="bdBlacklistBtn" onclick="" style="border-color:rgba(239,68,68,.4);color:#f87171">&#9940; Blacklist</button>
       <button class="btn" onclick="closeBookingDetail()">Close</button>
@@ -4863,7 +4864,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v338';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v339';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -12318,6 +12319,7 @@ function openBookingDetail(id){
     var _vb=$d('bdVoidBtn'); if(_vb){ _vb.style.display=(_vOn&&!_vd&&b.status!=='cancelled')?'':'none'; _vb.onclick=function(){ openVoidModal(b.id); }; }
     var _vr=$d('bdVoidReportBtn'); if(_vr){ _vr.style.display=_vd?'':'none'; _vr.onclick=function(){ _genVoidLegalReport(b.id); }; }
     var _ev=$d('bdEvidenceBtn'); if(_ev){ _ev.onclick=function(){ _genChargebackEvidence(b.id); }; }
+    var _bf=$d('bdBackfillBtn'); if(_bf){ _bf.onclick=function(){ _backfillStripeIds(b.id); }; }
     var _vu=$d('bdUnvoidBtn'); if(_vu){ _vu.style.display=_vd?'':'none'; _vu.onclick=function(){ unvoidTrip(b.id); closeBookingDetail(); }; }
   })();
   $d('bdInvoiceBtn').onclick=function(){ generateInvoice(b.id); };
@@ -18190,6 +18192,88 @@ function _genVoidLegalReport(id){
 // (exact time + signer IP), every payment received (time + amount + method), every extension step (added / signed /
 // paid), the communication timeline, and condition-photo evidence on file. Read-only; mirrors _genVoidLegalReport's
 // self-contained HTML + window.print mechanism. Nothing is charged, sent, or mutated.
+function _evFmtMoney(n){ return '$'+(Math.round((Number(n)||0)*100)/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function _evWhen(ms){ if(!ms) return '&mdash;'; try{ return esc(new Date(Number(ms)).toLocaleString()); }catch(e){ return '&mdash;'; } }
+function _evMono(sv){ return sv ? '<code style="font-family:ui-monospace,Menlo,monospace;font-size:11.5px;background:#f4f6f8;padding:1px 6px;border-radius:4px;color:#0a3d62;word-break:break-all">'+esc(sv)+'</code>' : '<span class="muted">not captured</span>'; }
+function _evIdentitySection(b){
+  var v=b.verify||{}; var verified=!!(v.verifiedAt||v.idName);
+  if(!verified){ return '<h2>Cardholder Identity Verification</h2><table><tr><td class="v"><span class="muted">No Stripe Identity verification on file for this booking.</span></td></tr></table>'; }
+  var rk=v.idRisk||v.riskLevel||'';
+  var rows='<tr><td class="k">Verification status</td><td class="v"><b style="color:#166534">VERIFIED by Stripe Identity</b></td></tr>'
+   +'<tr><td class="k">Verified legal name</td><td class="v"><b>'+esc(v.idName||v.verifiedName||'')+'</b></td></tr>'
+   +'<tr><td class="k">Date of birth</td><td class="v">'+(esc(v.idDob||'')||'&mdash;')+'</td></tr>'
+   +'<tr><td class="k">Government ID</td><td class="v">'+(esc(v.idType||'')||'&mdash;')+(v.idNumber?(' &middot; #'+esc(v.idNumber)):'')+(v.idState?(' &middot; '+esc(v.idState)):'')+'</td></tr>'
+   +'<tr><td class="k">ID expiry</td><td class="v">'+(esc(v.idExpiry||'')||'&mdash;')+'</td></tr>'
+   +'<tr><td class="k">ID address</td><td class="v">'+(esc(v.idAddress||'')||'&mdash;')+'</td></tr>'
+   +'<tr><td class="k">Verified on (exact)</td><td class="v"><b>'+_evWhen(v.verifiedAt)+'</b></td></tr>'
+   +(rk?('<tr><td class="k">Stripe risk assessment</td><td class="v">'+esc(String(rk))+'</td></tr>'):'');
+  return '<h2>Cardholder Identity Verification &mdash; Stripe Identity</h2>'
+    +'<div class="note">The individual below completed <b>Stripe Identity</b> government-ID verification. This is the same individual who electronically signed the rental agreement (timestamp &amp; signer IP above) and completed the card payment(s) in the ledger below &mdash; establishing the transaction was authorized by the verified cardholder, not an impostor.</div>'
+    +'<table>'+rows+'</table>';
+}
+function _evStripeLedger(b){
+  var sp=Array.isArray(b.stripePayments)?b.stripePayments:[];
+  var dp=Array.isArray(b.disputes)?b.disputes:[];
+  var pc=Array.isArray(b.portalCharges)?b.portalCharges:[];
+  var usedPi={}; var rows='';
+  pc.forEach(function(c){ if(!c) return;
+    var m=sp.filter(function(x){ return x && x.chargeRef && c.id && x.chargeRef===c.id; });
+    if(!m.length) m=sp.filter(function(x){ return x && c.paidAt && x.amount && Math.abs((Number(x.amount)||0)-(Number(c.amount)||0))<0.02 && !usedPi[x.paymentIntentId]; });
+    var st=m[0]||null; if(st&&st.paymentIntentId) usedPi[st.paymentIntentId]=1;
+    rows+='<tr><td>'+esc(c.description||c.desc||'Portal charge')+'</td><td class="r">'+_evFmtMoney(c.amount)+'</td><td>'+_evWhen(c.sentAt)+'</td>'
+      +'<td>'+(c.paidAt?('<b>'+_evWhen(c.paidAt)+'</b>'+(c.paymentMethod?(' &middot; '+esc(c.paymentMethod)):'')):'<span class="muted">unpaid</span>')+'</td>'
+      +'<td>'+(st?_evMono(st.paymentIntentId||st.chargeId||st.sessionId):'<span class="muted">&mdash;</span>')+'</td></tr>';
+  });
+  sp.forEach(function(st){ if(!st||(st.paymentIntentId&&usedPi[st.paymentIntentId])) return;
+    rows+='<tr><td>'+esc(st.kind||'Payment')+' <span class="muted">(Stripe)</span></td><td class="r">'+_evFmtMoney(st.amount)+'</td><td class="muted">&mdash;</td>'
+      +'<td><b>'+_evWhen(st.at)+'</b></td><td>'+_evMono(st.paymentIntentId||st.chargeId||st.sessionId)+'</td></tr>';
+  });
+  if(!rows) rows='<tr><td colspan="5" class="muted">No Stripe transaction ids on file yet. Click "Backfill Stripe IDs" on the booking to pull them from Stripe.</td></tr>';
+  var out='<h2>Stripe Transaction Ledger &mdash; every charge, timestamped, with transaction ids</h2>'
+    +'<table class="paytbl"><tr><th>Charge</th><th class="r">Amount</th><th>Sent to portal</th><th>Paid (exact)</th><th>Stripe transaction id</th></tr>'+rows+'</table>';
+  if(dp.length){
+    var dr=dp.map(function(d){ var due=d.dueBy?('<b style="color:#b91c1c">'+_evWhen(d.dueBy)+'</b>'):'<span class="muted">&mdash;</span>';
+      return '<tr><td>'+_evMono(d.id)+'</td><td>'+esc(String(d.reason||'').replace(/_/g,' '))+'</td><td class="r">'+_evFmtMoney(d.amount)+'</td><td>'+esc(d.status||'')+'</td><td>'+due+'</td><td>'+_evMono(d.chargeId||d.paymentIntentId)+'</td></tr>'; }).join('');
+    out+='<h2 style="color:#b91c1c">Disputes / Chargebacks on this booking</h2>'
+      +'<div class="note" style="background:#fdf0f0;border-color:#f0caca;color:#611">Each dispute is tied to a real Stripe charge above. Respond before the evidence-due date to contest it.</div>'
+      +'<table class="paytbl"><tr><th>Dispute id</th><th>Reason</th><th class="r">Amount</th><th>Status</th><th>Evidence due</th><th>On charge</th></tr>'+dr+'</table>';
+  }
+  return out;
+}
+function _evAgreement(b){
+  var bt=''; try{ bt=(typeof _buildBreakdownTable==='function')?_buildBreakdownTable(b):''; }catch(e){}
+  var dr=''; try{ dr=(typeof _buildAdditionalDriversHtml==='function')?_buildAdditionalDriversHtml(b,true,false):''; }catch(e){}
+  var isW=(b.vehicle==='Polaris Slingshot');
+  var vin=((typeof VEHICLE_INFO!=='undefined'&&VEHICLE_INFO[b.vehicle]&&VEHICLE_INFO[b.vehicle].vin)?VEHICLE_INFO[b.vehicle].vin:'');
+  var out='<h2>Signed Rental Agreement '+(isW?'&amp; Liability Waiver ':'')+'&mdash; Terms &amp; Signatures</h2>'
+    +'<div class="note">Financial terms and party signatures from the executed '+(isW?'agreement &amp; liability waiver':'rental agreement')+' are reproduced verbatim from the booking record. The agreement was electronically signed by the renter (signature, exact timestamp and signer IP shown above).</div>'
+    +'<table><tr><td class="k">Agreement type</td><td class="v">'+(isW?'Rental Agreement + Slingshot Liability Waiver':'Rental Agreement')+'</td></tr>'
+    +'<tr><td class="k">Vehicle / VIN</td><td class="v">'+esc(b.vehicle||'')+(vin?(' &middot; VIN '+esc(vin)):'')+'</td></tr></table>'
+    +'<div style="margin-top:10px">'+bt+'</div>'
+    +(dr?('<h2>Additional Authorized Drivers &mdash; Signatures</h2>'+dr):'');
+  var tpl=isW?(typeof slingshotWaiverTemplate!=='undefined'?slingshotWaiverTemplate:''):(typeof contractTemplate!=='undefined'?contractTemplate:'');
+  if(tpl){
+    var bd={}; try{ bd=_buildContractBreakdown(b); }catch(e){ bd={}; }
+    var vi=(typeof VEHICLE_INFO!=='undefined'&&VEHICLE_INFO[b.vehicle])?VEHICLE_INFO[b.vehicle]:{}; var v=b.verify||{};
+    var dd=Number(b.days)||1; var dur=dd+' '+((b.type==='hourly'||b.type==='chauffeur')?'hour':'day')+(dd!==1?'s':'');
+    var map={customer_name:b.name||'',today:(b.customerSigDate||''),vehicle:b.vehicle||'',rental_type:b.type||'daily',pickup_date:b.pickupDate||b.date||'',pickup_time:b.pickupTime||'',dropoff_date:b.dropoffDate||'',dropoff_time:b.dropoffTime||'',duration:dur,total_revenue:_evFmtMoney(bd.subtotal!=null?bd.subtotal:(b.revenue||0)),deposit_amount:_evFmtMoney(bd.depositAmt||0),balance_due:_evFmtMoney(bd.balanceDue||0),vehicle_model:vi.model||'',vehicle_color:vi.color||b.customerSigColor||'',vehicle_vin:vi.vin||'',license_number:v.idNumber||'',license_state:v.idState||'',license_type:v.idType||'',license_expiry:v.idExpiry||'',customer_dob:v.idDob||'',verified_name:v.idName||'',license_address:v.idAddress||''};
+    var merged=String(tpl).replace(/<script[\s\S]*?<\/script>/gi,'').replace(/\{\{\s*([a-zA-Z_]+)\s*\}\}/g,function(mm,k){ k=k.toLowerCase(); return (map[k]!=null&&map[k]!=='')?String(map[k]):'________'; });
+    var isHtml=/<(div|p|table|br|span|h[1-6])\b/i.test(merged);
+    out+='<h2>Full Executed Agreement Text</h2><div style="border:1px solid #ddd;border-radius:6px;padding:16px;font-size:12px;'+(isHtml?'':'white-space:pre-wrap;')+'background:#fcfcfc;overflow-wrap:anywhere">'+(isHtml?merged:esc(merged))+'</div>';
+  }
+  return out;
+}
+function _backfillStripeIds(id){
+  var W=(typeof WORKER!=='undefined'&&WORKER)?WORKER:((typeof WORKER_URL!=='undefined')?WORKER_URL:'');
+  if(!W||typeof DASHBOARD_SECRET==='undefined'||!DASHBOARD_SECRET){ toast('Worker/secret not configured.'); return; }
+  toast('Pulling exact Stripe transaction ids...');
+  fetch(W+'/stripe/backfill',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+DASHBOARD_SECRET},body:JSON.stringify({bookingId:id})})
+    .then(function(r){return r.json();}).then(function(d){
+      if(d&&d.ok){ toast('Stripe backfill done: '+((d.stored&&d.stored.payments)||0)+' payment(s), '+((d.stored&&d.stored.disputes)||0)+' dispute(s) on file.'); if(typeof cloudLoad==='function') cloudLoad(function(){}); }
+      else toast('Backfill failed: '+((d&&(d.error||d.detail))||'unknown'));
+    }).catch(function(e){ toast('Backfill error: '+e); });
+}
+
 function _genChargebackEvidence(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b){ toast('Booking not found.'); return; }
   var E=function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
@@ -18265,6 +18349,7 @@ function _genChargebackEvidence(id){
    +row('Pickup / pre-trip photos', ciN?('<b>'+ciN+'</b> timestamped photo(s) retained'):'<span class="muted">none on file</span>')
    +row('Return / post-trip photos', coN?('<b>'+coN+'</b> timestamped photo(s) retained'):'<span class="muted">none on file</span>')
    +'</table>'
+   +_evIdentitySection(b)+_evStripeLedger(b)+_evAgreement(b)
    +'<div class="ft">Business record generated by Prestige Black Rentals from the booking on file. Signature, timestamps, signer IP (where captured), payment records, extension agreements and communication history are reproduced verbatim and were not altered for this report. Reference '+E(ref)+'. This document is provided to substantiate a legitimate, cardholder-authorized transaction in response to a dispute.</div>'
    +'</div></body></html>';
   var w=window.open('','_blank'); if(!w){ toast('Allow pop-ups to open the evidence report.'); return; }
