@@ -4480,6 +4480,15 @@ function logNotif(type, label, to, bookingId){
 // with the reliable global _notifLog (localStorage \u2014 survives cloud-sync races
 // that can drop the per-booking copy), deduped, so a booking's notification
 // history always matches Settings \u2192 Notification Log.
+// Red "Disputed" pill on a booking card when a chargeback is OPEN (worker writes b.disputes[] on
+// charge.dispute.created). Hidden once every dispute reaches a terminal state. ASCII-safe.
+function _disputeBadge(b){
+  if(!b || !Array.isArray(b.disputes) || !b.disputes.length) return '';
+  var _term={won:1,lost:1,charge_refunded:1,warning_closed:1};
+  var _open=b.disputes.some(function(d){ return !_term[String((d&&d.status)||'').toLowerCase()]; });
+  if(!_open) return '';
+  return '<span class="badge" title="Payment dispute / chargeback opened \u2014 open this booking to submit evidence" style="background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.45);font-weight:800;margin-left:4px">\u26A0 Disputed</span>';
+}
 function _bookingCommLog(b){
   if(!b) return [];
   var out=[], seen={};
@@ -4499,6 +4508,26 @@ function _bookingCommLog(b){
     if(!_st && b.customerSigDate){ var _pd=new Date(b.customerSigDate+' 12:00:00'); if(!isNaN(_pd.getTime())) _st=_pd.getTime(); }
     var _isW=String(b.customerSigVehicle||b.vehicle||'').toLowerCase().indexOf('slingshot')!==-1;
     add({at:_st||0, type:'contractsigned', label:(_isW?'Waiver':'Contract')+' signed', to:b.name||''});
+  }
+  // Derived "payment received" entries so EVERY completed portal charge shows in the timeline with its
+  // amount -- including CARD payments the worker marks paid via Stripe (those never wrote a dashboard
+  // log). Deduped against an existing paid/received entry for the same charge description.
+  (b.portalCharges||[]).forEach(function(c){
+    if(!c || !c.paidAt) return;
+    var _cd=c.description||'Portal charge';
+    if(out.some(function(e){ var l=e.label||''; return (/charge (marked )?paid|payment received/i).test(l) && l.indexOf(_cd)!==-1; })) return;
+    add({at:Number(c.paidAt)||0, type:'charge', label:'Payment received \u2014 '+_cd+' '+$$(Number(c.amount)||0)+(c.paidMethod?(' ('+c.paidMethod+')'):''), to:b.name||''});
+  });
+  // Earlier signed versions archived when the vehicle/color changed (b._sigHistory). Without this a
+  // re-signed "waiver 2" is invisible -- only the current signature shows. Full images are in the
+  // booking's evidence report (see _evSignedDocs).
+  if(Array.isArray(b._sigHistory)){
+    b._sigHistory.forEach(function(h){
+      if(!h || !_isSigStr(h.sig)) return;
+      var _ht=Number(h.at)||0; if(!_ht && h.date){ var _hd=new Date(h.date+' 12:00:00'); if(!isNaN(_hd.getTime())) _ht=_hd.getTime(); }
+      var _hw=String(h.vehicle||'').toLowerCase().indexOf('slingshot')!==-1;
+      add({at:_ht||0, type:'contractsigned', label:(_hw?'Waiver':'Contract')+' signed (earlier version'+(h.vehicle?' \u2014 '+h.vehicle+(h.color?(' '+h.color):''):'')+')', to:b.name||''});
+    });
   }
   // Extension signatures (primary + each authorized driver) + fully-signed milestone
   _extSignCommEntries(b).forEach(add);
@@ -4864,7 +4893,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v339';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v340';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -6978,7 +7007,7 @@ function renderGrouponSection(){
             '<div><div style="font-weight:700">'+esc(b.name)+'</div><div style="color:var(--muted);font-size:11px">'+fmtDate(b.pickupDate||b.date)+' \u00B7 '+esc(b.vehicle||'')+'</div></div>'+
             '<div style="text-align:right">'+
               (bd>0?'<div style="color:var(--green);font-weight:700">'+$$(bd)+'</div>':'')+
-              '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+
+              '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+_disputeBadge(b)+
             '</div>'+
           '</div>';
         }).join('') : '<div style="font-size:12px;color:var(--muted);padding:6px 0">No bookings in this period.</div>';
@@ -7068,7 +7097,7 @@ function renderGrouponSection(){
             return '<div onclick="openBookingDetail(\''+b.id+'\')" style="background:rgba(255,255,255,.04);border-radius:8px;padding:8px 10px;cursor:pointer" onmouseenter="this.style.background=\'rgba(255,255,255,.08)\'" onmouseleave="this.style.background=\'rgba(255,255,255,.04)\'">'+
               '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'+
                 '<span style="font-weight:700;font-size:13px">'+esc(b.name)+'</span>'+
-                '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+
+                '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+_disputeBadge(b)+
               '</div>'+
               '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px">'+
                 '<span style="color:var(--muted)">'+esc(b.vehicle||'')+'</span>'+
@@ -7081,7 +7110,7 @@ function renderGrouponSection(){
             '<span style="color:var(--gold)">'+fmtDate(b.pickupDate||b.date)+'</span>'+
             '<span style="font-weight:600">'+esc(b.name)+'</span>'+
             '<span style="color:var(--muted)">'+esc(b.vehicle||'')+'</span>'+
-            '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+
+            '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+_disputeBadge(b)+
             (rev>0?'<span style="color:var(--green);font-size:11px">+'+$$(rev)+' direct</span>':'')+
             '<span style="color:var(--muted);font-size:10px;margin-left:auto">View \u2192</span>'+
           '</div>';
@@ -7149,7 +7178,7 @@ function renderGrouponSection(){
         return '<div style="background:var(--bg);border-radius:10px;padding:12px;border:1px solid var(--border2);'+(isCancelled?'opacity:0.5':'')+'" onclick="openBookingDetail(\''+b.id+'\')" >'+
           '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">'+
             '<div style="font-weight:800;font-size:13px">'+esc(b.name)+'</div>'+
-            '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+
+            '<span class="badge '+esc(b.status||'')+'">'+esc(b.status||'')+'</span>'+_disputeBadge(b)+
           '</div>'+
           '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px">'+
             '<div><span style="color:var(--muted)">Date: </span>'+fmtDate(b.pickupDate||b.date)+'</div>'+
@@ -18240,6 +18269,57 @@ function _evStripeLedger(b){
   }
   return out;
 }
+// Every signature on file for this booking -- the CURRENT customer signature plus any EARLIER versions
+// archived when the vehicle/color changed (b._sigHistory). Each renders as a numbered, dated, imaged
+// "signed document" so a re-signed waiver #2 is part of the legal record, not hidden. ASCII-safe.
+// Effective PRIMARY signature for the summary: the current customerSig, else the most recent archived
+// version (a re-signed booking DELETES customerSig and moves the old one into _sigHistory -- which left
+// the summary blank). Returns {sig,at,date,vehicle,color,archived} or null. ASCII-safe.
+function _evPrimarySig(b){
+  if(b && _isSigStr(b.customerSig)) return {sig:b.customerSig, at:Number(b.customerSigAt)||0, date:b.customerSigDate||'', vehicle:b.customerSigVehicle||b.vehicle||'', color:b.customerSigColor||''};
+  if(b && Array.isArray(b._sigHistory)){ for(var i=b._sigHistory.length-1;i>=0;i--){ var h=b._sigHistory[i]; if(h && _isSigStr(h.sig)) return {sig:h.sig, at:Number(h.at)||0, date:h.date||'', vehicle:h.vehicle||'', color:h.color||'', archived:true}; } }
+  return null;
+}
+function _evSignedDocs(b){
+  if(!b) return '';
+  var E=(typeof esc==='function')?esc:function(x){return x==null?'':String(x);};
+  var W=(typeof _evWhen==='function')?_evWhen:function(t){return t?new Date(Number(t)).toLocaleString():'';};
+  var _dt=function(at,ds){ at=Number(at)||0; if(at) return W(at); if(ds) return E(ds); return '<span class="muted">timestamp not captured</span>'; };
+  var docs=[];
+  var _cw=String(b.customerSigVehicle||b.vehicle||'').toLowerCase().indexOf('slingshot')!==-1;
+  if(_isSigStr(b.customerSig)) docs.push({sig:b.customerSig, when:(Number(b.customerSigAt)||0), ds:b.customerSigDate||'', who:b.name||'Renter', veh:b.customerSigVehicle||b.vehicle||'', color:b.customerSigColor||'', kind:(_cw?'Liability Waiver':'Rental Agreement')+' (current)'});
+  if(Array.isArray(b._sigHistory)) b._sigHistory.forEach(function(h){
+    if(!h || !_isSigStr(h.sig)) return;
+    var _hw=String(h.vehicle||'').toLowerCase().indexOf('slingshot')!==-1;
+    docs.push({sig:h.sig, when:(Number(h.at)||0), ds:h.date||'', who:b.name||'Renter', veh:h.vehicle||'', color:h.color||'', kind:(_hw?'Liability Waiver':'Rental Agreement')+' (earlier version'+(h.reason?', superseded: '+h.reason:'')+')'});
+  });
+  (b.extraDrivers||[]).forEach(function(d,j){
+    if(d && _isSigStr(d.sig)) docs.push({sig:d.sig, when:(Number(d.sigAt)||0), ds:d.sigDate||'', who:((d.name||('Authorized Driver '+(j+1))))+' (authorized driver)', veh:b.vehicle||'', color:'', kind:'Authorized-Driver Agreement'});
+  });
+  var _exts=[]; try{ _exts=(typeof _extLive==='function'?_extLive(b):(b.extensions||[]))||[]; }catch(e){ _exts=b.extensions||[]; }
+  _exts.forEach(function(x,i){
+    if(!x) return; var n=i+1;
+    var _term=(x.fromDate||x.toDate)?(' ('+E(x.fromDate||'')+' \u2192 '+E(x.toDate||'')+')'):'';
+    if(_isSigStr(x.sig)) docs.push({sig:x.sig, when:(Number(x.sigAt)||0), ds:x.sigDate||'', who:b.name||'Renter', veh:b.vehicle||'', color:'', kind:'Extension #'+n+' Agreement'+_term});
+    if(x.driverSigs) (b.extraDrivers||[]).forEach(function(d,j){
+      var sg=x.driverSigs[j]; if(sg && _isSigStr(sg.sig)) docs.push({sig:sg.sig, when:(Number(sg.sigAt)||0), ds:sg.sigDate||'', who:((d&&d.name)||('Driver '+(j+1)))+' (authorized driver)', veh:b.vehicle||'', color:'', kind:'Extension #'+n+' Agreement'+_term});
+    });
+  });
+  if(!docs.length) return '<h2>Signed Documents On File</h2><div class="note">No signature images are stored on this booking record.</div>';
+  docs.sort(function(a,c){ return (a.when||0)-(c.when||0); });
+  var rows=docs.map(function(d,i){
+    return '<div style="border:1px solid #ddd;border-radius:6px;padding:12px;margin:10px 0;page-break-inside:avoid">'+
+      '<div style="font-weight:700;font-size:13px;color:#0a3d62">Signed Document '+(i+1)+' of '+docs.length+' \u2014 '+E(d.kind)+'</div>'+
+      '<table style="margin:4px 0 8px"><tr><td class="k">Signed by</td><td class="v">'+E(d.who)+'</td></tr>'+
+      '<tr><td class="k">Vehicle</td><td class="v">'+E(d.veh)+(d.color?(' \u00b7 '+E(d.color)):'')+'</td></tr>'+
+      '<tr><td class="k">Signed on</td><td class="v">'+_dt(d.when,d.ds)+'</td></tr></table>'+
+      '<img src="'+E(d.sig)+'" alt="signature"/>'+
+    '</div>';
+  }).join('');
+  return '<h2>Signed Documents On File ('+docs.length+') \u2014 Exact Signatures</h2>'+
+    '<div class="note">Every signature captured for this booking \u2014 the rental agreement, any re-signed version, each authorized driver, and every extension \u2014 reproduced as signed.</div>'+rows;
+}
+
 function _evAgreement(b){
   var bt=''; try{ bt=(typeof _buildBreakdownTable==='function')?_buildBreakdownTable(b):''; }catch(e){}
   var dr=''; try{ dr=(typeof _buildAdditionalDriversHtml==='function')?_buildAdditionalDriversHtml(b,true,false):''; }catch(e){}
@@ -18264,15 +18344,23 @@ function _evAgreement(b){
   return out;
 }
 function _backfillStripeIds(id){
-  var W=(typeof WORKER!=='undefined'&&WORKER)?WORKER:((typeof WORKER_URL!=='undefined')?WORKER_URL:'');
-  if(!W||typeof DASHBOARD_SECRET==='undefined'||!DASHBOARD_SECRET){ toast('Worker/secret not configured.'); return; }
+  var W=(typeof PB_WORKER!=='undefined'&&PB_WORKER)?PB_WORKER:((typeof WORKER_URL!=='undefined'&&WORKER_URL)?WORKER_URL:'https://pb-booking.prestigeblackcorp.workers.dev');
+  var S=(typeof DASHBOARD_SECRET!=='undefined')?DASHBOARD_SECRET:'';
+  if(!S){ toast('Add the dashboard secret in Settings, then retry backfill.'); return; }
   toast('Pulling exact Stripe transaction ids...');
-  fetch(W+'/stripe/backfill',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+DASHBOARD_SECRET},body:JSON.stringify({bookingId:id})})
-    .then(function(r){return r.json();}).then(function(d){
-      if(d&&d.ok){ toast('Stripe backfill done: '+((d.stored&&d.stored.payments)||0)+' payment(s), '+((d.stored&&d.stored.disputes)||0)+' dispute(s) on file.'); if(typeof cloudLoad==='function') cloudLoad(function(){}); }
-      else toast('Backfill failed: '+((d&&(d.error||d.detail))||'unknown'));
-    }).catch(function(e){ toast('Backfill error: '+e); });
+  fetch(W+'/stripe/backfill',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+S},body:JSON.stringify({bookingId:id})})
+    .then(function(r){ return r.text().then(function(t){ var d={}; try{ d=JSON.parse(t); }catch(e){ d={}; } d._status=r.status; return d; }); })
+    .then(function(d){
+      if(d&&d.ok){
+        var np=(d.stored&&d.stored.payments)||0, nd=(d.stored&&d.stored.disputes)||0, fp=(d.found&&d.found.payments)||0;
+        toast(fp?('Stripe backfill: '+fp+' found -- '+np+' payment(s) + '+nd+' dispute(s) now on file.'):'Backfill ran, but Stripe returned no ids for this booking (older payments carried no booking tag). Amounts/dates are already in the report.');
+        if(typeof cloudLoad==='function') cloudLoad(function(){ try{ if(typeof openBookingDetail==='function') openBookingDetail(id); }catch(e){} });
+      } else if(d&&d._status===404){ toast('Backfill route not live yet -- paste the updated worker into Cloudflare, then retry.'); }
+      else if(d&&d._status===401){ toast('Backfill unauthorized -- the dashboard secret does not match the worker.'); }
+      else { toast('Backfill: '+((d&&(d.error||d.detail))||('HTTP '+((d&&d._status)||'?')))+'. If it persists, paste the updated worker.'); }
+    }).catch(function(e){ toast('Backfill network error -- is the worker deployed? '+((e&&e.message)||e)); });
 }
+
 
 function _genChargebackEvidence(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b){ toast('Booking not found.'); return; }
@@ -18300,7 +18388,8 @@ function _genChargebackEvidence(id){
   log.sort(function(a,c){ return (a.at||0)-(c.at||0); });
   var logRows=log.length ? log.map(function(e){ return '<tr><td>'+when(e.at)+'</td><td>'+E(e.label||e.type||'')+(e.to?(' <span class="muted">\u2192 '+E(e.to)+'</span>'):'')+'</td></tr>'; }).join('') : '<tr><td colspan="2" class="muted">No timeline events recorded.</td></tr>';
   // Proof of authorization -- signature + exact time + signer IP + ID verification.
-  var sig=(b.customerSig&&/^data:image\//.test(b.customerSig)) ? '<img src="'+b.customerSig+'" alt="signature"/>' : '<span class="muted">No signature image on file</span>';
+  var _ps=(typeof _evPrimarySig==='function')?_evPrimarySig(b):null;
+  var sig=_ps ? ('<img src="'+_ps.sig+'" alt="signature"/>'+(_ps.archived?'<div class="muted" style="font-size:11px">Re-signed version shown; every version is in Signed Documents below.</div>':'')) : '<span class="muted">No signature image on file</span>';
   var ipLine=b.customerSigIP ? ('<b>'+E(b.customerSigIP)+'</b>'+(b.customerSigCountry?(' ('+E(b.customerSigCountry)+')'):'')) : '<span class="muted">not recorded (in-person, or signed before IP capture)</span>';
   var verify=(b.verify&&(b.verify.idName||b.verify.idType)) ? (E(b.verify.idName||'')+(b.verify.idType?(' \u2014 '+E(b.verify.idType)):'')) : '';
   var sentLine=(b.verify&&(b.verify.firstSentAt||b.verify.verifyLinkSentAt)) ? when(b.verify.firstSentAt||b.verify.verifyLinkSentAt) : '';
@@ -18308,7 +18397,7 @@ function _genChargebackEvidence(id){
   var ciN=((b.checkInPhotoIds||[]).length)+((b.customerPreTripPhotoIds||[]).length)+((b.customerPreTripPhotos||[]).length);
   var coN=((b.checkOutPhotoIds||[]).length)+((b.customerPostTripPhotoIds||[]).length)+((b.customerPostTripPhotos||[]).length);
   var ref=b.id||'';
-  var authorized=!!(b.customerSig&&b.customerSigAt);
+  var authorized=!!(_ps&&_ps.sig);
   var H=''
    +'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
    +'<title>Transaction Evidence '+E(ref)+'</title><style>'
@@ -18338,8 +18427,8 @@ function _genChargebackEvidence(id){
    +row('Contract total', '<b>'+mny(totalRevenue(b))+'</b>')
    +'</table>'
    +'<h2>Proof of Authorization \u2014 Signed Agreement</h2><table>'
-   +row('Signature', sig)+row('Signed on', E(b.customerSigDate||'')||'&mdash;')+row('Signed at (exact)', '<b>'+when(b.customerSigAt)+'</b>')
-   +row('Signed for vehicle', E(b.customerSigVehicle||b.vehicle||''))+row('Signer IP address', ipLine)+row('ID verification', verify||'<span class="muted">not on file</span>')+row('Agreement first sent', sentLine||'&mdash;')
+   +row('Signature', sig)+row('Signed on', (_ps&&(_ps.date||_ps.at))?(E(_ps.date||'')||when(_ps.at)):'&mdash;')+row('Signed at (exact)', (_ps&&_ps.at)?('<b>'+when(_ps.at)+'</b>'):'&mdash;')
+   +row('Signed for vehicle', E((_ps&&_ps.vehicle)||b.customerSigVehicle||b.vehicle||''))+row('Signer IP address', ipLine)+row('ID verification', verify||'<span class="muted">not on file</span>')+row('Agreement first sent', sentLine||'&mdash;')
    +'</table>'
    +'<h2>Payments Received (proof of payment)</h2><table class="paytbl"><tr><th>Date / time</th><th>Item</th><th>Method</th><th class="r">Amount</th></tr>'+payRows
    +'<tr class="tot"><td colspan="3" class="r">Total received</td><td class="r">'+mny(paysTotal)+'</td></tr></table>'
@@ -18349,7 +18438,7 @@ function _genChargebackEvidence(id){
    +row('Pickup / pre-trip photos', ciN?('<b>'+ciN+'</b> timestamped photo(s) retained'):'<span class="muted">none on file</span>')
    +row('Return / post-trip photos', coN?('<b>'+coN+'</b> timestamped photo(s) retained'):'<span class="muted">none on file</span>')
    +'</table>'
-   +_evIdentitySection(b)+_evStripeLedger(b)+_evAgreement(b)
+   +_evIdentitySection(b)+_evStripeLedger(b)+_evAgreement(b)+_evSignedDocs(b)
    +'<div class="ft">Business record generated by Prestige Black Rentals from the booking on file. Signature, timestamps, signer IP (where captured), payment records, extension agreements and communication history are reproduced verbatim and were not altered for this report. Reference '+E(ref)+'. This document is provided to substantiate a legitimate, cardholder-authorized transaction in response to a dispute.</div>'
    +'</div></body></html>';
   var w=window.open('','_blank'); if(!w){ toast('Allow pop-ups to open the evidence report.'); return; }
@@ -24318,7 +24407,7 @@ async function submitPortalCharge(){
         '<div style="background:#f9f9f9;padding:14px 28px;text-align:center;font-size:12px;color:#aaa;border-top:1px solid #eee">Prestige Black Rentals \u00B7 Dallas\u2013Fort Worth</div>'+
         '</div>';
       fetch(MESSAGING_URL+'/send-email',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},_authHeader()),body:JSON.stringify({to:b.email,subject:'Payment Request \u2014 Prestige Black Rentals',html:html})})
-      .then(function(r){ if(r.ok) logNotif('charge','Payment Request',b.email,b.id); });
+      .then(function(r){ if(r.ok) logNotif('charge','Payment Request '+$$(amt),b.email,b.id); });
     }
   } catch(e){
     toast('Error saving charge: '+(e.message||e));
@@ -24516,7 +24605,7 @@ function deleteAllPortalCharges(bookingId){
   bookings[idx].portalCharges=[];
   bookings[idx]._t=Date.now();
   bookings[idx]._history=(bookings[idx]._history||[]).concat([{at:Date.now(),by:_currentUser||'owner',changes:['ALL portal charges deleted ('+charges.length+', '+$$(_paidTotal)+' paid'+(_extCount?(', '+_extCount+' ext reverted'):'')+')']}]);
-  logNotif('charge','All portal charges deleted ('+charges.length+')',(bookings[idx].name||''),bookingId);
+  logNotif('charge','All portal charges deleted ('+charges.length+', '+$$(_paidTotal)+' paid)',(bookings[idx].name||''),bookingId);
   save();
   render();
   if(activeTab==='upcoming')  renderUpcoming();
