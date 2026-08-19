@@ -2209,7 +2209,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20e';
+  var APP_VERSION='2026.7.20f';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -2700,6 +2700,10 @@ const Atlas = (function(){
     if(aud==='winback') return !act[nm] && (s.last[nm]>0) && (s.now-s.last[nm])>60*86400000 && (s.cnt[nm]||0)>=1;
     if(aud==='verified')return !!s.ver[nm];
     return true; }
+  // Segment-scoped SMS recipients (consented names in the audience) -> passed to the worker so a segmented SMS goes only to the selected audience (server re-enforces consent + STOP).
+  function _smsAudienceList(aud){ var names=_smsConsentNames(), cs=DATA.customers||[], act={};
+    (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') act[b.cust]=1; });
+    return cs.filter(function(c){ if(!names[c.name])return false; return _segTest(c,aud,act); }).map(function(c){ return c.name; }); }
   function _smsEligible(aud){ var names=_smsConsentNames(), cs=DATA.customers||[], act={};
     (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') act[b.cust]=1; });
     return cs.filter(function(c){ if(!names[c.name])return false; return _segTest(c,aud,act); }).length; }
@@ -2760,7 +2764,7 @@ const Atlas = (function(){
     // LIVE SMS broadcast: the worker itself derives the consented, non-STOP-suppressed recipients (TCPA) and returns the real count -- we record ONLY what it confirms sent.
     if(wantSms){
       if(!_live){ toast('Connect your Atlas backend to send texts'); }
-      else { _api('/api/outreach/send',{method:'POST',body:{sms:true,body:body}}).then(function(res){ var j=res.json||{};
+      else { _api('/api/outreach/send',{method:'POST',body:{sms:true,body:body,names:_smsAudienceList(aud)}}).then(function(res){ var j=res.json||{};
         if(res.status>=200&&res.status<300&&j.ok){ var sn=j.smsSent||0, ssk=j.smsSkipped||0;
           if(sn||ssk){ if(cm.sms){ cm.sms.sentThisMonth=(cm.sms.sentThisMonth||0)+sn; }
             cm.campaigns.unshift({ subject:'[SMS] '+body.slice(0,40), audience:audLabel, count:sn, channel:'sms', at:Date.now() });
