@@ -2209,7 +2209,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20f';
+  var APP_VERSION='2026.7.20g';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -2435,9 +2435,12 @@ const Atlas = (function(){
     _logEvent('loyalty','Referral bonus '+(L.refPts||250)+' pts to '+(ref.name||ref.email)+' (referred '+(b.cust||b.custEmail)+')',{}); save(); }
   /* ---- Gift cards: owner issues stored-value codes; redeeming draws the balance down as a credit on a booking ---- */
   function _giftcards(){ if(!S.giftcards) S.giftcards=[]; return S.giftcards; }
+  function _giftPortalUsed(code){ code=String(code||'').toUpperCase(); var t=0; (DATA.bookings||[]).forEach(function(b){ (b.giftRedemptions||[]).forEach(function(r){ if(r&&String(r.code||'').toUpperCase()===code&&r.via==='portal') t+=(Number(r.amt)||0); }); }); return Math.round(t*100)/100; }   // customer self-redeemed cents (portal channel) -- not reflected in the owner-maintained g.balance
+  function _giftAvail(g){ return Math.max(0, Math.round((((g&&g.balance)||0)-_giftPortalUsed(g&&g.code))*100)/100); }   // TRUE remaining = owner-net balance minus what customers already redeemed at the portal (prevents owner over-redeem)
+  function setGiftRedeem(on){ if(!_canMod('settings'))return; S.giftPortalRedeem=!!on; save(); toast(on?'Customers can now redeem gift cards at checkout':'Portal gift redemption turned off'); }
   function _findGift(code){ code=String(code||'').trim().toUpperCase(); return _giftcards().filter(function(g){ return (g.code||'').toUpperCase()===code; })[0]; }
   function _giftListHtml(){ var gs=_giftcards(); if(!gs.length) return '<div class="bk-lenhint" style="margin:0">No gift cards yet. Issue one and share the code or the printable certificate.</div>';
-    return gs.slice().sort(function(a,b){return (b.createdAt||0)-(a.createdAt||0);}).map(function(g){ var bal=g.balance||0, spent=(g.initial||0)-bal;
+    return gs.slice().sort(function(a,b){return (b.createdAt||0)-(a.createdAt||0);}).map(function(g){ var bal=_giftAvail(g), spent=(g.initial||0)-bal;
       return '<div class="promo-row"><div style="min-width:0"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b class="mono" style="color:var(--ink);font-size:14px;letter-spacing:.03em">'+esc(g.code)+'</b><span class="chip '+((bal>0&&!g.disabled)?'chip--ok':'chip--muted')+'"><span class="dot"></span>'+(g.disabled?'off':(money(bal)+' left'))+'</span></div><div style="font-size:12px;color:var(--muted);margin-top:3px">'+money(g.initial||0)+' issued'+(g.to?(' &middot; to '+esc(g.to)):'')+(spent>0?(' &middot; '+money(spent)+' used'):'')+'</div></div>'
         +'<div style="display:flex;gap:6px;align-items:center;flex:none"><button class="btn btn--ghost btn--sm" onclick="Atlas.giftEdit(\''+g.id+'\')">Edit</button><button class="btn btn--ghost btn--sm" onclick="Atlas.giftCert(\''+g.id+'\')">Certificate</button><button class="btn btn--sm" style="color:var(--danger);padding:6px 8px" onclick="Atlas.deleteGift(\''+g.id+'\')" title="Delete">&times;</button></div></div>';
     }).join(''); }
@@ -2462,12 +2465,12 @@ const Atlas = (function(){
   function bkApplyGift(id){ var b=_getBooking(id); if(!b)return; var code=prompt('Gift card code:'); if(code===null)return; var g=_findGift(code);
     if(!g){ toast('No gift card with that code'); return; }
     if(g.disabled){ toast('That gift card is turned off'); return; }
-    if((g.balance||0)<=0){ toast('That gift card has no balance left'); return; }
+    if(_giftAvail(g)<=0){ toast('That gift card has no balance left'); return; }
     var q=b.quote||{}; var netDue=Math.max(0, _r2(q.dueNow||q.total||0) - _giftApplied(b));
-    var amt=Math.round(Math.min(g.balance, netDue)*100)/100;   // apply only up to what is still due (netDue is already clamped >=0); never drain the card when nothing is owed
+    var amt=Math.round(Math.min(_giftAvail(g), netDue)*100)/100;   // cap at TRUE remaining (owner-net minus portal redemptions) so the owner can't over-redeem a card a customer already partly used online
     if(amt<=0){ toast('Nothing left due on this booking'); return; }
     g.balance=Math.round((g.balance-amt)*100)/100; g.redeemed=g.redeemed||[]; g.redeemed.push({bookingId:b.id,amt:amt,at:Date.now()});
-    b.giftRedemptions=b.giftRedemptions||[]; b.giftRedemptions.push({code:g.code,amt:amt,at:Date.now()});
+    b.giftRedemptions=b.giftRedemptions||[]; b.giftRedemptions.push({code:g.code,amt:amt,at:Date.now(),via:'owner'});
     _upsertBooking(b); save(); _logEvent('gift','Gift card '+g.code+' redeemed '+money(amt)+' on '+b.id,{booking:b.id,code:g.code}); openBooking(id); toast(money(amt)+' gift credit applied'); }
   function bkRemoveGift(id,idx){ var b=_getBooking(id); if(!b||!b.giftRedemptions||!b.giftRedemptions[idx])return; var r=b.giftRedemptions[idx];
     var g=_findGift(r.code); if(g){ g.balance=Math.round(((g.balance||0)+(r.amt||0))*100)/100; if(g.redeemed){ for(var i=g.redeemed.length-1;i>=0;i--){ if(g.redeemed[i].bookingId===b.id && g.redeemed[i].amt===r.amt){ g.redeemed.splice(i,1); break; } } } }
@@ -8234,6 +8237,7 @@ const Atlas = (function(){
       <div class="set-block"><h3>Gift cards</h3><div class="desc">Issue stored-value gift cards customers redeem toward any booking &mdash; each with a unique code and a printable certificate. Balances draw down automatically as they are used.</div>
         <div id="giftList">${_giftListHtml()}</div>
         <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.issueGift()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Issue a gift card</button>
+        <label style="margin-top:14px;display:flex;gap:9px;align-items:flex-start;cursor:pointer"><input type="checkbox" onchange="Atlas.setGiftRedeem(this.checked)" ${S.giftPortalRedeem!==false?'checked':''} style="margin-top:2px"> <span style="font-size:13px;color:var(--muted)">Let customers redeem a gift card themselves in their booking portal (server verifies the code and balance). On by default.</span></label>
       </div>
       <div class="set-block"><h3>Damage protection &amp; waiver</h3><div class="desc">Offer optional protection tiers at checkout &mdash; a real upsell that also lowers your risk. Each tier rides the quote as revenue and comes with a printable coverage + waiver summary for the customer.</div>
         ${_protSettingsHtml()}
@@ -13129,7 +13133,7 @@ const Atlas = (function(){
     newBooking,editBooking,bkPreview,createBooking,openBooking,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,exportBkIcs,viewCustomer,saveCustNote,emailCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,addLead,saveLead,leadStage,leadToBooking,rmLead,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkVoidFlow,doVoid,unvoidBooking,bkVoidReport,bkEvidence,bkPortalLink,bkPortalRevoke,bkExtendFlow,bkExtendAmt,bkExtendPreview,bkExtendSave,bkExtRemove,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,_mtOverage,bkFuel,saveFuel,_flHint,bkLate,saveLate,_ltHint,bkDriver,saveDriver,bkRmDriver,bkInsurance,saveInsurance,bkBlacklistToggle,blacklistBlockToggle,holdAuth,holdRelease,holdCapture,doCapture,bkCheckIn,doCheckIn,bkCloseOut,doCloseOut,_coCalc,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
-    issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,
+    issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,setGiftRedeem,
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,liveTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,addLocation,removeLocation,
