@@ -2209,7 +2209,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20h';
+  var APP_VERSION='2026.7.20i';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -2435,8 +2435,9 @@ const Atlas = (function(){
     _logEvent('loyalty','Referral bonus '+(L.refPts||250)+' pts to '+(ref.name||ref.email)+' (referred '+(b.cust||b.custEmail)+')',{}); save(); }
   /* ---- Gift cards: owner issues stored-value codes; redeeming draws the balance down as a credit on a booking ---- */
   function _giftcards(){ if(!S.giftcards) S.giftcards=[]; return S.giftcards; }
-  function _giftPortalUsed(code){ code=String(code||'').toUpperCase(); var t=0; (DATA.bookings||[]).forEach(function(b){ (b.giftRedemptions||[]).forEach(function(r){ if(r&&String(r.code||'').toUpperCase()===code&&r.via==='portal') t+=(Number(r.amt)||0); }); }); return Math.round(t*100)/100; }   // customer self-redeemed cents (portal channel) -- not reflected in the owner-maintained g.balance
-  function _giftAvail(g){ return Math.max(0, Math.round((((g&&g.balance)||0)-_giftPortalUsed(g&&g.code))*100)/100); }   // TRUE remaining = owner-net balance minus what customers already redeemed at the portal (prevents owner over-redeem)
+  function _giftUsed(code){ code=String(code||'').toUpperCase(); var t=0; (DATA.bookings||[]).forEach(function(b){ (b.giftRedemptions||[]).forEach(function(r){ if(r&&String(r.code||'').toUpperCase()===code) t+=(Number(r.amt)||0); }); }); return Math.round(t*100)/100; }   // total redeemed of this code across BOTH channels (owner + portal), from committed booking records
+  function _giftPortalUsed(code){ code=String(code||'').toUpperCase(); var t=0; (DATA.bookings||[]).forEach(function(b){ (b.giftRedemptions||[]).forEach(function(r){ if(r&&String(r.code||'').toUpperCase()===code&&r.via==='portal') t+=(Number(r.amt)||0); }); }); return Math.round(t*100)/100; }
+  function _giftAvail(g){ return Math.max(0, Math.round((((g&&g.initial)||0)-_giftUsed(g&&g.code))*100)/100); }   // TRUE remaining = card value minus ALL redemptions (owner + portal), from committed records (not the lag-synced g.balance)
   function setGiftRedeem(on){ if(!_canMod('settings'))return; S.giftPortalRedeem=!!on; save(); toast(on?'Customers can now redeem gift cards at checkout':'Portal gift redemption turned off'); }
   function _findGift(code){ code=String(code||'').trim().toUpperCase(); return _giftcards().filter(function(g){ return (g.code||'').toUpperCase()===code; })[0]; }
   function _giftListHtml(){ var gs=_giftcards(); if(!gs.length) return '<div class="bk-lenhint" style="margin:0">No gift cards yet. Issue one and share the code or the printable certificate.</div>';
@@ -2456,7 +2457,7 @@ const Atlas = (function(){
     var code='GIFT'+Date.now().toString(36).toUpperCase().slice(-6); while(_findGift(code)){ code='GIFT'+(Date.now()+Math.floor(Math.random()*9999)).toString(36).toUpperCase().slice(-6); }
     var g={ id:'gc'+Date.now().toString(36), code:code, initial:amt, balance:amt, to:(val('gfTo')||'').trim(), from:(val('gfFrom')||'').trim(), msg:(val('gfMsg')||'').trim(), comped:!!(el('gfComp')&&el('gfComp').checked), createdAt:Date.now(), redeemed:[] };
     _giftcards().push(g); save(); _logEvent('gift','Gift card '+code+' issued ('+money(amt)+')',{code:code}); closeModal(); renderSet(); toast('Gift card '+code+' created ('+money(amt)+')'); giftCert(g.id); }
-  function deleteGift(id){ if(!_canMod('settings'))return; var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return; if(!confirm('Delete gift card '+g.code+((g.initial||0)-(g.balance||0)>0?' (partly used)':'')+'?'))return; S.giftcards=_giftcards().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Gift card deleted'); }
+  function deleteGift(id){ if(!_canMod('settings'))return; var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return; if(_giftUsed(g.code)>0){ toast('This gift card has been redeemed -- deleting it would erase recognized revenue. Turn it OFF via Edit instead.'); return; } if(!confirm('Delete gift card '+g.code+((g.initial||0)-(g.balance||0)>0?' (partly used)':'')+'?'))return; S.giftcards=_giftcards().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Gift card deleted'); }
   function giftCert(id){ var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return; var doc=_giftCertHtml(g);
     try{ var blob=new Blob([doc],{type:'text/html'}); var url=URL.createObjectURL(blob); var w=window.open(url,'_blank','noopener'); if(!w){ var a=document.createElement('a'); a.href=url; a.download='gift-card-'+g.code+'.html'; a.click(); } setTimeout(function(){URL.revokeObjectURL(url);},6000); }catch(e){ toast('Could not open the certificate here'); } }
   function _giftApplied(b){ return (b.giftRedemptions||[]).reduce(function(s,r){ return s+(r.amt||0); },0); }
@@ -2474,6 +2475,7 @@ const Atlas = (function(){
     b.giftRedemptions=b.giftRedemptions||[]; b.giftRedemptions.push({code:g.code,amt:amt,at:Date.now(),via:'owner'});
     _upsertBooking(b); save(); _logEvent('gift','Gift card '+g.code+' redeemed '+money(amt)+' on '+b.id,{booking:b.id,code:g.code}); openBooking(id); toast(money(amt)+' gift credit applied'); }
   function bkRemoveGift(id,idx){ var b=_getBooking(id); if(!b||!b.giftRedemptions||!b.giftRedemptions[idx])return; var r=b.giftRedemptions[idx];
+    if(r&&r.via==='portal'){ toast('This is a customer self-redemption -- it is tracked server-side and cannot be reversed from here.'); return; }
     var g=_findGift(r.code); if(g){ g.balance=Math.round(((g.balance||0)+(r.amt||0))*100)/100; if(g.redeemed){ for(var i=g.redeemed.length-1;i>=0;i--){ if(g.redeemed[i].bookingId===b.id && g.redeemed[i].amt===r.amt){ g.redeemed.splice(i,1); break; } } } }
     b.giftRedemptions.splice(idx,1); _upsertBooking(b); save(); _logEvent('gift','Gift redemption removed on '+b.id+' (refunded '+money(r.amt)+')',{booking:b.id}); openBooking(id); toast('Gift credit removed &mdash; '+money(r.amt)+' back on the card'); }
   function _giftCertHtml(g){ var biz=(S.brand&&S.brand.name)||'Your rental business', city=(S.brand&&S.brand.city)||'';
@@ -2516,7 +2518,7 @@ const Atlas = (function(){
     return _giftcards().filter(function(g){ if(g.to && String(g.to).toLowerCase()===nm) return true; return (g.redeemed||[]).some(function(r){ return mine[r.bookingId]; }); }); }
   function _custGiftHtml(c){ var gs=_custGiftCards(c); if(!gs.length) return '';
     return '<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:750;margin:0 0 8px">Gift cards</div>'
-      +gs.map(function(g){ var bal=g.balance||0; return '<div style="display:flex;align-items:center;gap:9px;padding:8px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b class="mono" style="color:var(--ink);font-size:13px">'+esc(g.code)+'</b><div style="font-size:11.5px;color:var(--muted)">'+money(bal)+' of '+money(g.initial||0)+(g.disabled?' &middot; off':'')+(g.to?(' &middot; to '+esc(g.to)):'')+'</div></div>'+(_canMod('settings')?'<button class="btn btn--ghost btn--sm" onclick="Atlas.giftEdit(\''+g.id+'\')">Manage</button>':'')+'</div>'; }).join('')+'</div>'; }
+      +gs.map(function(g){ var bal=_giftAvail(g); return '<div style="display:flex;align-items:center;gap:9px;padding:8px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b class="mono" style="color:var(--ink);font-size:13px">'+esc(g.code)+'</b><div style="font-size:11.5px;color:var(--muted)">'+money(bal)+' of '+money(g.initial||0)+(g.disabled?' &middot; off':'')+(g.to?(' &middot; to '+esc(g.to)):'')+'</div></div>'+(_canMod('settings')?'<button class="btn btn--ghost btn--sm" onclick="Atlas.giftEdit(\''+g.id+'\')">Manage</button>':'')+'</div>'; }).join('')+'</div>'; }
   /* ---- Damage protection / waiver: owner sets tiers; picked at booking it rides the extras engine (counts as revenue), with a printable coverage + waiver doc ---- */
   function _protection(){ if(!S.money.protection){ var n=(S.fleet&&S.fleet.noun)||'asset'; S.money.protection={ on:true, plans:[
       {id:'basic',name:'Basic',price:19,per:'day',deductible:2500,covers:'Damage protection on the '+n+' with a reduced deductible for accidental damage during the rental period.'},
@@ -4452,7 +4454,7 @@ const Atlas = (function(){
       +(opts.foot||'')+'</div>'); }
   function _bkList(fn, opts){ opts=opts||{}; return (DATA.bookings||[]).filter(fn).map(function(b){ return {
     label:'<b>'+esc(b.cust||b.id)+'</b>', sub:esc(b.asset)+' &middot; '+b.id, chip:(opts.chip?statusChip(b.status):''),
-    amt:opts.noAmt?null:(opts.earned?_bkEarned(b):_bkTotal(b)), onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')" }; }); }
+    amt:opts.noAmt?null:(opts.earned?_bkEarnedRev(b):_bkTotal(b)), onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')" }; }); }
   function drillKpi(which){ var nc=_isCommitted;   // realized bookings only (excludes pending pipeline + cancelled) -- ties to every revenue surface
     if(which==='rev'||which==='anaRev'){ _drill('Revenue', 'Every '+_fterm('book')+' behind your revenue (rental + collected add-on charges) &mdash; tap one to open it', _bkList(function(b){return nc(b)&&(which==='anaRev'||_inOvRange(b));},{earned:true}).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total revenue'}); }
     else if(which==='active'){ _drill(cap(_fterm('active')), 'Out on rent or confirmed right now', _bkList(function(b){return b.status==='On rent'||b.status==='Confirmed';},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing active right now.'}); }
@@ -4617,9 +4619,9 @@ const Atlas = (function(){
     for(var i=11;i>=0;i--){ var d=new Date(now.getFullYear(),now.getMonth()-i,1);
       var B={from:d.getTime(), to:new Date(d.getFullYear(),d.getMonth()+1,1).getTime()-1};
       var bks=(DATA.bookings||[]).filter(function(b){ return _bkInRange(b,B)&&(all||_assetKindByName(b.asset)===kind); });
-      var rev=bks.reduce(function(s,b){return s+_bkEarned(b);},0);
+      var rev=bks.reduce(function(s,b){return s+_bkEarnedRev(b);},0);
       var cancelFee=(DATA.bookings||[]).filter(function(b){ var t=_bDate(b); return b&&b.status==='Cancelled'&&t>=B.from&&t<=B.to&&(all||_assetKindByName(b.asset)===kind); }).reduce(function(s,b){return s+_collectedCharges(b);},0);
-      var income=all?_ledger().incomes.reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0):0;
+      var income=all?_allIncomes().reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0):0;
       var exp=_ledger().expenses.filter(function(e){ return _expInRange(e,B)&&(all||(e.assetKind||'')===kind); }).reduce(function(s,e){return s+(e.amount||0);},0);
       var payout=bks.reduce(function(s,b){return s+((b.quote&&b.quote.payoutAmt)||0);},0);
       var tax=bks.reduce(function(s,b){return s+_bkTax(b);},0);   // Payments G4: sales tax out of monthly net too
@@ -5211,7 +5213,7 @@ const Atlas = (function(){
   // Payments G4: the sales tax the customer PAID that the owner must REMIT to the state -- a pass-through liability, NOT profit.
   // Scaled to what was actually collected (a partial pay owes proportional tax). Rental tax from quote.taxAmt + tax embedded in
   // taxable paid charges. Subtracted from NET profit (never from the revenue/gross line), so the owner stops treating tax as income.
-  function _bkTax(b){ if(!b) return 0; var q=b.quote||{}, taxAmt=(q.taxAmt||0); var fullVal=_bkTotal(b)+_collectedCharges(b); var earned=_bkEarned(b); var frac=fullVal>0?Math.min(1,earned/fullVal):1; return _r2(taxAmt*frac + _collectedChargeTax(b)); }
+  function _bkTax(b){ if(!b) return 0; var q=b.quote||{}, taxAmt=(q.taxAmt||0); var fullVal=_bkTotal(b)+_collectedCharges(b); var earned=_bkEarned(b)+_giftApplied(b); var frac=fullVal>0?Math.min(1,earned/fullVal):1; return _r2(taxAmt*frac + _collectedChargeTax(b)); }   // gift-paid portion IS collected + taxable at redemption; min(1,) clamps the non-reconciled (accrual) case
   function _isCommitted(b){ return !!b && b.status!=='Cancelled' && b.status!=='Pending'; }
   // ---- Real metrics: ALL derived from _bookings() so the KPIs, charts, fleet grid, customers + Atlas.io agree ----
   // Per-asset utilization = share of the trailing 30 days this asset is booked (excludes cancelled).
@@ -7099,7 +7101,7 @@ const Atlas = (function(){
     try{ _materializeRecurring(); }catch(e){}   // generate any recurring expenses due, prune stale/orphaned ones, before anything on this panel reads the ledger
     // All derived from real bookings + your ledger -- reconciles with Overview + Reports (no hardcoded figures).
     var _nc=(DATA.bookings||[]).filter(_isCommitted);   // earned bookings -- revenue, count + avg all share this basis so they reconcile
-    var _rev=_nc.reduce((s,b)=>s+_bkEarned(b),0), _cnt=_nc.length, _avg=_cnt?_r2(_rev/_cnt):0;
+    var _rev=_nc.reduce((s,b)=>s+_bkEarnedRev(b),0), _cnt=_nc.length, _avg=_cnt?_r2(_rev/_cnt):0;
     var _byCust={}; _nc.forEach(b=>{ _byCust[b.cust]=(_byCust[b.cust]||0)+1; });
     var _cu=Object.keys(_byCust), _rep=_cu.filter(c=>_byCust[c]>=2).length, _repPct=_cu.length?Math.round(_rep/_cu.length*100):0;
     const k=[['Total revenue',money(_rev),'anaRev'],[cap(_fterm('books')),_cnt.toLocaleString(),'count'],['Avg. '+_fterm('book'),money(_avg),'avg'],['Repeat customers',_repPct+'%','repeat'],['Net Profit',money(_netProfit()),'net']];
@@ -7156,7 +7158,7 @@ const Atlas = (function(){
       +'<div class="mp-row mp-total" style="cursor:pointer" onclick="Atlas.drillKpi(\'anaRev\')"><span>Total booked</span><span class="tnum">'+money(total)+'</span></div>'
       +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillKpi(\'anaRev\')"><span>Collected to date</span><span class="tnum">'+money(coll)+'</span></div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'bookings\')">Bookings CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'tax\')">Tax Summary CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'events\')">Activity Log CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'accounting\')">QuickBooks / Xero</button></div>'
-      +'<div style="font-size:12px;color:var(--muted);margin-top:10px">'+r.label+' &middot; earned bookings only (pending + cancelled excluded) &mdash; the card shows booked value; "Collected to date" is cash actually received and ties to your P&amp;L. Bookings CSV and Tax CSV tie to the same bookings.</div>'; }
+      +'<div style="font-size:12px;color:var(--muted);margin-top:10px">'+r.label+' &middot; earned bookings only (pending + cancelled excluded) &mdash; the card shows booked value; "Collected to date" is cash + gift value collected (the Revenue KPI nets redeemed gift to its sale). Bookings CSV and Tax CSV tie to the same bookings.</div>'; }
   function drillReportRow(kind){ var r=_repRange(); var bks=(DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && (b.createdAt||b.startTs||0)>=r.from; });
     if(kind==='fees'){ _drill('Fees', r.label+' &middot; fees charged on top of the rental', bks.filter(function(b){return ((b.quote&&b.quote.feeTotal)||0)>0;}).map(function(b){ return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset)+' &middot; '+b.id, amt:(b.quote&&b.quote.feeTotal)||0, onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')"}; }), {totalLabel:'Total fees', empty:'No fees charged '+r.label.toLowerCase()+'.'}); }
     else { _drill('Tax collected', r.label+' &middot; sales tax collected on bookings + taxable charges', bks.filter(function(b){return (((b.quote&&b.quote.taxAmt)||0)+_collectedChargeTax(b))>0;}).map(function(b){ var t=((b.quote&&b.quote.taxAmt)||0)+_collectedChargeTax(b); return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset)+' &middot; '+b.id, amt:t, onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')"}; }), {totalLabel:'Total tax', empty:'No tax collected '+r.label.toLowerCase()+'.'}); } }
@@ -7198,7 +7200,7 @@ const Atlas = (function(){
       name='bookings'; }
     else if(kind==='tax'){ var r2=_repRange(); var b2=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r2.from;});
       var g=0,d=0,fe=0,t=0,ch=0,tot=0,coll=0; b2.forEach(function(b){ var q=b.quote||{}, cc=_collectedCharges(b); g+=(q.gross||q.subtotal||q.total||0); d+=(q.disc||0); fe+=(q.feeTotal||0); t+=(q.taxAmt||0)+_collectedChargeTax(b); ch+=cc; tot+=(q.total||0)+cc; coll+=_bkEarned(b); });   // Tax collected includes the tax embedded in taxable payment-widget/owner charges. G8: 'coll' = true cash-in (matches the P&L revenue KPI); 'tot' is the accrual booked value.
-      rows=[['Period','Bookings','Gross revenue (pre-tax)','Discounts','Fees','Tax collected','Add-on charges collected','Total booked (accrual)','Collected to date (matches P&L)'],[r2.label,b2.length,_c2(g),_c2(d),_c2(fe),_c2(t),_c2(ch),_c2(tot),_c2(coll)]]; name='tax-summary'; }   // Gross - Discounts + Fees + Tax + Add-on charges == Total booked reconciles; Collected reconciles to the dashboard revenue KPI
+      rows=[['Period','Bookings','Gross revenue (pre-tax)','Discounts','Fees','Tax collected','Add-on charges collected','Total booked (accrual)','Collected to date (cash + gift)'],[r2.label,b2.length,_c2(g),_c2(d),_c2(fe),_c2(t),_c2(ch),_c2(tot),_c2(coll)]]; name='tax-summary'; }   // Gross - Discounts + Fees + Tax + Add-on charges == Total booked reconciles; Collected = cash + gift value (revenue KPI nets gift to its sale)
     else if(kind==='accounting'){ var r3=_repRange(); var b3=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r3.from;});
       // Xero/QuickBooks-friendly sales rows (one invoice line per booking) -- import as sales invoices.
       rows=[['ContactName','InvoiceNumber','InvoiceDate','Description','Quantity','UnitAmount','TaxAmount','LineTotal','AccountCode']];
@@ -12221,7 +12223,7 @@ const Atlas = (function(){
     var netTotal=Math.max(0, total-gift);                        // rental owed after gift credit
     var reserve=Math.min(netTotal, Math.max(0, _r2(q.dueNow||0)));   // deposit-to-reserve (capped at net)
     var reservePaid=!!p.reservePaidAt, balancePaid=!!p.balancePaidAt;
-    var rentalPaid = balancePaid? billable : (reservePaid? reserve : 0);    // balancePaid settles the rental AND the pre-trip charges folded into it
+    var rentalPaid = 0;    // set below, once billable is known -- referencing billable before its var-declaration made this NaN -> 'Amount paid $0.00' on paid receipts
     var rentalDue = 0;   // set below, once the folded-in charges are known
     // MIRRORS the worker's _portalDue so this preview shows exactly what the customer's real portal shows: charges the owner
     // added BEFORE the trip starts fold into the balance (one payment, itemized); charges added once it is under way stay separate.
@@ -12232,6 +12234,7 @@ const Atlas = (function(){
     var preUnpaid=preAll.filter(function(c){ return !c.paidAt; });
     var preDue=preUnpaid.reduce(function(s,c){return s+_r2(c.amount||0);},0);
     var billable=netTotal+preDue;                                // everything payable in ONE payment right now
+    rentalPaid = balancePaid? billable : (reservePaid? reserve : 0);    // balancePaid settles the rental AND the pre-trip charges folded into it
     var chTotal=post.reduce(function(s,c){return s+_r2(c.amount||0);},0);
     var chPaid=post.reduce(function(s,c){return s+(c.paidAt?_r2(c.amount||0):0);},0);
     var chDue=Math.max(0, chTotal-chPaid);
