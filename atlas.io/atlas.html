@@ -2209,7 +2209,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20g';
+  var APP_VERSION='2026.7.20h';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -2449,11 +2449,12 @@ const Atlas = (function(){
       +'<div class="field"><label>Amount</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="gfAmt" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="100"></div></div>'
       +'<div class="row2"><div class="field"><label>To (optional)</label><input class="input" id="gfTo" placeholder="Recipient"></div><div class="field"><label>From (optional)</label><input class="input" id="gfFrom" placeholder="Your name / business"></div></div>'
       +'<div class="field"><label>Message (optional)</label><input class="input" id="gfMsg" placeholder="Happy birthday!"></div>'
+      +'<label style="display:flex;gap:8px;align-items:flex-start;margin:2px 0 6px;font-size:13px;cursor:pointer"><input type="checkbox" id="gfComp" style="margin-top:2px"> <span style="color:var(--muted)">Free / promotional card &mdash; not a sale, so it is excluded from revenue</span></label>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveGift()">Create gift card</button>'
       +'<div class="bk-lenhint" style="margin:10px 0 0">Generates a unique code plus a printable certificate. Redeem it on any booking and it draws down the balance as a credit.</div></div>'); }
   function saveGift(){ if(!_canMod('settings'))return; var amt=Math.round(Math.max(0,parseFloat(val('gfAmt'))||0)); if(amt<=0){ toast('Enter an amount'); return; }
     var code='GIFT'+Date.now().toString(36).toUpperCase().slice(-6); while(_findGift(code)){ code='GIFT'+(Date.now()+Math.floor(Math.random()*9999)).toString(36).toUpperCase().slice(-6); }
-    var g={ id:'gc'+Date.now().toString(36), code:code, initial:amt, balance:amt, to:(val('gfTo')||'').trim(), from:(val('gfFrom')||'').trim(), msg:(val('gfMsg')||'').trim(), createdAt:Date.now(), redeemed:[] };
+    var g={ id:'gc'+Date.now().toString(36), code:code, initial:amt, balance:amt, to:(val('gfTo')||'').trim(), from:(val('gfFrom')||'').trim(), msg:(val('gfMsg')||'').trim(), comped:!!(el('gfComp')&&el('gfComp').checked), createdAt:Date.now(), redeemed:[] };
     _giftcards().push(g); save(); _logEvent('gift','Gift card '+code+' issued ('+money(amt)+')',{code:code}); closeModal(); renderSet(); toast('Gift card '+code+' created ('+money(amt)+')'); giftCert(g.id); }
   function deleteGift(id){ if(!_canMod('settings'))return; var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return; if(!confirm('Delete gift card '+g.code+((g.initial||0)-(g.balance||0)>0?' (partly used)':'')+'?'))return; S.giftcards=_giftcards().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Gift card deleted'); }
   function giftCert(id){ var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return; var doc=_giftCertHtml(g);
@@ -4422,12 +4423,14 @@ const Atlas = (function(){
     return 'Up to '+t.vehicles+' '+n+(t.locations>=90?', multiple locations':''); }
   /* ============ Interactive drill-downs + income/expense ledger + blocked days ============ */
   function _ledger(){ if(!S.ledger) S.ledger={incomes:[],expenses:[]}; if(!S.ledger.incomes)S.ledger.incomes=[]; if(!S.ledger.expenses)S.ledger.expenses=[]; return S.ledger; }
+  function _giftSaleIncomes(){ return (S.giftcards||[]).filter(function(g){ return g && !g.comped; }).map(function(g){ return { date:(g.createdAt||0), amount:_r2(g.initial||0), gift:true, label:'Gift card '+(g.code||'')+' sold' }; }); }   // a gift card SALE is revenue, recognized ONCE at purchase (face value); comped/free promo cards excluded
+  function _allIncomes(){ return _ledger().incomes.concat(_giftSaleIncomes()); }   // manual 'other income' + gift-card sales -> every income rollup routes through this so gift value hits the P&L exactly once (at sale, never again at redemption)
   function _activeExpenses(){ return _ledger().expenses.filter(function(x){return !x._deleted;}); }   // soft-deleted (pruned recurring) rows are never real money -- every expense sum routes through this
-  function _otherIncome(){ return _ledger().incomes.reduce(function(s,x){return s+(x.amount||0);},0); }
+  function _otherIncome(){ return _allIncomes().reduce(function(s,x){return s+(x.amount||0);},0); }
   function _totalExpenses(){ return _activeExpenses().reduce(function(s,x){return s+(x.amount||0);},0); }
   function _payoutLabel(){ return (S.money&&S.money.payout&&S.money.payout.label)||'Partner payout'; }
   function _totalPayouts(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ return s+((b.quote&&b.quote.payoutAmt)||0); },0); }   // commission/split that leaves the owner on each booking -- a real deduction from take-home
-  function _bookingRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkEarned(b);},0); }   // rental + collected add-on charges (owner chose: count charges as income everywhere)
+  function _bookingRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkEarnedRev(b);},0); }   // rental + collected add-on charges, NET of any redeemed gift-card value (recognized at gift sale instead)
   function _cancelledFeeIncome(){ return (DATA.bookings||[]).filter(function(b){ return b&&b.status==='Cancelled'; }).reduce(function(s,b){ return s+_collectedCharges(b); },0); }   // kept cancellation fees, recognized when actually COLLECTED (cash basis); committed-basis rollups exclude cancelled bookings, so their paid charges are real income counted only here
   function _taxCollected(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ return s+_bkTax(b); },0); }   // Payments G4: sales tax collected = a liability owed to the state, excluded from net profit
   function _netProfit(){ return _bookingRevenue() + _otherIncome() + _cancelledFeeIncome() - _totalExpenses() - _totalPayouts() - _taxCollected(); }   // take-home subtracts partner payouts AND remitted sales tax (a pass-through liability, not income)
@@ -4461,7 +4464,7 @@ const Atlas = (function(){
       _drill('Repeat customers', 'Customers with 2 or more '+_fterm('books'), Object.keys(by).filter(function(c){return by[c].length>=2;}).map(function(c){return {n:by[c].length,name:c};}).sort(function(a,b){return b.n-a.n;}).map(function(x){return {label:'<b>'+esc(x.name)+'</b>',sub:x.n+' '+(x.n===1?_fterm('book'):_fterm('books')),chip:x.n>=2?'<span class="chip chip--ok" style="font-size:11px">Repeat</span>':''};}), {showTotal:false}); }   // fix: list only repeat customers (n>=2) to match the heading
     else if(which==='net'){ var _pay=_totalPayouts(), _cf=_cancelledFeeIncome(); var _nrows=[
       {label:'<b>Booking revenue</b>',sub:'earned '+_fterm('books'),amt:_bookingRevenue(),onClick:"Atlas.drillKpi('rev')"},
-      {label:'<b>Other income</b>',sub:_ledger().incomes.length+' logged',amt:_otherIncome(),onClick:"Atlas.drillLedger('income')"}];
+      {label:'<b>Other income</b>',sub:_allIncomes().length+' logged',amt:_otherIncome(),onClick:"Atlas.drillLedger('income')"}];
       if(_cf>0) _nrows.push({label:'<b>Cancellation fees kept</b>',sub:'collected on cancelled '+_fterm('books'),amt:_cf,onClick:"Atlas.drillLedger('income')"});
       _nrows.push({label:'<b>Expenses</b>',sub:_activeExpenses().length+' logged',amt:_totalExpenses(),neg:true,onClick:"Atlas.drillLedger('expense')"});
       if(_pay>0) _nrows.push({label:'<b>'+esc(_payoutLabel())+'</b>',sub:'commission on '+_fterm('books'),amt:_pay,neg:true,onClick:"Atlas.drillKpi('payout')"});
@@ -4480,11 +4483,11 @@ const Atlas = (function(){
     r.onload=function(e){ _downscaleImg(String(e.target.result||''),1100,0.6,function(d){ _ldPhoto=d; var p=document.getElementById('ldPhotoPrev'); if(p) p.innerHTML=_ldPhotoPrevHtml(); }); }; r.readAsDataURL(f); }
   function _ldPhotoClear(){ _ldPhoto=null; var p=document.getElementById('ldPhotoPrev'); if(p) p.innerHTML=''; var inp=document.getElementById('ldPhoto'); if(inp) inp.value=''; }
   function _ldRecToggle(){ var c=document.getElementById('ldRec'), f=document.getElementById('ldRecFields'); if(f) f.style.display=(c&&c.checked)?'grid':'none'; }
-  function drillLedger(kind){ var items=(kind==='income'?_ledger().incomes:_activeExpenses()).slice().sort(function(a,b){return (b.date||0)-(a.date||0);});
+  function drillLedger(kind){ var items=(kind==='income'?_allIncomes():_activeExpenses()).slice().sort(function(a,b){return (b.date||0)-(a.date||0);});
     _drill(kind==='income'?'Other income':'Expenses', kind==='income'?'Income beyond bookings':'Costs you have logged', items.map(function(x){
       var _as=x.assetId?(DATA.assets||[]).filter(function(a){return a.id===x.assetId;})[0]:null;
       var bits=[]; if(x.category) bits.push(esc(x.category)); if(_as) bits.push(esc(_as.name)); bits.push(_csvDate(x.date)); if(x.recurring) bits.push('Repeats '+esc(x.recurring).toLowerCase()); if(x._auto) bits.push('Auto');
-      return {label:'<b>'+esc(x.label)+'</b>'+(x.photo?' <span title="Has a receipt photo">&#128247;</span>':''),sub:bits.join(' &middot; '),amt:x.amount,neg:(kind==='expense'),chip:'<button class="btn btn--ghost btn--sm" style="padding:2px 7px" onclick="Atlas.editLedger(\''+kind+'\',\''+x.id+'\')">Edit</button> <button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:2px 7px" onclick="Atlas.rmLedger(\''+kind+'\',\''+x.id+'\')">Remove</button>'};}),
+      return {label:'<b>'+esc(x.label)+'</b>'+(x.photo?' <span title="Has a receipt photo">&#128247;</span>':''),sub:bits.join(' &middot; '),amt:x.amount,neg:(kind==='expense'),chip:(x.gift?'<span class="chip chip--muted" style="font-size:10px">Gift card sale</span>':('<button class="btn btn--ghost btn--sm" style="padding:2px 7px" onclick="Atlas.editLedger(\''+kind+'\',\''+x.id+'\')">Edit</button> <button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:2px 7px" onclick="Atlas.rmLedger(\''+kind+'\',\''+x.id+'\')">Remove</button>'))};}),
       {totalLabel:kind==='income'?'Total income':'Total expenses', empty:'None logged yet.', foot:'<button class="btn btn--primary btn--full btn--sm" style="margin-top:12px" onclick="Atlas.logLedger(\''+kind+'\')">+ Log '+(kind==='income'?'income':'an expense')+'</button>'}); }
   function logLedger(kind){ if(!_canMod('analytics')&&!_canMod('settings')){ toast('You do not have access to this'); return; }
     _ldPhoto=null; var isExp=(kind==='expense');
@@ -4589,8 +4592,8 @@ const Atlas = (function(){
   function _pnlKinds(){ var seen={}, out=[]; (DATA.assets||[]).forEach(function(a){ var k=_kindOfAsset(a); if(!seen[k]){ seen[k]=1; out.push(k); } }); return out; }
   function _pnlSummary(B,kind){ var all=(kind==='all');
     var bks=(DATA.bookings||[]).filter(function(b){ return _bkInRange(b,B) && (all||_assetKindByName(b.asset)===kind); });
-    var rev=bks.reduce(function(s,b){return s+_bkEarned(b);},0);
-    var income = all ? _ledger().incomes.reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0) : 0;
+    var rev=bks.reduce(function(s,b){return s+_bkEarnedRev(b);},0);
+    var income = all ? _allIncomes().reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0) : 0;
     var cancelFee=(DATA.bookings||[]).filter(function(b){ var t=_bDate(b); return b&&b.status==='Cancelled'&&t>=B.from&&t<=B.to&&(all||_assetKindByName(b.asset)===kind); }).reduce(function(s,b){return s+_collectedCharges(b);},0);
     var exp=_ledger().expenses.filter(function(e){ return _expInRange(e,B)&&(all||(e.assetKind||'')===kind); }).reduce(function(s,e){return s+(e.amount||0);},0);
     var payout=bks.reduce(function(s,b){return s+((b.quote&&b.quote.payoutAmt)||0);},0);
@@ -4601,10 +4604,10 @@ const Atlas = (function(){
     var rows=kinds.map(function(k){ var s=_pnlSummary(B,k); return {kind:k,rev:_r2(s.rev+s.cancelFee),exp:_r2(s.exp),net:_r2(s.net),margin:s.margin}; });
     // General / shared: other income (not tied to any asset) + expenses with no assetKind, PLUS any booking/expense whose
     // asset no longer resolves to a known kind (renamed/deleted asset) -- so this table always foots to the all-kind total.
-    var incomeInRange=_ledger().incomes.reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0);
+    var incomeInRange=_allIncomes().reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0);
     var genExp=_ledger().expenses.reduce(function(s,e){ if(!_expInRange(e,B)) return s; var ek=e.assetKind||''; return s+((!ek||!known[ek])?(e.amount||0):0); },0);
     var strayRev=0, strayPay=0;
-    (DATA.bookings||[]).forEach(function(b){ if(!_bkInRange(b,B)) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_bkEarned(b); strayPay+=((b.quote&&b.quote.payoutAmt)||0); });
+    (DATA.bookings||[]).forEach(function(b){ if(!_bkInRange(b,B)) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_bkEarnedRev(b); strayPay+=((b.quote&&b.quote.payoutAmt)||0); });
     (DATA.bookings||[]).forEach(function(b){ var t=_bDate(b); if(!b||b.status!=='Cancelled'||t<B.from||t>B.to) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_collectedCharges(b); });
     var gRev=_r2(incomeInRange+strayRev), gExp=_r2(genExp), gNet=_r2(gRev-gExp-strayPay);
     rows.push({kind:'General / shared',rev:gRev,exp:gExp,net:gNet,margin:(gRev>0?Math.round(gNet/gRev*1000)/10:0)});
@@ -4743,7 +4746,7 @@ const Atlas = (function(){
     DATA.bookings=_bookings();
     _recomputeUtil();   // real per-asset utilization from bookings -> KPI, charts + AI all agree
     const _bk=DATA.bookings.filter(b=>b.status!=='Cancelled');
-    const rev=_bk.filter(_isCommitted).filter(_inOvRange).reduce((s,b)=>s+_bkEarned(b),0);   // earned only, within the selected KPI date range (all = every time)
+    const rev=_bk.filter(_isCommitted).filter(_inOvRange).reduce((s,b)=>s+_bkEarnedRev(b),0);   // earned only, NET of redeemed gift value (recognized at gift sale), within the selected KPI date range
     const active=_bk.filter(b=>b.status==='On rent').length;   // On rent only -- Confirmed belongs to Upcoming (was double-counted in both KPIs)
     const util=Math.round(DATA.assets.reduce((s,a)=>s+a.util,0)/Math.max(1,DATA.assets.length));
     const kpis=[['Revenue'+(_ovRange!=='all'?(' \u00b7 '+_ovRangeBounds(_ovRange).short):''),money(rev),'rev','M10 2v16M6 6h6a2 2 0 010 4H6a2 2 0 000 4h7'],
@@ -5199,7 +5202,9 @@ const Atlas = (function(){
   // Realized revenue for a committed booking = the rental total (accrual) + any add-on charges collected. Used by every
   // REVENUE/INCOME rollup (Overview KPI, Analytics, Reports, source split, drill-downs, tax/QuickBooks) so they all tie out.
   // NOTE: customer "spend" + loyalty deliberately stay on _bkTotal (rental only) -- you don't reward points on a damage fee.
-  function _bkEarned(b){ if(b && typeof b.revCents==='number') return _r2(b.revCents/100 + _offlineCollectedCharges(b)); return _bkTotal(b) + _collectedCharges(b); }   // Payments G1/G2/G3: when the server has reconciled money on this booking, revenue = ACTUALLY COLLECTED (reserve+balance+online charges, NET of refunds) so the books tie to Stripe; a partial pay shows the partial, a refund lowers it. G7: revenue_cents already includes Stripe-settled (paidOnline) charges so we do NOT re-add those, but we DO add back charges paid offline/locally (paidAt without a webhook). Offline/unpaid (no revCents) fall back to the accrual total + all collected charges, unchanged.
+  function _bkEarned(b){ if(b && typeof b.revCents==='number') return _r2(b.revCents/100 + _offlineCollectedCharges(b)); return _bkTotal(b) + _collectedCharges(b); }
+  // P&L REVENUE basis = realized revenue MINUS any redeemed gift-card value. A gift card is booked as income once, at SALE (_giftSaleIncomes); the booking it is spent on must not re-count it. Caps at the booking's non-gift value so it is correct whether revCents is cash (already ex-gift) or the accrual total (incl. gift). Tax + spend/loyalty stay on _bkEarned (gift is a payment method, taxable at redemption).
+  function _bkEarnedRev(b){ var e=_bkEarned(b); var g=_giftApplied(b); if(g>0){ var ceil=_r2(_bkTotal(b)+_collectedCharges(b)-g); return _r2(Math.min(e, Math.max(0,ceil))); } return e; }   // Payments G1/G2/G3: when the server has reconciled money on this booking, revenue = ACTUALLY COLLECTED (reserve+balance+online charges, NET of refunds) so the books tie to Stripe; a partial pay shows the partial, a refund lowers it. G7: revenue_cents already includes Stripe-settled (paidOnline) charges so we do NOT re-add those, but we DO add back charges paid offline/locally (paidAt without a webhook). Offline/unpaid (no revCents) fall back to the accrual total + all collected charges, unchanged.
   // ONE basis for "realized business". A booking counts toward revenue, occupancy + reconciled reports only once it is
   // COMMITTED (accepted). Pending = pipeline -- shown ONLY in the Upcoming KPI + the Bookings tab, never counted as earned
   // revenue. Cancelled = excluded everywhere. Every money/util/report surface routes through this so they all tie out.
