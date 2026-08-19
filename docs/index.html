@@ -2826,6 +2826,7 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
       <button class="btn btn-sm" id="bdEvidenceBtn" onclick="" style="border-color:rgba(56,132,204,.45);color:#5aa9e6" title="Downloadable proof this transaction was authorized + fulfilled, to defend a false chargeback">&#128737;&#65039; Evidence</button>
       <button class="btn btn-sm" id="bdBackfillBtn" onclick="" style="border-color:rgba(99,91,255,.45);color:#8b86ff" title="Pull the exact Stripe charge, payment-intent and dispute ids from Stripe onto this booking (for the evidence report)">&#128260; Backfill Stripe IDs</button>
       <button class="btn btn-sm" id="bdCoverBtn" onclick="" style="border-color:rgba(184,152,46,.5);color:#c9a961" title="Auto-generate a dispute-response cover letter filled from this booking (renter, ID, signature, Stripe ids) -- ready to paste into Stripe">&#128221; Cover Letter</button>
+      <button class="btn btn-sm" id="bdAddIdsBtn" onclick="" style="border-color:rgba(99,91,255,.45);color:#8b86ff" title="Manually add Stripe payment + dispute ids from your Stripe Dashboard (for bookings Backfill cannot find)">&#10133; Stripe IDs</button>
       <button class="btn btn-sm" id="bdUnvoidBtn" onclick="" style="display:none;border-color:rgba(201,169,98,.4);color:var(--gold)">&#8617; Un-void</button>
       <button class="btn btn-sm" id="bdBlacklistBtn" onclick="" style="border-color:rgba(239,68,68,.4);color:#f87171">&#9940; Blacklist</button>
       <button class="btn" onclick="closeBookingDetail()">Close</button>
@@ -4894,7 +4895,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v341';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v342';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -12351,6 +12352,7 @@ function openBookingDetail(id){
     var _ev=$d('bdEvidenceBtn'); if(_ev){ _ev.onclick=function(){ _genChargebackEvidence(b.id); }; }
     var _bf=$d('bdBackfillBtn'); if(_bf){ _bf.onclick=function(){ _backfillStripeIds(b.id); }; }
     var _cn=$d('bdCoverBtn'); if(_cn){ _cn.onclick=function(){ _genDisputeCoverNote(b.id); }; }
+    var _ai=$d('bdAddIdsBtn'); if(_ai){ _ai.onclick=function(){ _stripeIdsModal(b.id); }; }
     var _vu=$d('bdUnvoidBtn'); if(_vu){ _vu.style.display=_vd?'':'none'; _vu.onclick=function(){ unvoidTrip(b.id); closeBookingDetail(); }; }
   })();
   $d('bdInvoiceBtn').onclick=function(){ generateInvoice(b.id); };
@@ -18236,7 +18238,7 @@ function _evIdentitySection(b){
    +'<tr><td class="k">Government ID</td><td class="v">'+(esc(v.idType||'')||'&mdash;')+(v.idNumber?(' &middot; #'+esc(v.idNumber)):'')+(v.idState?(' &middot; '+esc(v.idState)):'')+'</td></tr>'
    +'<tr><td class="k">ID expiry</td><td class="v">'+(esc(v.idExpiry||'')||'&mdash;')+'</td></tr>'
    +'<tr><td class="k">ID address</td><td class="v">'+(esc(v.idAddress||'')||'&mdash;')+'</td></tr>'
-   +'<tr><td class="k">Verified on (exact)</td><td class="v"><b>'+_evWhen(v.verifiedAt)+'</b></td></tr>'
+   +'<tr><td class="k">Verified on (exact)</td><td class="v"><b>'+_cdt(v.verifiedAt)+'</b></td></tr>'
    +(rk?('<tr><td class="k">Stripe risk assessment</td><td class="v">'+esc(String(rk))+'</td></tr>'):'');
   return '<h2>Cardholder Identity Verification &mdash; Stripe Identity</h2>'
     +'<div class="note">The individual below completed <b>Stripe Identity</b> government-ID verification. This is the same individual who electronically signed the rental agreement (timestamp &amp; signer IP above) and completed the card payment(s) in the ledger below &mdash; establishing the transaction was authorized by the verified cardholder, not an impostor.</div>'
@@ -18277,6 +18279,31 @@ function _evStripeLedger(b){
 // Effective PRIMARY signature for the summary: the current customerSig, else the most recent archived
 // version (a re-signed booking DELETES customerSig and moves the old one into _sigHistory -- which left
 // the summary blank). Returns {sig,at,date,vehicle,color,archived} or null. ASCII-safe.
+// Format a date/time for evidence docs in Central time, robustly. Accepts epoch ms/seconds OR a date
+// string (ISO or calendar). NEVER returns "Invalid Date" -- unparseable input returns the raw string.
+function _cdt(val, withTime){
+  if(val==null||val==='') return '';
+  var sv=String(val).trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(sv) || /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(sv)){
+    var dc=new Date(sv+(/^\d{4}-/.test(sv)?'T12:00:00':' 12:00:00'));
+    if(isNaN(dc.getTime())) return sv;
+    return dc.toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'});
+  }
+  var d, n;
+  if(typeof val==='number' || /^\d{9,13}$/.test(sv)){ n=Number(val); if(n<1e12) n*=1000; d=new Date(n); }
+  else d=new Date(sv);
+  if(isNaN(d.getTime())) return sv;
+  try{
+    var o=withTime?{timeZone:'America/Chicago',year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}
+                  :{timeZone:'America/Chicago',year:'numeric',month:'short',day:'numeric'};
+    return d.toLocaleString('en-US',o)+(withTime?' CT':'');
+  }catch(e){ return sv; }
+}
+// 24h "HH:MM" -> "H:MM AM/PM CT"
+function _ctime(t){
+  if(!t) return ''; var m=String(t).match(/^(\d{1,2}):(\d{2})/); if(!m) return String(t);
+  var h=+m[1], mi=m[2], ap=h>=12?'PM':'AM'; h=h%12; if(h===0) h=12; return h+':'+mi+' '+ap+' CT';
+}
 function _evPrimarySig(b){
   if(b && _isSigStr(b.customerSig)) return {sig:b.customerSig, at:Number(b.customerSigAt)||0, date:b.customerSigDate||'', vehicle:b.customerSigVehicle||b.vehicle||'', color:b.customerSigColor||''};
   if(b && Array.isArray(b._sigHistory)){ for(var i=b._sigHistory.length-1;i>=0;i--){ var h=b._sigHistory[i]; if(h && _isSigStr(h.sig)) return {sig:h.sig, at:Number(h.at)||0, date:h.date||'', vehicle:h.vehicle||'', color:h.color||'', archived:true}; } }
@@ -18371,7 +18398,8 @@ function _genDisputeCoverNote(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b){ toast('Booking not found.'); return; }
   var E=function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
   var mny=function(n){ return '$'+(Math.round((Number(n)||0)*100)/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); };
-  var when=function(ms){ if(!ms) return ''; try{ return new Date(Number(ms)).toLocaleString(); }catch(e){ return ''; } };
+  var DT=function(vv,t){ return (typeof _cdt==='function')?_cdt(vv,t):String(vv==null?'':vv); };
+  var TM=function(t){ return (typeof _ctime==='function')?_ctime(t):String(t==null?'':t); };
   var _ps=(typeof _evPrimarySig==='function')?_evPrimarySig(b):null;
   var v=b.verify||{};
   var sp=Array.isArray(b.stripePayments)?b.stripePayments:[];
@@ -18386,41 +18414,46 @@ function _genDisputeCoverNote(id){
   var amount=(dsp&&dsp.amount)?dsp.amount:totalRevenue(b);
   var isRide=(b.type==='chauffeur');
   var isW=(b.vehicle==='Polaris Slingshot');
+  var docType=isW?'Liability Waiver':'Rental Agreement';
+  var dl=docType.toLowerCase();
   var idLine=(v.idType||v.idNumber)?((v.idType||'Government ID')+(v.idNumber?(' #'+v.idNumber):'')+(v.idState?(' ('+v.idState+')'):'')):'';
-  var signedWhen=_ps?((_ps.date||'')||when(_ps.at)):'';
+  var verifiedOn=v.verifiedAt?DT(v.verifiedAt):'';
+  var signedOn=_ps?(_ps.at?DT(_ps.at,true):DT(_ps.date)):'';
+  var wasDelivered=(Number(b.delivery)>0)||!!(b.deliveryAddress);
+  var pickupWhen=(b.pickupDate||b.date)?(DT(b.pickupDate||b.date)+(b.pickupTime?(' at '+TM(b.pickupTime)):'')):'';
   var contact=(b.email||'')+((b.email&&b.phone)?' / ':'')+(b.phone||'');
   var ciN=((b.checkInPhotoIds||[]).length)+((b.customerPreTripPhotoIds||[]).length)+((b.customerPreTripPhotos||[]).length);
   var coN=((b.checkOutPhotoIds||[]).length)+((b.customerPostTripPhotoIds||[]).length)+((b.customerPostTripPhotos||[]).length);
   var P=[];
   P.push('PRESTIGE BLACK RENTALS \u2014 DISPUTE / CHARGEBACK RESPONSE');
   P.push('Merchant: Prestige Black Rentals, Dallas\u2013Fort Worth, TX\nContact: prestigeblackcorp@gmail.com, (214) 207-2481');
-  P.push('Dispute / case #: '+(dsp&&dsp.id?dsp.id:'[enter the dp_ id from Stripe]')+
-         '\nStripe payment id(s): '+(ids.length?ids.join(', '):'[run "Backfill Stripe IDs", or copy pi_/ch_ from Stripe]')+
+  P.push('Dispute / case #: '+(dsp&&dsp.id?dsp.id:'[enter the dispute id from Stripe]')+
+         '\nStripe payment id(s): '+(ids.length?ids.join(', '):'[add via "Stripe IDs", or copy pi_/ch_ from Stripe]')+
          '\nBooking reference: '+(b.id||'')+
          '\nCardholder / renter: '+(b.name||'')+
-         '\nAmount disputed: '+mny(amount)+(lastPaid?('   \u00B7   Transaction date: '+when(lastPaid)):'')+
-         '\nResponse prepared: '+when(Date.now()));
+         '\nAmount disputed: '+mny(amount)+(lastPaid?('   \u00B7   Transaction date: '+DT(lastPaid,true)):'')+
+         '\nResponse prepared: '+DT(Date.now(),true));
   if(isRide){
     P.push('To whom it may concern,');
     P.push('We are responding to the dispute filed against the transaction above. This was a legitimate, cardholder-authorized transportation service that was requested and fully delivered. The attached Transaction Evidence Record supports every point below.');
-    P.push('1. The cardholder booked and authorized the service. '+(b.name||'The customer')+' requested chauffeur / transportation service'+(b.pickupDate?(' for '+b.pickupDate+(b.pickupTime?(' at '+b.pickupTime):'')):'')+' and authorized the fare of '+mny(amount)+' through our secure Stripe checkout'+(ids.length?(' (transaction '+ids[0]+')'):'')+'.');
+    P.push('1. The cardholder booked and authorized the service. '+(b.name||'The customer')+' requested chauffeur / transportation service'+(pickupWhen?(' for '+pickupWhen):'')+' and authorized the fare of '+mny(amount)+' through our secure Stripe checkout'+(ids.length?(' (transaction '+ids[0]+')'):'')+'.');
     P.push('2. The customer is identified. The booking was placed under '+(b.name||'')+(contact?(', '+contact):'')+(idLine?('; identity verified: '+idLine+(v.idName?(', '+v.idName):'')):'')+'. This was not anonymous or unauthorized use of the card.');
-    P.push('3. The service was performed. The trip was completed on '+(b.pickupDate||b.date||'[service date]')+'. Dispatch, pickup and drop-off details for the ride are retained on the booking record'+((b.address||b.dropoffAddress)?(' ('+[b.address,b.dropoffAddress].filter(Boolean).join(' \u2192 ')+')'):'')+'.');
+    P.push('3. The service was performed. The trip was completed on '+(DT(b.pickupDate||b.date)||'[service date]')+'. Dispatch, pickup and drop-off details for the ride are retained on the booking record'+((b.address||b.dropoffAddress)?(' ('+[b.address,b.dropoffAddress].filter(Boolean).join(' \u2192 ')+')'):'')+'.');
     P.push('4. Terms were disclosed and agreed. The fare, and any applicable stop or wait charges, were disclosed at booking and accepted before payment. The disputed amount matches the agreed fare; there was no duplicate or undisclosed charge.');
     P.push('The service the cardholder requested was delivered in full and the amount charged is exactly what they authorized. We respectfully request that this dispute be resolved in the merchant\u2019s favor.');
   } else {
     P.push('To whom it may concern,');
     P.push('We are responding to the dispute filed against the transaction above. This was a legitimate, cardholder-authorized vehicle-rental transaction that was fully performed. The attached Transaction Evidence Record substantiates every point below.');
-    P.push('1. The cardholder personally authorized the charge. The renter, '+(b.name||'')+', booked the '+(b.vehicle||'vehicle')+(b.pickupDate?(' for '+b.pickupDate+(b.dropoffDate?(' \u2192 '+b.dropoffDate):'')):'')+' and agreed to the total of '+mny(totalRevenue(b))+'. Payment was made through our secure Stripe checkout'+(ids.length?(' (transaction '+ids.join(', ')+')'):'')+'.');
-    P.push('2. '+(idLine?('Identity was verified \u2014 this was not unauthorized card use. Before releasing the vehicle we verified the renter\u2019s government ID: '+idLine+(v.idName?(', name '+v.idName):'')+(v.verifiedAt?(', on '+when(v.verifiedAt)):'')+'. The name on the verified ID matches the booking and the signed agreement.'):('The renter is identified. The booking was placed under '+(b.name||'')+(contact?(', '+contact):'')+', who signed the rental agreement below.')));
-    P.push('3. A binding rental agreement was electronically signed. '+(signedWhen?('The renter signed our Rental Agreement'+(isW?' and Liability Waiver':'')+' on '+signedWhen+(b.customerSigIP?(' from IP '+b.customerSigIP):'')+'. The signature image, exact timestamp and full agreement text are reproduced in the attached Evidence Report under "Signed Documents On File".'):('A signed agreement is on file for this booking and is reproduced in the attached Evidence Report.')));
-    P.push('4. The vehicle was delivered and taken into the renter\u2019s possession. Pickup occurred on '+(b.pickupDate||b.date||'[pickup date]')+(b.pickupTime?(' at '+b.pickupTime):'')+(b.address?(', '+b.address):'')+'.'+((ciN||coN)?(' Condition photos time-stamped at handover'+(coN?' and return':'')+' are retained on the booking ('+ciN+' pickup / '+coN+' return).'):''));
+    P.push('1. The cardholder personally authorized the charge. The renter, '+(b.name||'')+', booked the '+(b.vehicle||'vehicle')+((b.pickupDate||b.date)?(' for '+DT(b.pickupDate||b.date)+(b.dropoffDate?(' \u2192 '+DT(b.dropoffDate)):'')):'')+' and agreed to the total of '+mny(totalRevenue(b))+'. Payment was made through our secure Stripe checkout'+(ids.length?(' (transaction '+ids.join(', ')+')'):'')+'.');
+    P.push('2. '+(idLine?('Identity was verified \u2014 this was not unauthorized card use. Before releasing the vehicle we verified the renter\u2019s government ID: '+idLine+(v.idName?(', name '+v.idName):'')+(verifiedOn?(', on '+verifiedOn):'')+'. The name on the verified ID matches the booking and the signed '+dl+'.'):('The renter is identified. The booking was placed under '+(b.name||'')+(contact?(', '+contact):'')+', who signed the '+dl+' below.')));
+    P.push('3. A binding '+dl+' was electronically signed. '+(signedOn?('The renter signed our '+docType+' on '+signedOn+(b.customerSigIP?(' from IP '+b.customerSigIP):'')+'. The signature image, exact timestamp and full '+dl+' text are reproduced in the attached Evidence Report under "Signed Documents On File".'):('A signed '+dl+' is on file for this booking and is reproduced in the attached Evidence Report.')));
+    P.push('4. The renter took possession of the vehicle. '+(wasDelivered?('The vehicle was delivered to the renter'+(pickupWhen?(' on '+pickupWhen):'')+(b.address?(', '+b.address):'')+'.'):('Pickup'+(pickupWhen?(' occurred on '+pickupWhen):' occurred')+(b.address?(', '+b.address):'')+', where the renter took possession of the vehicle.'))+((ciN||coN)?(' Condition photos time-stamped at handover'+(coN?' and return':'')+' are retained on the booking ('+ciN+' pickup / '+coN+' return) and are included in the Evidence Report.'):''));
     P.push('5. The disputed amount reflects agreed, disclosed terms. The charge equals the amount the renter agreed to at signing. Our cancellation and date-lock terms \u2014 including that the $100 date-lock is non-refundable \u2014 were disclosed and accepted before payment. No undisclosed or duplicate charge was made.');
-    P.push('Because the cardholder was '+(idLine?'identity-verified, ':'')+'personally signed the agreement, took possession of the vehicle, and paid an amount they expressly agreed to, we respectfully request that this dispute be resolved in the merchant\u2019s favor.');
+    P.push('Because the cardholder was '+(idLine?'identity-verified, ':'')+'personally signed the '+dl+', took possession of the vehicle, and paid an amount they expressly agreed to, we respectfully request that this dispute be resolved in the merchant\u2019s favor.');
   }
   P.push('Sincerely,\nPrestige Black Rentals');
-  P.push('EVIDENCE ATTACHED:\n\u2022 Transaction Evidence Record (signatures, ID verification, Stripe id ledger, extensions, timeline)\n\u2022 Signed Rental Agreement'+(isW?' / Liability Waiver':'')+' with signature image + timestamp'+(idLine?'\n\u2022 Government-ID verification record':'')+'\n\u2022 Stripe Transaction Ledger (pi_/ch_ ids, amounts, paid/disputed timestamps)'+((ciN||coN)?('\n\u2022 Condition photos at pickup'+(coN?' and return':'')):'')+(isRide?'\n\u2022 Dispatch / pickup-dropoff details for the ride':''));
-  if(dsp&&dsp.dueBy){ P.push('NOTE: Stripe evidence is due by '+when(dsp.dueBy)+'. Submit before then.'); }
+  P.push('EVIDENCE ATTACHED:\n\u2022 Transaction Evidence Record (signatures, ID verification, Stripe id ledger, extensions, timeline)\n\u2022 Signed '+docType+' with signature image + timestamp'+(idLine?'\n\u2022 Government-ID verification record':'')+'\n\u2022 Stripe Transaction Ledger (pi_/ch_ ids, amounts, paid/disputed timestamps)'+((ciN||coN)?('\n\u2022 Condition photos at pickup'+(coN?' and return':'')+' (embedded in the Evidence Report)'):'')+(isRide?'\n\u2022 Dispatch / pickup-dropoff details for the ride':''));
+  if(dsp&&dsp.dueBy){ P.push('NOTE: Stripe evidence is due by '+DT(dsp.dueBy,true)+'. Submit before then.'); }
   var txt=P.join('\n\n');
   var paras=P.map(function(t,i){ var cls=(i===0)?'h1':(i===1?'sub':((/^EVIDENCE ATTACHED|^NOTE:/).test(t)?'idx':'p')); return '<div class="'+cls+'">'+E(t).replace(/\n/g,'<br>')+'</div>'; }).join('');
   var docHtml='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Dispute Cover Letter '+E(b.id||'')+'</title><style>'
@@ -18445,6 +18478,87 @@ function _genDisputeCoverNote(id){
     };
   },60); }catch(e){}
   try{ w.focus(); }catch(e){}
+}
+
+
+// Manually attach REAL Stripe payment + dispute ids to a booking (from the owner's Stripe Dashboard) so
+// the evidence report + cover letter show exact transaction numbers on bookings Backfill can't match
+// (older payments whose PaymentIntent was never tagged with the booking id). Writes b.stripePayments[] /
+// b.disputes[] exactly like the worker capture would. Owner action only. ASCII-safe.
+var _sidBookingId=null;
+function _stripeIdsModal(id){
+  var b=bookings.find(function(x){return x.id===id;}); if(!b){ toast('Booking not found'); return; }
+  _sidBookingId=id;
+  var _o=$d('sidOverlay'); if(_o) _o.remove();
+  var ov=document.createElement('div'); ov.id='sidOverlay';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:10002;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
+  ov.innerHTML='<div id="sidCard" style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;width:100%;max-width:540px;margin:24px auto;max-height:none"></div>';
+  ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
+  document.body.appendChild(ov);
+  _renderStripeIdsModal();
+}
+function _renderStripeIdsModal(){
+  var b=bookings.find(function(x){return x.id===_sidBookingId;}); if(!b) return;
+  var card=$d('sidCard'); if(!card) return;
+  var sp=Array.isArray(b.stripePayments)?b.stripePayments:[];
+  var dp=Array.isArray(b.disputes)?b.disputes:[];
+  var money=function(n){ return '$'+(Math.round((Number(n)||0)*100)/100).toFixed(2); };
+  var payList=sp.length?sp.map(function(p,i){ return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(p.paymentIntentId||p.chargeId||p.sessionId||'?')+' \u00B7 '+money(p.amount)+(p._manual?' (manual)':'')+'</span><button class="btn btn-sm" onclick="_sidDelPay('+i+')" title="Remove" style="color:var(--red);border-color:rgba(239,68,68,.3);flex:none">\u2715</button></div>'; }).join(''):'<div class="muted" style="font-size:12px;padding:4px 0">No payments recorded yet.</div>';
+  var dpList=dp.length?dp.map(function(d,i){ return '<div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(d.id||'?')+' \u00B7 '+money(d.amount)+' \u00B7 '+esc(d.status||'')+(d._manual?' (manual)':'')+'</span><button class="btn btn-sm" onclick="_sidDelDp('+i+')" title="Remove" style="color:var(--red);border-color:rgba(239,68,68,.3);flex:none">\u2715</button></div>'; }).join(''):'<div class="muted" style="font-size:12px;padding:4px 0">No disputes recorded yet.</div>';
+  card.innerHTML=
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><div style="font-size:16px;font-weight:800">Stripe IDs \u2014 '+esc(b.name||'')+'</div><button class="btn btn-sm" onclick="var o=$d(\'sidOverlay\');if(o)o.remove();">Close</button></div>'+
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:14px;line-height:1.5">Paste real ids from your Stripe Dashboard so the evidence report + cover letter show exact transaction numbers. Use this for older bookings that Backfill cannot find. Nothing is charged; these are reference ids only.</div>'+
+    '<div style="font-weight:700;font-size:12px;margin:6px 0 2px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">Payments</div>'+payList+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:10px 0 16px">'+
+      '<input id="sidPi" class="finput" placeholder="Payment intent  pi_..." autocomplete="off">'+
+      '<input id="sidCh" class="finput" placeholder="Charge  ch_...  (optional)" autocomplete="off">'+
+      '<input id="sidPayAmt" class="finput" type="number" step="0.01" min="0" placeholder="Amount $">'+
+      '<button class="btn" onclick="_sidAddPay()" style="background:var(--gold);color:#000;border-color:var(--gold);font-weight:700">Add payment</button>'+
+    '</div>'+
+    '<div style="font-weight:700;font-size:12px;margin:6px 0 2px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)">Disputes / chargebacks</div>'+dpList+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:10px 0 2px">'+
+      '<input id="sidDpId" class="finput" placeholder="Dispute id  du_ / dp_..." autocomplete="off">'+
+      '<input id="sidDpPi" class="finput" placeholder="On payment  pi_ / ch_..." autocomplete="off">'+
+      '<input id="sidDpAmt" class="finput" type="number" step="0.01" min="0" placeholder="Amount $">'+
+      '<select id="sidDpStatus" class="finput"><option value="needs_response">needs_response (open)</option><option value="under_review">under_review</option><option value="won">won (we won)</option><option value="lost">lost (customer won)</option><option value="charge_refunded">charge_refunded</option></select>'+
+      '<input id="sidDpReason" class="finput" placeholder="Reason (fraudulent, product_not_received, ...)" style="grid-column:1/3" autocomplete="off">'+
+      '<button class="btn" onclick="_sidAddDp()" style="grid-column:1/3;background:var(--gold);color:#000;border-color:var(--gold);font-weight:700">Add dispute</button>'+
+    '</div>';
+}
+function _sidAddPay(){
+  var b=bookings.find(function(x){return x.id===_sidBookingId;}); if(!b) return;
+  var pi=(($d('sidPi')&&$d('sidPi').value)||'').trim();
+  var ch=(($d('sidCh')&&$d('sidCh').value)||'').trim();
+  var amt=Number(($d('sidPayAmt')&&$d('sidPayAmt').value)||0)||0;
+  if(!pi&&!ch){ toast('Enter a pi_ or ch_ id'); return; }
+  b.stripePayments=Array.isArray(b.stripePayments)?b.stripePayments:[];
+  b.stripePayments.push({sessionId:'',paymentIntentId:pi,chargeId:ch,amount:amt,currency:'usd',kind:'manual',at:Date.now(),_manual:true});
+  b._t=Date.now(); save(); if(typeof flushCloudSave==='function') flushCloudSave();
+  toast('Payment id added \u2705'); _renderStripeIdsModal();
+}
+function _sidAddDp(){
+  var b=bookings.find(function(x){return x.id===_sidBookingId;}); if(!b) return;
+  var did=(($d('sidDpId')&&$d('sidDpId').value)||'').trim();
+  var onp=(($d('sidDpPi')&&$d('sidDpPi').value)||'').trim();
+  var amt=Number(($d('sidDpAmt')&&$d('sidDpAmt').value)||0)||0;
+  var st=(($d('sidDpStatus')&&$d('sidDpStatus').value)||'').trim();
+  var rsn=(($d('sidDpReason')&&$d('sidDpReason').value)||'').trim();
+  if(!did){ toast('Enter the dispute id'); return; }
+  var pi=(/^pi_/.test(onp))?onp:''; var ch=(/^ch_/.test(onp))?onp:'';
+  b.disputes=Array.isArray(b.disputes)?b.disputes:[];
+  b.disputes.push({id:did,paymentIntentId:pi,chargeId:ch,amount:amt,currency:'usd',status:st,reason:rsn,createdAt:Date.now(),_manual:true});
+  b._t=Date.now(); save(); if(typeof flushCloudSave==='function') flushCloudSave();
+  toast('Dispute added \u2705'); try{ render(); }catch(e){} _renderStripeIdsModal();
+}
+function _sidDelPay(i){
+  var b=bookings.find(function(x){return x.id===_sidBookingId;}); if(!b||!Array.isArray(b.stripePayments)) return;
+  if(!confirm('Remove this payment id from the booking record?')) return;
+  b.stripePayments.splice(i,1); b._t=Date.now(); save(); if(typeof flushCloudSave==='function') flushCloudSave(); _renderStripeIdsModal();
+}
+function _sidDelDp(i){
+  var b=bookings.find(function(x){return x.id===_sidBookingId;}); if(!b||!Array.isArray(b.disputes)) return;
+  if(!confirm('Remove this dispute from the booking record?')) return;
+  b.disputes.splice(i,1); b._t=Date.now(); save(); if(typeof flushCloudSave==='function') flushCloudSave(); try{ render(); }catch(e){} _renderStripeIdsModal();
 }
 
 function _genChargebackEvidence(id){
@@ -18523,11 +18637,30 @@ function _genChargebackEvidence(id){
    +row('Pickup / pre-trip photos', ciN?('<b>'+ciN+'</b> timestamped photo(s) retained'):'<span class="muted">none on file</span>')
    +row('Return / post-trip photos', coN?('<b>'+coN+'</b> timestamped photo(s) retained'):'<span class="muted">none on file</span>')
    +'</table>'
-   +_evIdentitySection(b)+_evStripeLedger(b)+_evAgreement(b)+_evSignedDocs(b)
+   +'<div id="evCondPhotos" class="muted" style="margin-top:8px">Loading condition photos...</div>'+_evIdentitySection(b)+_evStripeLedger(b)+_evAgreement(b)+_evSignedDocs(b)
    +'<div class="ft">Business record generated by Prestige Black Rentals from the booking on file. Signature, timestamps, signer IP (where captured), payment records, extension agreements and communication history are reproduced verbatim and were not altered for this report. Reference '+E(ref)+'. This document is provided to substantiate a legitimate, cardholder-authorized transaction in response to a dispute.</div>'
    +'</div></body></html>';
   var w=window.open('','_blank'); if(!w){ toast('Allow pop-ups to open the evidence report.'); return; }
   w.document.open(); w.document.write(H); w.document.close(); try{ w.focus(); }catch(e){}
+  try{
+    var _ciIds=(b.checkInPhotoIds||[]).concat(b.customerPreTripPhotoIds||[]);
+    var _coIds=(b.checkOutPhotoIds||[]).concat(b.customerPostTripPhotoIds||[]);
+    var _inPre=(b.customerPreTripPhotos||[]).filter(function(x){return /^data:image\//.test(x);});
+    var _inPost=(b.customerPostTripPhotos||[]).filter(function(x){return /^data:image\//.test(x);});
+    var _pimg=function(src){ return '<img src="'+src+'" style="max-width:230px;max-height:180px;margin:4px;border:1px solid #ccc;vertical-align:top"/>'; };
+    var _paint=function(map){
+      var grp=function(ids,inl){ var h=(inl||[]).map(_pimg); (ids||[]).forEach(function(id){ if(map&&map[id]) h.push(_pimg(map[id])); }); return h.join(''); };
+      var pre=grp(_ciIds,_inPre), post=grp(_coIds,_inPost), html='';
+      if(pre) html+='<div style="font-weight:700;color:#0a3d62;margin:8px 0 4px">Pickup / Pre-Trip Condition Photos</div>'+pre;
+      if(post) html+='<div style="font-weight:700;color:#0a3d62;margin:12px 0 4px">Return / Post-Trip Condition Photos</div>'+post;
+      if(!html) html='<span class="muted">No condition photo images could be loaded on this device.</span>';
+      try{ var el=w.document.getElementById('evCondPhotos'); if(el){ el.className=''; el.innerHTML=html; } }catch(e){}
+    };
+    var _allIds=_ciIds.concat(_coIds);
+    if(_allIds.length && typeof dbLoadPhotos==='function'){ dbLoadPhotos(_allIds, function(loaded){ var m={}; (loaded||[]).forEach(function(p){ if(p&&p.id) m[p.id]=p.data; }); _paint(m); }); }
+    else { _paint({}); }
+  }catch(e){}
+
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
