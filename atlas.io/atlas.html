@@ -2204,7 +2204,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19y';
+  var APP_VERSION='2026.7.19z';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -2649,7 +2649,11 @@ const Atlas = (function(){
     if(!isAuto){ left+='<div class="row2"><div class="field"><label>Send to</label><select class="select" id="ebAudience" onchange="Atlas.previewEmail()">'
       +'<option value="all">All customers ('+_audienceCount('all')+')</option>'
       +'<option value="active">Active renters ('+_audienceCount('active')+')</option>'
-      +'<option value="past">Past customers ('+_audienceCount('past')+')</option></select></div>'
+      +'<option value="past">Past customers ('+_audienceCount('past')+')</option>'
+      +'<option value="repeat">Repeat customers ('+_audienceCount('repeat')+')</option>'
+      +'<option value="vip">Top customers by value ('+_audienceCount('vip')+')</option>'
+      +'<option value="winback">Win-back &mdash; lapsed 60+ days ('+_audienceCount('winback')+')</option>'
+      +'<option value="verified">ID-verified customers ('+_audienceCount('verified')+')</option></select></div>'
       +'<div class="field"><label>Channel</label><select class="select" id="ebChannel" onchange="Atlas.previewEmail()"><option value="email">Email</option><option value="sms">SMS text</option><option value="both">Email + SMS</option></select></div></div>'
       +'<div class="bk-lenhint" id="ebComplyHint" style="margin:0 0 12px">Once sending is live, every email carries a working one-tap unsubscribe and your business address (CAN-SPAM).</div>'; }
     left+='<div class="field"><label>Subject</label><input class="input" id="ebSubject" value="'+esc(subject)+'" oninput="Atlas.previewEmail()" placeholder="Your booking is confirmed"></div>'
@@ -2670,23 +2674,43 @@ const Atlas = (function(){
         : 'Once sending is live, every email carries a working one-tap unsubscribe and your business address (CAN-SPAM).'; } }
   // SMS eligibility = customers who gave explicit consent (captured + timestamped in their portal). Never text without it.
   function _smsConsentNames(){ var n={}; (DATA.bookings||[]).forEach(function(b){ if(b.commsPref&&b.commsPref.sms&&b.commsPref.smsConsentAt) n[b.cust]=1; }); return n; }
+  // Behavioral audience segments -> membership test by customer NAME (the key the composer joins on everywhere).
+  // Read-only, from committed bookings so counts reconcile with Analytics + the Customer-analytics card.
+  var _segCacheV=null, _segCacheT=0;
+  function _segStats(){ var now=Date.now(); if(_segCacheV && (now-_segCacheT)<3000) return _segCacheV;
+    var val={}, cnt={}, last={}, ver={};
+    (DATA.bookings||[]).forEach(function(b){ if(!b||!b.cust)return; var nm=b.cust;
+      var ts=Number(b.startTs)||Number(b.createdAt)||0; if(ts>(last[nm]||0)) last[nm]=ts;
+      if(b.idVerified) ver[nm]=1;
+      if(_isCommitted(b)){ val[nm]=(val[nm]||0)+(_bkEarned(b)||0); cnt[nm]=(cnt[nm]||0)+1; } });
+    var vals=Object.keys(val).map(function(k){return val[k];}).filter(function(v){return v>0;}).sort(function(a,b){return b-a;});
+    var vipCut=vals.length?vals[Math.max(0,Math.ceil(vals.length*0.2)-1)]:Infinity;   // top ~20% by lifetime value (min 1 customer)
+    _segCacheV={val:val,cnt:cnt,last:last,ver:ver,vipCut:vipCut,now:now}; _segCacheT=now; return _segCacheV; }
+  // aud all/active/past keep EXACT prior behavior; repeat/vip/winback/verified are additive. act=active-name map from the caller.
+  function _segTest(c, aud, act){ var nm=c.name; if(!aud||aud==='all')return true;
+    if(aud==='active')return !!act[nm]; if(aud==='past')return !act[nm];
+    var s=_segStats();
+    if(aud==='repeat')  return (s.cnt[nm]||0)>=2;
+    if(aud==='vip')     return (s.val[nm]||0)>0 && (s.val[nm]||0)>=s.vipCut;
+    if(aud==='winback') return !act[nm] && (s.last[nm]>0) && (s.now-s.last[nm])>60*86400000 && (s.cnt[nm]||0)>=1;
+    if(aud==='verified')return !!s.ver[nm];
+    return true; }
   function _smsEligible(aud){ var names=_smsConsentNames(), cs=DATA.customers||[], act={};
     (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') act[b.cust]=1; });
-    return cs.filter(function(c){ if(!names[c.name])return false; if(aud==='active')return !!act[c.name]; if(aud==='past')return !act[c.name]; return true; }).length; }
+    return cs.filter(function(c){ if(!names[c.name])return false; return _segTest(c,aud,act); }).length; }
   function _emailOptOut(){ var n={}, t={}; (DATA.bookings||[]).forEach(function(b){ if(b.commsPref && typeof b.commsPref.email==='boolean'){ var w=b.updatedAt||b.createdAt||0; if(w>=(t[b.cust]||0)){ t[b.cust]=w; n[b.cust]=(b.commsPref.email===false); } } }); return n; }   // #3: customers who turned email OFF (latest pref per customer wins)
   function _emailEligible(aud){ var opt=_emailOptOut(), cs=DATA.customers||[], act={};
     (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') act[b.cust]=1; });
-    return cs.filter(function(c){ if(opt[c.name])return false; if(aud==='active')return !!act[c.name]; if(aud==='past')return !act[c.name]; return true; }).length; }   // email audience minus opt-outs (honors the one-tap unsubscribe)
+    return cs.filter(function(c){ if(opt[c.name])return false; return _segTest(c,aud,act); }).length; }   // email audience minus opt-outs (honors the one-tap unsubscribe)
   // Same filter as _emailEligible, but returns the actual [{email,name}] recipients (drops anyone with no email on file) so a live send matches the counted number.
   function _emailAudienceList(aud){ var opt=_emailOptOut(), cs=DATA.customers||[], act={};
     (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') act[b.cust]=1; });
-    return cs.filter(function(c){ if(opt[c.name]||!c.email)return false; if(aud==='active')return !!act[c.name]; if(aud==='past')return !act[c.name]; return true; })
+    return cs.filter(function(c){ if(opt[c.name]||!c.email)return false; return _segTest(c,aud,act); })
       .map(function(c){ return { email:c.email, name:c.name }; }); }
   function saveEmailTemplate(kind){ if(!_canMod('settings'))return; var cm=_comms(); cm.autos[kind].subject=val('ebSubject'); cm.autos[kind].body=val('ebBody'); save(); closeModal(); renderSet(); toast('Template saved'); }
-  function _audienceCount(aud){ var cs=DATA.customers||[]; if(aud==='all')return cs.length;
-    var activeNames={}; (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') activeNames[b.cust]=1; });
-    if(aud==='active') return cs.filter(function(c){return activeNames[c.name];}).length;
-    return cs.filter(function(c){return !activeNames[c.name];}).length; }
+  function _audienceCount(aud){ var cs=DATA.customers||[]; if(aud==='all'||!aud)return cs.length;
+    var act={}; (DATA.bookings||[]).forEach(function(b){ if(b.status==='On rent'||b.status==='Confirmed'||b.status==='Pending') act[b.cust]=1; });
+    return cs.filter(function(c){return _segTest(c,aud,act);}).length; }
   function sendCampaign(){ if(!_canMod('settings'))return; var cm=_comms(); var aud=val('ebAudience')||'all', channel=val('ebChannel')||'email';
     var subject=val('ebSubject').trim(), body=val('ebBody').trim();
     if(channel!=='sms' && !subject){ toast('Add a subject'); return; } if(!body){ toast('Write a message'); return; }
@@ -2706,7 +2730,7 @@ const Atlas = (function(){
     var doEmail = emailN>0;                                   // email recipients minus opt-outs
     var wantSms = (channel!=='email') && smsN>0;              // SMS only when asked AND at least one consented number exists (channel==='sms'+0 already returned above)
     if(!doEmail && !wantSms){ toast(channel==='email'?'Nothing to send':'No one to send to yet'); return; }
-    var audLabel={all:'All customers',active:'Active renters',past:'Past customers'}[aud]||aud;
+    var audLabel={all:'All customers',active:'Active renters',past:'Past customers',repeat:'Repeat customers',vip:'Top customers by value',winback:'Win-back (lapsed 60+ days)',verified:'ID-verified customers'}[aud]||aud;
     // EMAIL: count + record only what truly goes out (unchanged send behavior)
     if(doEmail){
       cm.sentThisMonth+=emailN;   // plan-cap meter only -- an estimate is fine here (renews monthly); the campaign LOG below records the worker-confirmed count instead
