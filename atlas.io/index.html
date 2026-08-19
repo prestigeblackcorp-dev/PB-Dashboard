@@ -2200,7 +2200,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19t';
+  var APP_VERSION='2026.7.19u';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -8229,6 +8229,9 @@ const Atlas = (function(){
         }).join('')}
         <div class="bk-lenhint" style="margin:12px 0 0">You keep your processor and your money &mdash; Atlas just routes the charge. Real processing goes live with your backend; today it is a safe test flow.</div>
       </div>
+      <div class="set-block"><h3>Identity verification <span class="chip chip--muted" style="font-size:10px;vertical-align:middle;font-weight:600">Know who you are renting to</span></h3><div class="desc">Confirm every renter is a real person holding a genuine, unexpired government photo ID &mdash; before they leave with your ${esc(S.fleet.nouns||'rentals')}. Turn it on and each renter is asked, right inside their booking, to scan their ID and take a quick selfie. It is checked automatically in seconds: the document is authenticated, the selfie is matched to it (a live capture, not a screenshot), and the ID&rsquo;s expiry is read and saved for you. No app to install, no training, no paperwork &mdash; and a verified renter is remembered, so they are never asked twice.</div>
+        <div id="idvState">${_idvStateHtml()}</div>
+      </div>
       <div class="set-block"><h3>Connections</h3><div class="desc">Bring your own accounts. Each has a step-by-step guide.</div>
         ${[['@','Email (Resend / SMTP)','Confirmations &amp; reminders','email'],['#','SMS (Twilio)','Text your customers','sms'],['M','Maps','Delivery &amp; addresses','maps'],['Q','QuickBooks / Xero','Live sales sync &middot; books-ready CSV export','qb'],['W','Website embed','Booking widget for your site','web']].map(c=>`
           <div class="conn-row">${_connBadge(c[3])}<div class="conn-row__t"><b>${c[1]}</b><small>${c[2]}</small></div>
@@ -8239,7 +8242,7 @@ const Atlas = (function(){
       </div>
       <div class="set-block"><h3>Webhooks</h3><div class="desc">Let your other tools react the moment something happens here. Atlas can ping your website, Zapier, or any app your developer builds the instant a booking is created or paid &mdash; no coding needed to set up.</div>
         <button class="btn btn--primary" onclick="Atlas.openWebhooks()">Set up webhooks</button>
-      </div>`; _qboStatusLoad(); _xeroStatusLoad(); _ppStatusLoad(); _sqStatusLoad(); }
+      </div>`; _qboStatusLoad(); _xeroStatusLoad(); _ppStatusLoad(); _sqStatusLoad(); _idvStatusLoad(); }
     else if(setCur==='portal'){ var pc=_portalCfg(); b.innerHTML=`
       <div class="set-block"><h3>Member portal</h3><div class="desc">Your customers' branded self-service area &mdash; fully generated for you and yours to edit.</div>
         <div class="conn-row"><div class="conn-row__ic" style="background:var(--brand-100);color:var(--brand-700)">&#128279;</div><div class="conn-row__t"><b>${S.brand.subdomain}.atlasrental.io/portal</b><small>Live &middot; branded as ${esc(S.brand.name)}</small></div><button class="btn btn--primary btn--sm conn-act" onclick="Atlas.copyPortal()">Copy link</button></div>
@@ -9885,6 +9888,47 @@ const Atlas = (function(){
   function closeAio(){ var _ad=document.getElementById('aioDrawer'); var _inA=!!(_ad&&_ad.contains(document.activeElement)); if(_ad) _ad.classList.remove('open'); document.getElementById('scrim').classList.remove('on'); try{ if(_inA&&openAio._opener&&openAio._opener.focus) openAio._opener.focus(); }catch(e){} }
 
   /* ============================== modals / connect ============================== */
+  // ---- Automated identity verification (Verified Renter): a non-technical, one-toggle ID/KYC check for every renter.
+  // Stripe Identity is the automated path (document authenticity + selfie liveness + face match), running on the tenant's
+  // OWN connected Stripe key -- so an owner who already takes card payments turns it on with a single switch: no keys, no
+  // webhook to configure. Manual upload stays as the always-free fallback; Persona/Onfido/Veriff connect BYO. Honest by
+  // construction: the card only reports "on" when a provider can actually run, and the automated in-portal flow is Stripe.
+  var _idvSrv={loaded:false,stripeConnected:false,connected:{}};
+  function _idvCfg(){ var c=(S&&S.idv)||{}; return {enabled:!!c.enabled, provider:c.provider||'manual'}; }
+  function _idvStatusLoad(){ try{ if(!ATLAS_BACKEND||typeof _api!=='function') return; _api('/api/tenant/idv/status').then(function(j){ if(j&&j.ok){ _idvSrv={loaded:true,stripeConnected:!!j.stripeConnected,connected:j.connected||{}}; var el=document.getElementById('idvState'); if(el) el.innerHTML=_idvStateHtml(); } }).catch(function(){}); }catch(e){} }
+  function _idvStateHtml(){
+    var cfg=_idvCfg(), prov=cfg.provider, on=cfg.enabled;
+    var stripeReady=_idvSrv.stripeConnected || !!(S.integrations&&S.integrations.stripe);
+    var opts=[
+      ['stripe','Stripe Identity','Automatic &middot; recommended','Renter scans their ID and takes a selfie; verified in seconds. About $1.50 per check, billed by Stripe to your account.'],
+      ['manual','Manual review','You check it &middot; free','Renter uploads a photo of their ID; you review it yourself. Always on as a backup.'],
+      ['other','Another service','Persona, Onfido, Veriff','Already use one? Connect it below and keep your own account.']
+    ];
+    var tiles=opts.map(function(o){ var sel=(prov===o[0])||(o[0]==='other'&&['persona','onfido','veriff'].indexOf(prov)>=0);
+      return '<button type="button" onclick="Atlas.idvSetProvider(\''+o[0]+'\')" style="flex:1 1 160px;min-width:150px;text-align:left;border:1.5px solid '+(sel?'var(--brand)':'var(--line,#e4e4ea)')+';background:'+(sel?'var(--brand-50,rgba(30,110,78,.07))':'var(--card,#fff)')+';border-radius:12px;padding:11px 13px;cursor:pointer;color:var(--ink);display:flex;flex-direction:column;gap:3px">'
+        +'<b style="font-size:13.5px">'+o[1]+'</b><span style="font-size:10.5px;color:var(--brand);font-weight:700;text-transform:uppercase;letter-spacing:.03em">'+o[2]+'</span><small style="font-size:11.5px;color:var(--muted);line-height:1.45">'+o[3]+'</small></button>';
+    }).join('');
+    var body='';
+    if(prov==='stripe'){
+      if(stripeReady){
+        body='<label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-size:14px;font-weight:600"><input type="checkbox" '+(on?'checked':'')+' onchange="Atlas.idvToggle(this.checked)" style="margin-top:2px;width:18px;height:18px"><span>Ask every new renter to verify their ID in their booking portal</span></label>'
+          +'<div class="bk-lenhint" style="margin:10px 0 0">'+(on?'<b style="color:var(--ok,#12813f)">On.</b> New bookings get a &ldquo;Verify my ID&rdquo; step. You are emailed the moment each renter passes, with their ID expiry saved on the booking. A verified renter is carried forward, so they are not re-asked next time while their ID is still valid.':'Ready. Flip the switch above whenever you want renters to start verifying.')+'</div>';
+      } else {
+        body='<div class="bk-lenhint" style="margin:0;border-color:#c9a227"><b>One quick step first.</b> Stripe Identity uses your Stripe account, so connect Stripe under <b>Payments &amp; POS</b> above (you probably already use it to get paid). Then switch this on here &mdash; that is the whole setup.</div>';
+      }
+    } else if(prov==='manual'){
+      body='<div class="bk-lenhint" style="margin:0">Renters upload a photo of their ID in their portal and you review it yourself. This is always available. For hands-off checks with liveness and automatic expiry reading, choose <b>Stripe Identity</b> above.</div>';
+    } else {
+      var others=[['persona','Persona'],['onfido','Onfido'],['veriff','Veriff']];
+      body='<div class="bk-lenhint" style="margin:0 0 10px">Save your provider key and it is stored encrypted for your account. Fully automated in-portal checks run through <b>Stripe Identity</b> today; connecting one of these keeps your existing verification workflow and readies you as more providers roll out.</div>'
+        +others.map(function(o){ var conn=!!(S.integrations&&S.integrations[o[0]]);
+          return '<div class="conn-row"><div class="conn-row__ic">'+o[1].charAt(0)+'</div><div class="conn-row__t"><b>'+o[1]+'</b><small>'+(conn?'Key saved &middot; encrypted':'Not connected')+'</small></div><div class="conn-act">'+(conn?'<span class="chip chip--muted"><span class="dot"></span>Saved</span> <button class="btn btn--ghost btn--sm" onclick="Atlas.connect(\''+o[0]+'\',\''+o[1]+'\')">Manage</button>':'<button class="btn btn--ghost btn--sm" onclick="Atlas.connect(\''+o[0]+'\',\''+o[1]+'\')">Connect</button>')+'</div></div>';
+        }).join('');
+    }
+    return '<div style="display:flex;gap:10px;flex-wrap:wrap">'+tiles+'</div><div style="margin-top:12px">'+body+'</div>';
+  }
+  function idvSetProvider(p){ if(!_canMod('settings'))return; if(!S.idv)S.idv={}; if(p==='other'){ if(['persona','onfido','veriff'].indexOf(S.idv.provider)<0) S.idv.provider='persona'; } else { S.idv.provider=p; if(p==='manual') S.idv.enabled=false; } save(); renderSet(); }
+  function idvToggle(on){ if(!_canMod('settings'))return; if(!S.idv)S.idv={}; if(!S.idv.provider||S.idv.provider==='manual')S.idv.provider='stripe'; S.idv.enabled=!!on; save(); renderSet(); toast(on?'Automatic ID verification is ON \u2014 new renters will be asked to verify':'Automatic ID verification is off'); }
   const GUIDES={
     stripe:['Create or sign in to your <b>Stripe</b> account at <code>stripe.com</code>.','In Stripe, open <b>Developers &rarr; API keys</b>.','Copy your <b>Publishable key</b> and <b>Secret key</b>.','Paste them below. At go-live your keys are sent encrypted to your backend and used for real charges &mdash; nothing is charged until then.'],
     email:['Choose your provider (Resend, SendGrid or SMTP).','Create an API key in your provider\'s dashboard.','Add a verified sender address (e.g. <code>bookings@yourco.com</code>).','Paste the API key below.','Send yourself a test confirmation email.'],
@@ -9894,7 +9938,10 @@ const Atlas = (function(){
     qb:['Atlas exports books-ready CSV files today &mdash; open <b>Reports</b> and export your sales, payments and tax rows.','In QuickBooks Online or Xero, import that file (File &rarr; Import).','Live one-click sync is coming soon &mdash; paste your key below now to be first in line; nothing syncs until it ships.'],
     square:['Sign in to <b>Square</b> at <code>squareup.com</code>.','Open <b>Developer Dashboard &rarr; Applications</b> and select (or create) an app.','Copy your <b>Access token</b> and your <b>Location ID</b>.','Paste them below to connect. Once connected, Square becomes your active processor and customer payments route straight to Square.'],
     paypal:['Sign in at <code>developer.paypal.com</code>.','Under <b>Apps &amp; Credentials</b> (Live), create an app.','Copy your <b>Client ID</b> and <b>Secret</b>.','Paste them below to connect. Once connected, PayPal becomes your active processor and customer payments route straight to PayPal.'],
-    venmo:['Venmo runs through <b>PayPal</b> for business.','Enable Venmo in your PayPal business settings.','Connect PayPal above &mdash; Venmo turns on with it.']
+    venmo:['Venmo runs through <b>PayPal</b> for business.','Enable Venmo in your PayPal business settings.','Connect PayPal above &mdash; Venmo turns on with it.'],
+    persona:['Sign in to <b>Persona</b> at <code>withpersona.com</code>.','Open <b>API keys</b> in your Persona dashboard and copy your key.','Paste it below &mdash; stored encrypted for your account. Fully automated in-portal checks run through Stripe Identity today.'],
+    onfido:['Sign in to <b>Onfido</b> at <code>onfido.com</code>.','Create an <b>API token</b> in your Onfido dashboard.','Paste it below &mdash; stored encrypted for your account.'],
+    veriff:['Sign in to <b>Veriff</b> at <code>veriff.com</code>.','Open <b>Integrations</b> and copy your API key.','Paste it below &mdash; stored encrypted for your account.']
   };
   // Payment processors an operator may already run. Connecting one makes it the active processor for portal payments, site checkout and charges.
   const PAY_PROVIDERS=[['stripe','Stripe','Cards, Apple/Google Pay, ACH'],['square','Square','POS + online, cards & tap'],['paypal','PayPal','PayPal + Venmo + cards'],['atlas','Atlas','Atlas-processed - 3.5% fee - auto payouts']];
@@ -9910,7 +9957,8 @@ const Atlas = (function(){
   var GUIDE_LINKS={   // deep links straight to where each key lives, so owners connect faster (no hunting)
     stripe:'https://dashboard.stripe.com/apikeys', square:'https://developer.squareup.com/apps',
     paypal:'https://developer.paypal.com/dashboard/applications', email:'https://resend.com/api-keys', sms:'https://console.twilio.com',
-    maps:'https://console.mapbox.com/account/access-tokens', qb:'https://quickbooks.intuit.com/app/homepage'
+    maps:'https://console.mapbox.com/account/access-tokens', qb:'https://quickbooks.intuit.com/app/homepage',
+    persona:'https://app.withpersona.com/dashboard/api-keys', onfido:'https://dashboard.onfido.com/', veriff:'https://station.veriff.com/'
   };
   function modalConnect(id,name){
     if(id==='web'){ return _modalEmbed(); }   // booking-embed connect shows a real, copyable snippet -- there is no key to paste
@@ -12912,7 +12960,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,connectAtlas,setPassFee,setTaxOn,syncTax,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,connectAtlas,idvSetProvider,idvToggle,setPassFee,setTaxOn,syncTax,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
