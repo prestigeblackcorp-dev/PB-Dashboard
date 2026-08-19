@@ -1609,6 +1609,10 @@ body.trk-fs-on .trk-fs-exit{display:grid}
             <div class="card"><div class="card__head"><h3>Top Performers</h3></div><div class="card__body" id="topList"></div></div>
           </div>
           <div class="card" style="margin-top:18px">
+            <div class="card__head"><h3>Customer analytics</h3><span style="font-size:11px;color:var(--muted)">cohorts, retention &amp; lifetime value</span></div>
+            <div class="card__body" id="anaCohorts"></div>
+          </div>
+          <div class="card" style="margin-top:18px">
             <div class="card__head"><h3>Reviews &amp; Ratings</h3></div>
             <div class="card__body" id="reviewsBody"></div>
           </div>
@@ -2200,7 +2204,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.19v';
+  var APP_VERSION='2026.7.19x';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -3725,6 +3729,7 @@ const Atlas = (function(){
       +'<div class="bk-lenhint" id="spPreview" style="margin-top:12px">'+_spPreviewHtml()+'</div>';
     return out; }
   /* ---- Booking-model builder (Settings > Bookings): edit the base for your preference ---- */
+  function setAutoHold(on){ if(!_canMod('settings'))return; S.autoHoldOverdue=!!on; save(); toast(on?'On \u2014 you will be warned before booking an asset overdue for service':'Auto-hold off'); }
   function setTurnaround(v){ if(!_canMod('settings'))return; S.turnaroundMin=Math.max(0,parseInt(v,10)||0); save(); renderSet(); toast(S.turnaroundMin?'Turnaround buffer saved':'Turnaround buffer off'); }
   function setBookingCfg(path,v){ if(!S.money.booking) S.money.booking={time:true,durationMode:'end',fields:{phone:true,notes:true}};
     var bk=S.money.booking; bk.fields=bk.fields||{phone:true,notes:true};
@@ -5066,6 +5071,9 @@ const Atlas = (function(){
     var _lockBanner=(_lockedCt>0)?('<div style="grid-column:1/-1;display:flex;gap:6px 12px;align-items:center;flex-wrap:wrap;background:rgba(180,83,9,.10);color:#7c2d12;border:1px solid rgba(180,83,9,.28);border-radius:12px;padding:10px 13px;font-size:12.5px;margin-bottom:2px">'
       +'<b style="font-weight:800">&#128274; '+_lockedCt+' '+esc(_lockedCt===1?S.fleet.noun:S.fleet.nouns)+' with units over your plan cap</b>'
       +'<span style="color:#9a3412">over your '+esc(_curTier().name)+' plan cap. Unlock the ones you need at '+_assetUnlockPrice()+'/mo each, or <a onclick="Atlas.promptUpgrade(\'vehicles\')" style="color:#7c2d12;text-decoration:underline;cursor:pointer;font-weight:700">upgrade your plan</a>.</span></div>'):'';
+    var _mDue=DATA.assets.map(function(a){return {a:a,d:_serviceDue(a)};}).filter(function(o){return o.d.tracked&&(o.d.overdue||o.d.soon);});
+    var _mOd=_mDue.filter(function(o){return o.d.overdue;}), _mSn=_mDue.filter(function(o){return o.d.soon;});
+    var _maintBanner=_mDue.length?('<div style="grid-column:1/-1;background:'+(_mOd.length?'rgba(178,42,32,.09)':'rgba(176,120,20,.10)')+';border:1px solid '+(_mOd.length?'rgba(178,42,32,.30)':'rgba(176,120,20,.30)')+';border-radius:12px;padding:11px 14px;margin-bottom:2px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-weight:800;color:var(--ink)">&#128295; '+(_mOd.length?(_mOd.length+' '+esc(_mOd.length===1?S.fleet.noun:S.fleet.nouns)+' overdue for service'):(_mSn.length+' '+esc(_mSn.length===1?S.fleet.noun:S.fleet.nouns)+' due for service soon'))+'</b>'+((_mOd.length&&_mSn.length)?('<span style="color:var(--muted);font-size:12px">+'+_mSn.length+' due soon</span>'):'')+(S.autoHoldOverdue?'<span class="chip chip--muted" style="font-size:10.5px">auto-hold on</span>':'')+'</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">'+_mDue.slice(0,8).map(function(o){return '<button class="btn btn--ghost btn--sm" onclick="Atlas.openAsset(\''+o.a.id+'\')">'+esc(o.a.name)+' &middot; '+esc(o.d.label||'service')+'</button>';}).join('')+'</div></div>'):'';
     var locs=_assetLocs(), locsEl=document.getElementById('fleetLocs'), grid=document.getElementById('assetGrid');
     if(locs){ var names=Object.keys(locs);
       document.getElementById('fleetSub').textContent=`${n} ${S.fleet.nouns} \u00b7 ${_fleetUnits()} units across ${names.length} ${_fterm(names.length===1?'loc':'locs')} on ${_curTier().name} \u00b7 ${avail} available now`;
@@ -5082,13 +5090,13 @@ const Atlas = (function(){
       var _chip=function(lbl,val){ return '<button class="btn btn--ghost btn--sm'+((_fleetStatusF===val)?' btn--primary':'')+'" onclick="Atlas.fleetStatusFilter(\''+esc(val).replace(/'/g,"\\'")+'\')">'+esc(lbl)+'</button>'; };
       var _toolbar='<div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:2px 0 6px"><input id="fleetSearchBox" value="'+esc(_fleetSearch||'')+'" oninput="Atlas.fleetSearch(this)" placeholder="Search '+esc(S.fleet.nouns)+'\u2026" aria-label="Search '+esc(S.fleet.nouns)+'" style="flex:1;min-width:170px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;font-size:16px;background:var(--surface);color:var(--ink)">'+_chip('All','')+_statuses.map(function(s){return _chip(s,s);}).join('')+'</div>';
       var _PAGE=60, _tot=list.length, shown=_fleetShowAll?list:list.slice(0,_PAGE), more=_tot-shown.length;
-      grid.innerHTML=_lockBanner+_toolbar+'<div style="grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px"><b style="font-size:14.5px;color:var(--ink)">'+(_fleetLocFilter?esc(_fleetLocFilter):('All '+cap(S.fleet.nouns)))+' <span style="color:var(--muted);font-weight:500;font-size:12.5px">('+_tot+')</span></b>'+(_fleetLocFilter?'<button class="btn btn--ghost btn--sm" onclick="Atlas.fleetLoc(\''+esc(_fleetLocFilter).replace(/'/g,"\\'")+'\')">Show all '+esc(_fterm('locs'))+'</button>':'')+'</div>'
+      grid.innerHTML=_lockBanner+_maintBanner+_toolbar+'<div style="grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px"><b style="font-size:14.5px;color:var(--ink)">'+(_fleetLocFilter?esc(_fleetLocFilter):('All '+cap(S.fleet.nouns)))+' <span style="color:var(--muted);font-weight:500;font-size:12.5px">('+_tot+')</span></b>'+(_fleetLocFilter?'<button class="btn btn--ghost btn--sm" onclick="Atlas.fleetLoc(\''+esc(_fleetLocFilter).replace(/'/g,"\\'")+'\')">Show all '+esc(_fterm('locs'))+'</button>':'')+'</div>'
         +(shown.length?shown.map(_assetCard).join(''):'<div style="grid-column:1/-1;text-align:center;color:var(--muted);font-size:13px;padding:18px">No '+esc(S.fleet.nouns)+' match'+(_q?(' \u201c'+esc(_fleetSearch)+'\u201d'):'')+'.</div>')
         +(more>0?'<div style="grid-column:1/-1;text-align:center;padding:10px"><button class="btn btn--ghost btn--sm" onclick="Atlas.fleetShowAll()">Show all '+_tot+' '+esc(S.fleet.nouns)+'</button></div>':'');
     } else {
       locsEl.innerHTML='';
       document.getElementById('fleetSub').textContent=`${_fleetUnits()} of ${capTxt} units (${n} ${S.fleet.nouns}) on ${_curTier().name} \u00b7 ${avail} available now`;
-      grid.innerHTML=DATA.assets.length?(_lockBanner+DATA.assets.map(_assetCard).join('')):'<div class="empty" style="grid-column:1/-1"><div class="empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M3 13l2-5h14l2 5v5H3zM7 18a2 2 0 100-4 2 2 0 000 4zM17 18a2 2 0 100-4 2 2 0 000 4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></div><h3>No '+esc(S.fleet.nouns)+' yet</h3><p>Add your first '+esc(S.fleet.noun)+' to start taking bookings &mdash; you can bulk-import the rest later.</p><button class="btn btn--primary" onclick="Atlas.addVehicle()">Add your first '+esc(S.fleet.noun)+'</button></div>';
+      grid.innerHTML=DATA.assets.length?(_lockBanner+_maintBanner+DATA.assets.map(_assetCard).join('')):'<div class="empty" style="grid-column:1/-1"><div class="empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M3 13l2-5h14l2 5v5H3zM7 18a2 2 0 100-4 2 2 0 000 4zM17 18a2 2 0 100-4 2 2 0 000 4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></div><h3>No '+esc(S.fleet.nouns)+' yet</h3><p>Add your first '+esc(S.fleet.noun)+' to start taking bookings &mdash; you can bulk-import the rest later.</p><button class="btn btn--primary" onclick="Atlas.addVehicle()">Add your first '+esc(S.fleet.noun)+'</button></div>';
     }
   }
   /* ---- Bookings module (persisted per-tenant collection, priced by the money engine) ---- */
@@ -5550,6 +5558,7 @@ const Atlas = (function(){
     var c=(DATA.bookings||[]).filter(function(b){ return b.id!==excludeId && ((_aid&&b.assetId)?(String(b.assetId)===_aid):(b.asset===assetName)) && b.status!=='Cancelled' && b.status!=='Completed' && b.status!=='Voided'; })   // #void: a voided (early-terminated) trip frees the asset the same day
       .filter(function(b){ var s=Number(b.startTs)||0, e=_bkEffectiveEndTs(b); if(!(e>s))e=s+_periodMs(); return _rangesOverlap(startTs,endTs,s-_buf,e+_buf); })[0];   // occupancy runs to the EFFECTIVE end (incl. active extensions) so an extended rental blocks the added time
     if(c) return {type:'booking', reason:c.id+(c.cust?(' \u2014 '+c.cust):'')};
+    if(S.autoHoldOverdue){ var _sd=_serviceDue(a); if(_sd&&_sd.overdue) return {type:'maintenance', reason:'overdue for service'+(_sd.label&&_sd.label!=='Service overdue'?(' \u2014 '+_sd.label):'')}; }   // self-driving fleet (opt-in): warn before booking an asset overdue for service; owner can override, same path as maintenance/blackout
     return null; }
   function _bookingForm(existing){
     var assets=(DATA.assets||[]).map(function(a){return a.name;}); var _noAssets=!assets.length; if(_noAssets && _isDemoTenant()) assets=S.fleet.sample.slice();   // real tenant with 0 assets: do NOT inject phantom sample vehicles (would save a booking against a car they don't own)
@@ -6954,6 +6963,51 @@ const Atlas = (function(){
     toast('Sending...'); _api('/api/outreach/send',{method:'POST',body:{subject:subj,body:body,recipients:[c.email]}}).then(function(res){
       if(res.json&&res.json.ok&&(res.json.sent>0)){ _logEvent('email','Emailed '+c.email+': '+subj,{to:c.email}); closeModal(); toast('Email sent'); }
       else { toast((res.json&&(res.json.error))||((res.json&&res.json.skipped)?'Not sent -- this customer is unsubscribed':'Could not send')); } }).catch(function(){ toast('Network error'); }); }
+  function _cohortHtml(){
+    var nc=(DATA.bookings||[]).filter(_isCommitted);
+    var key=function(b){ var e=(b.custEmail&&String(b.custEmail).toLowerCase())||''; if(e&&e.indexOf('@')>0)return e; var n=String(b.cust||'').toLowerCase().trim(); return n?('n:'+n):''; };
+    var by={};
+    nc.forEach(function(b){ var k=key(b); if(!k)return; var ts=Number(b.startTs)||Number(b.createdAt)||0; var rev=_bkEarned(b)||0;
+      var c=by[k]||(by[k]={first:(ts||Infinity),rev:0,n:0,name:(b.cust||b.custEmail||''),bk:[]}); c.rev+=rev; c.n++; if(ts){ c.bk.push({ts:ts,rev:rev}); if(ts<c.first)c.first=ts; } });
+    var custs=Object.keys(by).map(function(k){return by[k];});
+    if(custs.length<1) return '<div class="bk-lenhint" style="margin:0">No customer history yet. Once a few '+esc(_fterm('books'))+' come in, this shows who comes back, what a customer is worth, and how each month\u2019s new customers retain over time.</div>';
+    var totalRev=custs.reduce(function(s,c){return s+c.rev;},0);
+    var ltv=custs.length?totalRev/custs.length:0;
+    var avgBk=custs.length?(custs.reduce(function(s,c){return s+c.n;},0)/custs.length):0;
+    var repeat=custs.filter(function(c){return c.n>=2;}).length, repeatPct=custs.length?Math.round(repeat/custs.length*100):0;
+    var retRev=0; custs.forEach(function(c){ var s=c.bk.slice().sort(function(a,b){return a.ts-b.ts;}); for(var i=1;i<s.length;i++) retRev+=s[i].rev; });
+    var retPct=totalRev?Math.round(retRev/totalRev*100):0;
+    var kpis='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px;margin-bottom:16px">'
+      +[['Lifetime value',money(ltv),'avg revenue per customer'],['Bookings / customer',(Math.round(avgBk*10)/10).toString(),'lifetime average'],['Repeat rate',repeatPct+'%','book 2 or more times'],['From returning',retPct+'%','of revenue is repeat business']].map(function(x){
+        return '<div style="border:1px solid var(--line);border-radius:11px;padding:11px 13px"><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">'+x[0]+'</div><div style="font-size:20px;font-weight:800;color:var(--ink);margin:2px 0" class="tnum">'+x[1]+'</div><div style="font-size:11px;color:var(--muted)">'+x[2]+'</div></div>'; }).join('')+'</div>';
+    var mi=function(ts){ var d=new Date(ts); return d.getFullYear()*12+d.getMonth(); };
+    var mk=function(ts){ var d=new Date(ts); try{ return d.toLocaleString(undefined,{month:'short',year:'2-digit'}); }catch(e){ return (d.getMonth()+1)+'/'+d.getFullYear(); } };
+    var coh={};
+    Object.keys(by).forEach(function(k){ var c=by[k]; if(!isFinite(c.first))return; var ci=mi(c.first);
+      var h=coh[ci]||(coh[ci]={size:0,ci:ci,first:c.first,months:{}}); h.size++;
+      c.bk.forEach(function(x){ var off=mi(x.ts)-ci; if(off<0)return; (h.months[off]=h.months[off]||{})[k]=1; }); });
+    var ck=Object.keys(coh).map(Number).sort(function(a,b){return a-b;});
+    var maxOff=0; ck.forEach(function(ci){ Object.keys(coh[ci].months).forEach(function(o){ if(+o>maxOff)maxOff=+o; }); }); maxOff=Math.min(Math.max(maxOff,1),6);
+    var show=ck.slice(-8), grid='';
+    if(show.length){
+      var thead='<tr><th style="text-align:left;padding:6px 8px;font-size:11px;color:var(--muted)">Joined</th><th style="padding:6px 8px;font-size:11px;color:var(--muted)">New</th>';
+      for(var o=0;o<=maxOff;o++) thead+='<th style="padding:6px 6px;font-size:11px;color:var(--muted)">M'+o+'</th>'; thead+='</tr>';
+      var body=show.map(function(ci){ var h=coh[ci]; var r='<tr><td style="text-align:left;padding:5px 8px;font-weight:600;white-space:nowrap">'+esc(mk(h.first))+'</td><td style="padding:5px 8px;text-align:center" class="tnum">'+h.size+'</td>';
+        for(var o=0;o<=maxOff;o++){ var cnt=h.months[o]?Object.keys(h.months[o]).length:0; var pct=h.size?Math.round(cnt/h.size*100):0;
+          var a=pct?(0.12+0.85*pct/100):0; var bg=pct?('rgba(20,132,86,'+a.toFixed(2)+')'):'transparent';
+          r+='<td style="padding:5px 6px;text-align:center;border-radius:5px;background:'+bg+';color:'+(pct>52?'#fff':'var(--muted)')+';font-size:12px" class="tnum">'+(o===0?String(h.size):(cnt?pct+'%':'&middot;'))+'</td>'; }
+        return r+'</tr>'; }).join('');
+      grid='<div style="font-size:12.5px;font-weight:650;color:var(--ink);margin:4px 0 6px">Retention by cohort</div><div style="overflow-x:auto"><table style="border-collapse:separate;border-spacing:3px;width:100%;min-width:340px">'+thead+body+'</table></div><div style="font-size:11px;color:var(--muted);margin:6px 0 0">Each row is the customers who first booked that month; M1 to M'+maxOff+' show the share who booked again that many months later.</div>';
+    }
+    var top=custs.slice().sort(function(a,b){return b.rev-a.rev;}).slice(0,5);
+    var topHtml='<div style="font-size:12.5px;font-weight:650;color:var(--ink);margin:16px 0 6px">Top customers by value</div>'+top.map(function(c,i){
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;border-top:'+(i?'1px solid var(--line)':'0')+'"><div style="min-width:0"><b style="font-size:13.5px">'+(i+1)+'. '+esc(c.name||'Customer')+'</b><div style="font-size:11.5px;color:var(--muted)">'+c.n+' booking'+(c.n===1?'':'s')+'</div></div><div style="font-weight:700;color:var(--ink)" class="tnum">'+money(c.rev)+'</div></div>'; }).join('');
+    var _now=Date.now(), _DAY=86400000;
+    var lapsed=custs.map(function(c){ var last=c.bk.reduce(function(m,x){return Math.max(m,x.ts||0);},0); return {c:c,last:last}; }).filter(function(o){ return o.last>0 && (_now-o.last)>90*_DAY; }).sort(function(a,b){return b.c.rev-a.c.rev;}).slice(0,6);
+    var winHtml=lapsed.length?('<div style="font-size:12.5px;font-weight:650;color:var(--ink);margin:16px 0 6px">Win-back opportunities <span style="font-weight:500;color:var(--muted);font-size:11px">no booking in 90+ days</span></div>'+lapsed.map(function(o){ var days=Math.round((_now-o.last)/_DAY); return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;border-top:1px solid var(--line)"><div style="min-width:0"><b style="font-size:13.5px">'+esc(o.c.name||'Customer')+'</b><div style="font-size:11.5px;color:var(--muted)">'+money(o.c.rev)+' lifetime &middot; last booked '+days+' days ago</div></div></div>'; }).join('')+'<div class="bk-lenhint" style="margin:8px 0 0">These high-value customers have gone quiet &mdash; a note through <b>Outreach</b> often brings them back.</div>'):'';
+    return kpis+grid+topHtml+winHtml;
+  }
+
   function renderAnalytics(){
     if(!document.getElementById('anaKpis')) return;   // only when the Analytics panel is mounted
     try{ _materializeRecurring(); }catch(e){}   // generate any recurring expenses due, prune stale/orphaned ones, before anything on this panel reads the ledger
@@ -6974,6 +7028,7 @@ const Atlas = (function(){
     _renderBudgetCard();
     renderPnl();
     var _fcCard=document.getElementById('anaForecastCard'); if(_fcCard){ if(_flags().betaForecast){ _fcCard.style.display=''; var _fb=document.getElementById('anaForecast'); if(_fb)_fb.innerHTML=_forecastHtml(); } else _fcCard.style.display='none'; }   // betaForecast owner flag now drives a real projection
+    var _cc=document.getElementById('anaCohorts'); if(_cc) _cc.innerHTML=_cohortHtml();
     renderReports(); renderLog(); renderReviews();
     setTimeout(()=>drawSrcChart(),30);
   }
@@ -8138,6 +8193,7 @@ const Atlas = (function(){
           <option value="720" ${(+S.turnaroundMin)===720?'selected':''}>12 hours</option>
           <option value="1440" ${(+S.turnaroundMin)===1440?'selected':''}>1 full day</option>
         </select><div class="hint">A new booking cannot start until this much time has passed after an existing one ends (and the reverse). Multi-unit ${esc(S.fleet.nouns)} still book up to their unit count at once.</div></div>
+        <label class="cfg-check" style="margin-top:10px"><input type="checkbox" ${S.autoHoldOverdue?'checked':''} onchange="Atlas.setAutoHold(this.checked)">Warn me before booking a ${esc(S.fleet.noun)} that is overdue for service</label>
       </div>
       <div class="set-block" data-bkb="fields"><h3>Fields to collect</h3><div class="desc">Turn optional fields on or off. Name, email and ${cap(S.fleet.noun)} are always asked.</div>
         <label class="cfg-check"><input type="checkbox" ${bc.fields.phone?'checked':''} onchange="Atlas.setBookingCfg('fields.phone',this.checked)">Phone number</label>
@@ -12972,7 +13028,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setPassFee,setTaxOn,syncTax,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setAutoHold,setPassFee,setTaxOn,syncTax,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
