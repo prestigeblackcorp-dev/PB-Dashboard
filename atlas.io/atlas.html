@@ -5154,7 +5154,7 @@ const Atlas = (function(){
       var lo=Math.max(s,from), hi=Math.min(e,now);
       if(hi>lo) booked+=(hi-lo);
     });
-    return Math.max(0,Math.min(100,Math.round(booked/win*100)));
+    var _uq=Math.max(1,Number(a.qty)||1); return Math.max(0,Math.min(100,Math.round(booked/(win*_uq)*100)));   // AUDIT-FIX: divide by unit count -- a 1-of-N booking was reading 100% utilization
   }
   // Recompute util onto every asset so the Overview KPI, fleet grid, Top Performers + AI read the SAME value.
   function _recomputeUtil(){ try{ (DATA.assets||[]).forEach(function(a){ a.util=_assetUtil(a); }); }catch(e){} }
@@ -6994,7 +6994,7 @@ const Atlas = (function(){
       }).join('')+'</div>'; }
   function replyReview(id){ if(!_canMod('settings')&&!_canMod('analytics'))return; var b=_getBooking(id); if(!b||!b.review)return; var t=prompt('Your public reply to this review:',b.review.reply||''); if(t===null)return; b.review.reply=t.trim(); _upsertBooking(b); renderReviews(); toast('Reply saved'); }
   function reviewRemoveReply(id){ if(!_canMod('settings')&&!_canMod('analytics'))return; var b=_getBooking(id); if(!b||!b.review)return; if(!confirm('Remove your public reply to this review?'))return; b.review.reply=''; _upsertBooking(b); renderReviews(); toast('Reply removed'); }
-  function reviewToggleHidden(id,on){ if(!_canMod('settings')&&!_canMod('analytics'))return; var b=_getBooking(id); if(!b||!b.review)return; b.review.hidden=!!on; _upsertBooking(b); renderReviews(); toast(on?'Review hidden from your public site':'Review shown on your public site'); }
+  function reviewToggleHidden(id,on){ if(!_canMod('settings')&&!_canMod('analytics'))return; var b=_getBooking(id); if(!b||!b.review)return; if(on){ var _hr=prompt('Why hide this review? (kept for your records) Note: hiding honest negative reviews to mislead customers can violate FTC rules -- replying publicly is usually the better move.'); if(_hr===null)return; b.review.hideReason=String(_hr).slice(0,300); b.review.hiddenAt=Date.now(); } else { delete b.review.hideReason; } b.review.hidden=!!on; _upsertBooking(b); renderReviews(); toast(on?'Review hidden (reason recorded)':'Review shown on your public site'); }
   /* ---- reports (tax + documentation) + activity log ---- */
   function _repRange(){ var v=val('repRange')||'ytd'; var now=new Date(), y=now.getFullYear(), m=now.getMonth(), from, label;
     if(v==='mtd'){ from=new Date(y,m,1).getTime(); label='This month'; }
@@ -12076,7 +12076,7 @@ const Atlas = (function(){
     acts+=_pAct('Message preferences', 'How you hear from us: '+_prefLbl, !!b.commsPref, 'Atlas.portalView(\'prefs\')', 'Update');
     if(acts) h+='<div class="portal__acts">'+acts+'</div>';
     if(b.plan&&b.plan.installments&&b.plan.installments.length){ h+='<div class="portal__docs"><div class="portal__docs-hd">Payment schedule</div>'
-      +b.plan.installments.map(function(x,ix){ return '<div class="portal__doc"><span>'+esc(x.label)+' &middot; '+money(x.amount)+'</span><span>'+(x.paidAt?('Paid '+_stamp(x.paidAt)):('Due '+_fmtWhen(x.dueTs)+' <button class="btn btn--primary btn--sm" style="margin-left:8px" onclick="Atlas.portalPayInstallment('+ix+')">Pay</button>')) +'</span></div>'; }).join('')+'</div>'; }   // fix: each unpaid installment is now payable in the portal (mirrors owner _planHtml)
+      +b.plan.installments.map(function(x,ix){ return '<div class="portal__doc"><span>'+esc(x.label)+' &middot; '+money(x.amount)+'</span><span>'+(x.paidAt?('Paid '+_stamp(x.paidAt)):('Due '+_fmtWhen(x.dueTs)+' <button class="btn btn--primary btn--sm" style="margin-left:8px" onclick="Atlas.portalPayInstallment('+ix+')">Mark paid</button>')) +'</span></div>'; }).join('')+'</div>'; }   // fix: each unpaid installment is now payable in the portal (mirrors owner _planHtml)
     // Pre-rental condition media ALWAYS shows, on every rental type, so the customer sees the time-stamped condition.
     h+='<div class="portal__cond"><div class="portal__docs-hd">Condition at pickup &mdash; photos &amp; video</div>'+_condMediaHtml(b,{portal:true,phase:'pickup'})+'<div class="cond-note">Each item shows the exact date and time it was captured, so the '+esc(S.fleet.noun)+' condition is clear for both sides.</div></div>';
     if(_condMedia(b).some(function(m){return m.phase==='return';})){ h+='<div class="portal__cond"><div class="portal__docs-hd">Condition at return &mdash; photos &amp; video</div>'+_condMediaHtml(b,{portal:true,phase:'return'})+'</div>'; }
@@ -12358,7 +12358,7 @@ const Atlas = (function(){
   function portalPayCharge(cid){ var b=_pBk(); if(!b)return; var c=_charges(b).filter(function(x){return x.id===cid;})[0]; if(!c||c.paidAt)return;
     c.paidAt=Date.now(); if(!PAYMENTS_LIVE)c.test=true; _upsertBooking(b); save(); _logEvent('booking','Portal: charge '+(PAYMENTS_LIVE?'paid':'marked paid (test)')+' ('+c.label+' '+money(c.amount)+') on '+b.id,{booking:b.id}); _renderPortal(); try{ renderOverview(); renderBookings(); }catch(e){} toast(PAYMENTS_LIVE?'Payment received':'Payment recorded (test \u2014 no card charged)'); }
   function portalPayInstallment(idx){ var b=_pBk(); if(!b||!b.plan||!b.plan.installments)return; var x=b.plan.installments[idx]; if(!x||x.paidAt)return;   // fix: renter-payable installments (own schedule -- never touches b.charges/balance, so no double-count); mirrors owner bkPlanPaid so both sides agree
-    x.paidAt=Date.now(); if(!PAYMENTS_LIVE)x.test=true; _upsertBooking(b); _logEvent('booking','Portal: installment '+(PAYMENTS_LIVE?'paid':'marked paid (test)')+' ('+(x.label||'')+') on '+b.id,{booking:b.id}); save(); _renderPortal(); toast(PAYMENTS_LIVE?'Installment paid \u2014 thank you!':'Installment recorded (test \u2014 no card charged)'); }
+    if(!confirm('Record this installment as PAID for your records? This does NOT charge the customer online -- use it only after you have collected payment another way.'))return; x.paidAt=Date.now(); x.manual=true; if(!PAYMENTS_LIVE)x.test=true; _upsertBooking(b); _logEvent('booking','Portal: installment marked paid (manual, no online charge) ('+(x.label||'')+') on '+b.id,{booking:b.id}); save(); _renderPortal(); toast('Installment marked paid (recorded -- no card was charged)'); }
   function portalDoc(){ var b=_pBk(); if(!b)return; var p=_portal(b); if(!p.signedAt){ if(!_portalCfg().sections.agreement){ toast('No signature is required for this booking'); return; } portalView('sign'); return; }   // fix: gate the sign route on the agreement section toggle
     var sigHtml=p.sig?(p.sig.type==='draw'?('<img src="'+p.sig.data+'" alt="signature" style="max-height:70px">'):('<span class="sig-typed">'+esc(p.sig.data)+'</span>')):(p.signerName?('<span class="sig-typed">'+esc(p.signerName)+'</span>'):'-');
     var _tr=b.sigTrail;   // server-captured legal trail on a remotely-signed booking
