@@ -2209,7 +2209,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20n';
+  var APP_VERSION='2026.7.20o';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -8616,7 +8616,7 @@ const Atlas = (function(){
   // upward) and this tenant's OWN AI self-loop can learn from real usage. Guarded on a live backend session (_apiCsrf) so
   // demo / offline never emits; records the action TYPE + outcome ONLY (no request text, no PII); never throws, never
   // blocks the chat. The tenant's planner receives its own history back server-side (/api/aio/plan) -- learns from itself.
-  function _aioEmit(kind,actionType,outcome){ try{ if(!(ATLAS_BACKEND && _apiCsrf)) return; _api('/api/aio/event',{method:'POST',body:{kind:kind,actionType:actionType||'',outcome:outcome||''}}).catch(function(){}); }catch(e){} }
+  function _aioEmit(kind,actionType,outcome,val){ try{ if(!(ATLAS_BACKEND && _apiCsrf)) return; var _b={kind:kind,actionType:actionType||'',outcome:outcome||''}; if(typeof val==='number' && isFinite(val)) _b.val=val; _api('/api/aio/event',{method:'POST',body:_b}).catch(function(){}); }catch(e){} }
   var _AIO_COLORS={ 'Advisor A':'#4a7c6f','Advisor B':'#6b8cae','Advisor C':'#9b7ea8' };   // white-label: generic labels the worker now returns (never the provider names)
   function _councilCardsHtml(models){
     return '<div class="cx-grid">'+models.map(function(m){ return '<div class="cx-card"><div class="cx-card__h"><span class="cx-badge" style="background:'+m.c+'">'+esc(m.n[0])+'</span>'+esc(m.n)+'</div><div class="cx-card__b">'+m.a+'</div></div>'; }).join('')+'</div>';
@@ -8872,6 +8872,7 @@ const Atlas = (function(){
   var _aioNewPageId='';   // pre-generated page id for page.create -- couriered snapshot()->apply()/undo() (mirrors _aioNewPostId)
   var _aioNewBlkId='';    // pre-generated blackout id for availability.block -- couriered snapshot()->apply()/undo() (mirrors _aioNewAssetId)
   var _aioNewBkId='';     // pre-generated booking id for booking.create -- couriered snapshot()->apply()/undo()
+  var _aioNewMsId='';     // pre-generated service-log id for maint.logService -- couriered snapshot()->apply()/undo()
   function _aioAddAsset(id,p){
     if(!_canCap('fleetEdit')) return false;
     var cap=_vehCap(); if(cap!==Infinity && _fleetUnits()>=cap) return false;   // plan/unit cap -- same gate as addVehicle()
@@ -8933,6 +8934,12 @@ const Atlas = (function(){
     _logEvent('booking','Booking '+b.id+' created via assistant: '+b.cust+' / '+b.asset+' / '+money(q.total),{booking:b.id,total:_r2(q.total)});
     try{ renderOverview(); }catch(e){} try{ renderBookings(); }catch(e){} try{ renderCustomers(); }catch(e){} try{ _bkBadge(); }catch(e){}
     return true; }
+  function _aioDayStr(ms){ try{ return new Date(Number(ms)||0).toISOString().slice(0,10); }catch(e){ return ''; } }
+  function _aioBlkCovering(a,dateStr){ var ms=_aioDateMs(dateStr); if(isNaN(ms)) return null; var bs=_blackouts(a); for(var i=0;i<bs.length;i++){ var b=bs[i]; var f=Number(b.from)||0, t=Number(b.to)||0; if(ms>=f && ms<=t) return b; } return null; }
+  function _aioBkStatus(s){ s=String(s||'').trim().toLowerCase().replace(/\s+/g,' '); var ok={'pending':'Pending','confirmed':'Confirmed','confirm':'Confirmed','on rent':'On rent','onrent':'On rent','returned':'Returned','completed':'Completed','complete':'Completed'}; return ok[s]||''; }
+  function _aioBkDesc(b){ if(!b) return 'booking'; var c=String((b&&b.cust)||(b&&b.customer&&b.customer.name)||'').trim(); var as=String((b&&b.asset)||'').trim(); var d=''; try{ if(b&&b.startTs) d=_aioDayStr(b.startTs); }catch(e){} return (c||'Guest')+(as?(' - '+as):'')+(d?(' ('+d+')'):''); }
+  function _aioBookingByRef(ref){ ref=String(ref||'').trim(); if(!ref) return null; var bs=_bookings()||[]; var byId=bs.filter(function(b){return String(b.id)===ref;})[0]; if(byId) return byId; var low=ref.toLowerCase(); var m=bs.filter(function(b){ var c=String((b&&b.cust)||(b&&b.customer&&b.customer.name)||'').toLowerCase(); return c && c.indexOf(low)>=0; }); if(!m.length) return null; var active=m.filter(function(b){ return b.status!=='Completed'&&b.status!=='Cancelled'&&b.status!=='Voided'; }); var pool=active.length?active:m; if(pool.length===1) return pool[0]; return {ambiguous:pool.length, id:pool[0].id}; }
+  function _aioValNum(after){ if(after==null) return undefined; var m=/-?\d[\d,]*\.?\d*/.exec(String(after)); if(!m) return undefined; var n=parseFloat(m[0].replace(/,/g,'')); return isFinite(n)?n:undefined; }
   const AIO_ACTIONS={
     'brand.setColor':{
       params:['color'], hint:'color is a #RRGGBB hex -- translate a color name (gold, navy, black) to its hex. For a two-tone look like "black and gold", set the ACCENT here (gold) and ALSO emit theme.set with mode dark.',
@@ -9305,6 +9312,36 @@ const Atlas = (function(){
       apply:function(p){ if(!_canCap('fleetEdit')) return false; var a=_aioAssetByName(p.asset); if(!a) return false; var from=_aioDateMs(p.start), to=_aioDateMs(p.end||p.start); if(isNaN(from)||isNaN(to)) return false; if(to<from){ var x=from;from=to;to=x; } var bid=_aioNewBlkId||('blk'+Date.now().toString(36)); _aioNewBlkId=''; _blackouts(a).push({id:bid, from:from, to:to, reason:'Blocked via Atlas.io assistant'}); _saveAssets(); try{ renderFleet(); }catch(e){} return true; },
       undo:function(snap){ if(!snap||!snap.assetId||!snap.blkId) return; try{ assetUnblock(snap.assetId, snap.blkId); }catch(e){} try{ renderFleet(); }catch(e){} }
     },
+    'availability.unblock':{
+      params:['asset','date'], hint:function(){ return 'asset is one of your '+esc(S.fleet.nouns)+' (match by name). date (YYYY-MM-DD) is any day inside a currently-blocked range on that asset; removes that block so the days become bookable again.'; },
+      cap:'fleetEdit', money:false, tier:'confirm',
+      label:function(p){ var a=_aioAssetByName(p.asset); return 'Unblock '+esc(a?a.name:String(p.asset||''))+' around '+esc(_aioNormDate(p.date)||String(p.date||'')); },
+      summary:function(p){ var a=_aioAssetByName(p.asset), blk=a?_aioBlkCovering(a,p.date):null; return {field:'Blocked days'+(a?(' - '+a.name):''), before:(blk?(_aioDayStr(blk.from)+' to '+_aioDayStr(blk.to)+' (blocked)'):'(no block on that day)'), after:'(bookable)'}; },
+      validate:function(p){ var a=_aioAssetByName(p.asset); if(!a) return {ok:false,msg:'Which '+esc(S.fleet.noun)+'? I could not match "'+esc(String(p.asset||''))+'".'}; if(isNaN(_aioDateMs(p.date))) return {ok:false,msg:'Give me a date inside the block, like 2026-08-02.'}; if(!_aioBlkCovering(a,p.date)) return {ok:false,msg:esc(a.name)+' has no blocked range covering '+esc(_aioNormDate(p.date)||String(p.date))+'.'}; return {ok:true}; },
+      snapshot:function(p){ var a=_aioAssetByName(p.asset), blk=a?_aioBlkCovering(a,p.date):null; return {assetId:a&&a.id, blk:blk?{id:blk.id,from:blk.from,to:blk.to,reason:blk.reason}:null}; },
+      apply:function(p){ if(!_canCap('fleetEdit')) return false; var a=_aioAssetByName(p.asset); if(!a) return false; var blk=_aioBlkCovering(a,p.date); if(!blk) return false; a.blackouts=_blackouts(a).filter(function(x){return x.id!==blk.id;}); _saveAssets(); try{ renderFleet(); }catch(e){} return true; },
+      undo:function(snap){ if(!snap||!snap.assetId||!snap.blk) return; var a=(DATA.assets||[]).filter(function(x){return x.id===snap.assetId;})[0]; if(!a) return; _blackouts(a).push(snap.blk); _saveAssets(); try{ renderFleet(); }catch(e){} }
+    },
+    'maint.logService':{
+      params:['asset','note','odo'], hint:function(){ return 'asset is one of your '+esc(S.fleet.nouns)+' (match by name). note is a short description of the service done (e.g. "oil change", "new tires"). odo is optional (a number for current mileage/hours). Logs a maintenance record dated today.'; },
+      cap:'fleetEdit', money:false, tier:'auto',
+      label:function(p){ var a=_aioAssetByName(p.asset); return 'Log service on '+esc(a?a.name:String(p.asset||''))+': '+esc(String(p.note||'').slice(0,60)); },
+      summary:function(p){ var a=_aioAssetByName(p.asset); return {field:'Service log'+(a?(' - '+a.name):''), before:'(no new record)', after:String(p.note||'Service').slice(0,60)+(p.odo?(' @ '+Math.round(parseFloat(p.odo)||0)):'')}; },
+      validate:function(p){ var a=_aioAssetByName(p.asset); if(!a) return {ok:false,msg:'Which '+esc(S.fleet.noun)+'? I could not match "'+esc(String(p.asset||''))+'".'}; if(!String(p.note||'').trim()) return {ok:false,msg:'What service was done? Give me a short note like "oil change".'}; return {ok:true}; },
+      snapshot:function(p){ var a=_aioAssetByName(p.asset); _aioNewMsId='ms'+Date.now().toString(36)+Math.floor(Math.random()*1e4).toString(36); return {assetId:a&&a.id, msId:_aioNewMsId}; },
+      apply:function(p){ if(!_canCap('fleetEdit')) return false; var a=_aioAssetByName(p.asset); if(!a) return false; var mid=_aioNewMsId||('ms'+Date.now().toString(36)); _aioNewMsId=''; var rec={id:mid, at:Date.now(), type:'Service', note:String(p.note||'').trim().slice(0,300), odo:Math.round(parseFloat(p.odo)||0), cost:0}; _asMaint(a).push(rec); if(rec.odo) a.odometer=rec.odo; try{ _serviceSyncLast(a); }catch(e){} _saveAssets(); try{ renderFleet(); }catch(e){} return true; },
+      undo:function(snap){ if(!snap||!snap.assetId||!snap.msId) return; var a=(DATA.assets||[]).filter(function(x){return x.id===snap.assetId;})[0]; if(!a) return; a.maint=_asMaint(a).filter(function(x){return x.id!==snap.msId;}); try{ _serviceSyncLast(a); }catch(e){} _saveAssets(); try{ renderFleet(); }catch(e){} }
+    },
+    'booking.setStatus':{
+      params:['booking','status'], hint:function(){ return 'booking identifies the reservation (its id, or the customer name for their active booking). status is one of: Pending, Confirmed, On rent, Returned, Completed. To CANCEL or VOID a booking, tell the owner to use the Cancel or Void button on it -- those handle fees and refunds and are not available here.'; },
+      cap:'bookEdit', money:false, tier:'confirm',
+      label:function(p){ var b=_aioBookingByRef(p.booking); return 'Set '+((b&&!b.ambiguous)?esc(_aioBkDesc(b)):('booking "'+esc(String(p.booking||''))+'"'))+' to '+esc(_aioBkStatus(p.status)||String(p.status||'')); },
+      summary:function(p){ var b=_aioBookingByRef(p.booking); return {field:'Booking status'+((b&&!b.ambiguous)?(' - '+_aioBkDesc(b)):''), before:((b&&!b.ambiguous)?(b.status||'Confirmed'):'?'), after:(_aioBkStatus(p.status)||String(p.status||'?'))}; },
+      validate:function(p){ var st=_aioBkStatus(p.status); if(!st) return {ok:false,msg:'Status must be Pending, Confirmed, On rent, Returned or Completed. To cancel or void a booking, use the Cancel/Void button on it -- those handle fees and refunds.'}; var b=_aioBookingByRef(p.booking); if(!b) return {ok:false,msg:'Which booking? Give me its id or the customer name.'}; if(b.ambiguous) return {ok:false,msg:'I found '+b.ambiguous+' bookings matching that -- tell me the exact booking id.'}; return {ok:true}; },
+      snapshot:function(p){ var b=_aioBookingByRef(p.booking); return {bkId:(b&&!b.ambiguous)?b.id:null, prev:(b&&!b.ambiguous)?b.status:null}; },
+      apply:function(p){ if(!_canCap('bookEdit')) return false; var st=_aioBkStatus(p.status); if(!st) return false; var ref=_aioBookingByRef(p.booking); if(!ref||ref.ambiguous) return false; var b=_getBooking(ref.id); if(!b) return false; b.status=st; b._t=Date.now(); _upsertBooking(b); save(); try{ renderBookings(); renderOverview(); }catch(e){} return true; },
+      undo:function(snap){ if(!snap||!snap.bkId) return; var b=_getBooking(snap.bkId); if(!b) return; b.status=snap.prev||'Confirmed'; b._t=Date.now(); _upsertBooking(b); save(); try{ renderBookings(); renderOverview(); }catch(e){} }
+    },
     'booking.create':{
       params:['customer','asset','start','end'], hint:function(){ return 'customer is the renter name. asset is one of your '+esc(S.fleet.nouns)+'. start and end are calendar dates (YYYY-MM-DD). Uses your normal pricing.'; },
       cap:'bookEdit', money:true, tier:'confirm',
@@ -9394,7 +9431,7 @@ const Atlas = (function(){
         var uid=_aioPushUndo(a.type, params, res.snap, entry.label(params), null, (res.sum&&res.sum.after));
         var body=_aioDiffHtml(res.sum)+'<div style="margin-top:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.aioUndo(\''+uid+'\')">Undo</button></div>';
         aioMsg('bot','<div class="cx-card" id="'+uid+'"><div class="cx-card__h">Done \u2014 '+entry.label(params)+'</div><div class="cx-card__b">'+body+'</div></div>');
-        _logEvent('aio','Applied: '+entry.label(params),{type:a.type,params:params}); _aioEmit('applied',a.type,'good');
+        _logEvent('aio','Applied: '+entry.label(params),{type:a.type,params:params}); _aioEmit('applied',a.type,'good',_aioValNum(res.sum&&res.sum.after));
       }
     });
   }
@@ -9406,7 +9443,7 @@ const Atlas = (function(){
     if(!res.ok){ if(card) card.innerHTML='<div class="cx-card__h">Could not apply</div><div class="cx-card__b">'+esc(res.msg||'')+'</div>'; _logEvent('aio','Failed: '+pend.entry.label(pend.params),{type:pend.type,msg:res.msg}); _aioEmit('failed',pend.type,'bad'); return; }
     _aioPushUndo(pend.type, pend.params, res.snap, pend.entry.label(pend.params), id, (res.sum&&res.sum.after));
     if(card) card.innerHTML='<div class="cx-card__h">Done \u2014 '+pend.entry.label(pend.params)+'</div><div class="cx-card__b">'+_aioDiffHtml(res.sum)+'<div style="margin-top:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.aioUndo(\''+id+'\')">Undo</button></div></div>';
-    _logEvent('aio','Applied: '+pend.entry.label(pend.params),{type:pend.type,params:pend.params}); _aioEmit('applied',pend.type,'good');
+    _logEvent('aio','Applied: '+pend.entry.label(pend.params),{type:pend.type,params:pend.params}); _aioEmit('applied',pend.type,'good',_aioValNum(res.sum&&res.sum.after));
   }
   function aioCancel(id){
     var pend=_aioConfirmQ[id]; if(!pend){ toast('That was already handled.'); return; }
@@ -9464,7 +9501,7 @@ const Atlas = (function(){
     var html='<div class="cx-card__h">'+(failed?('Applied '+applied.length+' of '+b.steps.length):('Done \u2014 '+applied.length+' change'+(applied.length===1?'':'s')+' applied'))+'</div><div class="cx-card__b">'+doneRows+failRow+undoBtn+'</div>';
     var card=document.getElementById(id); if(card) card.innerHTML=html; else aioMsg('bot','<div class="cx-card" id="'+id+'">'+html+'</div>');
     _logEvent('aio','Applied bundle: '+applied.length+'/'+b.steps.length,{applied:applied.map(function(a){return a.type;})});
-    try{ applied.forEach(function(a){ _aioEmit('applied',a.type,'good'); }); if(failed) _aioEmit('failed',failed.type||'','bad'); }catch(e){}
+    try{ applied.forEach(function(a){ _aioEmit('applied',a.type,'good',_aioValNum(a.after)); }); if(failed) _aioEmit('failed',failed.type||'','bad'); }catch(e){}
   }
   function aioBundleCancel(id){ var b=_aioBundleQ[id]; if(!b){ toast('That was already handled.'); return; } delete _aioBundleQ[id]; var card=document.getElementById(id); if(card) card.innerHTML='<div class="cx-card__h" style="opacity:.6">Cancelled \u2014 '+b.steps.length+' changes</div>'; _logEvent('aio','Cancelled bundle',{n:b.steps.length}); try{ (b.steps||[]).forEach(function(s){ _aioEmit('cancelled',s.type,'neutral'); }); }catch(e){} }
   // Cheap local pre-filter: is this message worth routing to the structured planner at all? Never
