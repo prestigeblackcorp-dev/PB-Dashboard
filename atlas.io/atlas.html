@@ -2209,7 +2209,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20l';
+  var APP_VERSION='2026.7.20m';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -3928,7 +3928,7 @@ const Atlas = (function(){
     var q='Review this '+(kind==='agreement'?'rental agreement':kind==='tos'?'terms of service':'privacy policy')+' for a rental business operating in '+(region||'their region')+'. Point out the biggest gaps, missing clauses and risky wording in a few short lines. Do not give binding legal advice; frame these as points to review with a licensed professional.';
     _api('/api/aio',{method:'POST',body:{q:q, context:('The '+kind+' document to review (verbatim, may be truncated):\n\n'+txt.slice(0,3800))}}).then(function(res){ var j=res&&res.json;   // #tokens: worker /api/aio takes context ONLY as a string (an object was silently dropped -> the doc never reached the model, yet the call still cost N credits). Send the doc AS a string so the paid review actually reviews it.
       var out=(j&&j.live&&(j.synthesis||(j.models&&j.models[0]&&j.models[0].text)))||'';
-      if(res.status>=200&&res.status<300&&out){ lg[kind].flags=(lg[kind].flags||[]).filter(function(x){return !x.ai;}); lg[kind].flags.push({level:'med',ai:true,msg:'Atlas.io live review: '+String(out).replace(/\s+/g,' ').trim().slice(0,420)+' -- Automated review, NOT legal advice; have a licensed attorney in '+(region||'your region')+' review before you rely on it.'}); save(); if(setCur==='legal') renderSet(); toast('Atlas.io live review added'); }
+      if(res.status>=200&&res.status<300&&out){ lg[kind].flags=(lg[kind].flags||[]).filter(function(x){return !x.ai;}); lg[kind].flags.push({level:'med',ai:true,msg:'Atlas.io live review: '+String(out).replace(/\s+/g,' ').trim().slice(0,420)+' -- Automated review, NOT legal advice; have a licensed attorney in '+(region||'your region')+' review before you rely on it.'}); save(); if(setCur==='legal') renderSet(); toast('Atlas.io live review added'); try{_aioEmit('content','doc.review.'+kind,'good');}catch(e){} }
     }).catch(function(){}); }
   // Full document lifecycle: regenerate from current settings, or delete back to not-set-up (create + upload already exist).
   function regenDoc(kind){ if(!_canMod('settings'))return; if(!confirm('Regenerate this document from your current settings? Any manual edits will be replaced.'))return; buildDoc(kind); }
@@ -5395,7 +5395,7 @@ const Atlas = (function(){
     _api('/api/aio',{method:'POST',body:{q:q, context:_aioBizContext()}}).then(function(res){
       var j=res&&res.json, txt=j&&(j.synthesis||(j.models&&j.models[0]&&j.models[0].text));
       if(!(res.status>=200&&res.status<300) || !txt){ box.innerHTML=''; return; }
-      box.innerHTML='<div style="border-top:1px solid var(--line);margin-top:4px;padding-top:10px;font-size:13px;color:var(--ink)"><b style="color:var(--brand-700)">Atlas.io says:</b> '+esc(String(txt)).replace(/\n/g,'<br>')+'</div>';
+      box.innerHTML='<div style="border-top:1px solid var(--line);margin-top:4px;padding-top:10px;font-size:13px;color:var(--ink)"><b style="color:var(--brand-700)">Atlas.io says:</b> '+esc(String(txt)).replace(/\n/g,'<br>')+'</div>'; try{_aioEmit('content','review.optimizer','good');}catch(e){}
     }).catch(function(){ box.innerHTML=''; });
   }
   /* ---- Smart Pricing Increment 3: BOUNDED auto-apply (opt-in, autoApply.on DEFAULT OFF). When on, Atlas nudges each
@@ -7847,7 +7847,7 @@ const Atlas = (function(){
     toast('Atlas.io is building your week\u2026');
     var fb=function(){ _schedApply(_schedSolve(_parseSchedNL(txt,_shiftRoster()), weekStart), weekStart); };   // heuristic parser + code solver; works with zero backend
     try{ _api('/api/schedule',{method:'POST',body:{freeText:txt, roster:rosterNames, positions:_schedPositions(), weekStart:weekStart}}).then(function(r){ var j=r&&r.json;
-        if(r.status>=200 && r.status<300 && j && j.live && j.ok && j.result && j.result.shifts) _schedApply(_schedFromWorker(j.result, weekStart), weekStart);
+        if(r.status>=200 && r.status<300 && j && j.live && j.ok && j.result && j.result.shifts){ _schedApply(_schedFromWorker(j.result, weekStart), weekStart); try{_aioEmit('applied','schedule.build','good');}catch(e){} }
         else fb(); }).catch(fb); }catch(e){ fb(); } }
   // Every shift is fully editable (mirrors addShift/saveShift; handles Atlas-built people not on the roster + open slots).
   function editShift(id){ if(!_guard('teamManage','Editing shifts'))return; var sh=_shifts().filter(function(x){ return x.id===id; })[0]; if(!sh){ toast('Shift not found'); return; }
@@ -8651,13 +8651,14 @@ const Atlas = (function(){
         var _coErr=(j&&j.error)?esc(String(j.error)):'The live council could not reach any model right now. Please try again in a moment.';
         aioMsg('bot','<div class="cx-note">Live council unavailable &mdash; '+_coErr+'</div>'); return;
       }
+      if(res.status===429){ _aioDropThink(); var _rl=(j&&j.error)?esc(String(j.error)):'Atlas.io is at its limit right now &mdash; please try again in a moment.'; aioMsg('bot','<div class="cx-note">'+_rl+'</div>'); return; }   // surface the real rate limit instead of a canned preview that reads like a live answer
       _councilRenderPreview(q);
     }).catch(function(){ _councilRenderPreview(q); });
   }
   function buildAio(){
     try{ _aioUndoBoot(); }catch(e){}   // restore the persisted undo stack once per tenant session
     var cc=document.getElementById('aioCreditCount'); if(cc) cc.textContent=_credits().toLocaleString();
-    document.getElementById('aioBody').innerHTML=''; _aioTurns=[];
+    document.getElementById('aioBody').innerHTML=''; _aioTurns=_aioTurnsRestore();   // keep the recent thread as CONTEXT across reopens (UI still starts fresh)
     aioMsg('bot',`Hi ${esc(_ownerName())} \u{1F44B} I'm Atlas.io. I work from your live ${S.fleet.label.toLowerCase()} setup and money rules. You have <b>${_credits().toLocaleString()}</b> credits this week \u2014 ask me anything, or tap a suggestion.`);
     // Idle-time learning: open with the CURRENT researched finding for the owner's market (rotates over time).
     try{
@@ -8699,7 +8700,9 @@ const Atlas = (function(){
   // (council still bills N providers, plan still 1); it only makes each metered call smarter. Owner's own words (not
   // a trust boundary), but tag-stripped + whitespace-collapsed so it stays compact + predictable. =====
   var _aioTurns=[];
-  function _aioTurnPush(role,text){ try{ var t=String(text==null?'':text).replace(/<[^>]*>/g,' ').replace(/&[a-z]+;/gi,' ').replace(/\s+/g,' ').trim(); if(!t) return; _aioTurns.push({r:(role==='a'?'a':'u'),t:t.slice(0,300)}); if(_aioTurns.length>8) _aioTurns=_aioTurns.slice(-8); }catch(e){} }
+  function _aioTurnsKey(){ var ss=null; try{ ss=store.session(); }catch(e){} return 'atlas_aioturns_'+((ss&&ss.tenantId)||'x'); }
+  function _aioTurnsRestore(){ try{ var o=_lsGet(_aioTurnsKey(),null); if(o&&o.turns&&o.turns.length&&(Date.now()-(o.at||0)<2700000)) return o.turns.slice(-8); }catch(e){} return []; }   // multi-turn continuity across panel reopens, tenant-scoped, 45-min TTL so a stale thread never forces off-topic context
+  function _aioTurnPush(role,text){ try{ var t=String(text==null?'':text).replace(/<[^>]*>/g,' ').replace(/&[a-z]+;/gi,' ').replace(/\s+/g,' ').trim(); if(!t) return; _aioTurns.push({r:(role==='a'?'a':'u'),t:t.slice(0,300)}); if(_aioTurns.length>8) _aioTurns=_aioTurns.slice(-8); try{_lsSet(_aioTurnsKey(),{at:Date.now(),turns:_aioTurns});}catch(e){} }catch(e){} }
   function _aioHistoryStr(){ try{ if(_aioTurns.length<2) return ''; var lines=_aioTurns.slice(-6).map(function(x){ return (x.r==='a'?'Atlas.io':'Owner')+': '+x.t; }); var s=lines.join('\n'); return s.length>1400 ? s.slice(s.length-1400) : s; }catch(e){ return ''; } }
   function _aioChatContext(){ var biz=''; try{ biz=_aioBizContext(); }catch(e){} var h=_aioHistoryStr(); return h ? (biz+'\n\nRecent conversation (most recent last) -- answer the LATEST message and stay on THIS thread; do not change the subject:\n'+h) : biz; }
   function aioAsk(q){
@@ -9542,6 +9545,7 @@ const Atlas = (function(){
         if(!j.reply && !(j.actions&&j.actions.length) && !(j.clarify&&j.clarify.length) && !(j.unsupported&&j.unsupported.length)) aioMsg('bot', aioReply(q));
         return;
       }
+      if(res.status===429){ var _rl=(j&&j.error)?esc(String(j.error)):'Atlas.io is at its limit right now &mdash; please try again in a moment.'; aioMsg('bot','<div class="cx-note">'+_rl+'</div>'); return; }   // surface the real rate limit, not the silent offline heuristic
       _aioPlanFallback(q);
     }).catch(function(){ _aioDropThink(); _aioPlanFallback(q); });
   }
@@ -11082,7 +11086,7 @@ const Atlas = (function(){
         if(!(res&&res.status>=200&&res.status<300) || j.error){ fin(null); return; }
         var cands=[]; if(j.synthesis) cands.push(String(j.synthesis));
         (j.models||[]).forEach(function(m){ if(m&&m.text) cands.push(String(m.text)); });
-        for(var i=0;i<cands.length;i++){ var o=_aiParseCopy(cands[i]); if(o){ fin(o); return; } }
+        for(var i=0;i<cands.length;i++){ var o=_aiParseCopy(cands[i]); if(o){ try{_aioEmit('content','site.copy','good');}catch(e){} fin(o); return; } }
         fin(null);
       }).catch(function(){ clearTimeout(_to); fin(null); });
     }catch(e){ fin(null); }
@@ -11398,7 +11402,7 @@ const Atlas = (function(){
         if(!(res&&res.status>=200&&res.status<300) || j.error){ fin(null); return; }
         var cands=[]; if(j.synthesis) cands.push(String(j.synthesis));
         (j.models||[]).forEach(function(m){ if(m&&m.text) cands.push(String(m.text)); });
-        for(var i=0;i<cands.length;i++){ var o=parse(cands[i]); if(o){ fin(o); return; } }
+        for(var i=0;i<cands.length;i++){ var o=parse(cands[i]); if(o){ try{_aioEmit('content','site.design','good');}catch(e){} fin(o); return; } }
         fin(null);
       }).catch(function(){ clearTimeout(_to); fin(null); });
     }catch(e){ fin(null); }
@@ -11528,7 +11532,7 @@ const Atlas = (function(){
         if(!(res&&res.status>=200&&res.status<300) || j.error){ fin(null); return; }
         var cands=[]; if(j.synthesis) cands.push(String(j.synthesis));
         (j.models||[]).forEach(function(m){ if(m&&m.text) cands.push(String(m.text)); });
-        for(var i=0;i<cands.length;i++){ var o=parse(cands[i]); if(o){ fin(o); return; } }
+        for(var i=0;i<cands.length;i++){ var o=parse(cands[i]); if(o){ try{_aioEmit('content','site.edit','good');}catch(e){} fin(o); return; } }
         fin(null);
       }).catch(function(){ clearTimeout(_to); fin(null); });
     }catch(e){ fin(null); }
