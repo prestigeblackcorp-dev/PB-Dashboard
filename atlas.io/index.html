@@ -2209,7 +2209,7 @@ const Atlas = (function(){
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20m';
+  var APP_VERSION='2026.7.20n';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -9369,7 +9369,8 @@ const Atlas = (function(){
     catch(e){ return {ok:false,msg:'That could not be applied ('+(e&&e.message?e.message:'unexpected error')+').'}; }
     return {ok:true, sum:sum, snap:snap};
   }
-  function _aioPushUndo(type,params,snap,label,useId){ var id=useId||_aioNextId(); _aioUndoStack.push({id:id,type:type,params:params,snap:snap,label:label,t:Date.now()}); _aioUndoPersist(); return id; }
+  function _aioDrift(type,params,after){ if(after==null) return false; var e=AIO_ACTIONS[type]; if(!e||!e.summary) return false; var cur=null; try{ cur=e.summary(params); }catch(x){ return false; } return !!(cur && String(cur.before)!==String(after)); }   // stale-snapshot guard: true when the live value no longer matches what Atlas set (owner re-edited it since) -> undo must fail closed and never clobber the later manual edit
+  function _aioPushUndo(type,params,snap,label,useId,after){ var id=useId||_aioNextId(); _aioUndoStack.push({id:id,type:type,params:params,snap:snap,label:label,after:after,t:Date.now()}); _aioUndoPersist(); return id; }
   // Proposes a whole plan (one or more actions) from the live planner or the offline fallback. Each action
   // is re-validated here regardless of where it came from -- the AI only ever NAMES a type; this decides
   // whether it actually runs.
@@ -9390,7 +9391,7 @@ const Atlas = (function(){
       } else {
         var res=_aioRunAction(entry, params);
         if(!res.ok){ aioMsg('bot','I could not do that \u2014 '+esc(res.msg||'')); _logEvent('aio','Failed: '+entry.label(params),{type:a.type,msg:res.msg}); _aioEmit('failed',a.type,'bad'); return; }
-        var uid=_aioPushUndo(a.type, params, res.snap, entry.label(params));
+        var uid=_aioPushUndo(a.type, params, res.snap, entry.label(params), null, (res.sum&&res.sum.after));
         var body=_aioDiffHtml(res.sum)+'<div style="margin-top:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.aioUndo(\''+uid+'\')">Undo</button></div>';
         aioMsg('bot','<div class="cx-card" id="'+uid+'"><div class="cx-card__h">Done \u2014 '+entry.label(params)+'</div><div class="cx-card__b">'+body+'</div></div>');
         _logEvent('aio','Applied: '+entry.label(params),{type:a.type,params:params}); _aioEmit('applied',a.type,'good');
@@ -9403,7 +9404,7 @@ const Atlas = (function(){
     var res=_aioRunAction(pend.entry, pend.params);
     var card=document.getElementById(id);
     if(!res.ok){ if(card) card.innerHTML='<div class="cx-card__h">Could not apply</div><div class="cx-card__b">'+esc(res.msg||'')+'</div>'; _logEvent('aio','Failed: '+pend.entry.label(pend.params),{type:pend.type,msg:res.msg}); _aioEmit('failed',pend.type,'bad'); return; }
-    _aioPushUndo(pend.type, pend.params, res.snap, pend.entry.label(pend.params), id);
+    _aioPushUndo(pend.type, pend.params, res.snap, pend.entry.label(pend.params), id, (res.sum&&res.sum.after));
     if(card) card.innerHTML='<div class="cx-card__h">Done \u2014 '+pend.entry.label(pend.params)+'</div><div class="cx-card__b">'+_aioDiffHtml(res.sum)+'<div style="margin-top:8px"><button class="btn btn--ghost btn--sm" onclick="Atlas.aioUndo(\''+id+'\')">Undo</button></div></div>';
     _logEvent('aio','Applied: '+pend.entry.label(pend.params),{type:pend.type,params:pend.params}); _aioEmit('applied',pend.type,'good');
   }
@@ -9418,14 +9419,15 @@ const Atlas = (function(){
     if(idx<0){ toast('Already undone.'); return; }
     var item=_aioUndoStack[idx];
     if(item.bundle){   // #271 pt2: reverse the whole bundle, last change first (so dependent changes unwind cleanly)
-      var okN=0; for(var b=item.bundle.length-1;b>=0;b--){ var st=item.bundle[b]; var e2=AIO_ACTIONS[st.type]; if(!e2||!e2.undo) continue; try{ e2.undo(st.snap, st.params); okN++; }catch(e){} }
+      var okN=0, skN=0; for(var b=item.bundle.length-1;b>=0;b--){ var st=item.bundle[b]; var e2=AIO_ACTIONS[st.type]; if(!e2||!e2.undo) continue; if(_aioDrift(st.type,st.params,st.after)){ skN++; continue; } try{ e2.undo(st.snap, st.params); okN++; }catch(e){} }
       _aioUndoStack.splice(idx,1); _aioUndoPersist();
-      var cardB=document.getElementById(id); if(cardB) cardB.innerHTML='<div class="cx-card__h" style="opacity:.6">Undone \u2014 '+okN+' change'+(okN===1?'':'s')+' reverted</div>';
+      var cardB=document.getElementById(id); if(cardB) cardB.innerHTML='<div class="cx-card__h" style="opacity:.6">Undone \u2014 '+okN+' change'+(okN===1?'':'s')+' reverted'+(skN?(' ('+skN+' left as you re-edited them)'):'')+'</div>';
       try{ (item.bundle||[]).forEach(function(st){ _aioEmit('undone',st.type,'bad'); }); }catch(e){}
       _logEvent('aio','Undid bundle: '+okN,{}); toast('Undone'); return;
     }
     var entry=AIO_ACTIONS[item.type];
     if(!entry){ toast('Could not undo that.'); return; }
+    if(_aioDrift(item.type,item.params,item.after)){ var _dc=document.getElementById(id); if(_dc) _dc.innerHTML='<div class="cx-card__h" style="opacity:.75">Undo skipped</div><div class="cx-card__b">This changed since Atlas set it, so undoing would overwrite your later edit. Adjust it yourself from the right tab.</div>'; toast('Undo skipped \u2014 you changed this since'); return; }
     try{ entry.undo(item.snap, item.params); }catch(e){ toast('Could not undo that.'); return; }
     _aioUndoStack.splice(idx,1); _aioUndoPersist();
     var card=document.getElementById(id); if(card) card.innerHTML='<div class="cx-card__h" style="opacity:.6">Undone \u2014 '+esc(item.label||'')+'</div>';
@@ -9454,7 +9456,7 @@ const Atlas = (function(){
   function aioBundleApply(id){
     var b=_aioBundleQ[id]; if(!b){ toast('That was already handled.'); return; } delete _aioBundleQ[id];
     var applied=[], failed=null;
-    for(var i=0;i<b.steps.length;i++){ var s=b.steps[i]; var res=_aioRunAction(s.entry, s.params); if(!res.ok){ failed={label:s.entry.label(s.params), msg:res.msg, type:s.type}; break; } applied.push({type:s.type, params:s.params, snap:res.snap, label:s.entry.label(s.params)}); }
+    for(var i=0;i<b.steps.length;i++){ var s=b.steps[i]; var res=_aioRunAction(s.entry, s.params); if(!res.ok){ failed={label:s.entry.label(s.params), msg:res.msg, type:s.type}; break; } applied.push({type:s.type, params:s.params, snap:res.snap, label:s.entry.label(s.params), after:(res.sum&&res.sum.after)}); }
     if(applied.length){ _aioUndoStack.push({id:id, bundle:applied, label:b.label, t:Date.now()}); _aioUndoPersist(); }
     var doneRows=applied.map(function(a){ return '<div style="font-size:12px;color:var(--muted)">\u2713 '+esc(a.label)+'</div>'; }).join('');
     var failRow=failed?('<div style="font-size:12px;color:var(--danger);margin-top:4px">Stopped at "'+esc(failed.label)+'" &mdash; '+esc(failed.msg||'could not apply')+'. The steps above were applied and can be undone.</div>'):'';
