@@ -1648,9 +1648,21 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx, fromPortal){
     var exts = _extLiveP(bk);   // LIVE extensions only -- a deleted (tombstoned) ext must never count toward numbering or the gate
     var extIdx = exts.findIndex(e => e && e.id === extId);
     if(extIdx === -1){
+      // The linked extension no longer exists -- almost always an OLD email whose extension was since deleted
+      // and replaced. Never dead-end the client: if exactly one live extension still needs THIS signer, send
+      // them straight to it (so any stale link lands on the current agreement instead of an error).
+      var _needsThisSigner=exts.filter(function(e){
+        if(!e) return false;
+        if(_exIsDrv){ var s=e.driverSigs&&e.driverSigs[_exDIdx]; return !(s&&_isSigDataUri(s.sig)); }
+        return !(e.signed && _isSigDataUri(e.sig));
+      });
+      if(_needsThisSigner.length===1){ extId=_needsThisSigner[0].id; extIdx=exts.indexOf(_needsThisSigner[0]); }
+    }
+    if(extIdx === -1){
       var _haveIds = exts.map(function(e){ return (e&&e.id)||'(no-id)'; }).join(', ');
       try{ console.error('[PB] extension not found in the server copy of this booking. looked for extId=', extId, '| booking has', exts.length, 'extension(s):', _haveIds); }catch(_e){}
-      body.innerHTML = '<div style="color:#f87171;padding:20px">Extension not found. Please contact Prestige Black Rentals at <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a>.<br><small style="opacity:.4">ref '+esc(String(extId))+' \u00B7 '+exts.length+' on file</small></div>';
+      var _openPortal = exts.length ? '<div style="margin-top:14px"><button onclick="showAuthForSigner()" style="padding:10px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:700;cursor:pointer;font-size:14px">Open your Contracts \u2192</button><div style="font-size:11px;color:rgba(255,255,255,.4);margin-top:8px">Your current agreement is in the portal under Contracts.</div></div>' : '';
+      body.innerHTML = '<div style="text-align:center;padding:24px 20px;color:#e8e8e8"><div style="font-size:34px;margin-bottom:10px">\uD83D\uDCC4</div><div style="font-size:16px;font-weight:700;margin-bottom:6px">This link is out of date</div><div style="color:rgba(255,255,255,.55);font-size:13px">This particular extension was replaced. Your latest agreement is ready in your portal, or call us and we\u2019ll re-send it.</div>'+_openPortal+'<div style="margin-top:14px;font-size:12px;color:rgba(255,255,255,.55)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div><div style="margin-top:6px"><small style="opacity:.3">ref '+esc(String(extId))+' \u00B7 '+exts.length+' on file</small></div></div>';
       return;
     }
     var ext = exts[extIdx];
