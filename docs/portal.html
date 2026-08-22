@@ -976,6 +976,34 @@ function _bothSigsHtml(bk, isWv){
     + '<div><div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#555;margin-bottom:3px">Rental Agreement'+(bk.customerSigDate?' \u00B7 '+esc(String(bk.customerSigDate)):'')+'</div>'+_img(bk.customerSig)+'</div>'
     + '</div>';
 }
+// Original SIGNED terms (return date + day count) for the BASE agreement -- reconstructed robustly so a
+// signed contract always shows what was ACTUALLY signed and is never altered by later extensions. Extension
+// churn (add then delete) can inflate bk.days (a deleted ext may not decrement it) and leave the surviving
+// ext's fromDate stale, which made the base doc show the EXTENDED return + an inflated term. The FIRST-created
+// extension extended FROM the original return (nothing had moved the window yet when it was created), so its
+// fromDate is the true original return -- reliable even after other extensions are added or deleted. Original
+// days = the pickup->original-return span (daily), else bk.days minus the live extension days (hourly/legacy).
+// No extensions at all -> the booking's own stored dropoff/days ARE the original.
+function _smOrigTerms(bk){
+  var raw=(Array.isArray(bk.extensions)?bk.extensions:(bk.extensions&&typeof bk.extensions==='object'?Object.values(bk.extensions):[])).filter(Boolean);
+  if(!raw.length) return { returnStr:(bk.dropoffDate||''), days: Math.max(1, Number(bk.days)||1) };
+  // earliest-CREATED extension: when it was created nothing had moved the window yet, so its "extended from"
+  // (fromDate, or toDate minus its own days) IS the original signed return -- robust to later add/delete churn.
+  var sorted=raw.slice().sort(function(a,b){ return (Number(a.createdAt)||0)-(Number(b.createdAt)||0); });
+  var origReturn='';
+  for(var _i=0;_i<sorted.length;_i++){ var _f=(typeof _smExtFrom==='function')?_smExtFrom(sorted[_i]):(sorted[_i]&&sorted[_i].fromDate); if(_f){ origReturn=_f; break; } }
+  if(!origReturn) origReturn=(bk.dropoffDate||'');
+  var days=0, p=(bk.pickupDate||bk.date||'');
+  if((bk.type==='daily'||!bk.type) && p && origReturn){
+    var pd=new Date(p+'T12:00:00'), rd=new Date(origReturn+'T12:00:00');
+    if(!isNaN(pd.getTime()) && !isNaN(rd.getTime())){ var d=Math.round((rd-pd)/86400000); if(d>=1) days=d; }
+  }
+  if(!days){
+    var liveDays=raw.filter(function(e){ return !e._deleted; }).reduce(function(a,e){ return a+(Number(e.extensionDays)||0); },0);
+    days=Math.max(1, (Number(bk.days)||1) - liveDays);
+  }
+  return { returnStr: origReturn, days: days };
+}
 function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
   var tmpl = (docType==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
   if(!tmpl) return '';
@@ -1000,10 +1028,9 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
   var _sbd = _buildContractBreakdown(bk);
   var _svInfo = Object.assign({}, (bk.vehicleInfo||{}), VEHICLE_INFO[bk.vehicle]||{});  // booking snapshot fallback (covers owner-added custom vehicles the portal catalog lacks); catalog wins when present
   // #16: the base agreement reproduces the ORIGINALLY-SIGNED return + day count (extensions are separate amendment pages).
-  var _origExtsB2 = (Array.isArray(bk.extensions)?bk.extensions:(bk.extensions&&typeof bk.extensions==='object'?Object.values(bk.extensions):[])).filter(function(e){return e&&!e._deleted;});
-  var _origExtDaysB2 = _origExtsB2.reduce(function(a,e){return a+(Number(e.extensionDays)||0);},0);
-  var _origDropB2 = (_origExtsB2.length && _origExtsB2[0].fromDate) ? _origExtsB2[0].fromDate : (bk.dropoffDate||'');
-  var _origDaysB2 = Math.max(1, (Number(bk.days)||1) - _origExtDaysB2);
+  var _ot2 = _smOrigTerms(bk);
+  var _origDropB2 = _ot2.returnStr;   // #16: original signed return (robust to extension add/delete churn)
+  var _origDaysB2 = _ot2.days;        // #16: original signed day count
   var _sRentalType = bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var _sPickupFull = fmtDateFull(bk.pickupDate||bk.date||'');
   var _sReturnFull = fmtDateFull(_origDropB2||bk.dropoffDate||'');   // #16: original signed return
@@ -1300,10 +1327,9 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     // #16: the BASE/original agreement reproduces the ORIGINALLY-SIGNED terms -- the pre-extension return date and
     // day count (extensions are separate amendment pages). Without this the re-rendered base doc showed the grown
     // return, contradicting what the client actually signed.
-    var _origExtsB = (Array.isArray(bk.extensions)?bk.extensions:(bk.extensions&&typeof bk.extensions==='object'?Object.values(bk.extensions):[])).filter(function(e){return e&&!e._deleted;});
-    var _origExtDaysB = _origExtsB.reduce(function(a,e){return a+(Number(e.extensionDays)||0);},0);
-    var _origDropB = (_origExtsB.length && _origExtsB[0].fromDate) ? _origExtsB[0].fromDate : (bk.dropoffDate||'');
-    var _origDaysB = Math.max(1, (Number(bk.days)||1) - _origExtDaysB);
+    var _otB = _smOrigTerms(bk);
+    var _origDropB = _otB.returnStr;   // #16: original signed return (robust to extension add/delete churn)
+    var _origDaysB = _otB.days;        // #16: original signed day count
     var _sRentalType = bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
     var _sPickupFull = fmtDateFull(bk.pickupDate||bk.date||'');
     var _sReturnFull = fmtDateFull(_origDropB||bk.dropoffDate||'');   // #16: original signed return
@@ -1466,11 +1492,11 @@ function _smExtFrom(ext){
   }
   return (ext && ext.fromDate) || '';
 }
-// Original return = the FIRST extension's computed "from" (before any extension moved the dropoff).
+// Original return = the FIRST-created extension's "extended from" (before any extension moved the dropoff).
+// Delegates to _smOrigTerms so the extension doc, the signed base contract, and its download all agree and
+// are equally robust to add/delete churn.
 function _smOrigReturn(bk){
-  var exts=(bk&&bk.extensions)||[];
-  if(!exts.length) return (bk&&bk.dropoffDate)||'';
-  return _smExtFrom(exts[0]) || (bk.dropoffDate||'');
+  return _smOrigTerms(bk).returnStr;
 }
 
 // ====================================================================================================
