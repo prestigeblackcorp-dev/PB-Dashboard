@@ -1912,7 +1912,7 @@ const Atlas = (function(){
   // place (still works locally + retries next sync), so a photo is NEVER lost. Only the worker's MIME allow-list types
   // (jpg/png/webp/pdf) are offloaded; anything else stays inline.
   var _OFFLOAD_MIN=60000, _offloading=false;   // ~45KB binary; smaller stays inline (icons / tiny thumbnails)
-  function _isBigDataUri(v){ return typeof v==='string' && v.length>_OFFLOAD_MIN && /^data:(image\/(jpe?g|png|webp)|application\/pdf);base64,/i.test(v); }
+  function _isBigDataUri(v){ return typeof v==='string' && v.length>_OFFLOAD_MIN && /^data:(image\/(jpe?g|png|webp)|application\/pdf|video\/(mp4|webm|quicktime|ogg));base64,/i.test(v); }   // #18: video now offloads to R2 like photos -> full-size video no longer bloats the D1 row
   function _uploadBlob(dataUri,name){ return _api('/api/files',{method:'POST',body:{data:dataUri,name:(name||'file')}}).then(function(res){ return (res&&res.json&&res.json.ok&&res.json.url)?res.json.url:null; }).catch(function(){ return null; }); }
   async function _offloadObj(obj){ var changed=false;
     async function walk(o){ if(!o||typeof o!=='object') return; var keys=Object.keys(o);
@@ -2219,7 +2219,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20s';
+  var APP_VERSION='2026.7.20t';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -12429,7 +12429,7 @@ const Atlas = (function(){
     (function next(){ if(i>=arr.length){ done&&done(); return; } var f=arr[i++], isVid=/^video\//.test(f.type)||/\.(mp4|mov|webm|m4v|avi)$/i.test(f.name||'');
       var item={ id:'cm'+Date.now()+'_'+i, kind:isVid?'video':'photo', name:f.name||(isVid?'video':'photo'), at:Date.now(), src:null, phase:(phase==='return'?'return':'pickup') };
       if(!isVid){ var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result),1000,0.7,function(u){ item.src=u; cm.push(item); next(); }); }; r.onerror=function(){ cm.push(item); next(); }; r.readAsDataURL(f); }
-      else if(f.size && f.size<=700000){ var rv=new FileReader(); rv.onload=function(e){ item.src=String(e.target.result); cm.push(item); next(); }; rv.onerror=function(){ cm.push(item); next(); }; rv.readAsDataURL(f); }
+      else if(f.size && f.size<=15000000){ var rv=new FileReader(); rv.onload=function(e){ item.src=String(e.target.result); cm.push(item); next(); }; rv.onerror=function(){ cm.push(item); next(); }; rv.readAsDataURL(f); }
       else { item.note='on file'; cm.push(item); next(); } })(); }   // large videos: keep the time-stamped record (real file lands in R2 in production)
   function _condMediaHtml(b, opts){ opts=opts||{}; var cm=_condMedia(b);
     if(opts.phase){ cm=cm.filter(function(m){ return (m.phase||'pickup')===opts.phase; }); }
