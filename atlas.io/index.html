@@ -1971,7 +1971,7 @@ const Atlas = (function(){
     var seen={};
     Object.keys(cols).forEach(function(kind){ (cols[kind]||[]).forEach(function(it){ if(!it||!it.id) return; var key=kind+':'+it.id; seen[key]=1;
       if(_pushedHash[key]!==JSON.stringify(it)){ it._t=_monoNow(); _srvMirror(kind,it,key,JSON.stringify(it)); } }); });   // #294: monotonic stamp; _pushedHash set on server-accept inside _srvMirror
-    Object.keys(_pushedHash).forEach(function(key){ if(key==='__profile'||seen[key]) return; var p=key.indexOf(':'); if(p<0) return; var kind=key.slice(0,p); if(cols[kind]) _srvDelete(kind,key.slice(p+1)); });
+    Object.keys(_pushedHash).forEach(function(key){ if(key==='__profile'||seen[key]) return; var p=key.indexOf(':'); if(p<0) return; var kind=key.slice(0,p); if(cols[kind] && cols[kind].length) _srvDelete(kind,key.slice(p+1)); });   // audit HIGH #17: fail-CLOSED -- never reconcile-delete when the local collection is EMPTY (transient/unhydrated/logout-race must not mass-delete server rows; explicit delAsset/booking-delete still call _srvDelete directly)
     // #294 Gap 6: don't push the profile until the server's copy is verified this session (or the user genuinely onboarded
     // locally) -> a fresh device that hasn't hydrated can never overwrite the real server profile with an empty one.
     if(!(S&&(S.onboarded||_profileHydrated))) return;
@@ -2089,11 +2089,12 @@ const Atlas = (function(){
   function _srvMergeColl(lsKey,kind,rows){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[];
     local.forEach(function(x){ if(x&&x.id&&!byId[x.id]){ byId[x.id]=x; order.push(x.id); if(x._t) _seenT(x._t); } });
     rows.forEach(function(row){ var srv=_srvUnshape(kind,row); if(!srv||!srv.id) return; _seenT(srv._t); var loc=byId[srv.id];   // #294: feed the monotonic clock so our next local stamp is after the server's newest
-      if(!loc){ byId[srv.id]=srv; order.push(srv.id); } else if((srv._t||0)>(loc._t||0)){ byId[srv.id]=srv; }
+      if(!loc){ byId[srv.id]=srv; order.push(srv.id); _pushedHash[kind+':'+srv.id]=JSON.stringify(srv); }   // audit HIGH #16: adopted from server -> matches server, mark synced
+      else if((srv._t||0)>(loc._t||0)){ byId[srv.id]=srv; _pushedHash[kind+':'+srv.id]=JSON.stringify(srv); }   // server newer -> adopt + mark synced
       else if(kind==='bookings' && Array.isArray(srv.extensions) && Array.isArray(loc.extensions)){   // #extfix: local booking wins by _t, but never drop a server-recorded extension SIGNATURE (mirrors the worker _graftServerPay)
         var _sx={}; srv.extensions.forEach(function(e){ if(e&&e.id!=null&&e.signedAt) _sx[String(e.id)]=e; });
         loc.extensions.forEach(function(e){ if(e&&e.id!=null){ var s=_sx[String(e.id)]; if(s&&!e.signedAt){ e.signedAt=s.signedAt; if(s.signerName!=null)e.signerName=s.signerName; if(s.sigId!=null)e.sigId=s.sigId; } } }); }
-      _pushedHash[kind+':'+srv.id]=JSON.stringify(byId[srv.id]); });
+      });   // audit HIGH #16: when LOCAL wins, do NOT touch _pushedHash -> the local edit stays dirty and the next _srvSyncPush actually sends it (was set unconditionally to the LOCAL blob -> the edit was marked already-synced and silently never reached the server = cross-device data loss)
     _lsSet(lsKey, order.map(function(id){ return byId[id]; })); }
   function _srvMergeProfile(tid,prof){ _profileHydrated=true;   // #294 Gap 6: a valid server profile was received -> the profile push is now safe to run
     var loc=_lsGet('atlas_tenant_'+tid,null)||{}; var s=(prof&&prof.settings)||{};
@@ -2218,7 +2219,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20q';
+  var APP_VERSION='2026.7.20r';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -3215,6 +3216,7 @@ const Atlas = (function(){
     // switching accounts on a shared device could briefly show the previous tenant's vehicles/branding. One account must
     // NEVER see another's data. (Belt-and-suspenders in-memory clear below in case the reload is blocked.)
     try{ S=null; DATA={}; }catch(e){}
+    try{ _apiCsrf=null; _pushedHash={}; if(_syncTimer){ clearTimeout(_syncTimer); _syncTimer=null; } }catch(e){}   // audit HIGH #17: stop any queued _srvSyncPush + clear the reconcile delete-source BEFORE the hard reload, so a logout-race sync can never mass-delete this tenant's server bookings/assets
     try{ _selfActor=null; }catch(e){}
     try{ if(typeof _demo!=='undefined'&&_demo){ _demo.on=false; if(_demo.timer)clearTimeout(_demo.timer); } }catch(e){}
     try{ location.replace(location.pathname); return; }catch(e){}
@@ -12426,7 +12428,7 @@ const Atlas = (function(){
     (function next(){ if(i>=arr.length){ done&&done(); return; } var f=arr[i++], isVid=/^video\//.test(f.type)||/\.(mp4|mov|webm|m4v|avi)$/i.test(f.name||'');
       var item={ id:'cm'+Date.now()+'_'+i, kind:isVid?'video':'photo', name:f.name||(isVid?'video':'photo'), at:Date.now(), src:null, phase:(phase==='return'?'return':'pickup') };
       if(!isVid){ var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result),1000,0.7,function(u){ item.src=u; cm.push(item); next(); }); }; r.onerror=function(){ cm.push(item); next(); }; r.readAsDataURL(f); }
-      else if(f.size && f.size<=2600000){ var rv=new FileReader(); rv.onload=function(e){ item.src=String(e.target.result); cm.push(item); next(); }; rv.onerror=function(){ cm.push(item); next(); }; rv.readAsDataURL(f); }
+      else if(f.size && f.size<=700000){ var rv=new FileReader(); rv.onload=function(e){ item.src=String(e.target.result); cm.push(item); next(); }; rv.onerror=function(){ cm.push(item); next(); }; rv.readAsDataURL(f); }
       else { item.note='on file'; cm.push(item); next(); } })(); }   // large videos: keep the time-stamped record (real file lands in R2 in production)
   function _condMediaHtml(b, opts){ opts=opts||{}; var cm=_condMedia(b);
     if(opts.phase){ cm=cm.filter(function(m){ return (m.phase||'pickup')===opts.phase; }); }
