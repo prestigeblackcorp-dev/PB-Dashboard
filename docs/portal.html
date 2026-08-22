@@ -2099,6 +2099,21 @@ document.addEventListener('DOMContentLoaded',()=>{
                   }
                 }
               }
+              // Paid an EXTENSION on a SIGNED base -> carry the client straight to signing it.
+              try{
+                if(paidBkId && paidChgId && _markOk){
+                  var _eb=state.bookings.find(function(x){ return x.id===paidBkId; });
+                  var _ec=_eb?(_eb.portalCharges||[]).find(function(c){ return c && c.id===paidChgId && c._extId; }):null;
+                  var _baseSigned=!!(_eb && _eb.customerSig && String(_eb.customerSig).indexOf('data:image/')===0);
+                  var _ex=_ec?(_eb.extensions||[]).find(function(e){ return e && e.id===_ec._extId && !e._deleted; }):null;
+                  if(_ex && _baseSigned && !_ex.signed && typeof _initExtensionSigningMode==='function'){
+                    showApp(); switchTab('bookings');
+                    setTimeout(function(){ toast('\u2705 Payment received \u2014 now sign your extension.','success'); }, 300);
+                    setTimeout(function(){ _initExtensionSigningMode(paidBkId, _ec._extId, null, true); }, 650);
+                    return;
+                  }
+                }
+              }catch(_e){}
               showApp();
               switchTab('bookings');
               if(_markOk){
@@ -2904,6 +2919,15 @@ function _radQuote(veh, n, origDaily, drop){
   var tier=r?_pbTierTotal(n, r, dow, false):(origDaily*n);
   return Math.round(Math.min(tier, origDaily*n)*100)/100;
 }
+// New-return date shown to the client as MM/DD/YYYY (Day) e.g. 09/02/2026 (Wed).
+function _radFmtRet(iso){
+  if(!iso) return '';
+  var d=new Date(iso+'T12:00:00Z');
+  if(isNaN(d.getTime())) return iso;
+  var dow=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()];
+  var mm=('0'+(d.getUTCMonth()+1)).slice(-2), dd=('0'+d.getUTCDate()).slice(-2), yy=d.getUTCFullYear();
+  return mm+'/'+dd+'/'+yy+' ('+dow+')';
+}
 function showRentalAddDays(b){
   if(!b) return '';
   var t=(b.type||'').toLowerCase();
@@ -2929,7 +2953,7 @@ function showRentalAddDays(b){
         '<div style="text-align:center;min-width:66px;"><div id="radN_'+bid+'" style="font-size:28px;font-weight:800;color:#C9A962;line-height:1;">1</div><div id="radNl_'+bid+'" style="font-size:10px;color:rgba(255,255,255,.5);letter-spacing:.04em;">DAY</div></div>'+
         '<button type="button" onclick="_radStep(\''+bid+'\',1)" aria-label="More days" style="width:40px;height:40px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,.05);color:#fff;font-size:22px;font-weight:800;cursor:pointer;line-height:1;">+</button>'+
       '</div>'+
-      '<div style="display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,.6);margin-bottom:3px;"><span>New return</span><span id="radRet_'+bid+'" style="color:#fff;font-weight:600;">'+esc(ret1)+'</span></div>'+
+      '<div style="display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,.6);margin-bottom:3px;"><span>New return</span><span id="radRet_'+bid+'" style="color:#fff;font-weight:600;">'+esc(_radFmtRet(ret1))+'</span></div>'+
       '<div style="display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,.6);"><span>'+totLabel+'</span><span id="radTot_'+bid+'" style="color:#fff;font-weight:800;font-size:15px;">$'+tot1.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span></div>'+
       '<button type="button" onclick="rentalAddDaysGo(\''+bid+'\')" id="radBtn_'+bid+'" data-veh="'+esc(veh)+'" data-origdaily="'+rate+'" data-signed="'+(signed?'1':'0')+'" data-drop="'+esc(drop)+'" style="width:100%;margin-top:12px;padding:12px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;letter-spacing:.02em;">Add to my trip</button>'+
     '</div></div>';
@@ -2946,7 +2970,7 @@ function _radRecalc(bid){
   var veh=btn.getAttribute('data-veh')||'', origDaily=Number(btn.getAttribute('data-origdaily'))||0, drop=btn.getAttribute('data-drop')||'';
   var base=_radQuote(veh,n,origDaily,drop), total=Math.round(base*1.1325*100)/100;
   var ret=drop?new Date(new Date(drop+'T12:00:00Z').getTime()+n*86400000).toISOString().slice(0,10):'';
-  var rEl=document.getElementById('radRet_'+bid); if(rEl) rEl.textContent=ret;
+  var rEl=document.getElementById('radRet_'+bid); if(rEl) rEl.textContent=_radFmtRet(ret);
   var tEl=document.getElementById('radTot_'+bid); if(tEl) tEl.textContent='$'+total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 }
 async function rentalAddDaysGo(bid){
@@ -3153,11 +3177,11 @@ function renderBookings(){
       <div class="booking-meta">${priceStr?`<span>${priceStr}</span> &nbsp;\u00B7&nbsp; `:''}${bookingRef(b.id)}</div>
       ${progressBar(b.status)}
       ${showSignContract(b)}
+      ${showPayBalance(b)}
+      ${showPendingCharges(b)}
       ${showAddUnlimited(b)}
       ${showChauffeurEnhance(b)}
       ${showRentalAddDays(b)}
-      ${showPayBalance(b)}
-      ${showPendingCharges(b)}
       ${showMileageTracker(b)}
       ${showCondition(b)}
       ${paymentHistory}
