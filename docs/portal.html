@@ -2703,7 +2703,8 @@ function showExtensionSign(b){
   if(!b) return '';
   var t=(b.type||'').toLowerCase(); if(t==='chauffeur'||t==='event') return '';
   var s=(b.status||'').toLowerCase(); if(['cancelled','completed','voided'].indexOf(s)!==-1) return '';
-  var exts=(((b.extensions))||[]).filter(function(e){ return e && !e._deleted; });
+  if(!(b.customerSig && String(b.customerSig).indexOf('data:image/')===0)) return '';   // extensions sign separately only AFTER the base is signed; unsigned add-days folds into the booking (nothing separate to sign)
+  var exts=(Array.isArray(b.extensions)?b.extensions:(b.extensions&&typeof b.extensions==='object'?Object.values(b.extensions):[])).filter(function(e){ return e && !e._deleted; });
   var unsigned=exts.filter(function(e){ return !(e.signed && String(e.sig||'').indexOf('data:image/')===0); });
   if(!unsigned.length) return '';
   var bid=b.id;
@@ -2722,8 +2723,7 @@ function showExtensionSign(b){
   }).join('');
 }
 function showPayBalance(b){
-  const _extOwed = _unpaidExtChargeTotal(b);   // shown + paid once as its own charge, netted out here
-  const bal = Math.max(0, (Number(b.remainingBalance) || 0) - _extOwed);
+  const bal = Number(b.remainingBalance) || 0;   // extension is never in the balance now (signed=its own charge, unsigned=folded), so no netting
   if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed','voided'].includes((b.status||'').toLowerCase())) return '';
   const fee   = Math.round(bal * 0.05 * 100) / 100;
   const tax   = Math.round(bal * 0.0825 * 100) / 100;
@@ -2950,6 +2950,7 @@ function _radQuote(veh, n, origDaily, drop){
   return Math.round(Math.min(tier, origDaily*n)*100)/100;
 }
 // New-return date shown to the client as MM/DD/YYYY (Day) e.g. 09/02/2026 (Wed).
+function _radAddDaysIso(drop, n){ try{ if(!drop) return ''; var t=new Date(drop+'T12:00:00Z').getTime(); if(!isFinite(t)) return ''; return new Date(t+(Number(n)||0)*86400000).toISOString().slice(0,10); }catch(e){ return ''; } }
 function _radFmtRet(iso){
   if(!iso) return '';
   var d=new Date(iso+'T12:00:00Z');
@@ -2965,14 +2966,18 @@ function showRentalAddDays(b){
   var s=(b.status||'').toLowerCase();
   if(['cancelled','completed','voided'].indexOf(s)!==-1) return '';
   var bd; try{ bd=_buildContractBreakdown(b); }catch(e){ return ''; }
-  var rate=Math.round(((bd&&bd.dailyRateNum)||0)*100)/100;   // customer's effective per-day = the price cap
+  // TRUE original per-day = base revenue / ORIGINAL days. b.days grows with each extension but revenue does not,
+  // so dailyRateNum (=baseRev/b.days) would dilute the cap + undercharge repeat extensions -- divide by origDays.
+  var _radExtPrior=(Array.isArray(b.extensions)?b.extensions:(b.extensions&&typeof b.extensions==='object'?Object.values(b.extensions):[])).filter(function(e){return e&&!e._deleted;}).reduce(function(s,e){return s+(Number(e.extensionDays)||0);},0);
+  var _radOrigDays=Math.max(1,((bd&&bd.days)||1)-_radExtPrior);
+  var rate=Math.round((((bd&&bd.baseRev)||0)/_radOrigDays)*100)/100;   // customer's TRUE per-day = the price cap
   if(rate<1) return '';
   var bid=b.id;
   var signed=!!(b.customerSig&&String(b.customerSig).indexOf('data:image/')===0);
   var drop=b.dropoffDate||b.pickupDate||b.date||'';
   var veh=b.vehicle||'';
   var base1=_radQuote(veh,1,rate,drop), tot1=Math.round(base1*1.1325*100)/100;   // every extension is paid now (5% fee + 8.25% tax)
-  var ret1=drop?new Date(new Date(drop+'T12:00:00Z').getTime()+86400000).toISOString().slice(0,10):'';
+  var ret1=_radAddDaysIso(drop,1);
   var totLabel='Total (5% fee + 8.25% tax)';
   return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">'+
     '<div style="background:rgba(201,169,98,.05);border:1px solid rgba(201,169,98,.22);border-radius:12px;padding:14px 16px;">'+
@@ -2999,7 +3004,7 @@ function _radRecalc(bid){
   var n=Math.max(1,parseInt(el.textContent,10)||1);
   var veh=btn.getAttribute('data-veh')||'', origDaily=Number(btn.getAttribute('data-origdaily'))||0, drop=btn.getAttribute('data-drop')||'';
   var base=_radQuote(veh,n,origDaily,drop), total=Math.round(base*1.1325*100)/100;
-  var ret=drop?new Date(new Date(drop+'T12:00:00Z').getTime()+n*86400000).toISOString().slice(0,10):'';
+  var ret=_radAddDaysIso(drop,n);
   var rEl=document.getElementById('radRet_'+bid); if(rEl) rEl.textContent=_radFmtRet(ret);
   var tEl=document.getElementById('radTot_'+bid); if(tEl) tEl.textContent='$'+total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 }
