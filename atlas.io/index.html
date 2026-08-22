@@ -1322,6 +1322,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
     <div class="hero__in">
       <div>
         <span class="eyebrow"><span class="dot" style="color:var(--brand)"></span> The Digital Headquarters for Rental Businesses</span>
+        <div id="founderBanner" style="display:none;margin:12px 0 4px;background:linear-gradient(90deg,var(--brand),var(--brand-700,#0f4230));color:#fff;border-radius:12px;padding:11px 15px;font-size:13.5px;font-weight:700;box-shadow:0 6px 22px rgba(15,66,48,.22)"></div>
         <h1>The digital <em>headquarters</em> for your rental business.</h1>
         <div class="hero__pun"><b>AT&#8209;LAS</b> &mdash; as in, <em>at&nbsp;last.</em> Finally a dashboard with no set rules on how <em>your</em> business runs. Customize the app, the portal and your site to fit you &mdash; not the other way around.</div>
         <p class="hero__sub">Bookings, contracts, payments, a branded customer portal, deep analytics, and the Atlas.io&nbsp;AI assistant &mdash; one dashboard you make your own. Cars and trucks, apartments and homes, construction and heavy equipment, tools and gear, event and party rentals, trailers, boats, aircraft &mdash; if your company rents it out, you run it on Atlas Rental.io. Solo owner or 300-location operation, it fits.</p>
@@ -2074,6 +2075,7 @@ const Atlas = (function(){
       if(r[2].json && typeof r[2].json.referralEnabled==='boolean'){ _refEnabled=r[2].json.referralEnabled; }   // REFERRAL: adopt the platform master switch so the "Refer & earn" card shows only when the owner has turned it on
       if(r[2].json && ('domainRenewal' in r[2].json)){ try{ var _dvR=r[2].json.domainRenewal||null; var _dwb=_lsGet('atlas_tenant_'+tid,null); if(_dwb){ _dwb.domainRenewal=_dvR; _lsSet('atlas_tenant_'+tid,_dwb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.domainRenewal=_dvR; } }catch(e){} }   // #282: adopt server-authoritative billed-domain (self-cancellable yearly renewal); null once cancelled -> Add-ons control clears on next hydrate
       if(r[2].json){ try{ if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ if('assetCap' in r[2].json) S.assetCap=r[2].json.assetCap; if(typeof r[2].json.assetUnlockCents==='number') S.assetUnlockCents=r[2].json.assetUnlockCents; if(typeof r[2].json.assetUnlockUnits==='number') S.assetUnlockUnits=r[2].json.assetUnlockUnits; if(Array.isArray(r[2].json.assetUnlocks)) S.assetUnlocks=r[2].json.assetUnlocks; if(typeof renderFleet==='function' && document.getElementById('assetGrid')) renderFleet(); } }catch(e){} }   // per-asset unlock: adopt server plan cap + $11.99/mo unlocks so the Fleet lock UI is authoritative; re-render if the fleet is open
+      if(r[2].json && ('founder' in r[2].json)){ try{ _founderInfo.mine=!!r[2].json.founder; if('founderProgram' in r[2].json) _founderInfo.program=!!r[2].json.founderProgram; if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.founder=!!r[2].json.founder; } }catch(e){} }   // FOUNDER: adopt server-authoritative founder flag + program state on hydrate
       try{ var _pc=r[2].json&&r[2].json.policyCurrent, _pa=r[2].json&&r[2].json.policyAccepted; if(_pc && _pa!==_pc){ _showPolicyBanner(_pc); } else { _hidePolicyBanner(); } }catch(e){}   // #254: re-prompt acceptance whenever the published policy version moved past what this tenant last accepted
     }).catch(function(){}); }
   // #254 Compliance: dismissible re-accept banner shown when the tenant's accepted ToS/Privacy version != the current one.
@@ -2208,8 +2210,15 @@ const Atlas = (function(){
       +'</div>';
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
+  // FOUNDER PROGRAM: first 1000 accounts get a PERPETUAL 50% off every Atlas charge. Server is authoritative at checkout;
+  // this state (hydrated from /api/tenant/profile + /api/founder/status) only drives the matching price DISPLAY + the offer banner.
+  var _founderInfo = { program:false, mine:false, open:false, remaining:0 };
+  function _isFounder(){ return !!(_founderInfo.program && _founderInfo.mine); }
+  function _fHalf(d){ return Math.max(0.50, Math.round(Number(d)*100*0.5)/100); }   // 50% off, cent-rounded EXACTLY like the worker (Math.round(cents*0.5))
+  function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
+  function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20p';
+  var APP_VERSION='2026.7.20q';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -10572,10 +10581,10 @@ const Atlas = (function(){
   function openPlans(){
     if(_isComp()){ toast('You have complimentary '+(S&&S.tier==='gold'?'Gold':'full')+' access -- every feature is unlocked and there is no billing to change.'); return; }   // #293: comp / owner tier is LOCKED -- no plan changes
     openModal('<div class="modal__head"><h3>Choose your plan</h3>'+_xBtn()+'</div>'
-      +'<div class="modal__body" style="padding-top:10px">'+TIERS.filter(function(t){return !t.owner && !t.comp;}).map(function(t){ var cur=_isActive()&&S.tier===t.id;
+      +'<div class="modal__body" style="padding-top:10px">'+(_isFounder()?'<div style="background:var(--brand);color:#fff;border-radius:10px;padding:9px 12px;margin-bottom:10px;font-size:12.5px;font-weight:700">Founder pricing active &mdash; 50% off every plan, for life</div>':'')+TIERS.filter(function(t){return !t.owner && !t.comp;}).map(function(t){ var cur=_isActive()&&S.tier===t.id;
         return '<div style="display:flex;align-items:center;gap:12px;border:1px solid '+(cur?'var(--brand)':'var(--line)')+';border-radius:12px;padding:13px 15px;margin-bottom:10px">'
           +'<div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:15px">'+t.name+'</b>'+(cur?' <span class="chip chip--ok" style="margin-left:4px"><span class="dot"></span>Current</span>':'')+(WEBSITE_TIERS.indexOf(t.id)>=0?' <span class="chip chip--brand" style="margin-left:4px">Website included</span>':'')+'<div style="font-size:12.5px;color:var(--muted)">'+_tierCap(t)+' &middot; '+t.credits.toLocaleString()+' credits/wk</div>'+(_tierUnlocks(t.id)?'<div style="font-size:11.5px;color:var(--brand);font-weight:600;margin-top:3px">'+_tierUnlocks(t.id)+'</div>':'')+'</div>'
-          +'<div style="text-align:right"><div style="font-size:19px;font-weight:850;color:var(--ink)" class="tnum">$'+t.price+(t.id==='unlimited'?'+':'')+'</div><div style="font-size:11px;color:var(--muted)">/month</div></div>'
+          +'<div style="text-align:right"><div style="font-size:19px;font-weight:850;color:var(--ink)" class="tnum">'+_fDisp(t.price)+(t.id==='unlimited'?'+':'')+'</div><div style="font-size:11px;color:var(--muted)">/month</div></div>'
           +(cur?'':'<button class="btn btn--primary btn--sm" onclick="Atlas.subscribe(\''+t.id+'\')">'+(_isActive()?'Switch':'Choose')+'</button>')
         +'</div>'; }).join('')
       +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px">Higher plans lift your caps + unlock premium features &middot; free weekly Atlas.io credits &middot; cancel anytime.</p></div>');
@@ -10586,7 +10595,7 @@ const Atlas = (function(){
     // through Stripe hosted Checkout at go-live; until PAYMENTS_LIVE, activating a plan just sets it up with no charge.
     var _cardBlock='<div class="bk-lenhint" style="margin:0 0 12px">'+(PAYMENTS_LIVE?'You will enter your card on Stripe\'s secure checkout - Atlas never sees your card number. Cancel anytime, keep your data.':'Your plan activates now so you can set everything up. <b>No card is collected in-app and nothing is charged</b> \u2014 secure card billing turns on through Stripe hosted checkout at go-live (see GO-LIVE steps).')+'</div>';
     openModal('<div class="modal__head"><h3>'+(sameTier?'Update your card':((_isActive()?'Switch to ':'Subscribe to ')+'Atlas Rental.io '+t.name))+'</h3>'+_xBtn()+'</div>'
-      +'<div class="modal__body"><div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:30px;font-weight:850;color:var(--ink)">$'+t.price+(t.id==='unlimited'?'+':'')+'</span><span style="color:var(--muted)">/month</span></div>'
+      +'<div class="modal__body"><div style="display:flex;align-items:baseline;gap:6px"><span style="font-size:30px;font-weight:850;color:var(--ink)">'+_fDisp(t.price)+(t.id==='unlimited'?'+':'')+'</span><span style="color:var(--muted)">/month</span></div>'
       +'<div style="font-size:13px;color:var(--muted);margin:4px 0 18px">'+_tierCap(t)+' &middot; '+t.credits.toLocaleString()+' free Atlas.io credits/week</div>'
       +_cardBlock
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.confirmSubscribe(\''+t.id+'\')">'+(sameTier?'Save card':(_isActive()?'Switch plan':'Start subscription'))+'</button>'
@@ -10623,7 +10632,7 @@ const Atlas = (function(){
     openModal('<div class="modal__head"><h3>Atlas.io credits</h3>'+_xBtn()+'</div>'
       +'<div class="modal__body"><div style="text-align:center"><div style="font-size:32px;font-weight:850;color:var(--ink)" class="tnum">'+_credits().toLocaleString()+'</div><div style="font-size:13px;color:var(--muted)">credits available &middot; '+_curTier().credits.toLocaleString()+' free every week</div></div>'
       +'<div style="font-size:13px;font-weight:700;color:var(--ink);margin:18px 0 8px">Need more? Top up anytime</div>'
-      +CREDIT_PACKS.map(function(p,i){ return '<div style="display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><div style="flex:1"><b style="color:var(--ink)">'+p.credits.toLocaleString()+' credits</b><div style="font-size:11.5px;color:var(--muted)">$'+(p.price/p.credits).toFixed(3).replace(/0+$/,'0')+' per credit</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.buyCredits('+i+')">$'+p.price+'</button></div>'; }).join('')
+      +CREDIT_PACKS.map(function(p,i){ return '<div style="display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><div style="flex:1"><b style="color:var(--ink)">'+p.credits.toLocaleString()+' credits</b><div style="font-size:11.5px;color:var(--muted)">$'+((_isFounder()?_fHalf(p.price):p.price)/p.credits).toFixed(3).replace(/0+$/,'0')+' per credit'+(_isFounder()?' &middot; founder':'')+'</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.buyCredits('+i+')">'+_fDisp(p.price)+'</button></div>'; }).join('')
       +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px">A credit = one Atlas.io action. Purchased credits never expire.</p></div>');
   }
   function buyCredits(i){ if(!_guard('billing','Managing billing'))return; var p=CREDIT_PACKS[i]; if(!p) return;
@@ -13091,6 +13100,9 @@ const Atlas = (function(){
   /* ---------- boot ---------- */
   /* ---- PWA: installable + offline app shell ---- */
   var _deferredInstall=null;
+  // FOUNDER OFFER (public): reveal the hero banner only when the program is live AND still open. Also seeds _founderInfo.program
+  // so the signup plan chooser shows founder pricing. No-op (banner stays hidden) when the flag is OFF -> byte-identical marketing page.
+  function _founderBanner(){ try{ if(typeof ATLAS_BACKEND==='undefined' || !ATLAS_BACKEND) return; _api('/api/founder/status',{method:'GET'}).then(function(res){ var j=res&&res.json; if(!(j&&j.enabled&&j.open)) return; _founderInfo.program=true; _founderInfo.open=true; _founderInfo.remaining=j.remaining||0; var cap=(j.cap||1000); var el=document.getElementById('founderBanner'); if(el){ el.innerHTML='&#127881; Founder pricing &mdash; the first '+cap.toLocaleString()+' businesses get <b>50% off everything, for life</b>. '+(j.remaining||0).toLocaleString()+' of '+cap.toLocaleString()+' spots left.'; el.style.display='block'; } }).catch(function(){}); }catch(e){} }
   function _initPWA(){ try{ if('serviceWorker' in navigator && location.protocol!=='file:') navigator.serviceWorker.register('atlas-sw.js').catch(function(){}); }catch(e){}
     window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); _deferredInstall=e; });
     window.addEventListener('appinstalled', function(){ _pingInstall(); });
@@ -13105,6 +13117,7 @@ const Atlas = (function(){
   function init(){
     _applyTheme();   // honor the saved light/dark choice on every load, before anything renders
     _initPWA();
+    try{ _founderBanner(); }catch(e){}
     buildLanding();
     try{ var _csv=new URLSearchParams(location.search).get('cardsaved'); if(_csv){ try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){} setTimeout(function(){ try{ toast('Card saved on file \u2014 it will appear on the booking shortly.'); }catch(e){} },500); } }catch(e){}
     try{ var _ssoQ=new URLSearchParams(location.search).get('sso');
