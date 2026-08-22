@@ -4900,7 +4900,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v355';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v356';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -8306,6 +8306,18 @@ function recordExtension(b, opts){
   // An extension's value is ALWAYS counted in gross via extensionCharge() \u2014 paid or unpaid. We never
   // fold it into b.revenue (that double-counts against extensionCharge + today's KPI). Only effect of
   // "unpaid" here is that the customer still owes it \u2192 add it to the balance due.
+  // PARITY with the client portal add-days flow: create a client-payable charge LINKED to this extension so it
+  // surfaces in the guest's portal (Pending Charges) to pay + then sign in-flow. On payment the reconcile
+  // (_reconcilePaidExtensionCharges, _extId branch) marks THIS extension paid + clears its amount from balance.
+  // The portal nets this UNPAID charge out of the base-balance display so the extension is shown exactly ONCE.
+  // Only for an UNPAID, billable extension; idempotent (never a 2nd charge for one ext); opts.noCharge opts out.
+  if(charge>0 && !paid && opts.noCharge!==true){
+    if(!Array.isArray(b.portalCharges)) b.portalCharges=[];
+    if(!b.portalCharges.some(function(c){ return c && c._extId===ext.id; })){
+      var _ecu=(unit==='hours')?(qty!==1?'hrs':'hr'):(qty!==1?'days':'day');
+      b.portalCharges.push({ id:'chg_'+Date.now()+Math.random().toString(36).slice(2,6), description:'Rental extension: +'+qty+' '+_ecu+(toDate?(' to '+toDate):''), amount:charge, category:'extension', extensionDays:qty, extensionUnit:unit, _extId:ext.id, _extPayment:true, createdAt:Date.now(), sentAt:Date.now() });
+    }
+  }
   if(charge>0 && !paid && !b.balancePaidAt){
     if(b.remainingBalance==null) b.remainingBalance=Math.max(0,(Number(b.revenue)||0)+(Number(b.deposit)||0)-(Number(b.dateLock)||0));
     b.remainingBalance = (Number(b.remainingBalance)||0) + charge;

@@ -2692,8 +2692,38 @@ async function addUnlimited(bookingId){
   }
 }
 
+// Sum of UNPAID extension-linked portal charges. An extension is shown + paid ONCE as its own charge, so
+// the base-balance display + payment net this out (matches the worker /portal/pay-balance netting exactly).
+function _unpaidExtChargeTotal(b){
+  return (((b&&b.portalCharges))||[]).reduce(function(s,c){ return (c && !c.paidAt && (c._extId || c._extPayment || String(c.category||'').toLowerCase()==='extension') && Number(c.amount)>0) ? s+(Number(c.amount)||0) : s; }, 0);
+}
+// Sign-anytime element for any UNSIGNED extension (owner-created OR client add-days) -- so a guest can always
+// sign without the owner sending a link. _initExtensionSigningMode handles ordering (earlier ext must sign first).
+function showExtensionSign(b){
+  if(!b) return '';
+  var t=(b.type||'').toLowerCase(); if(t==='chauffeur'||t==='event') return '';
+  var s=(b.status||'').toLowerCase(); if(['cancelled','completed','voided'].indexOf(s)!==-1) return '';
+  var exts=(((b.extensions))||[]).filter(function(e){ return e && !e._deleted; });
+  var unsigned=exts.filter(function(e){ return !(e.signed && String(e.sig||'').indexOf('data:image/')===0); });
+  if(!unsigned.length) return '';
+  var bid=b.id;
+  return unsigned.map(function(e){
+    var num=exts.indexOf(e)+1;
+    var when=e.toDate?_radFmtRet(e.toDate):'';
+    return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">'+
+      '<div style="background:rgba(201,169,98,.06);border:1px solid rgba(201,169,98,.28);border-radius:12px;padding:12px 14px;">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'+
+          '<div style="font-size:12px;font-weight:800;color:#C9A962;">\u270D\uFE0F Sign Extension #'+num+'</div>'+
+          (when?'<div style="font-size:11px;color:rgba(255,255,255,.6);">through '+esc(when)+'</div>':'')+
+        '</div>'+
+        '<div style="font-size:11px;color:rgba(255,255,255,.55);line-height:1.5;margin-bottom:10px;">Your rental was extended. Review and sign your extension agreement to confirm the new return date.</div>'+
+        '<button type="button" onclick="_initExtensionSigningMode(\''+bid+'\',\''+e.id+'\',null,true)" style="width:100%;padding:11px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;">Review and Sign Extension #'+num+' \u2192</button>'+
+      '</div></div>';
+  }).join('');
+}
 function showPayBalance(b){
-  const bal = Number(b.remainingBalance) || 0;
+  const _extOwed = _unpaidExtChargeTotal(b);   // shown + paid once as its own charge, netted out here
+  const bal = Math.max(0, (Number(b.remainingBalance) || 0) - _extOwed);
   if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed','voided'].includes((b.status||'').toLowerCase())) return '';
   const fee   = Math.round(bal * 0.05 * 100) / 100;
   const tax   = Math.round(bal * 0.0825 * 100) / 100;
@@ -3179,6 +3209,7 @@ function renderBookings(){
       ${showSignContract(b)}
       ${showPayBalance(b)}
       ${showPendingCharges(b)}
+      ${showExtensionSign(b)}
       ${showAddUnlimited(b)}
       ${showChauffeurEnhance(b)}
       ${showRentalAddDays(b)}
