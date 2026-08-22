@@ -978,6 +978,7 @@ function _bothSigsHtml(bk){
 function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
   var tmpl = (docType==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
   if(!tmpl) return '';
+  tmpl = tmpl.replace(/Jalen Nguyen/g, 'Edwin P. Watson Jr.');   // owner change: never render the prior owner on a client-facing doc, whatever the stored template says
   // Slingshot color normalization
   if(bk.vehicle==='Polaris Slingshot'){
     var _sentCol = bk.contractSentColor||'Green';
@@ -1088,7 +1089,7 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
     .replace(/\{\{owner_signature\}\}/gi,
       (data.owner_signature&&data.owner_signature.startsWith('data:image/'))
         ? '<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">'
-        : '<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
+        : '<span style="font-family:\'Brush Script MT\',\'Snell Roundhand\',cursive;font-size:28px;line-height:1;color:'+((docType==='waiver'||(bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly'))?'#111':'#fff')+'">Edwin P. Watson Jr.</span>')
     .replace(/\{\{customer_signature\}\}/gi,
       readOnly
         ? (_isSlingFullDay(bk) ? _bothSigsHtml(bk) : ((bk.customerSig&&bk.customerSig.startsWith('data:image/')) ? '<img src="'+bk.customerSig+'" style="max-height:80px;max-width:300px;display:block">' : '_______________________________'))
@@ -1164,6 +1165,46 @@ async function _portalDownloadSignedContract(bookingId, btnEl, extId, docType){
 // Download the cumulative document from the original through a SPECIFIC extension.
 function _portalDownloadExtension(bookingId, extId, btnEl){ return _portalDownloadSignedContract(bookingId, btnEl, extId); }
 function _portalDownloadWaiver(bookingId, btnEl){ return _portalDownloadSignedContract(bookingId, btnEl, null, 'waiver'); }
+// View a document read-only (BEFORE or after signing) in a full-screen overlay -- so a client can always
+// preview their contract, waiver, or any extension from the Contract section, not just download once signed.
+function _portalPreviewDoc(bookingId, docType, extId, btnEl){
+  var _lbl=null; if(btnEl){ try{ _lbl=btnEl.textContent; btnEl.disabled=true; btnEl.textContent='Opening\u2026'; }catch(e){} }
+  function _restore(){ if(btnEl){ try{ btnEl.disabled=false; if(_lbl!=null) btnEl.textContent=_lbl; }catch(e){} } }
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'})
+    .then(function(r){ return r.ok?r.json():null; })
+    .then(function(data){
+      if(!data||!data.booking){ toast('Could not load the document.'); _restore(); return; }
+      var bk=data.booking, tmpl='';
+      if(extId){
+        var _ex=(Array.isArray(bk.extensions)?bk.extensions:(bk.extensions&&typeof bk.extensions==='object'?Object.values(bk.extensions):[])).filter(Boolean);
+        var _ix=_ex.findIndex(function(e){ return e && e.id===extId; });
+        if(_ix>=0 && _pbCumulativeOn() && typeof _buildCumulativeContractHtml==='function') tmpl=_buildCumulativeContractHtml(bk,data,_ix,{});
+        if(!tmpl && _ix>=0 && typeof _buildExtAmendmentHtml==='function') tmpl='<!DOCTYPE html><html><body style="font-family:-apple-system,Segoe UI,sans-serif;padding:18px">'+_buildExtAmendmentHtml(bk,_ix,{dark:false,owner_signature:(data.owner_signature||'')})+'</body></html>';
+      } else {
+        tmpl=_smFillContractTmpl(bk, data, null, true, docType);
+      }
+      if(!tmpl){ toast('No document on file yet.'); _restore(); return; }
+      _showDocOverlay(tmpl, bookingId, docType, extId);
+      _restore();
+    }).catch(function(){ toast('Could not open the document.'); _restore(); });
+}
+function _showDocOverlay(docHtml, bid, docType, extId){
+  var old=document.getElementById('pbDocOverlay'); if(old) old.remove();
+  var isFull=/^\s*<!doctype|^\s*<html/i.test(docHtml);
+  var title=extId?'Extension Agreement':(docType==='waiver'?'Liability Waiver':'Rental Agreement');
+  var frameHtml=isFull?docHtml:('<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:-apple-system,Segoe UI,sans-serif;padding:20px;color:#111;background:#fff;line-height:1.5}</style></head><body>'+docHtml+'</body></html>');
+  var ov=document.createElement('div'); ov.id='pbDocOverlay';
+  ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.88);display:flex;flex-direction:column';
+  ov.innerHTML=
+    '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:#0d0d0d;border-bottom:1px solid rgba(255,255,255,.12);flex-shrink:0">'+
+      '<div style="font-weight:800;color:#C9A962;font-size:15px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+title+'</div>'+
+      '<button onclick="_portalDownloadSignedContract(\''+bid+'\', this'+(extId?(",'"+extId+"'"):'')+')" style="padding:8px 14px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:13px">\uD83D\uDCC4 Download</button>'+
+      '<button onclick="var d=document.getElementById(\'pbDocOverlay\');if(d)d.remove();" style="padding:8px 16px;border:none;border-radius:8px;background:#333;color:#fff;font-weight:700;cursor:pointer;font-size:13px">Close</button>'+
+    '</div>'+
+    '<iframe id="pbDocFrame" sandbox="allow-same-origin" style="flex:1;width:100%;border:none;background:#fff"></iframe>';
+  document.body.appendChild(ov);
+  var fr=document.getElementById('pbDocFrame'); if(fr) fr.srcdoc=frameHtml;
+}
 
 function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
   _smDriverIdx = (driverIdx !== null && driverIdx !== undefined && !isNaN(Number(driverIdx))) ? Number(driverIdx) : null;
@@ -1227,6 +1268,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
 
     // Pick template (docType-aware: waiver -> the Slingshot waiver template; contract -> the rental agreement)
     var tmpl = (_dt==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+    tmpl = tmpl.replace(/Jalen Nguyen/g, 'Edwin P. Watson Jr.');   // owner change: never render the prior owner on the doc the client SIGNS (mirror the download render)
     if(!tmpl){ body.innerHTML='<div style="color:#f87171;padding:20px">No contract template found. Please contact Prestige Black Rentals.</div>'; return; }
 
     // Slingshot color normalization
@@ -1341,7 +1383,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
       .replace(/\{\{owner_signature\}\}/gi,
         (data.owner_signature&&data.owner_signature.startsWith('data:image/'))
           ? '<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">'
-          : '<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
+          : '<span style="font-family:\'Brush Script MT\',\'Snell Roundhand\',cursive;font-size:28px;line-height:1;color:'+((_dt==='waiver'||(bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly'))?'#111':'#fff')+'">Edwin P. Watson Jr.</span>')
       .replace(/\{\{customer_signature\}\}/gi,
         (_smDriverIdx === null)
           ? '<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span>'
@@ -1459,7 +1501,7 @@ function _buildExtAmendmentHtml(bk, extIdx, opts){
   var _own=(typeof opts.owner_signature==='string')?opts.owner_signature:'';
   var ownerSig=(_isSigDataUri(_own))
     ? '<img src="'+_own+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;'+ownerInk+'">'
-    : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+tx+';line-height:1">Jalen Nguyen</span>';
+    : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+tx+';line-height:1">Edwin P. Watson Jr.</span>';
   var sigBoxCss='border-bottom:1.5px solid '+sigBd+';min-height:80px;margin-bottom:4px;display:flex;align-items:flex-end;padding-bottom:2px';
   var padSpan='<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed '+(dark?'#888':'#aaa')+';height:60px"></span>';
   var drvList=(bk.extraDrivers||[]);
@@ -1507,7 +1549,7 @@ function _buildExtAmendmentHtml(bk, extIdx, opts){
     '<div style="display:flex;gap:30px;flex-wrap:wrap;align-items:flex-start">'+
       '<div style="flex:1 1 210px;min-width:190px">'+
         '<div style="'+sigBoxCss+'">'+ownerSig+'</div>'+
-        '<div style="font-size:11px;font-weight:700;color:'+tx+'">Prestige Black Corp. \u2014 Jalen Nguyen</div>'+
+        '<div style="font-size:11px;font-weight:700;color:'+tx+'">Prestige Black Corp. \u2014 Edwin P. Watson Jr.</div>'+
         '<div style="font-size:10px;color:'+faint+';text-transform:uppercase;letter-spacing:.04em">Owner / Lessor</div>'+
       '</div>'+
       '<div style="flex:2 1 320px;min-width:200px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:18px 22px">'+
@@ -1616,7 +1658,7 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx, fromPortal){
     var _ownSig = (typeof data.owner_signature==='string') ? data.owner_signature : '';   // tolerate a non-string owner sig (object/number) -> typed cursive fallback
     var ownerSig = (_ownSig&&_ownSig.startsWith('data:image/'))
       ? '<img src="'+_ownSig+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;filter:brightness(0)">'
-      : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Jalen Nguyen</span>';
+      : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Edwin P. Watson Jr.</span>';
 
     var prevExtRows = '';
     for(var pi=0;pi<extIdx;pi++){
@@ -1662,7 +1704,7 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx, fromPortal){
       '<p style="font-size:12px;color:#333;line-height:1.7;margin:0 0 8px">All original terms of the Rental Agreement remain in effect. This extension amends only the return date and charges noted above. Standard late fees of $75/hr apply for returns past the agreed time.</p>'+
       '<hr style="border:none;border-top:1.5px solid #aaa;margin:24px 0 18px">'+
       '<div style="display:flex;gap:28px;flex-wrap:wrap">'+
-        '<div style="flex:1;min-width:200px"><div class="sig-box">'+ownerSig+'</div><div style="font-size:11px">Date: '+todayFmt+'</div><div style="font-size:11px">Prestige Black Corp. \u2014 Jalen Nguyen</div></div>'+
+        '<div style="flex:1;min-width:200px"><div class="sig-box">'+ownerSig+'</div><div style="font-size:11px">Date: '+todayFmt+'</div><div style="font-size:11px">Prestige Black Corp. \u2014 Edwin P. Watson Jr.</div></div>'+
         '<div style="flex:1;min-width:200px"><div class="sig-box"><span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span></div><div style="font-size:11px">Date: <span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></div><div style="font-size:11px">Customer: '+esc(bk.name)+'</div></div>'+
       '</div></body></html>';
 
@@ -2248,7 +2290,7 @@ function renderContractTab(){
     if(!b) return false;
     var s = (b.status||'').toLowerCase();
     if(s==='cancelled') return false;
-    return b.contractSent || (b.customerSig && b.customerSig.startsWith('data:image/'));
+    return b.contractSent || (b.customerSig && b.customerSig.startsWith('data:image/')) || (b.waiverSig && String(b.waiverSig).indexOf('data:image/')===0) || ((Array.isArray(b.extensions)?b.extensions:(b.extensions&&typeof b.extensions==='object'?Object.values(b.extensions):[])).filter(Boolean).length>0);
   });
   if(!bks.length){
     el.innerHTML='<div style="text-align:center;color:var(--text-muted);padding:60px 16px;"><div style="font-size:40px;margin-bottom:12px;">\uD83D\uDCC4</div><div style="font-size:15px;font-weight:600;margin-bottom:8px;">No Contract Yet</div><div style="font-size:13px;">Your rental agreement will appear here once a booking is confirmed.</div></div>';
@@ -2265,7 +2307,7 @@ function renderContractTab(){
     var fullySigned = alreadySigned && _pendingDrv===0 && (!_sfd || _wSig);   // Slingshot full-day also needs the waiver
     var sigDate = b.sigDate || b.contractSignedAt || b.customerSigDate || '';
     var sigDateStr = sigDate ? (function(){ try{ return new Date(sigDate).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }catch(e){ return String(sigDate); } })() : '';
-    var exts = _pbCumulativeOn() ? (b.extensions||[]).filter(Boolean) : [];
+    var exts = (Array.isArray(b.extensions)?b.extensions:(b.extensions&&typeof b.extensions==='object'?Object.values(b.extensions):[])).filter(Boolean);   // always list extensions so the client can view/sign/download each
     html += '<div class="card" style="margin-bottom:14px;">'
       + '<div class="card-header"><div><div class="vehicle-name" style="font-size:15px;">' + (b.vehicle||b.car||'Rental Agreement') + '</div>'
       + '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + (b.startDate||'') + (b.endDate?' \u2013 '+b.endDate:'') + '</div></div>'
@@ -2281,6 +2323,7 @@ function renderContractTab(){
     if(_sfd){
       var _wDateStr = b.waiverSigDate ? String(b.waiverSigDate) : '';
       html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:6px 0 6px;">Liability Waiver</div>';
+      html += '<button class="btn btn-ghost" style="margin-right:6px;margin-bottom:6px" onclick="_portalPreviewDoc(\''+b.id+'\',\'waiver\',null,this)">\uD83D\uDC41\uFE0F View Waiver</button>';
       if(_wSig){
         if(_wDateStr) html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Signed '+_wDateStr+'</div>';
         html += '<button class="btn btn-ghost" onclick="_portalDownloadWaiver(\''+b.id+'\', this)">\uD83D\uDCC4 Download Waiver</button>';
@@ -2293,6 +2336,7 @@ function renderContractTab(){
     var _mt = exts.length ? '0' : '8px';
     if(exts.length && !_sfd) html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:6px 0 6px;">Original Agreement</div>';
     if(sigDateStr && alreadySigned) html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Signed ' + sigDateStr + '</div>';
+    html += '<button class="btn btn-ghost" style="margin-right:6px;margin-bottom:6px" onclick="_portalPreviewDoc(\''+b.id+'\',\'contract\',null,this)">\uD83D\uDC41\uFE0F View Agreement</button>';
     if(fullySigned){
       html += '<button class="btn" style="margin-top:'+_mt+';" onclick="_portalDownloadSignedContract(\''+b.id+'\', this)">\uD83D\uDCC4 Download '+(exts.length?'Full Contract':'Signed Contract')+'</button>';
     } else if(_sfd && alreadySigned && !_wSig){
@@ -2336,6 +2380,7 @@ function renderContractTab(){
           action='<div style="font-size:11.5px;color:var(--text-muted);padding:9px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">You\'ve signed \u2014 awaiting '+drvPending+' authorized driver signature'+(drvPending===1?'':'s')+'.</div>'+
             '<button class="btn btn-ghost" style="margin-top:6px;" onclick="_portalDownloadExtension(\''+b.id+'\',\''+ext.id+'\', this)">\uD83D\uDCC4 Download draft (thru Ext '+extNum+')</button>';
         }
+        action = '<button class="btn btn-ghost" style="margin-top:0;margin-right:6px" onclick="_portalPreviewDoc(\''+b.id+'\',\'contract\',\''+ext.id+'\',this)">\uD83D\uDC41\uFE0F View</button>' + action;   // client can always preview the extension
         var charge = Number(ext.additionalCharge)||0;
         html += '<div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.07);">'
           + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;">'
@@ -2765,6 +2810,7 @@ function showExtensionSign(b){
   var unsigned=exts.filter(function(e){ return !(e.signed && String(e.sig||'').indexOf('data:image/')===0); });
   if(!unsigned.length) return '';
   var bid=b.id;
+  var _extPaid=function(e){ if(!e||!e._billedViaCharge) return true; var _c=(Array.isArray(b.portalCharges)?b.portalCharges:[]).find(function(c){ return c && c._extId===e.id; }); return !_c || !!_c.paidAt; };   // a portal-self extension (billed via its own charge) is signable only AFTER that charge is paid
   return unsigned.map(function(e){
     var num=exts.indexOf(e)+1;
     var when=e.toDate?_radFmtRet(e.toDate):'';
@@ -2775,7 +2821,9 @@ function showExtensionSign(b){
           (when?'<div style="font-size:11px;color:rgba(255,255,255,.6);">through '+esc(when)+'</div>':'')+
         '</div>'+
         '<div style="font-size:11px;color:rgba(255,255,255,.55);line-height:1.5;margin-bottom:10px;">Your rental was extended. Review and sign your extension agreement to confirm the new return date.</div>'+
-        '<button type="button" onclick="_initExtensionSigningMode(\''+bid+'\',\''+e.id+'\',null,true)" style="width:100%;padding:11px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;">Review and Sign Extension #'+num+' \u2192</button>'+
+        (_extPaid(e)
+          ? '<button type="button" onclick="_initExtensionSigningMode(\''+bid+'\',\''+e.id+'\',null,true)" style="width:100%;padding:11px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;">Review and Sign Extension #'+num+' \u2192</button>'
+          : '<div style="width:100%;padding:11px;background:rgba(255,255,255,.04);border:1px dashed rgba(201,169,98,.4);border-radius:10px;font-weight:700;font-size:12.5px;color:rgba(255,255,255,.62);text-align:center;box-sizing:border-box;">\uD83D\uDD12 Complete the extension payment above, then sign here.</div>')+
       '</div></div>';
   }).join('');
 }

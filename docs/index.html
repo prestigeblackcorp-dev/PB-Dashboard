@@ -4900,7 +4900,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v359';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v360';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -8397,6 +8397,16 @@ function _paymentsReceived(b){
     });
   } else if(b.balancePaidAt && (Number(b.balancePaidAmount)||0)>0){
     out.push({label:'Balance', amount:Number(b.balancePaidAmount)||0, method:_m(b.balancePaidMethod), ts:_ts(b.balancePaidAt), card:_isCardMethod(b.balancePaidMethod)});
+  }
+  // Fallback: if NO positive payment line came from the standard fields (balance / portal charge / date lock /
+  // extension / driver) but the card WAS charged -- e.g. a Stripe PAYMENT LINK or website charge recorded only
+  // in stripePayments[] -- surface those charges so the ledger never shows a bare refund with the original
+  // payment missing. Skipped whenever a normal payment line already exists, so it can never double-count.
+  if(!out.some(function(p){ return (Number(p.amount)||0) > 0; }) && Array.isArray(b.stripePayments)){
+    b.stripePayments.forEach(function(sp){
+      if(!sp || sp.kind==='refund' || !(Number(sp.amount)>0)) return;
+      out.push({label:(sp.description?String(sp.description):'Card payment'), amount:Number(sp.amount)||0, method:'Card', ts:_ts(sp.created||sp.at||Date.now()), card:false});
+    });
   }
   // Refunds issued (Stripe charge.refunded, recorded by the worker as b.refunds[]) -> NEGATIVE ledger lines
   // so Total Collected + the Today cash-basis view drop by the refund. Excluded from the card-fee base.
@@ -11958,7 +11968,7 @@ function renderCancelled(){
 
 // Small gold "+N days/hrs ext" tag for the trip-card Duration when the booking has extensions.
 function _extDaysLabel(b){
-  var arr=_extLive(b); if(!arr.length) return '';
+  var arr=_extLive(b).filter(function(e){ return e && (!e._billedViaCharge || e.paid); }); if(!arr.length) return '';   // an unpaid/unconfirmed portal-self extension does not inflate the trip until paid
   var d=arr.reduce(function(s,e){ return s+((e&&e.extensionUnit==='hours')?0:(Number(e&&e.extensionDays)||0)); },0);
   var h=arr.reduce(function(s,e){ return s+((e&&e.extensionUnit==='hours')?(Number(e.extensionDays)||0):0); },0);
   var parts=[]; if(d>0) parts.push('+'+d+' day'+(d!==1?'s':'')); if(h>0) parts.push('+'+h+' hr'+(h!==1?'s':''));
@@ -12511,7 +12521,7 @@ function openBookingDetail(id){
       var _rows=_pays.map(function(p){
         var _d=new Date(p.ts), _ds=isNaN(_d.getTime())?'&#8212;':_d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
         var _pa=(p.gross!=null?p.gross:p.amount);
-        return '<div class="detail-row"><span class="detail-label">'+_ds+' <span style="opacity:.6">'+esc(p.label)+(p.method?' &#183; '+esc(p.method):'')+(p.card&&p.gross!=null&&p.gross>(Number(p.amount)||0)+0.005?' <span style="opacity:.5">&#183; incl. card fee</span>':'')+'</span></span><span class="detail-val" style="color:var(--green)">'+$$(_pa)+'</span></div>';
+        return '<div class="detail-row"><span class="detail-label">'+_ds+' <span style="opacity:.6">'+esc(p.label)+(p.method?' &#183; '+esc(p.method):'')+(p.card&&p.gross!=null&&p.gross>(Number(p.amount)||0)+0.005?' <span style="opacity:.5">&#183; incl. card fee</span>':'')+'</span></span><span class="detail-val" style="color:'+(p.refund?'var(--red)':'var(--green)')+'">'+(p.refund?('-'+$$(Math.abs(_pa))):$$(_pa))+'</span></div>';
       }).join('');
       var _tot=_pays.reduce(function(s,p){ return s+(Number(p.gross!=null?p.gross:p.amount)||0); },0);
       return '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">Payments Received</div>'+_rows+
@@ -18343,7 +18353,9 @@ function _evSignedDocs(b){
   var _dt=function(at,ds){ at=Number(at)||0; if(at) return W(at); if(ds) return E(ds); return '<span class="muted">timestamp not captured</span>'; };
   var docs=[];
   var _cw=String(b.customerSigVehicle||b.vehicle||'').toLowerCase().indexOf('slingshot')!==-1;
-  if(_isSigStr(b.customerSig)) docs.push({sig:b.customerSig, when:(Number(b.customerSigAt)||0), ds:b.customerSigDate||'', who:b.name||'Renter', veh:b.customerSigVehicle||b.vehicle||'', color:b.customerSigColor||'', kind:(_cw?'Liability Waiver':'Rental Agreement')+' (current)'});
+  // Slingshot FULL-DAY signs TWO docs: the liability waiver (b.waiverSig) AND the rental agreement (b.customerSig).
+  if(_isSigStr(b.waiverSig)) docs.push({sig:b.waiverSig, when:(Number(b.waiverSigAt)||0), ds:b.waiverSigDate||'', who:b.name||'Renter', veh:b.vehicle||'', color:b.customerSigColor||'', kind:'Liability Waiver (current)'});
+  if(_isSigStr(b.customerSig)) docs.push({sig:b.customerSig, when:(Number(b.customerSigAt)||0), ds:b.customerSigDate||'', who:b.name||'Renter', veh:b.customerSigVehicle||b.vehicle||'', color:b.customerSigColor||'', kind:((_cw && !_isSigStr(b.waiverSig))?'Liability Waiver':'Rental Agreement')+' (current)'});
   if(Array.isArray(b._sigHistory)) b._sigHistory.forEach(function(h){
     if(!h || !_isSigStr(h.sig)) return;
     var _hw=String(h.vehicle||'').toLowerCase().indexOf('slingshot')!==-1;
@@ -18397,7 +18409,7 @@ function _evAgreement(b){
     var _ps=(typeof _evPrimarySig==='function')?_evPrimarySig(b):null;
     var _sd=_ps?((_ps.date||'')||((typeof _cdt==='function')?_cdt(_ps.at):'')):(b.customerSigDate||'');
     var _csig=(_ps&&_ps.sig)?'<img src="'+_ps.sig+'" style="max-height:56px;max-width:260px;object-fit:contain;display:inline-block;vertical-align:bottom;background:transparent;filter:brightness(0)">':'';
-    var _osig=(typeof OWNER_SIGNATURE!=='undefined'&&OWNER_SIGNATURE&&String(OWNER_SIGNATURE).indexOf('data:image/')===0)?'<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:260px;object-fit:contain;display:inline-block;vertical-align:bottom;background:transparent;filter:brightness(0)">':'<span style="font-family:cursive;font-size:26px;color:#111;line-height:1">Jalen Nguyen</span>';
+    var _osig=(typeof OWNER_SIGNATURE!=='undefined'&&OWNER_SIGNATURE&&String(OWNER_SIGNATURE).indexOf('data:image/')===0)?'<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:260px;object-fit:contain;display:inline-block;vertical-align:bottom;background:transparent;filter:brightness(0)">':'<span style="font-family:cursive;font-size:26px;color:#111;line-height:1">Edwin P. Watson Jr.</span>';
     var map={customer_name:b.name||'',today:_sd,customer_signed_date:_sd,customer_signature:_csig,signature:_csig,owner_signature:_osig,vehicle:b.vehicle||'',rental_type:b.type||'daily',pickup_date:b.pickupDate||b.date||'',pickup_time:b.pickupTime||'',dropoff_date:b.dropoffDate||'',dropoff_time:b.dropoffTime||'',duration:dur,total_revenue:_evFmtMoney(bd.subtotal!=null?bd.subtotal:(b.revenue||0)),deposit_amount:_evFmtMoney(bd.depositAmt||0),balance_due:_evFmtMoney(bd.balanceDue||0),vehicle_model:vi.model||'',vehicle_color:vi.color||b.customerSigColor||'',vehicle_vin:vi.vin||'',license_number:v.idNumber||'',license_state:v.idState||'',license_type:v.idType||'',license_expiry:v.idExpiry||'',customer_dob:v.idDob||'',verified_name:v.idName||'',license_address:v.idAddress||''};
     var merged=String(tpl).replace(/<script[\s\S]*?<\/script>/gi,'').replace(/\{\{\s*([a-zA-Z_]+)\s*\}\}/g,function(mm,k){ k=k.toLowerCase(); return (map[k]!=null&&map[k]!=='')?String(map[k]):'________'; });
     var isHtml=/<(div|p|table|br|span|h[1-6]|img)\b/i.test(merged);
@@ -21548,7 +21560,7 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
     <div>
       <div class="sig-line">{{owner_signature}}</div>
       <div class="sig-label">Date: {{today}}</div>
-      <div class="sig-label" style="margin-top:4px">Printed Name: Jalen Nguyen on behalf of Prestige Black Corp.</div>
+      <div class="sig-label" style="margin-top:4px">Printed Name: Edwin P. Watson Jr. on behalf of Prestige Black Corp.</div>
     </div>
     <div>
       <div class="sig-line">{{customer_signature}}</div>
@@ -21766,7 +21778,7 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
     </div>
     <div style="display:flex;align-items:flex-end;gap:8px;margin-bottom:6px">
       <span style="white-space:nowrap">Printed Name:</span>
-      <div style="flex:1;border-bottom:1px solid #999;padding-bottom:2px;font-size:13px">Jalen Nguyen on behalf of Prestige Black Corp.</div>
+      <div style="flex:1;border-bottom:1px solid #999;padding-bottom:2px;font-size:13px">Edwin P. Watson Jr. on behalf of Prestige Black Corp.</div>
     </div>
     <div style="display:flex;align-items:flex-end;gap:8px">
       <span style="white-space:nowrap">Date:</span>
@@ -21791,6 +21803,7 @@ function loadContractTemplate(){
 
 function _migrateContractTemplate(){
   if(!contractTemplate || contractTemplate === DEFAULT_CONTRACT_TEMPLATE) return;
+  if(contractTemplate.indexOf('Jalen Nguyen')!==-1){ contractTemplate=contractTemplate.replace(/Jalen Nguyen/g,'Edwin P. Watson Jr.'); try{ localStorage.setItem('pb_contract_template', contractTemplate); }catch(e){} }   // owner change: PB now owned by Edwin P. Watson Jr.
   var stale =
     contractTemplate.indexOf('{{owner_signature}}') === -1 ||
     (function(){
@@ -21845,6 +21858,7 @@ function _migrateContractTemplate(){
 
 function _migrateWaiverTemplate(){
   if(!slingshotWaiverTemplate || slingshotWaiverTemplate === DEFAULT_SLINGSHOT_WAIVER_TEMPLATE) return;
+  if(slingshotWaiverTemplate.indexOf('Jalen Nguyen')!==-1){ slingshotWaiverTemplate=slingshotWaiverTemplate.replace(/Jalen Nguyen/g,'Edwin P. Watson Jr.'); try{ localStorage.setItem('pb_slingshot_waiver', slingshotWaiverTemplate); }catch(e){} }   // owner change
   // If the stored template has any old hardcoded values or is missing required placeholders,
   // replace it entirely with the current default (user has never customized the template).
   var stale =
@@ -22269,6 +22283,7 @@ function _renderContractContent(){
   }
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
   var activeTemplate=_contractIsWaiver?slingshotWaiverTemplate:contractTemplate;
+  activeTemplate = activeTemplate.replace(/Jalen Nguyen/g, 'Edwin P. Watson Jr.');   // owner change safety net (render-time)
   if(!activeTemplate) return;
 
   // -- Render-time template fixes (run every render regardless of what's stored) -------------
@@ -22302,7 +22317,7 @@ function _renderContractContent(){
         '<div style="flex:1;min-width:200px">' +
           '<div style="border-bottom:1.5px solid #888;min-height:82px;margin-bottom:6px;display:flex;align-items:flex-end;padding-bottom:0">{{owner_signature}}</div>' +
           '<div style="font-size:11px;margin-bottom:3px">Date: {{today}}</div>' +
-          '<div style="font-size:11px">Printed Name: Jalen Nguyen on behalf of Prestige Black Corp.</div>' +
+          '<div style="font-size:11px">Printed Name: Edwin P. Watson Jr. on behalf of Prestige Black Corp.</div>' +
         '</div>' +
         '<div style="flex:1;min-width:200px">' +
           '<div style="border-bottom:1.5px solid #888;min-height:82px;margin-bottom:6px;display:flex;align-items:flex-end;padding-bottom:0">{{customer_signature}}</div>' +
@@ -22427,9 +22442,9 @@ function _renderContractContent(){
     .replace(/\{\{pet_fee\}\}/gi,            sr(petFee))
     .replace(/\{\{odometer_in\}\}/gi,        sr(odomIn))
     .replace(/\{\{date_lock\}\}/gi,          sr(b.dateLock!=null?'$'+(Number(b.dateLock)||0):'$100'))
-    .replace(/\{\{owner_signature\}\}/gi,      (OWNER_SIGNATURE && String(OWNER_SIGNATURE).indexOf('data:image/')===0)?'<img class="pb-sig" src="'+OWNER_SIGNATURE+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom;filter:'+(_contractIsWaiver?'brightness(0)':'brightness(0) invert(1)')+'">'  :'<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+(_contractIsWaiver?'#111':'#fff')+';line-height:1">Jalen Nguyen</span>')
-    .replace(/\{\{customer_signature\}\}/gi,   (b.customerSig&&b.customerSig.startsWith('data:image/'))?'<img class="pb-sig" src="'+b.customerSig+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom'+(_contractIsWaiver?'':';filter:invert(1)')+'">':'_______________________________')
-    .replace(/\{\{customer_signed_date\}\}/gi, sr(b.customerSigDate||todayFmt))
+    .replace(/\{\{owner_signature\}\}/gi,      (OWNER_SIGNATURE && String(OWNER_SIGNATURE).indexOf('data:image/')===0)?'<img class="pb-sig" src="'+OWNER_SIGNATURE+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom;filter:'+(_contractIsWaiver?'brightness(0)':'brightness(0) invert(1)')+'">'  :'<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+(_contractIsWaiver?'#111':'#fff')+';line-height:1">Edwin P. Watson Jr.</span>')
+    .replace(/\{\{customer_signature\}\}/gi,   (function(){ var _sg=(_contractIsWaiver && b.waiverSig && String(b.waiverSig).indexOf('data:image/')===0)?b.waiverSig:b.customerSig; return (_sg&&String(_sg).startsWith('data:image/'))?'<img class="pb-sig" src="'+_sg+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom'+(_contractIsWaiver?'':';filter:invert(1)')+'">':'_______________________________'; })())
+    .replace(/\{\{customer_signed_date\}\}/gi, sr((_contractIsWaiver && b.waiverSig && String(b.waiverSig).indexOf('data:image/')===0)?(b.waiverSigDate||todayFmt):(b.customerSigDate||todayFmt)))
     .replace(/\{\{broker_fee_rate\}\}/gi,    b.brokerFee?'$'+b.brokerFee+'/day':'N/A')
     .replace(/\{\{remaining_balance\}\}/gi,  '$'+Math.max(0,getRemainingBalance(b)))
     .replace(/\{\{mileage_policy\}\}/gi,     sr(_cIsUnlim?'Mileage: This rental includes unlimited mileage at no additional per-mile charge.':'Mileage: This rental includes '+_cPerDay.toLocaleString()+' miles per day ('+tripTotalMiles+' for this rental). Miles driven beyond the included amount will be charged at $'+_cOverage+' per mile.'))
@@ -22666,7 +22681,9 @@ function switchSlingshotDoc(isWaiver){
 async function sendSignedCopyToClient(){
   if(!_contractBookingId) return;
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
-  if(!b.customerSig){ showToast('No signature saved yet \u2014 have the client sign first'); return; }
+  var _scWaiver = _contractIsWaiver && b.waiverSig && String(b.waiverSig).indexOf('data:image/')===0;   // Slingshot full-day: the waiver copy carries the WAIVER signature, not the rental-agreement one
+  var _scSig = _scWaiver ? b.waiverSig : b.customerSig;
+  if(!_scSig){ showToast('No signature saved yet \u2014 have the client sign first'); return; }
   if(!b.email){ showToast('No email on file for this booking'); return; }
   if(!MESSAGING_URL){ showToast('Messaging worker not configured \u2014 go to \u2699 Settings to add it'); return; }
   var firstName=(b.name||'').split(' ')[0]||'there';
@@ -22674,7 +22691,7 @@ async function sendSignedCopyToClient(){
   var _docShort=_contractIsWaiver?'Waiver':'Contract';
   // Subject doubles as the client's saved-PDF name \u2014 Gmail/Apple Mail name the printed
   // file after the email subject \u2192 "{Name} - Signed {Contract|Waiver} - {signed date}".
-  var _sigDateF=((b.customerSigDate?(b.customerSigDate+''):fmtDate(b.pickupDate||b.date))+'').replace(/[\/\\:*?"<>|]/g,'-');
+  var _sigDateF=((_scWaiver?(b.waiverSigDate||b.customerSigDate||fmtDate(b.pickupDate||b.date)):(b.customerSigDate?(b.customerSigDate+''):fmtDate(b.pickupDate||b.date)))+'').replace(/[\/\\:*?"<>|]/g,'-');
   var subj=(((b.name||'Client').trim())||'Client')+' - Signed '+_docShort+' - '+_sigDateF;
   var rev=totalRevenue(b), dep=Number(b.deposit)||0, bal=Math.max(0,getRemainingBalance(b));
   var addons=[];
@@ -22714,7 +22731,7 @@ async function sendSignedCopyToClient(){
     '<div style="margin:20px 0">'+
     '<div style="font-size:11px;font-weight:700;color:#888;margin-bottom:8px;text-transform:uppercase;letter-spacing:.08em">Your Signature</div>'+
     '<div style="border:1px solid #e5e5e5;border-radius:10px;padding:14px 18px;display:inline-block;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.06)">'+
-    '<img src="'+b.customerSig+'" style="max-height:60px;max-width:280px;display:block">'+
+    '<img src="'+_scSig+'" style="max-height:60px;max-width:280px;display:block">'+
     '</div>'+
     '<div style="font-size:11px;color:#999;margin-top:6px">Signed '+signedOn+'</div>'+
     '</div>'+
@@ -23167,7 +23184,7 @@ function _buildExtensionContractHtml(b, extIdx){
   // renders it). Without this the white signature is invisible on white and the box looks blank.
   var ownerSigHtml = (OWNER_SIGNATURE && String(OWNER_SIGNATURE).indexOf('data:image/')===0)
     ? '<img src="'+OWNER_SIGNATURE+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;filter:brightness(0)">'
-    : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Jalen Nguyen</span>';
+    : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Edwin P. Watson Jr.</span>';
   var custSigHtml = (ext.signed && ext.sig && ext.sig.startsWith('data:image/'))
     ? '<img src="'+ext.sig+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;filter:invert(0)">'
     : '<span style="color:#aaa;font-size:11px;font-style:italic">pending signature</span>';
@@ -23248,7 +23265,7 @@ function _buildExtensionContractHtml(b, extIdx){
     // -- Owner / Lessor (always signed) --
     '<div style="flex:1 1 210px;min-width:190px">'+
       '<div class="sig-box">'+ownerSigHtml+'</div>'+
-      '<div style="font-size:11px;font-weight:700">Prestige Black Corp. \u2014 Jalen Nguyen</div>'+
+      '<div style="font-size:11px;font-weight:700">Prestige Black Corp. \u2014 Edwin P. Watson Jr.</div>'+
       '<div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.04em">Owner / Lessor</div>'+
       '<div style="font-size:10px;color:#666">'+_fmtSigStamp(ext.createdAt)+'</div>'+
     '</div>'+
@@ -23321,7 +23338,7 @@ function _buildExtAmendmentHtml(bk, extIdx, opts){
   var _own=(typeof opts.owner_signature==='string')?opts.owner_signature:'';
   var ownerSig=(_isSigStr(_own))
     ? '<img src="'+_own+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;'+ownerInk+'">'
-    : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+tx+';line-height:1">Jalen Nguyen</span>';
+    : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+tx+';line-height:1">Edwin P. Watson Jr.</span>';
   var sigBoxCss='border-bottom:1.5px solid '+sigBd+';min-height:80px;margin-bottom:4px;display:flex;align-items:flex-end;padding-bottom:2px';
   var padSpan='<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed '+(dark?'#888':'#aaa')+';height:60px"></span>';
   var drvList=(bk.extraDrivers||[]);
@@ -23369,7 +23386,7 @@ function _buildExtAmendmentHtml(bk, extIdx, opts){
     '<div style="display:flex;gap:30px;flex-wrap:wrap;align-items:flex-start">'+
       '<div style="flex:1 1 210px;min-width:190px">'+
         '<div style="'+sigBoxCss+'">'+ownerSig+'</div>'+
-        '<div style="font-size:11px;font-weight:700;color:'+tx+'">Prestige Black Corp. \u2014 Jalen Nguyen</div>'+
+        '<div style="font-size:11px;font-weight:700;color:'+tx+'">Prestige Black Corp. \u2014 Edwin P. Watson Jr.</div>'+
         '<div style="font-size:10px;color:'+faint+';text-transform:uppercase;letter-spacing:.04em">Owner / Lessor</div>'+
       '</div>'+
       '<div style="flex:2 1 320px;min-width:200px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:18px 22px">'+
@@ -23831,7 +23848,7 @@ function sendExtensionSigningLink(){
   if(!ext){ showToast('Extension not found'); return; }
   var extIdx = _contractActiveExtIdx;
   var base = location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
-  var url  = base + '?sign=' + encodeURIComponent(b.id) + '&extId=' + encodeURIComponent(ext.id);
+  var url  = base + '?sign=' + encodeURIComponent(b.id) + '&extId=' + encodeURIComponent(ext.id) + (b._signToken?('&t='+encodeURIComponent(b._signToken)):'');
   // Mark sentAt
   var bidx = bookings.findIndex(function(x){return x.id===_contractBookingId;});
   if(bidx !== -1){
@@ -24426,7 +24443,7 @@ function sendContractSigningLink(){
   var b = bookings.find(function(x){return x.id===_contractBookingId;});
   if(!b){ toast('Booking not found'); return; }
   var base = location.origin + location.pathname.replace(/[^\/]*$/,'') + 'portal.html';
-  var primaryUrl = base + '?sign=' + encodeURIComponent(_contractBookingId);
+  var primaryUrl = base + '?sign=' + encodeURIComponent(_contractBookingId) + (b._signToken?('&t='+encodeURIComponent(b._signToken)):'');
   // Persist the selected Slingshot color to Firebase BEFORE sending the link. Stamp the color the owner
   // is looking at UNCONDITIONALLY (the old !== guard skipped the save when local already matched, so a
   // White that never reached Firebase stayed absent) and force-flush it to the cloud NOW instead of on
@@ -25324,7 +25341,7 @@ function _initExtensionSigningMode(bookingId, extId){
     // ALWAYS appears: the uploaded image if on file, else a typed cursive signature.
     var ownerSig = (data.owner_signature&&data.owner_signature.startsWith('data:image/'))
       ? '<img src="'+data.owner_signature+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;filter:brightness(0)">'
-      : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Jalen Nguyen</span>';
+      : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Edwin P. Watson Jr.</span>';
 
     // Build prior extensions rows
     var prevExtRows='';
@@ -25369,7 +25386,7 @@ function _initExtensionSigningMode(bookingId, extId){
       '<p style="font-size:12px;color:#333;line-height:1.7;margin:0 0 8px">All original terms of the Rental Agreement remain in effect. This extension amends only the return date and charges noted above. Standard late fees of $75/hr apply for returns past the agreed time.</p>'+
       '<hr style="border:none;border-top:1.5px solid #aaa;margin:24px 0 18px">'+
       '<div style="display:flex;gap:28px;flex-wrap:wrap">'+
-        '<div style="flex:1;min-width:200px"><div class="sig-box">'+ownerSig+'</div><div style="font-size:11px">Date: '+todayFmt+'</div><div style="font-size:11px">Prestige Black Corp. &mdash; Jalen Nguyen</div></div>'+
+        '<div style="flex:1;min-width:200px"><div class="sig-box">'+ownerSig+'</div><div style="font-size:11px">Date: '+todayFmt+'</div><div style="font-size:11px">Prestige Black Corp. &mdash; Edwin P. Watson Jr.</div></div>'+
         '<div style="flex:1;min-width:200px"><div class="sig-box"><span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span></div><div style="font-size:11px">Date: <span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></div><div style="font-size:11px">Customer: '+esc(bk.name)+'</div></div>'+
       '</div>'+
       '</body></html>';
