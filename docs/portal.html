@@ -966,8 +966,17 @@ async function _downloadSignedContractPdf(rootEl, fname){
 // copy. The live signing flow keeps using its own inline fill (untouched), so this can NEVER affect
 // signing. KEEP IN SYNC: if you add a template placeholder to _initSigningMode's fill, add it here too.
 // Returns the filled template HTML, or '' if there is no template.
-function _smFillContractTmpl(bk, data, drvIdx, readOnly){
-  var tmpl = (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+function _isSlingFullDay(bk){ return !!(bk && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event'].indexOf(String(bk.type||'').toLowerCase())===-1); }
+// Slingshot FULL-DAY docs carry BOTH signatures (waiver + rental agreement) on EVERY doc, at the primary sig spot.
+function _bothSigsHtml(bk){
+  function _img(s){ return (s&&String(s).indexOf('data:image/')===0) ? '<img src="'+s+'" style="max-height:64px;max-width:260px;display:block">' : '<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>'; }
+  return '<div style="display:flex;flex-direction:column;gap:12px">'
+    + '<div><div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#555;margin-bottom:3px">Liability Waiver'+(bk.waiverSigDate?' \u00B7 '+esc(String(bk.waiverSigDate)):'')+'</div>'+_img(bk.waiverSig)+'</div>'
+    + '<div><div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#555;margin-bottom:3px">Rental Agreement'+(bk.customerSigDate?' \u00B7 '+esc(String(bk.customerSigDate)):'')+'</div>'+_img(bk.customerSig)+'</div>'
+    + '</div>';
+}
+function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
+  var tmpl = (docType==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
   if(!tmpl) return '';
   // Slingshot color normalization
   if(bk.vehicle==='Polaris Slingshot'){
@@ -1082,7 +1091,7 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly){
         : '<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
     .replace(/\{\{customer_signature\}\}/gi,
       readOnly
-        ? ((bk.customerSig&&bk.customerSig.startsWith('data:image/')) ? '<img src="'+bk.customerSig+'" style="max-height:80px;max-width:300px;display:block">' : '_______________________________')
+        ? (_isSlingFullDay(bk) ? _bothSigsHtml(bk) : ((bk.customerSig&&bk.customerSig.startsWith('data:image/')) ? '<img src="'+bk.customerSig+'" style="max-height:80px;max-width:300px;display:block">' : '_______________________________'))
         : ((drvIdx === null)
             ? '<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span>'
             : (bk.customerSig&&bk.customerSig.startsWith('data:image/')
@@ -1110,7 +1119,7 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly){
 // EVERY extension, when PB_FLAGS.cumulativeContracts is on). extId set -> the cumulative document from the
 // original through THAT extension. Falls back to the base-only contract whenever cumulative is off, there
 // are no extensions, or the cumulative build fails -- so the download never breaks.
-async function _portalDownloadSignedContract(bookingId, btnEl, extId){
+async function _portalDownloadSignedContract(bookingId, btnEl, extId, docType){
   var _lbl=null;
   if(btnEl){ try{ _lbl=btnEl.textContent; btnEl.disabled=true; btnEl.textContent='Preparing...'; }catch(e){} }
   function _restore(){ if(btnEl){ try{ btnEl.disabled=false; if(_lbl!=null) btnEl.textContent=_lbl; }catch(e){} } }
@@ -1121,15 +1130,17 @@ async function _portalDownloadSignedContract(bookingId, btnEl, extId){
     var bk=data.booking;
     var exts=(bk.extensions||[]).filter(Boolean);
     var tmpl='', _uptoLabel='', _extPart='';
-    if(_pbCumulativeOn() && exts.length){
+    if(docType==='waiver'){
+      tmpl=_smFillContractTmpl(bk, data, null, true, 'waiver'); _uptoLabel=''; _extPart='';
+    } else if(_pbCumulativeOn() && exts.length){
       var upto=exts.length-1;   // original + ALL extensions
       if(extId){ var ix=exts.findIndex(function(e){ return e&&e.id===extId; }); if(ix>=0){ upto=ix; _uptoLabel=' thru Extension '+(ix+1);
         // extension file saves as "<Client First Last> Extension <N> <start date>" (start = ext.fromDate)
         var _ex=exts[ix]||{}; var _sd=(_ex.fromDate||_ex.toDate||_ex.sigDate||'')+''; _extPart='Extension '+(ix+1)+(_sd?' '+_sd:''); } }
       tmpl=_buildCumulativeContractHtml(bk, data, upto, {});
     }
-    if(!tmpl){ tmpl=_smFillContractTmpl(bk, data, null, true); _uptoLabel=''; _extPart=''; }   // fallback: base-only (cumulative off / no exts / build failed)
-    if(!tmpl){ toast('No contract on file for this booking.'); _restore(); return; }
+    if(!tmpl && docType!=='waiver'){ tmpl=_smFillContractTmpl(bk, data, null, true); _uptoLabel=''; _extPart=''; }   // fallback: base-only (cumulative off / no exts / build failed)
+    if(!tmpl){ toast(docType==='waiver'?'No waiver on file for this booking.':'No contract on file for this booking.'); _restore(); return; }
     var isHtml=tmpl.trim().toLowerCase().startsWith('<!doctype')||tmpl.trim().startsWith('<html');
     var holder=document.createElement('div'); holder.style.cssText='position:absolute;left:-99999px;top:0;width:760px;visibility:hidden';
     document.body.appendChild(holder);
@@ -1143,7 +1154,7 @@ async function _portalDownloadSignedContract(bookingId, btnEl, extId){
       holder.innerHTML='<div>'+tmpl+'</div>'; rootEl=holder;
     }
     var _base=((bk.name||'Client')+'').trim().replace(/\s+/g,' ')||'Client';
-    var fname=(_extPart ? (_base+' '+_extPart) : (_base+' Signed Contract'+_uptoLabel)).replace(/[\/\\:*?"<>|]/g,'-')+'.pdf';
+    var fname=(docType==='waiver' ? (_base+' Signed Waiver') : (_extPart ? (_base+' '+_extPart) : (_base+' Signed Contract'+_uptoLabel))).replace(/[\/\\:*?"<>|]/g,'-')+'.pdf';
     if(rootEl){ await _downloadSignedContractPdf(rootEl, fname); }
     else { toast('Could not render the contract for download.'); }
     try{ document.body.removeChild(holder); }catch(e){}
@@ -1152,8 +1163,9 @@ async function _portalDownloadSignedContract(bookingId, btnEl, extId){
 }
 // Download the cumulative document from the original through a SPECIFIC extension.
 function _portalDownloadExtension(bookingId, extId, btnEl){ return _portalDownloadSignedContract(bookingId, btnEl, extId); }
+function _portalDownloadWaiver(bookingId, btnEl){ return _portalDownloadSignedContract(bookingId, btnEl, null, 'waiver'); }
 
-function _initSigningMode(bookingId, driverIdx, fromPortal){
+function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
   _smDriverIdx = (driverIdx !== null && driverIdx !== undefined && !isNaN(Number(driverIdx))) ? Number(driverIdx) : null;
   _smFromPortal = !!fromPortal;
   document.getElementById('signing-screen').style.display = 'block';
@@ -1174,10 +1186,17 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
     var bk = data.booking;
     var _isDriver = (_smDriverIdx !== null);
     var _signer = _isDriver ? (bk.extraDrivers&&bk.extraDrivers[_smDriverIdx]) : null;
+    // Slingshot FULL-DAY rentals sign TWO docs consecutively -- the WAIVER first, then the CONTRACT. docType is
+    // explicit ('waiver'/'contract') on the chained 2nd step; otherwise default to the waiver first (if unsigned)
+    // for the primary renter. Every other vehicle + Slingshot hourly + drivers stay on 'contract' (unchanged).
+    var _slingFullDay = !_isDriver && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event'].indexOf(String(bk.type||'').toLowerCase())===-1;
+    var _waiverSigned = !!(bk.waiverSig && String(bk.waiverSig).indexOf('data:image/')===0);
+    var _dt = (docType==='waiver'||docType==='contract') ? docType : ((_slingFullDay && !_waiverSigned) ? 'waiver' : 'contract');
+    document.getElementById('sign-tag').textContent = _isDriver ? 'Additional Driver Agreement' : (_dt==='waiver' ? 'Liability Waiver' : 'Rental Agreement');
     var _signerName = _isDriver ? ((_signer&&_signer.name)||'Additional Driver') : (bk.name||'').split(' ')[0]||'there';
     var _alreadySig = _isDriver
       ? (_signer&&_signer.sig&&_signer.sig.startsWith('data:image/'))
-      : (bk.customerSig&&bk.customerSig.startsWith('data:image/'));
+      : (_dt==='waiver' ? _waiverSigned : (bk.customerSig&&bk.customerSig.startsWith('data:image/')));
     var _alreadyDate = _isDriver ? (_signer&&_signer.sigDate) : bk.customerSigDate;
 
     if(_alreadySig){
@@ -1206,8 +1225,8 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
       return;
     }
 
-    // Pick template
-    var tmpl = (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+    // Pick template (docType-aware: waiver -> the Slingshot waiver template; contract -> the rental agreement)
+    var tmpl = (_dt==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
     if(!tmpl){ body.innerHTML='<div style="color:#f87171;padding:20px">No contract template found. Please contact Prestige Black Rentals.</div>'; return; }
 
     // Slingshot color normalization
@@ -1358,7 +1377,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
       '<canvas id="smSigCanvas" width="480" height="160" style="width:100%;max-width:480px;height:clamp(120px,22vw,160px);border:2px dashed rgba(201,169,98,.5);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block"></canvas>'+
       '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'+
       '<button onclick="_smClearSig()" style="padding:8px 16px;border:1px solid rgba(255,255,255,.2);border-radius:8px;background:transparent;color:rgba(255,255,255,.7);cursor:pointer;font-size:13px">\u2715 Clear</button>'+
-      '<button onclick="_smSubmitSig(\''+bookingId+'\','+((_smDriverIdx!==null)?_smDriverIdx:'null')+')" id="smSubmitBtn" style="padding:8px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:15px">\u270D\uFE0F Sign & Submit</button>'+
+      '<button onclick="_smSubmitSig(\''+bookingId+'\','+((_smDriverIdx!==null)?_smDriverIdx:'null')+',\''+_dt+'\')" id="smSubmitBtn" style="padding:8px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:15px">\u270D\uFE0F Sign & Submit</button>'+
       '</div>'+
       '<div id="smSigMsg" style="font-size:12px;color:rgba(255,255,255,.4);margin-top:8px">By signing, you agree to the terms of the rental agreement above.</div>'+
       '</div>';
@@ -1736,7 +1755,7 @@ function showAuthForSigner(){
   }
 }
 
-function _smSubmitSig(bookingId, driverIdx){
+function _smSubmitSig(bookingId, driverIdx, docType){
   var _isDriver = (driverIdx !== null && driverIdx !== undefined && !isNaN(Number(driverIdx)));
   var _dIdx = _isDriver ? Number(driverIdx) : null;
   var c = document.getElementById('smSigCanvas'); if(!c) return;
@@ -1761,6 +1780,7 @@ function _smSubmitSig(bookingId, driverIdx){
     if(!_freshBk){ _showSaveErr('Error loading data \u2014 please refresh.'); return; }
     var _signerName = _isDriver ? ((_freshBk.extraDrivers&&_freshBk.extraDrivers[_dIdx]&&_freshBk.extraDrivers[_dIdx].name)||'Driver').split(' ')[0] : (_freshBk.name||'').split(' ')[0]||'there';
     var _savePayload = {bookingId, sig, sigDate, t:_sigTokenFor(bookingId)};
+    if(docType==='waiver') _savePayload.doc='waiver';
     if(_isDriver) _savePayload.driverIdx = _dIdx;
     return fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_savePayload)})
       .then(r => r.json())
@@ -1769,7 +1789,14 @@ function _smSubmitSig(bookingId, driverIdx){
           // Update local state so button reflects signed status
           if(_smFromPortal && state && state.bookings){
             var _lb = state.bookings.find(function(x){ return x.id===bookingId; });
-            if(_lb){ _lb.customerSig = sig; _lb.customerSigDate = sigDate; }
+            if(_lb){ if(docType==='waiver'){ _lb.waiverSig=sig; _lb.waiverSigDate=sigDate; } else { _lb.customerSig=sig; _lb.customerSigDate=sigDate; } }
+          }
+          // Slingshot full-day: after the WAIVER, immediately continue to the CONTRACT (consecutive signing).
+          if(docType==='waiver' && _freshBk && _freshBk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event'].indexOf(String(_freshBk.type||'').toLowerCase())===-1){
+            document.getElementById('signing-body').innerHTML = '<div style="text-align:center;padding:40px"><div style="font-size:48px;margin-bottom:12px">\u2705</div><div style="font-size:18px;font-weight:800;color:#22c55e;margin-bottom:8px">Waiver signed!</div><div style="color:rgba(255,255,255,.6);font-size:14px">Now review and sign your Rental Agreement\u2026</div></div>';
+            var _sbw=document.getElementById('smStickyBar'); if(_sbw) _sbw.remove();
+            setTimeout(function(){ _initSigningMode(bookingId, null, _smFromPortal, 'contract'); }, 950);
+            return;
           }
           var _portalBtn = _smFromPortal
             ? '<button onclick="_smGoBack()" style="margin-top:20px;padding:12px 32px;background:#C9A962;color:#000;border:none;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer;">\u2190 Back to My Bookings</button>'
@@ -2231,9 +2258,11 @@ function renderContractTab(){
   var html = '';
   bks.forEach(function(b){
     var alreadySigned = _isSig(b.customerSig);
+    var _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day = waiver + rental agreement
+    var _wSig = _isSig(b.waiverSig);
     var _drvs = (b.extraDrivers||[]).filter(function(d){ return d && d.name && d.status !== 'denied'; });   // a denied driver is not a party -> doesn't block "fully signed"
     var _pendingDrv = _drvs.filter(function(d){ return !_isSig(d.sig); }).length;
-    var fullySigned = alreadySigned && _pendingDrv===0;   // primary renter + EVERY listed authorized driver has signed
+    var fullySigned = alreadySigned && _pendingDrv===0 && (!_sfd || _wSig);   // Slingshot full-day also needs the waiver
     var sigDate = b.sigDate || b.contractSignedAt || b.customerSigDate || '';
     var sigDateStr = sigDate ? (function(){ try{ return new Date(sigDate).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }catch(e){ return String(sigDate); } })() : '';
     var exts = _pbCumulativeOn() ? (b.extensions||[]).filter(Boolean) : [];
@@ -2242,20 +2271,44 @@ function renderContractTab(){
       + '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + (b.startDate||'') + (b.endDate?' \u2013 '+b.endDate:'') + '</div></div>'
       + (fullySigned
         ? '<span style="background:rgba(34,197,94,.15);color:#4ade80;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u2705 Signed</span>'
-        : (alreadySigned
-          ? '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u23F3 Awaiting Drivers</span>'
-          : '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u26A0\uFE0F Action Needed</span>'))
+        : ((_sfd && alreadySigned && !_wSig)
+          ? '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u26A0\uFE0F Waiver Needed</span>'
+          : (alreadySigned
+            ? '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u23F3 Awaiting Drivers</span>'
+            : '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u26A0\uFE0F Action Needed</span>')))
       + '</div>';
+    // --- Slingshot full-day: Liability Waiver row (reviewed + signed BEFORE the rental agreement) ---
+    if(_sfd){
+      var _wDateStr = b.waiverSigDate ? String(b.waiverSigDate) : '';
+      html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:6px 0 6px;">Liability Waiver</div>';
+      if(_wSig){
+        if(_wDateStr) html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Signed '+_wDateStr+'</div>';
+        html += '<button class="btn btn-ghost" onclick="_portalDownloadWaiver(\''+b.id+'\', this)">\uD83D\uDCC4 Download Waiver</button>';
+      } else {
+        html += '<button class="btn" onclick="_initSigningMode(\''+b.id+'\',null,true,\'waiver\')">\u270D\uFE0F Sign Liability Waiver \u2192</button>';
+      }
+      html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:14px 0 6px;">Rental Agreement</div>';
+    }
     // --- Original rental agreement row ---
     var _mt = exts.length ? '0' : '8px';
-    if(exts.length) html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:6px 0 6px;">Original Agreement</div>';
+    if(exts.length && !_sfd) html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:6px 0 6px;">Original Agreement</div>';
     if(sigDateStr && alreadySigned) html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Signed ' + sigDateStr + '</div>';
     if(fullySigned){
       html += '<button class="btn" style="margin-top:'+_mt+';" onclick="_portalDownloadSignedContract(\''+b.id+'\', this)">\uD83D\uDCC4 Download '+(exts.length?'Full Contract':'Signed Contract')+'</button>';
+    } else if(_sfd && alreadySigned && !_wSig){
+      // Rental agreement signed but the liability waiver is still missing (owner in-person capture, or a booking
+      // signed before the waiver step existed). The waiver row above carries the live "Sign Liability Waiver"
+      // action; keep the already-signed agreement downloadable so a legacy signed copy never disappears.
+      html += '<div style="font-size:12px;color:var(--text-muted);padding:10px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">Rental agreement signed \u2014 complete the liability waiver above to finish.</div>';
+      html += '<button class="btn btn-ghost" style="margin-top:8px;" onclick="_portalDownloadSignedContract(\''+b.id+'\', this)">\uD83D\uDCC4 Download Signed Agreement</button>';
     } else if(alreadySigned){
       html += '<div style="font-size:12px;color:var(--text-muted);padding:10px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">You\'ve signed \u2014 awaiting '+_pendingDrv+' authorized driver signature'+(_pendingDrv===1?'':'s')+' before the signed copy is ready.</div>';
     } else {
-      html += '<button class="btn" style="margin-top:'+_mt+';" onclick="_initSigningMode(\''+b.id+'\',null,true)">\u270D\uFE0F Sign Rental Agreement \u2192</button>';
+      if(_sfd && !_wSig){
+        html += '<div style="font-size:12px;color:var(--text-muted);padding:10px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">Sign the liability waiver above \u2014 you\'ll be brought here to sign the rental agreement automatically.</div>';
+      } else {
+        html += '<button class="btn" style="margin-top:'+_mt+';" onclick="_initSigningMode(\''+b.id+'\',null,true'+(_sfd?",'contract'":'')+')">\u270D\uFE0F Sign Rental Agreement \u2192</button>';
+      }
     }
     // --- Extension rows (strict sequence) ---
     if(exts.length){
@@ -2637,11 +2690,15 @@ function showSignContract(b){
   if(['cancelled'].includes(s)) return '';
   // Only show if contract has been sent by admin
   if(!b.contractSent) return '';
-  const alreadySigned = b.customerSig && b.customerSig.startsWith('data:image/');
-  if(alreadySigned) return `<div style="margin-top:10px;display:flex;align-items:center;gap:6px;font-size:12px;color:#22c55e;font-weight:600;">\u2705 Contract Signed</div>`;
+  const _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day signs waiver + agreement
+  const _wSig = b.waiverSig && String(b.waiverSig).startsWith('data:image/');
+  const _cSig = b.customerSig && b.customerSig.startsWith('data:image/');
+  const alreadySigned = _cSig && (!_sfd || _wSig);   // Slingshot full-day needs BOTH docs signed
+  if(alreadySigned) return `<div style="margin-top:10px;display:flex;align-items:center;gap:6px;font-size:12px;color:#22c55e;font-weight:600;">\u2705 ${_sfd?'Documents':'Contract'} Signed</div>`;
+  const _label = (_sfd && !_wSig) ? 'Sign Liability Waiver' : 'Sign Rental Agreement';   // waiver comes first for Slingshot full-day
   return `<div style="margin-top:12px;">
     <button onclick="_initSigningMode('${b.id}',null,true)" style="width:100%;padding:13px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer;letter-spacing:.02em;display:flex;align-items:center;justify-content:center;gap:8px;">
-      \u270D\uFE0F Sign Rental Agreement
+      \u270D\uFE0F ${_label}
     </button>
   </div>`;
 }
