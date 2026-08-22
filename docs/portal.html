@@ -2882,6 +2882,28 @@ function _chFmtCountdown(ms){
 // Priced at the booking's own effective per-day rate (carries promo/special). Not signed yet -> folds into
 // the balance; already signed -> creates a pending extension, pays first (existing payCharge), then signs
 // (existing extension signing). The worker re-computes + authorises everything.
+// Fleet rate tiers -- IDENTICAL to the website (PB_Booking_live.js) + worker PB_RATES. Extensions price off
+// these, capped at the customer's own per-day so a promo booking never pays more.
+var PB_RATES = {
+  'Corvette': { daily:450, weekly:1900, monthly:5700 }, 'Corvette Z51': { daily:450, weekly:1900, monthly:5700 },
+  'BMW M3': { daily:450, weekly:2200, monthly:5700 }, 'BMW i4': { daily:150, weekly:950, monthly:3000 },
+  'Macan': { daily:275, weekly:1750, monthly:4000 }, 'Porsche Boxster S': { daily:225, weekly:1250, monthly:3750 },
+  'C300': { daily:200, weekly:1250, monthly:3750 }, 'Polaris Slingshot': { daily:300, weekly:1500, monthly:4500 },
+  'Lambo Huracan': { daily:1350, weekly:0, monthly:0 }
+};
+function _pbTierTotal(days, r, startDow, promo){
+  var daily=(r&&r.daily)||0, weekly=(r&&r.weekly)||0, monthly=(r&&r.monthly)||0;
+  var base=days*daily, tiered=false;
+  if(monthly>0 && days>=30){ base=monthly+(days-30)*(monthly/30); tiered=true; }
+  else if(weekly>0 && days>=7){ base=weekly+(days-7)*(weekly/7); tiered=true; }
+  if(!tiered && !promo && startDow>=1 && startDow<=4) base=base*0.90;
+  return Math.round(base*100)/100;
+}
+function _radQuote(veh, n, origDaily, drop){
+  var r=PB_RATES[veh]||null, dow=0; try{ dow=new Date(drop+'T12:00:00Z').getUTCDay(); }catch(e){}
+  var tier=r?_pbTierTotal(n, r, dow, false):(origDaily*n);
+  return Math.round(Math.min(tier, origDaily*n)*100)/100;
+}
 function showRentalAddDays(b){
   if(!b) return '';
   var t=(b.type||'').toLowerCase();
@@ -2889,14 +2911,15 @@ function showRentalAddDays(b){
   var s=(b.status||'').toLowerCase();
   if(['cancelled','completed','voided'].indexOf(s)!==-1) return '';
   var bd; try{ bd=_buildContractBreakdown(b); }catch(e){ return ''; }
-  var rate=Math.round(((bd&&bd.dailyRateNum)||0)*100)/100;
+  var rate=Math.round(((bd&&bd.dailyRateNum)||0)*100)/100;   // customer's effective per-day = the price cap
   if(rate<1) return '';
   var bid=b.id;
   var signed=!!(b.customerSig&&String(b.customerSig).indexOf('data:image/')===0);
   var drop=b.dropoffDate||b.pickupDate||b.date||'';
-  var base1=Math.round(rate*1*100)/100, tot1=signed?Math.round(base1*1.1325*100)/100:base1;
+  var veh=b.vehicle||'';
+  var base1=_radQuote(veh,1,rate,drop), tot1=Math.round(base1*1.1325*100)/100;   // every extension is paid now (5% fee + 8.25% tax)
   var ret1=drop?new Date(new Date(drop+'T12:00:00Z').getTime()+86400000).toISOString().slice(0,10):'';
-  var totLabel=signed?'Total (5% fee + 8.25% tax)':'Added to your balance';
+  var totLabel='Total (5% fee + 8.25% tax)';
   return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">'+
     '<div style="background:rgba(201,169,98,.05);border:1px solid rgba(201,169,98,.22);border-radius:12px;padding:14px 16px;">'+
       '<div style="font-size:14px;font-weight:800;color:#fff;margin-bottom:3px;">\uD83D\uDCC5 Add Days</div>'+
@@ -2908,7 +2931,7 @@ function showRentalAddDays(b){
       '</div>'+
       '<div style="display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,.6);margin-bottom:3px;"><span>New return</span><span id="radRet_'+bid+'" style="color:#fff;font-weight:600;">'+esc(ret1)+'</span></div>'+
       '<div style="display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,.6);"><span>'+totLabel+'</span><span id="radTot_'+bid+'" style="color:#fff;font-weight:800;font-size:15px;">$'+tot1.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span></div>'+
-      '<button type="button" onclick="rentalAddDaysGo(\''+bid+'\')" id="radBtn_'+bid+'" data-rate="'+rate+'" data-signed="'+(signed?'1':'0')+'" data-drop="'+esc(drop)+'" style="width:100%;margin-top:12px;padding:12px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;letter-spacing:.02em;">Add to my trip</button>'+
+      '<button type="button" onclick="rentalAddDaysGo(\''+bid+'\')" id="radBtn_'+bid+'" data-veh="'+esc(veh)+'" data-origdaily="'+rate+'" data-signed="'+(signed?'1':'0')+'" data-drop="'+esc(drop)+'" style="width:100%;margin-top:12px;padding:12px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;letter-spacing:.02em;">Add to my trip</button>'+
     '</div></div>';
 }
 function _radStep(bid,delta){
@@ -2920,8 +2943,8 @@ function _radStep(bid,delta){
 function _radRecalc(bid){
   var el=document.getElementById('radN_'+bid), btn=document.getElementById('radBtn_'+bid); if(!el||!btn) return;
   var n=Math.max(1,parseInt(el.textContent,10)||1);
-  var rate=Number(btn.getAttribute('data-rate'))||0, signed=btn.getAttribute('data-signed')==='1', drop=btn.getAttribute('data-drop')||'';
-  var base=Math.round(rate*n*100)/100, total=signed?Math.round(base*1.1325*100)/100:base;
+  var veh=btn.getAttribute('data-veh')||'', origDaily=Number(btn.getAttribute('data-origdaily'))||0, drop=btn.getAttribute('data-drop')||'';
+  var base=_radQuote(veh,n,origDaily,drop), total=Math.round(base*1.1325*100)/100;
   var ret=drop?new Date(new Date(drop+'T12:00:00Z').getTime()+n*86400000).toISOString().slice(0,10):'';
   var rEl=document.getElementById('radRet_'+bid); if(rEl) rEl.textContent=ret;
   var tEl=document.getElementById('radTot_'+bid); if(tEl) tEl.textContent='$'+total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -2936,11 +2959,11 @@ async function rentalAddDaysGo(bid){
     if(r.status===401){ if(typeof _portalSessionExpired==='function'){_portalSessionExpired();return;} }
     if(!r.ok||!d.ok){ toast((d&&d.error)||'Could not add days \u2014 call (214) 207-2481.','error'); btn.disabled=false; btn.textContent=_t; return; }
     if(d.mode==='extension' && d.chargeId){
-      toast('Extension created \u2014 opening secure payment; you\'ll sign it right after.','success');
+      toast(d.signAfter?'Extension created \u2014 opening secure payment; you\'ll sign it right after.':'Extension created \u2014 opening secure payment.','success');
       if(typeof payCharge==='function'){ payCharge(bid, d.chargeId); return; }
-      toast('Extension added \u2014 pay it in the Charges section, then sign.','success');
+      toast('Extension added \u2014 pay it in the Charges section.','success');
     } else {
-      toast('\u2705 '+n+' day'+(n!==1?'s':'')+' added \u2014 new return '+(d.newDropoff||'')+'. Your balance was updated.','success');
+      toast('\u2705 '+n+' day'+(n!==1?'s':'')+' added \u2014 new return '+(d.newDropoff||'')+'.','success');
     }
     if(typeof loadPortalData==='function'){ try{ await loadPortalData(); }catch(e){} }
     if(typeof renderBookings==='function') renderBookings();
