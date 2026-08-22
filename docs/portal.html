@@ -39,10 +39,10 @@
   input:focus,select:focus{border-color:var(--gold);}
   .otp-wrap{position:relative;margin-bottom:4px;}
   .otp-hidden{position:absolute;inset:0;opacity:0;width:100%;height:100%;font-size:1px;z-index:2;cursor:text;caret-color:transparent;}
-  .otp-row{display:flex;gap:8px;justify-content:center;pointer-events:none;}
+  .otp-row{display:flex;gap:6px;justify-content:center;pointer-events:none;}
   .otp-box{
     background:#111;border:2px solid var(--border);border-radius:10px;color:var(--text);
-    font-size:22px;font-weight:700;text-align:center;width:46px;height:56px;
+    font-size:22px;font-weight:700;text-align:center;width:clamp(38px,13.5vw,46px);height:56px;flex:0 0 auto;
     display:flex;align-items:center;justify-content:center;transition:border-color .15s;
     flex-shrink:0;
   }
@@ -999,12 +999,17 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
   var tStr = (today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
   var _sbd = _buildContractBreakdown(bk);
   var _svInfo = Object.assign({}, (bk.vehicleInfo||{}), VEHICLE_INFO[bk.vehicle]||{});  // booking snapshot fallback (covers owner-added custom vehicles the portal catalog lacks); catalog wins when present
+  // #16: the base agreement reproduces the ORIGINALLY-SIGNED return + day count (extensions are separate amendment pages).
+  var _origExtsB2 = (Array.isArray(bk.extensions)?bk.extensions:(bk.extensions&&typeof bk.extensions==='object'?Object.values(bk.extensions):[])).filter(function(e){return e&&!e._deleted;});
+  var _origExtDaysB2 = _origExtsB2.reduce(function(a,e){return a+(Number(e.extensionDays)||0);},0);
+  var _origDropB2 = (_origExtsB2.length && _origExtsB2[0].fromDate) ? _origExtsB2[0].fromDate : (bk.dropoffDate||'');
+  var _origDaysB2 = Math.max(1, (Number(bk.days)||1) - _origExtDaysB2);
   var _sRentalType = bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var _sPickupFull = fmtDateFull(bk.pickupDate||bk.date||'');
-  var _sReturnFull = fmtDateFull(bk.dropoffDate||'');
+  var _sReturnFull = fmtDateFull(_origDropB2||bk.dropoffDate||'');   // #16: original signed return
   var _sVm = VEHICLE_MILEAGE[bk.vehicle]||{};
   // includedMiles is the TOTAL for the trip -> derive per-day from it (don't multiply the total by days).
-  var _sDaysM = _sbd.days||1;
+  var _sDaysM = _origDaysB2||_sbd.days||1;   // #16: original day count
   var _sTripTot = (Number(bk.includedMiles)>0)?Number(bk.includedMiles):((Number(_sVm.miles)||0)*_sDaysM);
   var _sPerDay = (Number(bk.includedMiles)>0&&_sDaysM>0)?Math.round(Number(bk.includedMiles)/_sDaysM):(Number(_sVm.miles)||0);
   var _sOvRate = Number(bk.overageRate)||_sVm.overage||0;
@@ -1037,7 +1042,7 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
     .replace(/\{\{dropoff_time\}\}/gi, _sr(bk.dropoffTime?fmtTime(bk.dropoffTime):''))
     .replace(/\{\{pickup_time_display\}\}/gi, _sr(bk.pickupTime?' at '+fmtTime(bk.pickupTime):''))
     .replace(/\{\{dropoff_time_display\}\}/gi, _sr(bk.dropoffTime?' at '+fmtTime(bk.dropoffTime):''))
-    .replace(/\{\{days\}\}/gi, _sr(String(_sbd.days)))
+    .replace(/\{\{days\}\}/gi, _sr(String(_origDaysB2||_sbd.days)))
     .replace(/\{\{daily_rate\}\}/gi, _sr(_sbd.days>0?'$'+_sbd.dailyRateNum.toFixed(2):'N/A'))
     .replace(/\{\{base_rental\}\}/gi, _sr('$'+_sbd.baseRev.toFixed(2)))
     .replace(/\{\{addons_total\}\}/gi, _sr('$'+_sbd.addonsTotal.toFixed(2)))
@@ -1200,8 +1205,8 @@ function _showDocOverlay(docHtml, bid, docType, extId){
   ov.innerHTML=
     '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:#0d0d0d;border-bottom:1px solid rgba(255,255,255,.12);flex-shrink:0">'+
       '<div style="font-weight:800;color:#C9A962;font-size:15px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+title+'</div>'+
-      '<button onclick="'+((docType==='waiver'&&!extId)?('_portalDownloadWaiver(\''+bid+'\', this)'):('_portalDownloadSignedContract(\''+bid+'\', this'+(extId?(",'"+extId+"'"):'')+')'))+'" style="padding:8px 14px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:13px">\uD83D\uDCC4 Download</button>'+
-      '<button onclick="var d=document.getElementById(\'pbDocOverlay\');if(d)d.remove();" style="padding:8px 16px;border:none;border-radius:8px;background:#333;color:#fff;font-weight:700;cursor:pointer;font-size:13px">Close</button>'+
+      '<button onclick="'+((docType==='waiver'&&!extId)?('_portalDownloadWaiver(\''+bid+'\', this)'):('_portalDownloadSignedContract(\''+bid+'\', this'+(extId?(",'"+extId+"'"):'')+')'))+'" style="padding:8px 14px;min-height:44px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:13px">\uD83D\uDCC4 Download</button>'+
+      '<button onclick="var d=document.getElementById(\'pbDocOverlay\');if(d)d.remove();" style="padding:8px 16px;min-height:44px;border:none;border-radius:8px;background:#333;color:#fff;font-weight:700;cursor:pointer;font-size:13px">Close</button>'+
     '</div>'+
     '<iframe id="pbDocFrame" sandbox="allow-same-origin" style="flex:1;width:100%;border:none;background:#fff"></iframe>';
   document.body.appendChild(ov);
@@ -1292,12 +1297,19 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     var tStr = (today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
     var _sbd = _buildContractBreakdown(bk);
     var _svInfo = Object.assign({}, (bk.vehicleInfo||{}), VEHICLE_INFO[bk.vehicle]||{});  // booking snapshot fallback (covers owner-added custom vehicles the portal catalog lacks); catalog wins when present
+    // #16: the BASE/original agreement reproduces the ORIGINALLY-SIGNED terms -- the pre-extension return date and
+    // day count (extensions are separate amendment pages). Without this the re-rendered base doc showed the grown
+    // return, contradicting what the client actually signed.
+    var _origExtsB = (Array.isArray(bk.extensions)?bk.extensions:(bk.extensions&&typeof bk.extensions==='object'?Object.values(bk.extensions):[])).filter(function(e){return e&&!e._deleted;});
+    var _origExtDaysB = _origExtsB.reduce(function(a,e){return a+(Number(e.extensionDays)||0);},0);
+    var _origDropB = (_origExtsB.length && _origExtsB[0].fromDate) ? _origExtsB[0].fromDate : (bk.dropoffDate||'');
+    var _origDaysB = Math.max(1, (Number(bk.days)||1) - _origExtDaysB);
     var _sRentalType = bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
     var _sPickupFull = fmtDateFull(bk.pickupDate||bk.date||'');
-    var _sReturnFull = fmtDateFull(bk.dropoffDate||'');
+    var _sReturnFull = fmtDateFull(_origDropB||bk.dropoffDate||'');   // #16: original signed return
     var _sVm = VEHICLE_MILEAGE[bk.vehicle]||{};
     // includedMiles is the TOTAL for the trip -> derive per-day from it (don't multiply the total by days).
-    var _sDaysM = _sbd.days||1;
+    var _sDaysM = _origDaysB||_sbd.days||1;   // #16: original day count
     var _sTripTot = (Number(bk.includedMiles)>0)?Number(bk.includedMiles):((Number(_sVm.miles)||0)*_sDaysM);
     var _sPerDay = (Number(bk.includedMiles)>0&&_sDaysM>0)?Math.round(Number(bk.includedMiles)/_sDaysM):(Number(_sVm.miles)||0);
     var _sOvRate = Number(bk.overageRate)||_sVm.overage||0;
@@ -1331,7 +1343,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
       .replace(/\{\{dropoff_time\}\}/gi, _sr(bk.dropoffTime?fmtTime(bk.dropoffTime):''))
       .replace(/\{\{pickup_time_display\}\}/gi, _sr(bk.pickupTime?' at '+fmtTime(bk.pickupTime):''))
       .replace(/\{\{dropoff_time_display\}\}/gi, _sr(bk.dropoffTime?' at '+fmtTime(bk.dropoffTime):''))
-      .replace(/\{\{days\}\}/gi, _sr(String(_sbd.days)))
+      .replace(/\{\{days\}\}/gi, _sr(String(_origDaysB||_sbd.days)))
       .replace(/\{\{daily_rate\}\}/gi, _sr(_sbd.days>0?'$'+_sbd.dailyRateNum.toFixed(2):'N/A'))
       .replace(/\{\{base_rental\}\}/gi, _sr('$'+_sbd.baseRev.toFixed(2)))
       .replace(/\{\{addons_total\}\}/gi, _sr('$'+_sbd.addonsTotal.toFixed(2)))
@@ -1996,6 +2008,8 @@ function _safeClear(key){
 // Called when a payment API returns 401 \u2014 prompts re-login without forcing a page redirect
 function _portalSessionExpired(){
   toast('Session expired \u2014 please sign out and sign back in to pay.','error');
+  // #13: re-enable any pay/sign button left disabled on a spinner so the client isn't stuck needing a full reload
+  try{ Array.prototype.forEach.call(document.querySelectorAll('button[disabled]'), function(b){ if(/Loading|Working|Preparing|Saving|Opening|\u2026/i.test(b.textContent||'')){ b.disabled=false; } }); }catch(e){}
 }
 
 // Resolve a Stripe payment confirmation that couldn't be marked-paid at return time (no session
@@ -3083,9 +3097,10 @@ function showRentalAddDays(b){
   var signed=!!(b.customerSig&&String(b.customerSig).indexOf('data:image/')===0);
   var drop=b.dropoffDate||b.pickupDate||b.date||'';
   var veh=b.vehicle||'';
-  var base1=_radQuote(veh,1,rate,drop), tot1=Math.round(base1*1.1325*100)/100;   // every extension is paid now (5% fee + 8.25% tax)
+  var base1=_radQuote(veh,1,rate,drop);
+  var tot1 = signed ? Math.round(base1*1.1325*100)/100 : base1;   // signed => charged now (5% fee + 8.25% tax); UNSIGNED => folds into the balance, paid at signing (base only)
   var ret1=_radAddDaysIso(drop,1);
-  var totLabel='Total (5% fee + 8.25% tax)';
+  var totLabel = signed ? 'Total (5% fee + 8.25% tax)' : 'Added to your balance (due at signing)';
   return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">'+
     '<div style="background:rgba(201,169,98,.05);border:1px solid rgba(201,169,98,.22);border-radius:12px;padding:14px 16px;">'+
       '<div style="font-size:14px;font-weight:800;color:#fff;margin-bottom:3px;">\uD83D\uDCC5 Add Days</div>'+
@@ -3110,7 +3125,7 @@ function _radRecalc(bid){
   var el=document.getElementById('radN_'+bid), btn=document.getElementById('radBtn_'+bid); if(!el||!btn) return;
   var n=Math.max(1,parseInt(el.textContent,10)||1);
   var veh=btn.getAttribute('data-veh')||'', origDaily=Number(btn.getAttribute('data-origdaily'))||0, drop=btn.getAttribute('data-drop')||'';
-  var base=_radQuote(veh,n,origDaily,drop), total=Math.round(base*1.1325*100)/100;
+  var _rSigned=(btn.getAttribute('data-signed')==='1'); var base=_radQuote(veh,n,origDaily,drop), total=_rSigned?(Math.round(base*1.1325*100)/100):base;   // #18: unsigned folds into balance (base only), signed = charged now
   var ret=_radAddDaysIso(drop,n);
   var rEl=document.getElementById('radRet_'+bid); if(rEl) rEl.textContent=_radFmtRet(ret);
   var tEl=document.getElementById('radTot_'+bid); if(tEl) tEl.textContent='$'+total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
