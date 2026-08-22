@@ -4900,7 +4900,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v362';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v363';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -8384,6 +8384,7 @@ function _paymentsReceived(b){
   });
   _extLive(b).forEach(function(e){
     if(!e||!e.paidAt||!(Number(e.additionalCharge)>0)) return;
+    if(e._paidExternally) return;   // paid by an EXISTING card transaction already shown via stripePayments -> no duplicate payment line
     out.push({label:'Extension', amount:Number(e.additionalCharge)||0, method:_m(e.paymentMethod), ts:_ts(e.paidAt), card:_cardOnline(e.paymentMethod)});
   });
   (Array.isArray(b.extraDrivers)?b.extraDrivers:[]).forEach(function(d){
@@ -9733,7 +9734,7 @@ function renderCharts(filtered){
       var amt=Number(e&&e.additionalCharge)||0; if(!amt) return;
       var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup);
       if(!_inWinC(ed)) return; var k=_bkKey(ed,gran); if(k){ R[k]=(R[k]||0)+amt; C[k]=(C[k]||0)+(Number(e.brokerFee)||0);
-        if(!_p2pMethod(e&&e.paymentMethod)){ var cfe=amt*0.1325; R[k]=(R[k]||0)+cfe; C[k]=(C[k]||0)+cfe; _chartCardFee+=cfe; } }
+        if(!_p2pMethod(e&&e.paymentMethod)&&!e._paidExternally){ var cfe=amt*0.1325; R[k]=(R[k]||0)+cfe; C[k]=(C[k]||0)+cfe; _chartCardFee+=cfe; } }
     });
     (b.portalCharges||[]).forEach(function(c){
       if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c)&&!_isBalanceCharge(c))) return;
@@ -10167,7 +10168,7 @@ function openTypeDrilldown(typeKey){
         if(inWin(pickup)){ var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
           if(!_p2pMethod(b.balancePaidMethod)) fee+=Math.max(0,baseAll-dl)*0.1325;
           if(!_p2pMethod(b.dateLockMethod)) fee+=_dlExactPremium(b); }
-        _extLive(b).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(inWin(ed)&&!_p2pMethod(e&&e.paymentMethod)) fee+=amt*0.1325; });
+        _extLive(b).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(inWin(ed)&&!_p2pMethod(e&&e.paymentMethod)&&!e._paidExternally) fee+=amt*0.1325; });
         (b.portalCharges||[]).forEach(function(c){ if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c)&&!_isBalanceCharge(c)))return; if(inWin(dateStr(new Date(c.paidAt)))&&!_p2pMethod(c.paidMethod)) fee+=(Number(c.amount)||0)*0.1325; });
         if(fee>0.5){ total+=fee; cr.push({id:b.id,date:(b.pickupDate||b.date||''),name:b.name,sub:'card sale',vehicle:b.vehicle,val:fee}); }
       });
@@ -10198,7 +10199,7 @@ function openBucketDrilldown(bucketKey){
         var cost=getEstCost(b)+(Number(b.brokerFee)||0)*brokerRateDays(b)+cf;
         if(cost){ totC+=cost; costRows.push({id:b.id,date:pickup,name:b.name,sub:'est cost'+(b.brokerFee?' + broker':'')+(cf?' + card fee':''),vehicle:b.vehicle,val:cost}); }
       }
-      _extLive(b).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(!inWin(ed))return; var cfe=!_p2pMethod(e&&e.paymentMethod)?amt*0.1325:0; totR+=amt+cfe; revRows.push({id:b.id,date:ed,name:b.name,sub:'extension',vehicle:b.vehicle,val:amt+cfe}); var ce=(Number(e.brokerFee)||0)+cfe; if(ce){ totC+=ce; costRows.push({id:b.id,date:ed,name:b.name,sub:'ext broker/fee',vehicle:b.vehicle,val:ce}); } });
+      _extLive(b).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(!inWin(ed))return; var cfe=(!_p2pMethod(e&&e.paymentMethod)&&!e._paidExternally)?amt*0.1325:0; totR+=amt+cfe; revRows.push({id:b.id,date:ed,name:b.name,sub:'extension',vehicle:b.vehicle,val:amt+cfe}); var ce=(Number(e.brokerFee)||0)+cfe; if(ce){ totC+=ce; costRows.push({id:b.id,date:ed,name:b.name,sub:'ext broker/fee',vehicle:b.vehicle,val:ce}); } });
       (b.portalCharges||[]).forEach(function(c){ if(!(c&&c.paidAt&&!c._foldedIntoRevenue&&!c._extPayment&&!c._extRecorded&&!c._dlApplied&&!c._extId&&!_isDepositCharge(c)&&!_isBalanceCharge(c)))return; var cd=dateStr(new Date(c.paidAt)); if(!inWin(cd))return; var amt=Number(c.amount)||0, cfc=!_p2pMethod(c.paidMethod)?amt*0.1325:0; totR+=amt+cfc; revRows.push({id:b.id,date:cd,name:b.name,sub:(c.description||'portal charge'),vehicle:b.vehicle,val:amt+cfc}); if(cfc){ totC+=cfc; costRows.push({id:b.id,date:cd,name:b.name,sub:'charge card fee',vehicle:b.vehicle,val:cfc}); } });
     });
     (incomes||[]).forEach(function(i){ if(!i||i._deleted)return; var d=(i.fromDate||'').slice(0,10); if(!inWin(d))return; var amt=Number(i.amount)||0; totR+=amt; revRows.push({date:d,name:(i.description||'Other income'),sub:(i.category||'income'),vehicle:(i.vehicle||''),val:amt}); });
@@ -23563,6 +23564,7 @@ function addExtensionContract(){
         '<select id="extPayMethod" class="finput" style="width:100%">'+
           '<option value="">\u2014 choose later \u2014</option>'+
           '<option value="stripe">\uD83D\uDCB3 Stripe \u2014 send card link to client portal</option>'+
+          '<option value="reconcile">\u2705 Already paid on card \u2014 reconcile to an existing payment (no new charge)</option>'+
           '<option value="Zelle">Zelle</option>'+
           '<option value="Cash App">Cash App</option>'+
           '<option value="Venmo">Venmo</option>'+
@@ -23613,12 +23615,16 @@ function confirmAddExtension(){
   if(idx === -1) return;
   // Single source of truth \u2014 recordExtension writes the contract entry, moves the dropoff/day
   // window, and rolls the (unpaid) charge into the balance. fromDate = the pre-extension return.
+  var _reconcile = (payMethod === 'reconcile');   // the client ALREADY paid this on card (a prior transaction) -> tie to it, never re-charge
   var newExt = recordExtension(bookings[idx], {
     fromDate: currentEnd, toDate: newEndDate, days: extDays,
     additionalCharge: addlCharge, brokerFee: extBrokerFee,
     unlimited: extUnlimited, milesPerDay: extMilesPerDay, startOdom: extStartOdom,
-    paymentMethod: payMethod, paid:false, notes: notes, source:'modal'
+    paymentMethod: (_reconcile ? 'Card (reconciled)' : payMethod), paid: _reconcile, notes: notes, source:'modal'
   });
+  // Reconciled = paid by an existing card charge shown in stripePayments: mark paid, add NO new payment line
+  // (_paidExternally), keep it OFF the base balance (_billedViaCharge), and suppress a re-added card fee.
+  if(newExt && _reconcile){ newExt._paidExternally=true; newExt._billedViaCharge=true; if(!newExt.paidAt) newExt.paidAt=Date.now(); }
   // Remember how the broker fee was entered, for the per-day breakdown on the contract.
   if(newExt && _extBrokerMode==='perday'){ newExt.brokerMode='perday'; newExt.brokerPerDay=_extBrokerInput; }
   if(newExt && _extPromoDisc>0){ newExt.promoCode=b.promoCode; newExt.promoDiscount=_extPromoDisc; newExt.promoBaseCharge=_extBaseCharge; }
