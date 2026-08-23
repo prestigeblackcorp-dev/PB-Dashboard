@@ -4913,7 +4913,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v370';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v371';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -9083,6 +9083,9 @@ function _applyKpiPeriod(arr){
 // Reconciles by using the exact snapshot renderKPIs froze; a balancing row guarantees no gaps.
 var _kpiSnapshot=null, _kdExpanded={};
 function closeKpiDetail(){ var m=document.getElementById('kpiDetailModal'); if(m) m.classList.remove('open'); }
+// Expand/collapse a KPI row's full itemization inline (caret rotates). Lets a composite total (Net Profit,
+// Net After Car, ...) be audited item-by-item without leaving the breakdown.
+function _kdToggle(id){ var el=document.getElementById(id); if(!el) return; var open=el.style.display!=='none'; el.style.display=open?'none':'flex'; var c=document.getElementById(id+'_c'); if(c) c.style.transform=open?'rotate(0deg)':'rotate(90deg)'; }
 function _kdInW(s){ var c=s.cutoff,t=s.tod; return function(ds){ if(!c) return true; ds=(ds||'').slice(0,10); return !!ds&&ds>=c&&ds<=t; }; }
 function _bkEarnedComponents(b, cutoff, tod){
   var out=[], inW=function(ds){ if(!cutoff)return true; ds=(ds||'').slice(0,10); return !!ds&&ds>=cutoff&&ds<=(tod||todayStr()); }, pk=b.pickupDate||b.date||'';
@@ -9143,6 +9146,34 @@ function _kdTodayBuild(key, s){
   if(Math.abs(tp.cardFee)>0.005) groups.push({head:'Card-fee gross-up (13.25%)',rows:[{name:'13.25% on card/Stripe collected today',sub:'5% processing + 8.25% tax',amt:tp.cardFee}]});
   return {title:'Gross Revenue',total:v.grossRev,note:'All money COLLECTED today (cash-basis), before broker fees, plus the card-fee gross-up.',groups:groups};
 }
+// Flatten a leaf KPI's itemized rows into an {l,a} list so a COMPOSITE KPI row (Net Profit -> Net Revenue /
+// Logged expenses / ...) can show its FULL itemization inline -- every booking, ride, expense -- so every
+// dollar in the total is traceable by scrolling, no second tap needed. Costs come from leaf builders already
+// signed negative (loggedExp), so pass sign=1 there; sign=-1 flips a positive leaf list into a cost.
+function _kdExpand(key, s, sign){
+  sign = sign || 1;
+  try{
+    var D=_kpiDetailData(key, s); if(!D||!D.groups) return [];
+    var out=[];
+    D.groups.forEach(function(g){
+      (g.rows||[]).forEach(function(r){
+        if(r.plain) return;
+        var lbl=String(r.name||'').replace(/<[^>]*>/g,'').trim();
+        var sub=String(r.sub||'').replace(/<[^>]*>/g,'').trim();
+        out.push({ l: lbl + (sub ? ' \u00B7 ' + sub : ''), a: sign*(Number(r.amt)||0) });
+      });
+    });
+    return out;
+  }catch(e){ return []; }
+}
+// Itemize a per-booking cost aggregate (direct booking cost, chauffeur payouts) so those composite rows are
+// as auditable as the rest. builder(b) returns the per-booking dollar amount; sign shows it as a cost.
+function _kdExpandBk(list, builder, sign){
+  sign = sign || -1;
+  var out=[];
+  (list||[]).forEach(function(b){ var a=Number(builder(b))||0; if(Math.abs(a)>0.005) out.push({ l:(String(b.name||'(no name)'))+(b.vehicle?' \u00B7 '+b.vehicle:''), a: sign*Math.abs(a) }); });
+  return out.sort(function(x,y){ return Math.abs(y.a)-Math.abs(x.a); });
+}
 function _kpiDetailData(key, s){
   var v=s.vals, cutoff=s.cutoff, tod=s.tod;
   if(s.period==='today' && s.todayParts && (key==='grossRev'||key==='netRevenue'||key==='dateLocks'||key==='cardFee')) return _kdTodayBuild(key, s);
@@ -9170,16 +9201,17 @@ function _kpiDetailData(key, s){
     return {title:'Card Fees (13.25%)',total:v.cardFee,note:'5% processing + 8.25% tax on CARD/Stripe-collected revenue only (cash/Zelle/etc excluded). Per booking = its card revenue this period \u00D7 13.25%.',groups:[{head:'Card/Stripe bookings',rows:_kdSort(g)}]};
   }
   if(key==='netProfit'){
-    var revRows=[{name:'Net Revenue',sub:'Bookings (after broker) + rides + income',amt:v.netRevenue}];
-    var costRows=[]; if(v.bookingCost>0.005) costRows.push({name:'Direct booking costs',sub:'Est. cost of the vehicles out',amt:-v.bookingCost});
-    if(v.loggedExp>0.005) costRows.push({name:'Logged operating expenses',sub:'Fuel, maintenance, marketing, etc.',amt:-v.loggedExp});
-    if(v.driverPayouts>0.005) costRows.push({name:'Chauffeur payouts (35%)',sub:'Driver share of completed rides',amt:-v.driverPayouts});
+    var revRows=[{name:'Net Revenue',sub:'Bookings (after broker) + rides + income',amt:v.netRevenue,expand:_kdExpand('netRevenue',s,1)}];
+    var costRows=[]; if(v.bookingCost>0.005) costRows.push({name:'Direct booking costs',sub:'Est. cost of the vehicles out',amt:-v.bookingCost,expand:_kdExpandBk(s.active,getEstCost,-1)});
+    if(v.loggedExp>0.005) costRows.push({name:'Logged operating expenses',sub:'Fuel, maintenance, marketing, etc.',amt:-v.loggedExp,expand:_kdExpand('loggedExp',s,1)});
+    if(v.driverPayouts>0.005) costRows.push({name:'Chauffeur payouts (35%)',sub:'Driver share of completed rides',amt:-v.driverPayouts,expand:_kdExpand('driverPayouts',s,-1)});
     if(!costRows.length) costRows.push({name:'No costs in period',sub:'',amt:0,plain:true});
-    return {title:'Net Profit',total:v.netProfit,note:'Net Revenue minus all costs (direct booking cost + logged expenses + chauffeur payouts). Margin '+pct(v.margin)+'. Tap Net Revenue or a cost KPI to drill further.',groups:[{head:'Revenue',rows:revRows},{head:'Costs',rows:costRows}]};
+    return {title:'Net Profit',total:v.netProfit,note:'Net Revenue minus all costs (direct booking cost + logged expenses + chauffeur payouts). Margin '+pct(v.margin)+'. Tap any line to expand every item behind it.',groups:[{head:'Revenue',rows:revRows},{head:'Costs',rows:costRows}]};
   }
   if(key==='netAfterCar'){
-    var carRows=[]; if(v.carPayments>0.005) carRows.push({name:'Vehicle loan/lease payments',sub:'"Car Payment" expenses this period',amt:-v.carPayments}); else carRows.push({name:'No car payments in period',sub:'',amt:0,plain:true});
-    return {title:'Net After Car Payments',total:v.netAfterCar,note:'Net Revenue minus your vehicle loan/lease payments this period. (Operating costs are NOT subtracted here \u2014 see Net Profit for the fully-costed figure.)',groups:[{head:'Revenue',rows:[{name:'Net Revenue',sub:'Bookings (after broker) + rides + income',amt:v.netRevenue}]},{head:'Car payments',rows:carRows}]};
+    var _carExp=(typeof expenses!=='undefined'?expenses:[]).filter(function(e){ return e&&!e._deleted&&e.category==='Car Payment'&&(!s.from||e.date>=s.from)&&(!s.to||e.date<=s.to); }).map(function(e){ return {l:String(e.description||e.vehicle||'Car Payment')+(e.date?' \u00b7 '+e.date:''), a:-(Number(e.amount)||0)}; }).sort(function(x,y){return Math.abs(y.a)-Math.abs(x.a);});
+    var carRows=[]; if(v.carPayments>0.005) carRows.push({name:'Vehicle loan/lease payments',sub:'"Car Payment" expenses this period',amt:-v.carPayments,expand:_carExp}); else carRows.push({name:'No car payments in period',sub:'',amt:0,plain:true});
+    return {title:'Net After Car Payments',total:v.netAfterCar,note:'Net Revenue minus your vehicle loan/lease payments this period. (Operating costs are NOT subtracted here \u2014 see Net Profit for the fully-costed figure.) Tap any line to expand every item.',groups:[{head:'Revenue',rows:[{name:'Net Revenue',sub:'Bookings (after broker) + rides + income',amt:v.netRevenue,expand:_kdExpand('netRevenue',s,1)}]},{head:'Car payments',rows:carRows}]};
   }
   if(key==='cancelLoss'){
     var bk=(s.cancelBks||[]).map(function(b){ var a=Math.max(0,(Number(b.revenue)||0)-(Number(b.depositKept)||0)-_bkCancelKeptDL(b)-_bkDriverWageMissed(b)); var _r=_kdBkRow(b,a); _r.delBk=b.id; return _r; }).filter(function(r){return Math.abs(r.amt)>0.005;});
@@ -9222,10 +9254,16 @@ function openKpiDetail(key){
   var gh=(D.groups||[]).map(function(g,gi){
     var rows=(g.rows||[]).map(function(r,ri){
       var amtHtml=r.plain?'':'<span style="font-weight:800;color:'+((Number(r.amt)||0)<0?'var(--red)':'var(--text)')+';font-variant-numeric:tabular-nums;white-space:nowrap">'+((Number(r.amt)||0)<0?'-':'')+_kdMoney(Math.abs(Number(r.amt)||0))+'</span>';
-      var exp=(r.expand&&r.expand.length)?('<div style="margin-top:6px;padding-left:10px;border-left:2px solid var(--border);display:flex;flex-direction:column;gap:3px">'+r.expand.map(function(c){return '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>'+esc(c.l)+'</span><span style="font-variant-numeric:tabular-nums">'+_kdMoney(c.a)+'</span></div>';}).join('')+'</div>'):'';
+      var _hasX=!!(r.expand&&r.expand.length), _xid='kdx_'+gi+'_'+ri;
+      // Full itemization behind this row -- collapsed by default, tap the row to reveal EVERY item (booking,
+      // ride, expense) so the aggregate is auditable line by line. Items keep the +/- sign + red for costs.
+      var exp=_hasX?('<div id="'+_xid+'" style="display:none;margin-top:6px;padding-left:10px;border-left:2px solid var(--border);flex-direction:column;gap:3px">'+r.expand.map(function(c){var _n=Number(c.a)||0;return '<div style="display:flex;justify-content:space-between;gap:10px;font-size:11px;color:var(--muted)"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">'+esc(c.l)+'</span><span style="font-variant-numeric:tabular-nums;white-space:nowrap;color:'+(_n<0?'var(--red)':'var(--muted)')+'">'+(_n<0?'-':'')+_kdMoney(Math.abs(_n))+'</span></div>';}).join('')+'</div>'):'';
       var _delBtn=function(fn,arg,ttl){ return '<button onclick="event.stopPropagation();'+fn+'(\''+_jsAttr(arg)+'\')" title="'+ttl+'" style="background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#f87171;border-radius:7px;padding:2px 7px;font-size:11px;cursor:pointer;margin-left:8px">\uD83D\uDDD1</button>'; };
       var del=r.delRide?_delBtn('_kdDeleteRide',r.delRide,'Delete this cancelled ride'):(r.delBk?_delBtn('_kdDeleteBooking',r.delBk,'Delete this cancelled booking'):'');
-      return '<div style="padding:9px 2px;border-bottom:1px solid rgba(255,255,255,.05)"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="min-width:0;flex:1"><div style="font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis">'+r.name+'</div>'+(r.sub?'<div style="font-size:10.5px;color:var(--muted);margin-top:1px">'+r.sub+'</div>':'')+'</div><div style="display:flex;align-items:center">'+amtHtml+del+'</div></div>'+exp+'</div>';
+      var _caret=_hasX?'<span id="'+_xid+'_c" style="display:inline-block;transition:transform .15s;color:var(--muted);font-size:9px;margin-right:5px">\u25B8</span>':'';
+      var _cnt=_hasX?' <span style="font-size:10px;color:var(--muted);font-weight:600">('+r.expand.length+')</span>':'';
+      var _outer=_hasX?(' onclick="_kdToggle(\''+_xid+'\')" style="padding:9px 2px;border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer"'):' style="padding:9px 2px;border-bottom:1px solid rgba(255,255,255,.05)"';
+      return '<div'+_outer+'><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="min-width:0;flex:1"><div style="font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis">'+_caret+r.name+_cnt+'</div>'+(r.sub?'<div style="font-size:10.5px;color:var(--muted);margin-top:1px">'+r.sub+'</div>':'')+'</div><div style="display:flex;align-items:center">'+amtHtml+del+'</div></div>'+exp+'</div>';
     }).join('')||'<div style="padding:12px 2px;color:var(--muted);font-size:12px">None in this period.</div>';
     var grpSum=(g.rows||[]).reduce(function(a,r){return a+(r.plain?0:(Number(r.amt)||0));},0);
     var grpTot=(g.rows&&g.rows.length&&!g.rows[0].plain)?'<span style="font-size:11px;color:var(--muted);font-weight:700;font-variant-numeric:tabular-nums">'+((grpSum<0?'-':'')+_kdMoney(Math.abs(grpSum)))+'</span>':'';
