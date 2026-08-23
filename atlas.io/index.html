@@ -2227,7 +2227,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.21d';
+  var APP_VERSION='2026.7.21e';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -4456,7 +4456,7 @@ const Atlas = (function(){
   function _bkAddons(b){ var ex=(b&&b.extras)||[]; if(!ex.length)return 0; var per=Math.max(1,Number(b.periods)||1); var rm=(S.money&&S.money.rateModel)||'day'; var _bkMs=per*_periodMsOf(rm);
     return ex.reduce(function(s,x){ var each=(Number(x.price)||0)*(Number(x.qty)||1), amt; if(x.per==='unit') amt=each*per; else if(x.per==='hour'||x.per==='pday'||x.per==='week'||x.per==='pmonth') amt=each*Math.max(1,Math.ceil(_bkMs/_periodMsOf(x.per))); else amt=each; return s+amt; },0); }   // per-booking add-on $ -- mirrors calcQuote exLines
   function _addonRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkAddons(b);},0); }
-  function _remainingBalance(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ return s+Math.max(0,_r2(_bkTotal(b)-_bkEarned(b))); },0); }   // total value not yet collected
+  function _remainingBalance(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ if(b.status==='Voided') return s; return s+Math.max(0,_r2(_bkTotal(b)-_bkEarned(b))); },0); }   // total not yet collected (Voided=cancelled-kept-DL: trip never happened, nothing owed)
   function _cancelLoss(){ return (DATA.bookings||[]).filter(function(b){return b&&b.status==='Cancelled';}).reduce(function(s,b){ return s+Math.max(0,_r2(_bkTotal(b)-_collectedCharges(b))); },0); }   // lost revenue on cancelled, net of kept fee   // take-home subtracts partner payouts AND remitted sales tax (a pass-through liability, not income)
   // Generic drill-down modal: lists the line items behind any number, each optionally clickable.
   function _drill(title, sub, rows, opts){ opts=opts||{};
@@ -4789,9 +4789,9 @@ const Atlas = (function(){
       {id:'income',label:'Other income',ic:'M10 17V3M6 7l4-4 4 4',v:money(_otherIncome()),c:"Atlas.drillLedger('income')"},
       {id:'deposits',label:'Deposits held',ic:'M4 7h12v9H4zM4 10h12M8 13h4',v:money(_dep),c:"Atlas.drillDeposits()"},
       {id:'payout',label:cap(_payoutLabel()),ic:'M3 6h14M3 10h14M3 14h9',v:money(_totalPayouts()),c:"Atlas.drillKpi('payout')"},
-      {id:'depositsKept',label:'Deposits kept',ic:'M4 7h12v9H4zM8 11h4',v:money((DATA.bookings||[]).reduce(function(s,b){return s+((b.hold&&b.hold.status==='captured')?(Number(b.hold.captured||b.hold.amount)||0):0);},0)),c:"Atlas.drillDeposits()"},
-      {id:'uncollected',label:'Uncollected deposits',ic:'M10 3a7 7 0 100 14 7 7 0 000-14zM10 6v5M10 14v.5',v:(DATA.bookings||[]).filter(function(b){return (b.status==='Confirmed'||b.status==='Pending')&&!(b.hold&&Number(b.hold.amount)>0);}).length,c:"Atlas.drillDeposits()"},
-      {id:'reserves',label:'Reserves collected',ic:'M10 2v16M6 6h6a2 2 0 010 4H6a2 2 0 000 4h7',v:money((DATA.bookings||[]).reduce(function(s,b){return s+((b.portal&&b.portal.reservePaidAt&&b.quote)?(Number(b.quote.dueNow)||0):0);},0)),c:"Atlas.drillDeposits()"},
+      {id:'depositsKept',label:'Deposits kept',ic:'M4 7h12v9H4zM8 11h4',v:money((DATA.bookings||[]).reduce(function(s,b){return s+((b.hold&&b.hold.status==='captured')?(Number(b.hold.captured||b.hold.amount)||0):0);},0)),c:"Atlas.drillDeposits('kept')"},
+      {id:'uncollected',label:'Uncollected deposits',ic:'M10 3a7 7 0 100 14 7 7 0 000-14zM10 6v5M10 14v.5',v:(DATA.bookings||[]).filter(function(b){return (b.status==='Confirmed'||b.status==='Pending')&&!(b.hold&&Number(b.hold.amount)>0);}).length,c:"Atlas.drillDeposits('uncollected')"},
+      {id:'reserves',label:'Reserves collected',ic:'M10 2v16M6 6h6a2 2 0 010 4H6a2 2 0 000 4h7',v:money((DATA.bookings||[]).reduce(function(s,b){return s+((b.portal&&b.portal.reservePaidAt&&b.quote)?(Number(b.quote.dueNow)||0):0);},0)),c:"Atlas.drillDeposits('reserves')"},
       {id:'unpaid',label:'Balance owed',ic:'M10 3a7 7 0 100 14 7 7 0 000-14zM10 6v4M10 13v.5',v:money(_remainingBalance()),c:"Atlas.drillUnpaid()"},
       {id:'cancelLoss',label:'Cancellation losses',ic:'M6 6l8 8M14 6l-8 8',v:money(_cancelLoss()),c:"Atlas.drillCancelLoss()"},
       {id:'addons',label:'Add-on revenue',ic:'M10 4v12M4 10h12M5 5l10 10',v:money(_addonRevenue()),c:"Atlas.drillAddons()"}
@@ -4800,7 +4800,7 @@ const Atlas = (function(){
       var _rideI=_ledger().incomes.filter(function(x){return x&&x.source==='pb-mirror-rides';});
       var _rg=_rideI.reduce(function(s,x){return s+(Number(x.amount)||0);},0);
       var _dp=_ledger().expenses.filter(function(x){return x&&x.source==='pb-mirror-rides';}).reduce(function(s,x){return s+(Number(x.amount)||0);},0);
-      defs.push({id:'rideGross',label:'Chauffeur ride fares',ic:'M3 13l2-6h10l2 6M5 13v2M15 13v2M2 13h16',v:money(_rg),c:"Atlas.drillKpi('income')"});
+      defs.push({id:'rideGross',label:'Chauffeur ride fares',ic:'M3 13l2-6h10l2 6M5 13v2M15 13v2M2 13h16',v:money(_rg),c:"Atlas.drillLedger('income')"});
       defs.push({id:'driverPay',label:'Driver payouts',ic:'M10 17V5M6 9l4-4 4 4',v:money(_dp),c:"Atlas.drillLedger('expense')"});
       defs.push({id:'rideNet',label:'Ride net',ic:'M3 16l4-5 3 3 7-9',v:money(_r2(_rg-_dp)),c:"Atlas.drillKpi('net')"});
     }
@@ -4821,8 +4821,13 @@ const Atlas = (function(){
     var shown=_ovKpiOrder().map(function(id){return map[id];}).filter(Boolean); if(!shown.length) shown=OV_KPI_DEFAULT.map(function(id){return map[id];}).filter(Boolean);
     el.innerHTML=shown.map(function(k){return '<div class="kpi kpi--clk" onclick="'+k.c+'"><div class="kpi__top"><span class="kpi__label">'+esc(k.label)+'</span><span class="kpi__ic"><svg viewBox="0 0 20 20" fill="none"><path d="'+k.ic+'" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><div class="kpi__val tnum">'+k.v+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>';}).join('')
       +(_canMod('analytics')||_canMod('settings')?'<button class="kpi" onclick="Atlas.ovCustomizeKpis()" title="Add, remove or reorder your KPIs" style="border:1px dashed var(--line);background:transparent;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--muted);gap:4px;min-height:74px"><svg viewBox="0 0 20 20" width="18" height="18" fill="none"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span style="font-size:12px">Customize</span></button>':''); }
-  function drillDeposits(){ var rows=(DATA.bookings||[]).filter(function(b){return b.hold&&b.hold.status==='authorized'&&(Number(b.hold.amount)||0)>0;}).map(function(b){return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:Number(b.hold.amount)||0,onClick:"Atlas.openBooking('"+b.id+"')"};});
-    _drill('Deposits held','Refundable security deposits currently authorized (held, not captured) - released at $0 fee when the '+esc(_fterm('book'))+' closes clean.',rows,{empty:'No deposits held right now.'}); }
+  function drillDeposits(mode){ mode=mode||'held'; var title,note,pred,amt;
+    if(mode==='kept'){ title='Deposits kept'; note='Security deposits captured as revenue (not returned to the '+_custNoun()+').'; pred=function(b){return b.hold&&b.hold.status==='captured'&&(Number(b.hold.captured||b.hold.amount)||0)>0;}; amt=function(b){return Number(b.hold.captured||b.hold.amount)||0;}; }
+    else if(mode==='uncollected'){ title='Uncollected deposits'; note='Confirmed or pending '+_fterm('books')+' with no security deposit collected.'; pred=function(b){return (b.status==='Confirmed'||b.status==='Pending')&&!(b.hold&&Number(b.hold.amount)>0);}; amt=function(b){return 0;}; }
+    else if(mode==='reserves'){ title='Reserves collected'; note='Reserve / down-payments collected on '+_fterm('books')+'.'; pred=function(b){return b.portal&&b.portal.reservePaidAt&&b.quote&&(Number(b.quote.dueNow)||0)>0;}; amt=function(b){return Number(b.quote.dueNow)||0;}; }
+    else { title='Deposits held'; note='Refundable security deposits currently authorized (held, not captured) - released at $0 fee when the '+esc(_fterm('book'))+' closes clean.'; pred=function(b){return b.hold&&b.hold.status==='authorized'&&(Number(b.hold.amount)||0)>0;}; amt=function(b){return Number(b.hold.amount)||0;}; }
+    var rows=(DATA.bookings||[]).filter(pred).map(function(b){return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:amt(b),onClick:"Atlas.openBooking('"+b.id+"')"};});
+    _drill(title,note,rows,{empty:'Nothing here right now.'}); }
   function drillUnpaid(){ var rows=(DATA.bookings||[]).filter(_isCommitted).map(function(b){ var o=Math.max(0,_r2(_bkTotal(b)-_bkEarned(b))); return o>0.005?{label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:o,onClick:"Atlas.openBooking('"+b.id+"')"}:null; }).filter(Boolean);
     _drill('Balance owed','Outstanding balance across your committed '+esc(_fterm('books'))+' - value not yet collected.',rows,{empty:'Everything is paid up.'}); }
   function drillCancelLoss(){ var rows=(DATA.bookings||[]).filter(function(b){return b&&b.status==='Cancelled';}).map(function(b){ var l=Math.max(0,_r2(_bkTotal(b)-_collectedCharges(b))); return l>0.005?{label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:l,onClick:"Atlas.openBooking('"+b.id+"')"}:null; }).filter(Boolean);
@@ -5387,14 +5392,15 @@ const Atlas = (function(){
     if(!rows.length) return '<div class="bk-lenhint" style="margin:0">No '+_fterm('books')+' or expenses in this period yet.</div>';
     return '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>'+esc(cap(S.fleet.noun||'Asset'))+'</th><th>Revenue</th><th>Expenses</th><th>Net</th><th>Margin</th></tr></thead><tbody>'
       +rows.map(function(r){ var neg=r.net<0; return '<tr style="cursor:pointer" onclick="Atlas.openAsset(\''+esc(r.a.id)+'\')"><td><b>'+esc(r.a.name)+'</b></td><td class="tnum">'+money(r.rev)+'</td><td class="tnum"'+(r.exp>0?' style="color:var(--danger)"':'')+'>'+money(r.exp)+'</td><td class="tnum"'+(neg?' style="color:var(--danger)"':'')+'><b>'+money(r.net)+'</b></td><td class="tnum">'+r.margin+'%</td></tr>'; }).join('')
-      +(function(){ var _tr=rows.reduce(function(s,r){return s+r.rev;},0), _te=rows.reduce(function(s,r){return s+r.exp;},0), _tn=_r2(_tr-_te), _tm=_tr>0?Math.round(_tn/_tr*100):0; return '<tr style="border-top:2px solid var(--line)"><td><b>All '+esc(S.fleet.nouns||'assets')+'</b></td><td class="tnum"><b>'+money(_tr)+'</b></td><td class="tnum"'+(_te>0?' style="color:var(--danger)"':'')+'><b>'+money(_te)+'</b></td><td class="tnum"'+(_tn<0?' style="color:var(--danger)"':'')+'><b>'+money(_tn)+'</b></td><td class="tnum"><b>'+_tm+'%</b></td></tr>'; })()
+      +(function(){ var _tr=rows.reduce(function(s,r){return s+r.rev;},0), _te=rows.reduce(function(s,r){return s+r.exp;},0), _tn=_r2(_tr-_te), _tm=_tr>0?Math.round(_tn/_tr*100):0; return '<tr style="border-top:2px solid var(--line)"><td><b>All '+esc(S.fleet.nouns||'assets')+' (attributed)</b></td><td class="tnum"><b>'+money(_tr)+'</b></td><td class="tnum"'+(_te>0?' style="color:var(--danger)"':'')+'><b>'+money(_te)+'</b></td><td class="tnum"'+(_tn<0?' style="color:var(--danger)"':'')+'><b>'+money(_tn)+'</b></td><td class="tnum"><b>'+_tm+'%</b></td></tr>'; })()
       +'</tbody></table></div>'; }
   function assetPnlSetPeriod(k){ _assetPnlPeriod=k; var b=document.getElementById('assetPnlBody'); if(b)b.innerHTML=_assetPnlHtml(); }
   // ---- Utilization heatmap: assets x last 30 days, filled cell = booked that day ----
   function _utilHeatmapHtml(){ var assets=(DATA.assets||[]); if(!assets.length) return '<div class="bk-lenhint" style="margin:0">Add a '+esc(S.fleet.noun||'asset')+' to see the heatmap.</div>';
     var D=86400000, days=30, d0=new Date(); d0.setHours(0,0,0,0); var start=d0.getTime()-(days-1)*D;
-    var byKey={}; (DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&b.startTs&&b.endTs&&b.endTs>start;}).forEach(function(b){ var k=b.assetId||b.asset; (byKey[k]=byKey[k]||[]).push(b); });
-    var rows=assets.slice(0,40).map(function(a){ var list=(byKey[a.id]||byKey[a.name]||[]); var cells=''; for(var i=0;i<days;i++){ var ds=start+i*D, de=ds+D, on=false; for(var j=0;j<list.length;j++){ if(list[j].startTs<de&&list[j].endTs>ds){on=true;break;} } cells+='<span title="'+esc(a.name)+'" style="display:inline-block;width:9px;height:15px;border-radius:2px;background:'+(on?'var(--brand)':'var(--line-2)')+(i===days-1?';box-shadow:inset 0 0 0 1.5px var(--ink)':'')+'"></span>'; } return '<div style="display:flex;align-items:center;gap:2px;margin-bottom:3px"><span style="width:96px;min-width:96px;font-size:11px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+esc(a.name)+'">'+esc(a.name)+'</span><span style="display:flex;gap:1px">'+cells+'</span></div>'; }).join('');
+    var _endOf=function(b){ return (typeof _bkEffectiveEndTs==='function')?_bkEffectiveEndTs(b):(Number(b.endTs)||Number(b.startTs)||0); };
+    var byKey={}; (DATA.bookings||[]).filter(_isCommitted).forEach(function(b){ if(!b.startTs)return; var e=_endOf(b); if(!(e>start))return; var rec={s:b.startTs,e:e}; if(b.assetId){(byKey[b.assetId]=byKey[b.assetId]||[]).push(rec);} if(b.asset){(byKey[b.asset]=byKey[b.asset]||[]).push(rec);} });
+    var rows=assets.slice(0,40).map(function(a){ var list=(byKey[a.id]||[]).concat(byKey[a.name]||[]); var cells=''; for(var i=0;i<days;i++){ var ds=start+i*D, de=ds+D, on=false; for(var j=0;j<list.length;j++){ if(list[j].s<de&&list[j].e>ds){on=true;break;} } cells+='<span title="'+esc(a.name)+'" style="display:inline-block;width:9px;height:15px;border-radius:2px;background:'+(on?'var(--brand)':'var(--line-2)')+(i===days-1?';box-shadow:inset 0 0 0 1.5px var(--ink)':'')+'"></span>'; } return '<div style="display:flex;align-items:center;gap:2px;margin-bottom:3px"><span style="width:96px;min-width:96px;font-size:11px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+esc(a.name)+'">'+esc(a.name)+'</span><span style="display:flex;gap:1px">'+cells+'</span></div>'; }).join('');
     var _hdr='<div style="display:flex;gap:2px;margin:0 0 5px"><span style="width:96px;min-width:96px"></span><span style="flex:1;display:flex;justify-content:space-between;font-size:9px;color:var(--muted)"><span>30 days ago</span><span>today &rarr;</span></span></div>';
     return '<div style="min-width:400px">'+_hdr+rows+'</div><div class="bk-lenhint" style="margin:8px 0 0">Each cell = one day (oldest left, today outlined right); filled = booked. Last 30 days across your '+esc(S.fleet.nouns||'assets')+'.</div>'; }
   /* ---- Revenue Optimizer (Smart Pricing Increment 2): turns THIS tenant's own utilization + trailing booking
@@ -7237,7 +7243,7 @@ const Atlas = (function(){
     var _cu=Object.keys(_byCust), _rep=_cu.filter(c=>_byCust[c]>=2).length, _repPct=_cu.length?Math.round(_rep/_cu.length*100):0;
     _renderAnaKpis();   // customizable Analytics KPI grid (same registry as the Overview, own S.anaKpis order)
     var _perAsset={}; _nc.forEach(b=>{ _perAsset[b.asset]=(_perAsset[b.asset]||0)+((b.quote&&b.quote.total)||0); });
-    document.getElementById('topList').innerHTML=(DATA.assets||[]).map(a=>({a:a,rev:Math.round(_perAsset[a.name]||0)})).sort((x,y)=>(y.rev-x.rev)||(y.a.util-x.a.util)).slice(0,5).map((o,i)=>`<div class="util-row" style="cursor:pointer" onclick="Atlas.openAsset('${o.a.id}')">
+    var _tlEl=document.getElementById('topList'); if(_tlEl) _tlEl.innerHTML=(DATA.assets||[]).map(a=>({a:a,rev:Math.round(_perAsset[a.name]||0)})).sort((x,y)=>(y.rev-x.rev)||(y.a.util-x.a.util)).slice(0,5).map((o,i)=>`<div class="util-row" style="cursor:pointer" onclick="Atlas.openAsset('${o.a.id}')">
       <div class="util-row__t"><b>${i+1}. ${esc(o.a.name)}</b><small>${money(o.rev)} booked &middot; ${o.a.util}% ${_fterm('occ')}</small><div class="bar"><i style="width:${o.a.util}%"></i></div></div>
       <span class="util-row__pct tnum">${o.a.util}%</span></div>`).join('');
     var _lb=document.getElementById('ledgerBody'); if(_lb) _lb.innerHTML=_ledgerCardHtml();
@@ -8130,7 +8136,7 @@ const Atlas = (function(){
     ctx.fillStyle=ink;ctx.font='700 15px -apple-system';ctx.textAlign='center';ctx.fillText(money(_sb.total),cx,cy+2);ctx.fillStyle=muted;ctx.font='10px -apple-system';ctx.fillText('total',cx,cy+15);
     segs.slice(0,4).forEach((s,i)=>{const y=h/2-30+i*20;ctx.fillStyle=cols[i%cols.length];roundRect(ctx,w*0.62,y-8,11,11,3);ctx.fill();ctx.fillStyle=body;ctx.font='12px -apple-system';ctx.textAlign='left';ctx.fillText(`${s[0]}  ${s[1]}%`,w*0.62+18,y+1);});
   }
-  function roundRect(ctx,x,y,w,h,r){r=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+  function roundRect(ctx,x,y,w,h,r){r=Math.max(0,Math.min(r,Math.abs(w)/2,Math.abs(h)/2));ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
   /* ---- settings ---- */
   const SET=[['branding','Branding'],['money','Money rules'],['bookings','Bookings'],['legal','Contracts &amp; Legal'],['comms','Messaging'],['integrations','Integrations'],['portal','Member portal'],['team','Team'],['security','Security'],['billing','Plan &amp; billing'],['support','Help &amp; feedback']];
