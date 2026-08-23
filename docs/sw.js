@@ -1,4 +1,4 @@
-const CACHE = 'pb-v376';
+const CACHE = 'pb-v377';
 const ASSETS = ['./index.html', './icon.png', './obsidian.html', './driver.html', './pb-config.js', './pb-vehicle-search.js'];
 
 self.addEventListener('install', function(e) {
@@ -83,9 +83,11 @@ self.addEventListener('push', function(e){
       return fetch(auth.worker+'/owner-alerts?_='+Date.now(), {headers:{'Authorization':'Bearer '+auth.token}, cache:'no-store'})
         .then(function(r){ return r.json(); })
         .then(function(d){ var a=d&&d.alerts&&d.alerts[0];
-          var vsUrl=(a&&a.url)||''; var app=vsUrl?('./index.html?vsurl='+encodeURIComponent(vsUrl)):'./index.html';
+          var vsUrl='', app;
+          if(a&&a.appUrl){ app=String(a.appUrl); }   // direct deep-link (signing -> ./index.html?signed=<id>)
+          else { vsUrl=(a&&a.url)||''; app=vsUrl?('./index.html?vsurl='+encodeURIComponent(vsUrl)):'./index.html'; }
           data={app:app, vsUrl:vsUrl, rideId:'ow'+Date.now()};
-          title=(a&&a.kind==='steal')?'\ud83d\udd25 STEAL deal':(a&&a.kind==='soon')?'\u23f0 Selling soon':(a&&a.kind==='snipe')?'\u23f1 Auction ending':'Prestige Black';
+          title=(a&&a.kind==='signed')?'\u270d\ufe0f Document signed':(a&&a.kind==='steal')?'\ud83d\udd25 STEAL deal':(a&&a.kind==='soon')?'\u23f0 Selling soon':(a&&a.kind==='snipe')?'\u23f1 Auction ending':'Prestige Black';
           body=(a&&a.text)?a.text:'New booking activity on your dashboard'; return show(); })
         .catch(function(){ title='Prestige Black'; body='New booking activity'; data={app:'./index.html', rideId:'ow'+Date.now()}; return show(); });
     }
@@ -153,8 +155,11 @@ self.addEventListener('notificationclick', function(e){
   var url=d.app||'./obsidian.html';
   var want=String(d.app||'').replace('./','').split('?')[0];
   var vsUrl=d.vsUrl||'';
+  // A signing deep-link carries ?signed=<bookingId>. If the dashboard is ALREADY open, focusing it isn't
+  // enough -- tell it (postMessage) to jump to that booking's contract; only a cold open relies on the URL param.
+  var signedId=''; try{ var _sm=/[?&]signed=([^&]+)/.exec(String(d.app||'')); if(_sm) signedId=decodeURIComponent(_sm[1]); }catch(_e){}
   e.waitUntil(clients.matchAll({type:'window', includeUncontrolled:true}).then(function(cl){
-    for(var i=0;i<cl.length;i++){ if(cl[i].url.indexOf(want)>=0 && 'focus' in cl[i]){ if(vsUrl){ try{ cl[i].postMessage({type:'pb-vs-open', url:vsUrl}); }catch(_e){} } return cl[i].focus(); } }
+    for(var i=0;i<cl.length;i++){ if(cl[i].url.indexOf(want)>=0 && 'focus' in cl[i]){ if(vsUrl){ try{ cl[i].postMessage({type:'pb-vs-open', url:vsUrl}); }catch(_e){} } else if(signedId){ try{ cl[i].postMessage({type:'pb-open-signed', id:signedId}); }catch(_e){} } return cl[i].focus(); } }
     if(clients.openWindow) return clients.openWindow(url);
   }));
 });

@@ -1636,6 +1636,7 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
   <div class="modal-card" style="max-width:820px">
     <div class="modal-title">
       <span id="contractModalTitle">&#128221; Rental Agreement</span>
+      <span id="contractSigProgress" style="display:none;font-size:12px;font-weight:800;border-radius:20px;padding:3px 11px;margin-left:10px;vertical-align:middle"></span>
       <button class="modal-close" onclick="closeContract()">&#10005;</button>
     </div>
     <!-- Slingshot color picker (top) &#8212; separate from contractHeader so _renderContractContent can't overwrite it -->
@@ -4913,7 +4914,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v374';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v375';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -22648,6 +22649,50 @@ function _renderContractContent(){
   if(ssb) ssb.style.display=_anySigned?'':'none';
 }
 
+// ---- Push-on-signature: deep link + signature progress ----------------------------------------------
+// A signing push opens the dashboard at ?signed=<bookingId>. Once the app is unlocked (PIN entered or
+// auto-restored) AND the booking data has loaded, jump straight into that booking's contract so the owner
+// can review and Send Signed Copy. Retries until both are ready (data may still be loading behind the lock).
+var _pbPendingSignedOpen = null;
+function _pbTrySignedOpen(){
+  try{
+    if(!_pbPendingSignedOpen) return;
+    if(localStorage.getItem('pb_lock_pin') && typeof _appUnlocked!=='undefined' && !_appUnlocked) return; // still locked -> wait
+    var b=(typeof bookings!=='undefined'&&bookings)?bookings.find(function(x){return x&&x.id===_pbPendingSignedOpen;}):null;
+    if(!b) return;   // data not loaded yet -> a later retry will catch it
+    var id=_pbPendingSignedOpen; _pbPendingSignedOpen=null;
+    if(typeof openContract==='function'){ openContract(id); try{ showToast('Opened '+((b.name||'booking').split(' ')[0])+"'s agreement \u2014 review & send the signed copy"); }catch(e){} }
+  }catch(e){}
+}
+// Signature progress for a booking's active doc across the primary renter + every non-denied authorized
+// driver: "1/2" = renter signed, 1 driver still pending; "1/4" = renter signed of a renter + 3 drivers.
+function _pbSigProgress(b, opts){
+  opts=opts||{}; if(!b) return {done:0,total:0,label:''};
+  var _isS=function(s){ return !!(s && String(s).indexOf('data:image/')===0); };
+  var drivers=(b.extraDrivers||[]).filter(function(d){ return d && d.name && d.status!=='denied'; });
+  var total=1+drivers.length, done=0;
+  if(opts.ext){ var e=opts.ext; if(e && e.signed && _isS(e.sig)) done++; drivers.forEach(function(d,i){ var s=e&&e.driverSigs&&e.driverSigs[i]; if(_isS(s&&s.sig)) done++; }); }
+  else { if(_isS(opts.waiver?b.waiverSig:b.customerSig)) done++; drivers.forEach(function(d){ if(_isS(d.sig)) done++; }); }
+  return {done:done, total:total, label:done+'/'+total, complete:(done>=total)};
+}
+// Paint the "Signatures 1/2" badge in the contract modal header for whatever doc is currently in view
+// (base contract / waiver, or the active extension tab). Green + check when every required party has signed.
+function _pbUpdateSigProgressBadge(){
+  try{
+    var pe=document.getElementById('contractSigProgress'); if(!pe) return;
+    var b=(typeof bookings!=='undefined'&&bookings)?bookings.find(function(x){return x&&x.id===_contractBookingId;}):null;
+    if(!b){ pe.style.display='none'; return; }
+    var opts;
+    if(typeof _contractActiveExtIdx!=='undefined' && _contractActiveExtIdx>=0){ var el=(typeof _extLive==='function')?_extLive(b):[]; opts={ext:el[_contractActiveExtIdx]}; }
+    else opts={waiver:!!_contractIsWaiver};
+    var pr=_pbSigProgress(b,opts);
+    if(!(pr.total>0)){ pe.style.display='none'; return; }
+    pe.style.display='';
+    pe.textContent=(pr.complete?'\u2705 ':'\u270D\uFE0F ')+'Signatures '+pr.label;
+    pe.style.background=pr.complete?'rgba(34,197,94,.15)':'rgba(234,179,8,.15)';
+    pe.style.color=pr.complete?'#4ade80':'#fbbf24';
+  }catch(e){}
+}
 function openContract(id){
   _contractBookingId = id;
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
@@ -22683,6 +22728,7 @@ function openContract(id){
   console.warn('[PB Contract] openContract resetting to original tab', id, new Error().stack);
   _renderContractContent();
   _updateExtensionTabs();
+  _pbUpdateSigProgressBadge();
   // Show main sig area (may have been hidden from a previous extension tab view)
   var _sigArea = $d('sigEditView'); if(_sigArea) _sigArea.style.display = '';
   var _extSig  = $d('extSigView');  if(_extSig)  _extSig.style.display  = 'none';
@@ -27225,6 +27271,18 @@ setTimeout(stickyTabFix, 200);
   var _signExtId = sp.get('extId'); // extension contract signing
   var _signDriverParam = sp.get('driver');
   var _signDriverIdx = (_signDriverParam !== null && _signDriverParam !== '') ? parseInt(_signDriverParam) : null;
+  // Push-on-signature deep link (?signed=<bookingId>): open the dashboard NORMALLY, then jump straight into
+  // that booking's contract once the app is unlocked (PIN entered or auto-restored) and its data has loaded,
+  // so the owner lands on the doc to Send Signed Copy. Retries until both are ready. (Does NOT skip init.)
+  var _signedId = sp.get('signed');
+  if(_signedId){
+    _pbPendingSignedOpen = _signedId;
+    try{ var _cs=new URLSearchParams(location.search); _cs.delete('signed'); history.replaceState(null,'',location.pathname+(_cs.toString()?'?'+_cs.toString():'')+location.hash); }catch(e){}
+    var _soN=0, _soIv=setInterval(function(){ _soN++; try{ _pbTrySignedOpen(); }catch(e){} if(!_pbPendingSignedOpen||_soN>20){ clearInterval(_soIv); } }, 700);
+  }
+  // When the dashboard is ALREADY open and a signing notification is tapped, the SW postMessages the booking
+  // id here (a URL param can't reach an open tab) -> jump to that contract just like the cold-open path.
+  try{ if(navigator.serviceWorker){ navigator.serviceWorker.addEventListener('message', function(ev){ var m=(ev&&ev.data)||{}; if(m.type==='pb-open-signed' && m.id){ _pbPendingSignedOpen=m.id; try{ _pbTrySignedOpen(); }catch(e){} } }); } }catch(e){}
   if(signId||portalId){
     // Don't run the full dashboard init; just show the special view
     document.addEventListener('DOMContentLoaded', function(){
