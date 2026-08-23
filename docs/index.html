@@ -4913,7 +4913,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v371';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v372';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -8420,7 +8420,11 @@ function _paymentsReceived(b){
   // doubled. stripePayments amounts are the exact charged total (gross); tag the line with its real Stripe id.
   if(Array.isArray(b.stripePayments) && b.stripePayments.length){
     var _seenAmt={};
-    out.forEach(function(p){ var a=Number(p.amount)||0; if(a>0){ _seenAmt[Math.round(a*100)]=true; _seenAmt[Math.round(a*1.1325*100)]=true; } });
+    out.forEach(function(p){ var a=Number(p.amount)||0; if(a>0){ _seenAmt[Math.round(a*100)]=true; _seenAmt[Math.round(a*1.1325*100)]=true; if(Number(p.gross)>0) _seenAmt[Math.round(Number(p.gross)*100)]=true; } });
+    // The date lock's EXACT charged gross (dateLockGross) can differ from base x 1.1325 (rounding, or a $100 base
+    // held as $114), so mark it explicitly -> the SAME Stripe charge in b.stripePayments is recognized as the date
+    // lock and not surfaced a second time as a stray "Card payment" (which inflated Total Collected).
+    if(Number(b.dateLockGross)>0) _seenAmt[Math.round(Number(b.dateLockGross)*100)]=true;
     b.stripePayments.forEach(function(sp){
       if(!sp || sp.kind==='refund' || !(Number(sp.amount)>0)) return;
       var _c=Math.round((Number(sp.amount)||0)*100);
@@ -13100,6 +13104,20 @@ function calCellClick(vehicle, date){
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  MODAL
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+// ---- Add Booking DRAFT persistence -----------------------------------------------------------------
+// iOS evicts a backgrounded PWA, so swapping to Contacts/Messages to copy a customer's phone/email and coming
+// back reloaded the app and WIPED the half-filled Add Booking form. We autosave the NEW-booking form to
+// localStorage as it's typed and restore it when the form re-opens -- so switching apps never loses the entry.
+// Only for NEW bookings (editingId null); editing an existing booking, or a successful Save, clears it.
+var _PB_DRAFT_KEY='pb_booking_draft';
+function _pbBookingFields(){ var m=document.getElementById('modal'); if(!m) return []; return Array.prototype.slice.call(m.querySelectorAll('input,select,textarea')).filter(function(el){ return el.id && el.type!=='button' && el.type!=='submit' && el.type!=='file'; }); }
+function _pbSaveBookingDraft(){ try{ if(editingId) return; var d={}; _pbBookingFields().forEach(function(el){ d[el.id]=(el.type==='checkbox')?(el.checked?1:0):el.value; }); localStorage.setItem(_PB_DRAFT_KEY, JSON.stringify({ t:Date.now(), d:d })); }catch(e){} }
+function _pbClearBookingDraft(){ try{ localStorage.removeItem(_PB_DRAFT_KEY); }catch(e){} var _bn=document.getElementById('pbDraftBanner'); if(_bn) _bn.remove(); }
+function _pbGetBookingDraft(){ try{ var s=JSON.parse(localStorage.getItem(_PB_DRAFT_KEY)||'null'); return (s&&s.d&&(s.d.fName||s.d.fPhone||s.d.fEmail||s.d.fRevenue||s.d.fVehicle))?s:null; }catch(e){ return null; } }
+function _pbRestoreBookingDraft(){ var s=_pbGetBookingDraft(); if(!s) return false; try{ _pbBookingFields().forEach(function(el){ if(Object.prototype.hasOwnProperty.call(s.d,el.id)){ if(el.type==='checkbox') el.checked=!!s.d[el.id]; else el.value=s.d[el.id]; } }); }catch(e){} return true; }
+function _pbStartFreshBooking(){ _pbClearBookingDraft(); openModal(null); }
+function _pbShowDraftBanner(){ try{ var t=document.getElementById('modalTitle'); if(!t||!t.parentElement) return; var old=document.getElementById('pbDraftBanner'); if(old) old.remove(); var bar=document.createElement('div'); bar.id='pbDraftBanner'; bar.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;background:rgba(201,169,98,.12);border:1px solid var(--gold-dim);border-radius:8px;padding:8px 12px;margin:10px 0 0;font-size:12px;color:var(--gold)'; bar.innerHTML='<span>\u21A9\uFE0F Restored your unsaved booking</span><button type="button" onclick="_pbStartFreshBooking()" style="background:transparent;border:1px solid var(--gold-dim);color:var(--gold);border-radius:6px;padding:3px 10px;font-size:11px;font-weight:700;cursor:pointer">Start fresh</button>'; t.parentElement.insertAdjacentElement('afterend', bar); }catch(e){} }
+try{ var _pbModalEl=document.getElementById('modal'); if(_pbModalEl){ var _pbDraftT; var _pbAutosave=function(){ if(editingId) return; clearTimeout(_pbDraftT); _pbDraftT=setTimeout(_pbSaveBookingDraft, 250); }; _pbModalEl.addEventListener('input', _pbAutosave, true); _pbModalEl.addEventListener('change', _pbAutosave, true); } }catch(e){}
 function openModal(id, vehiclePreset, datePreset){
   editingId=id||null;
   var titleEl=$d('modalTitle');
@@ -13211,7 +13229,17 @@ function openModal(id, vehiclePreset, datePreset){
     if($d('chkEventStop'))    $d('chkEventStop').checked   = Number(b.stop)>0;
     if($d('chkEventWait'))    $d('chkEventWait').checked   = Number(b.wait)>0;
   }
+  // NEW booking: restore an autosaved draft (survives an app-switch/reload) so the form is never lost. A
+  // calendar-cell preset still wins for its vehicle/date. Editing an existing booking clears any stray draft.
+  if(!editingId){
+    if(_pbRestoreBookingDraft()){
+      if(datePreset){ $d('fPickupDate').value=datePreset; if($d('fDate')) $d('fDate').value=datePreset; }
+      if(vehiclePreset){ $d('fVehicle').value=vehiclePreset; }
+      _pbShowDraftBanner();
+    } else { var _bn0=document.getElementById('pbDraftBanner'); if(_bn0) _bn0.remove(); }
+  } else { _pbClearBookingDraft(); }
   toggleEventFields();
+  try{ if(typeof updateRemainingBalance==='function') updateRemainingBalance(); if(typeof updateLiveTotal==='function') updateLiveTotal(); }catch(e){}
   $d('modal').classList.add('open');
 }
 
@@ -13820,7 +13848,7 @@ function saveBooking(){
       if(_wlChg && typeof saveWaitlist==='function'){ saveWaitlist(); }
     }
   }catch(e){}
-  save(); flushCloudSave(); closeModal(); initSelects();
+  save(); flushCloudSave(); _pbClearBookingDraft(); closeModal(); initSelects();
   _saving = false;
   _autoCarryVerifyForAll(); // immediate pass \u2014 catches the just-saved booking + any others for same customer
   syncToGCal(entry); // create or update Google Calendar event
@@ -13841,7 +13869,7 @@ function confirmDelete(id){
   var idx=bookings.findIndex(function(b){return b.id===id;});
   if(idx!==-1){ bookings[idx]._deleted=true; bookings[idx]._t=Date.now(); }
   if(toDelete && toDelete.status!=='cancelled') checkWaitlistOnCancel(toDelete);
-  save(); flushCloudSave(); closeModal(); initSelects();
+  save(); flushCloudSave(); _pbClearBookingDraft(); closeModal(); initSelects();
   render();
   if(activeTab==='upcoming') renderUpcoming();
   if(activeTab==='current')  renderCurrent();
@@ -26492,6 +26520,10 @@ function hideSplash(){
 var _appUnlocked = false;
 var _pinAttempts = 0;
 var _pinLockedUntil = 0;
+var _PB_UNLOCK_WINDOW_MS = 600000;   // must match the 10-min idle auto-lock below
+// Persist the unlock across a full app EVICTION (see initLock). Stores WHO + WHEN so the role is restored too.
+function _pbPersistUnlock(){ try{ localStorage.setItem('pb_unlock', JSON.stringify({ ts:(_pbLastActivity||Date.now()), u:(_currentUser||'owner'), r:(_currentRole||'full') })); }catch(e){} }
+function _pbClearUnlockPersist(){ try{ localStorage.removeItem('pb_unlock'); }catch(e){} }
 function initLock(){
   var pin=localStorage.getItem('pb_lock_pin');
   if(!pin) return; // no PIN set \u2014 app is always open
@@ -26499,6 +26531,21 @@ function initLock(){
   // Stay unlocked so a reload never dumps you to the lock screen mid-work. A genuine new session
   // (tab closed+reopened, or a new device) has no flag -> PIN still required at login. Idle/manual lock clear it.
   if(sessionStorage.getItem('pb_unlocked')==='1'){ _appUnlocked=true; _pbLastActivity=Date.now(); return; }
+  // Survive a full app EVICTION: iOS routinely kills a backgrounded PWA, so switching to Contacts/Messages to
+  // grab a customer's info and coming back relaunches it as a BRAND-NEW session (sessionStorage gone) -> the
+  // passcode was being re-demanded every single time. If the owner was active within the SAME 10-min idle
+  // window, restore the unlock (+ role) instead of re-prompting. Security is unchanged: a real 10-min pause
+  // still re-locks (the idle timer clears this), and it's still per-device + gated on the PIN being set.
+  try{
+    var _us=JSON.parse(localStorage.getItem('pb_unlock')||'null');
+    if(_us && (Date.now()-(Number(_us.ts)||0) < _PB_UNLOCK_WINDOW_MS)){
+      _appUnlocked=true; _currentUser=_us.u||'owner'; _currentRole=_us.r||'full';
+      _pbLastActivity=Date.now();
+      try{ sessionStorage.setItem('pb_unlocked','1'); }catch(e){}
+      if(typeof applyRoleUI==='function') applyRoleUI();
+      return;
+    } else if(_us){ _pbClearUnlockPersist(); }
+  }catch(e){}
   if(!_appUnlocked){ showLockScreen(); }
 }
 function showLockScreen(){
@@ -26533,6 +26580,7 @@ async function unlockApp(){
     _appUnlocked=true; _currentUser='owner'; _currentRole='full';
     try{ sessionStorage.setItem('pb_unlocked','1'); }catch(e){}   // stay unlocked across reloads this session
     _pbLastActivity=Date.now();                                   // fresh 10-min idle window
+    _pbPersistUnlock();                                           // survive a full eviction within the idle window
     hideLockScreen();
     $d('lockPinInput').value=''; $d('lockError').textContent='';
     applyRoleUI();
@@ -26553,6 +26601,7 @@ async function unlockApp(){
     _appUnlocked=true; _currentUser=staff.name; _currentRole=staff.role||'checkin';
     try{ sessionStorage.setItem('pb_unlocked','1'); }catch(e){}
     _pbLastActivity=Date.now();
+    _pbPersistUnlock();
     hideLockScreen();
     $d('lockPinInput').value=''; $d('lockError').textContent='';
     applyRoleUI();
@@ -26579,6 +26628,7 @@ async function unlockApp(){
 function lockApp(){
   _appUnlocked = false;
   try{ sessionStorage.removeItem('pb_unlocked'); }catch(e){}   // idle-timeout OR manual Lock -> require the PIN again (even across a reload)
+  _pbClearUnlockPersist();                                     // and don't let the eviction-restore skip the PIN
   showLockScreen();
 }
 // -- 10-MINUTE IDLE AUTO-LOCK: after 10 min of no activity, lock the dashboard (require the PIN again) and
@@ -26597,6 +26647,8 @@ setInterval(function(){
     if(Date.now() - _pbLastActivity >= 600000){          // 10 minutes idle
       try{ sessionStorage.removeItem('pb_gcal_tok'); gcalAccessToken = null; if(typeof updateGCalUI==='function') updateGCalUI(); }catch(e){}  // force a fresh Google login on resume
       if(typeof lockApp==='function') lockApp();
+    } else {
+      _pbPersistUnlock();   // keep the eviction-restore timestamp current while the owner is active
     }
   }catch(e){}
 }, 20000);
