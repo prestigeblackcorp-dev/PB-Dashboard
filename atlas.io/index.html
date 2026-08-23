@@ -2219,7 +2219,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.20z';
+  var APP_VERSION='2026.7.21';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -4444,7 +4444,12 @@ const Atlas = (function(){
   function _bookingRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkEarnedRev(b);},0); }   // rental + collected add-on charges, NET of any redeemed gift-card value (recognized at gift sale instead)
   function _cancelledFeeIncome(){ return (DATA.bookings||[]).filter(function(b){ return b&&b.status==='Cancelled'; }).reduce(function(s,b){ return s+_collectedCharges(b); },0); }   // kept cancellation fees, recognized when actually COLLECTED (cash basis); committed-basis rollups exclude cancelled bookings, so their paid charges are real income counted only here
   function _taxCollected(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ return s+_bkTax(b); },0); }   // Payments G4: sales tax collected = a liability owed to the state, excluded from net profit
-  function _netProfit(){ return _bookingRevenue() + _otherIncome() + _cancelledFeeIncome() - _totalExpenses() - _totalPayouts() - _taxCollected(); }   // take-home subtracts partner payouts AND remitted sales tax (a pass-through liability, not income)
+  function _netProfit(){ return _bookingRevenue() + _otherIncome() + _cancelledFeeIncome() - _totalExpenses() - _totalPayouts() - _taxCollected(); }
+  function _bkAddons(b){ var ex=(b&&b.extras)||[]; if(!ex.length)return 0; var per=Math.max(1,Number(b.periods)||1); var rm=(S.money&&S.money.rateModel)||'day'; var _bkMs=per*_periodMsOf(rm);
+    return ex.reduce(function(s,x){ var each=(Number(x.price)||0)*(Number(x.qty)||1), amt; if(x.per==='unit') amt=each*per; else if(x.per==='hour'||x.per==='pday'||x.per==='week'||x.per==='pmonth') amt=each*Math.max(1,Math.ceil(_bkMs/_periodMsOf(x.per))); else amt=each; return s+amt; },0); }   // per-booking add-on $ -- mirrors calcQuote exLines
+  function _addonRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkAddons(b);},0); }
+  function _remainingBalance(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ return s+Math.max(0,_r2(_bkTotal(b)-_bkEarned(b))); },0); }   // total value not yet collected
+  function _cancelLoss(){ return (DATA.bookings||[]).filter(function(b){return b&&b.status==='Cancelled';}).reduce(function(s,b){ return s+Math.max(0,_r2(_bkTotal(b)-_collectedCharges(b))); },0); }   // lost revenue on cancelled, net of kept fee   // take-home subtracts partner payouts AND remitted sales tax (a pass-through liability, not income)
   // Generic drill-down modal: lists the line items behind any number, each optionally clickable.
   function _drill(title, sub, rows, opts){ opts=opts||{};
     if(opts.total!=null){   // reconciliation guard: an itemized drill with an explicit total always foots -- a hidden data gap reads as a real number instead of a silent math error
@@ -4778,7 +4783,10 @@ const Atlas = (function(){
       {id:'payout',label:cap(_payoutLabel()),ic:'M3 6h14M3 10h14M3 14h9',v:money(_totalPayouts()),c:"Atlas.drillKpi('payout')"},
       {id:'depositsKept',label:'Deposits kept',ic:'M4 7h12v9H4zM8 11h4',v:money((DATA.bookings||[]).reduce(function(s,b){return s+((b.hold&&b.hold.status==='captured')?(Number(b.hold.captured||b.hold.amount)||0):0);},0)),c:"Atlas.drillDeposits()"},
       {id:'uncollected',label:'Uncollected deposits',ic:'M10 3a7 7 0 100 14 7 7 0 000-14zM10 6v5M10 14v.5',v:(DATA.bookings||[]).filter(function(b){return (b.status==='Confirmed'||b.status==='Pending')&&!(b.hold&&Number(b.hold.amount)>0);}).length,c:"Atlas.drillDeposits()"},
-      {id:'reserves',label:'Reserves collected',ic:'M10 2v16M6 6h6a2 2 0 010 4H6a2 2 0 000 4h7',v:money((DATA.bookings||[]).reduce(function(s,b){return s+((b.portal&&b.portal.reservePaidAt&&b.quote)?(Number(b.quote.dueNow)||0):0);},0)),c:"Atlas.drillDeposits()"}
+      {id:'reserves',label:'Reserves collected',ic:'M10 2v16M6 6h6a2 2 0 010 4H6a2 2 0 000 4h7',v:money((DATA.bookings||[]).reduce(function(s,b){return s+((b.portal&&b.portal.reservePaidAt&&b.quote)?(Number(b.quote.dueNow)||0):0);},0)),c:"Atlas.drillDeposits()"},
+      {id:'unpaid',label:'Balance owed',ic:'M10 3a7 7 0 100 14 7 7 0 000-14zM10 6v4M10 13v.5',v:money(_remainingBalance()),c:"Atlas.drillUnpaid()"},
+      {id:'cancelLoss',label:'Cancellation losses',ic:'M6 6l8 8M14 6l-8 8',v:money(_cancelLoss()),c:"Atlas.drillCancelLoss()"},
+      {id:'addons',label:'Add-on revenue',ic:'M10 4v12M4 10h12M5 5l10 10',v:money(_addonRevenue()),c:"Atlas.drillAddons()"}
     ];
   }
   var OV_KPI_DEFAULT=['rev','active','util','upcoming'];
@@ -4790,6 +4798,12 @@ const Atlas = (function(){
       +(_canMod('analytics')||_canMod('settings')?'<button class="kpi" onclick="Atlas.ovCustomizeKpis()" title="Add, remove or reorder your KPIs" style="border:1px dashed var(--line);background:transparent;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--muted);gap:4px;min-height:74px"><svg viewBox="0 0 20 20" width="18" height="18" fill="none"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span style="font-size:12px">Customize</span></button>':''); }
   function drillDeposits(){ var rows=(DATA.bookings||[]).filter(function(b){return b.hold&&b.hold.status==='authorized'&&(Number(b.hold.amount)||0)>0;}).map(function(b){return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:Number(b.hold.amount)||0,onClick:"Atlas.openBooking('"+b.id+"')"};});
     _drill('Deposits held','Refundable security deposits currently authorized (held, not captured) - released at $0 fee when the '+esc(_fterm('book'))+' closes clean.',rows,{empty:'No deposits held right now.'}); }
+  function drillUnpaid(){ var rows=(DATA.bookings||[]).filter(_isCommitted).map(function(b){ var o=Math.max(0,_r2(_bkTotal(b)-_bkEarned(b))); return o>0.005?{label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:o,onClick:"Atlas.openBooking('"+b.id+"')"}:null; }).filter(Boolean);
+    _drill('Balance owed','Outstanding balance across your committed '+esc(_fterm('books'))+' - value not yet collected.',rows,{empty:'Everything is paid up.'}); }
+  function drillCancelLoss(){ var rows=(DATA.bookings||[]).filter(function(b){return b&&b.status==='Cancelled';}).map(function(b){ var l=Math.max(0,_r2(_bkTotal(b)-_collectedCharges(b))); return l>0.005?{label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:l,onClick:"Atlas.openBooking('"+b.id+"')"}:null; }).filter(Boolean);
+    _drill('Cancellation losses','Revenue lost to cancelled '+esc(_fterm('books'))+', net of any kept fee.',rows,{empty:'No cancellation losses.'}); }
+  function drillAddons(){ var rows=(DATA.bookings||[]).filter(_isCommitted).map(function(b){ var a=_bkAddons(b); return a>0.005?{label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:a,onClick:"Atlas.openBooking('"+b.id+"')"}:null; }).filter(Boolean);
+    _drill('Add-on revenue','Extras and add-ons sold across your committed '+esc(_fterm('books'))+'.',rows,{empty:'No add-ons sold yet.'}); }
   function _ovKpiModalHtml(){ var defs=_ovKpiDefs(), map={}; defs.forEach(function(k){map[k.id]=k;});
     var shown=(_ovKpiEdit||[]).filter(function(id){return map[id];});
     var hidden=defs.filter(function(k){return shown.indexOf(k.id)<0;});
@@ -13258,7 +13272,7 @@ const Atlas = (function(){
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,addLocation,removeLocation,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetPhotoAdd,assetPhotoRmGallery,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
-    drillKpi,ovCustomizeKpis,ovKpiToggle,ovKpiMove,ovKpiSave,drillDeposits,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
+    drillKpi,ovCustomizeKpis,ovKpiToggle,ovKpiMove,ovKpiSave,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
     renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,webMetaImageUpload,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
