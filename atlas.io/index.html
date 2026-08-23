@@ -1941,7 +1941,9 @@ const Atlas = (function(){
   // Shape a rich client object into the worker's row (full fidelity in the JSON blob: bookings/customers->data, assets->info).
   function _srvShape(kind,item){
     if(kind==='assets') return { id:item.id, name:item.name||('Item '+item.id), type:item.type||undefined, status:item.status||undefined, day_rate_cents:(Math.round((Number(item.rate)||0)*100))||undefined, info:item };
-    return { id:item.id, status:String(item.status||'pending'), starts:(Number.isFinite(item.startTs)?Math.round(item.startTs):undefined), ends:(Number.isFinite(item.endTs)?Math.round(item.endTs):undefined), data:item };
+    var _effE=(kind==='bookings')?_bkEffectiveEndTs(item):0, _hasExt=!!(kind==='bookings'&&item&&item.extensions&&_bkActiveExt(item).length>0);
+    if(kind==='bookings'&&item){ if(_hasExt&&_effE>0) item._effEndTs=Math.round(_effE); else if(item._effEndTs!=null) delete item._effEndTs; }   // readiness HIGH (extension-tail): stash absolute effective end (base + active extensions) so the denormalized ends column + server overlap gates see the extension tail
+    return { id:item.id, status:String(item.status||'pending'), starts:(Number.isFinite(item.startTs)?Math.round(item.startTs):undefined), ends:((_hasExt&&_effE>0)?Math.round(_effE):(Number.isFinite(item.endTs)?Math.round(item.endTs):undefined)), data:item };
   }
   function _srvUnshape(kind,row){ try{
     if(kind==='assets'){ var i=row.info; var o=i?(typeof i==='string'?JSON.parse(i):i):null; return o||{id:row.id,name:row.name,type:row.type,status:row.status,rate:(row.day_rate_cents||0)/100}; }
@@ -2227,7 +2229,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.21e';
+  var APP_VERSION='2026.7.21f';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
