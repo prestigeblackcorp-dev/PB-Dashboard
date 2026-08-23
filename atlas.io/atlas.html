@@ -1594,8 +1594,8 @@ body.trk-fs-on .trk-fs-exit{display:grid}
         <section class="panel" data-panel="analytics">
           <div style="margin-bottom:18px"><h2 style="font-size:22px">Analytics</h2><p style="color:var(--muted);font-size:14px">Full-scope insight across your website, portal and bookings.</p></div>
           <div class="kpi-row" id="anaKpis"></div>
-          <div class="card" id="anaForecastCard" style="display:none;margin-top:18px">
-            <div class="card__head"><h3>Forecast <span class="chip chip--brand" style="font-size:11px">Beta</span></h3><span style="font-size:11px;color:var(--muted)">projected from your trailing history</span></div>
+          <div class="card" id="anaForecastCard" style="margin-top:18px">
+            <div class="card__head"><h3>Forecast</h3><span style="font-size:11px;color:var(--muted)">projected from your trailing history</span></div>
             <div class="card__body" id="anaForecast"></div>
           </div>
           <div class="card" id="moneyCard" style="margin-top:18px">
@@ -1609,6 +1609,14 @@ body.trk-fs-on .trk-fs-exit{display:grid}
           <div class="card" style="margin-top:18px">
             <div class="card__head"><h3>Profit &amp; Loss</h3><div id="pnlControls" style="display:flex;gap:6px;flex-wrap:wrap"></div></div>
             <div class="card__body" id="pnlBody"></div>
+          </div>
+          <div class="card" style="margin-top:18px">
+            <div class="card__head"><h3 id="assetPnlTitle">Per-asset P&amp;L</h3><div id="assetPnlControls" style="display:flex;gap:6px;flex-wrap:wrap"></div></div>
+            <div class="card__body" id="assetPnlBody"></div>
+          </div>
+          <div class="card" style="margin-top:18px">
+            <div class="card__head"><h3 id="utilHeatTitle">Utilization heatmap</h3><span style="font-size:11px;color:var(--muted)">last 30 days &middot; filled = booked</span></div>
+            <div class="card__body" id="utilHeatBody" style="overflow-x:auto"></div>
           </div>
           <div class="grid-2">
             <div class="card"><div class="card__head"><h3>Revenue by Source</h3></div><div class="card__body"><canvas class="chartbox" id="srcChart" style="cursor:pointer" onclick="Atlas.drillKpi('anaRev')"></canvas></div></div>
@@ -2219,7 +2227,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.21b';
+  var APP_VERSION='2026.7.21c';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -5351,18 +5359,42 @@ const Atlas = (function(){
     var curUtil= us.length? Math.round(us.reduce(function(x,y){return x+y;},0)/us.length):0;
     var c4=mean(cnt.slice(n-4)), cp4=mean(cnt.slice(Math.max(0,n-8),n-4)), utilTrend= cp4>0?(c4-cp4)/cp4:0;
     var projUtil= Math.max(0, Math.min(100, Math.round(curUtil*(1+utilTrend*0.5))));
-    return {projWkly:projWkly, projMonth:projMonth, growthPct:growthPct, curUtil:curUtil, projUtil:projUtil, weeks:rev, committed:(DATA.bookings||[]).filter(_isCommitted).length}; }
+    var _now=Date.now(), _D=86400000, _upc=(DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && b.startTs && b.startTs>=_now; });
+    var booked7=_upc.filter(function(b){return b.startTs<_now+7*_D;}).reduce(function(s,b){return s+_bkTotal(b);},0);
+    var booked30=_upc.filter(function(b){return b.startTs<_now+30*_D;}).reduce(function(s,b){return s+_bkTotal(b);},0);
+    return {projWkly:projWkly, projMonth:projMonth, growthPct:growthPct, curUtil:curUtil, projUtil:projUtil, weeks:rev, committed:(DATA.bookings||[]).filter(_isCommitted).length, booked7:booked7, booked30:booked30, upcoming:_upc.length}; }
   function _forecastHtml(){ var fc=_forecast();
     if(fc.committed<2) return '<div class="bk-lenhint" style="margin:0">Add a couple of '+_fterm('books')+' and Atlas.io will project your next period from the real trend.</div>';
     var arrow=fc.growthPct>0?'&uarr;':fc.growthPct<0?'&darr;':'&rarr;', gc=fc.growthPct>0?'#2e9e6b':fc.growthPct<0?'var(--danger)':'var(--muted)';
     var mx=Math.max.apply(null,fc.weeks.concat([1])); var spark='<div style="display:flex;align-items:flex-end;gap:3px;height:34px;margin-top:8px">'+fc.weeks.map(function(v){ return '<div style="flex:1;background:var(--brand);opacity:.7;border-radius:2px;height:'+Math.max(2,Math.round(v/mx*34))+'px"></div>'; }).join('')+'</div>';
     var cell=function(l,v,sub){ return '<div style="flex:1;min-width:120px"><div style="font-size:12px;color:var(--muted)">'+l+'</div><div style="font-size:24px;font-weight:800;color:var(--ink)" class="tnum">'+v+'</div>'+(sub?'<div style="font-size:11.5px;color:var(--muted)">'+sub+'</div>':'')+'</div>'; };
     return '<div style="display:flex;gap:18px;flex-wrap:wrap">'
+      +cell('Booked \u2014 next 30 days', money(fc.booked30), fc.upcoming+' upcoming '+_fterm('books')+(fc.booked7>0?(' \u00b7 '+money(fc.booked7)+' next 7d'):''))
       +cell('Projected next month', money(fc.projMonth), '~'+money(fc.projWkly)+'/week')
       +cell('Revenue trend', '<span style="color:'+gc+'">'+arrow+' '+Math.abs(fc.growthPct)+'%</span>', 'vs. prior 4 weeks')
       +cell('Utilization now', fc.curUtil+'%', 'projected '+fc.projUtil+'%')
       +'</div>'+spark
       +'<div class="bk-lenhint" style="margin:12px 0 0">Projected from your trailing 8-week '+_fterm('book')+' history (damped momentum). An estimate, not a guarantee.</div>'; }
+  // ---- Per-ASSET P&L (revenue - expenses, per individual asset, with period pills) -- generic across asset types ----
+  var _assetPnlPeriod='month';
+  function _assetPnl(B){ var byId={}, byName={}; (DATA.assets||[]).forEach(function(a){ byId[a.id]={a:a,rev:0,exp:0}; byName[a.name]=byId[a.id]; });
+    (DATA.bookings||[]).filter(_isCommitted).forEach(function(b){ var d=_bDate(b); if(d<B.from||d>B.to)return; var r=(b.assetId&&byId[b.assetId])||byName[b.asset]; if(r) r.rev+=_bkEarnedRev(b); });
+    _ledger().expenses.forEach(function(e){ if(!_expInRange(e,B)||!e.assetId||!byId[e.assetId])return; byId[e.assetId].exp+=(Number(e.amount)||0); });
+    return Object.keys(byId).map(function(k){ var r=byId[k]; r.net=_r2(r.rev-r.exp); r.margin=r.rev>0?Math.round(r.net/r.rev*100):0; return r; }).sort(function(x,y){return y.net-x.net;}); }
+  function _assetPnlHtml(){ var B=_pnlBounds(_assetPnlPeriod); var rows=_assetPnl(B).filter(function(r){return r.rev>0||r.exp>0;});
+    var ttl=document.getElementById('assetPnlTitle'); if(ttl) ttl.textContent='Per-'+(S.fleet.noun||'asset')+' P&L';
+    var ctl=document.getElementById('assetPnlControls'); if(ctl) ctl.innerHTML=_PNL_RANGES.map(function(r){return '<button class="bk-chip'+(_assetPnlPeriod===r[0]?' active':'')+'" onclick="Atlas.assetPnlSetPeriod(\''+r[0]+'\')">'+r[1]+'</button>';}).join('');
+    if(!rows.length) return '<div class="bk-lenhint" style="margin:0">No '+_fterm('books')+' or expenses in this period yet.</div>';
+    return '<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>'+esc(cap(S.fleet.noun||'Asset'))+'</th><th>Revenue</th><th>Expenses</th><th>Net</th><th>Margin</th></tr></thead><tbody>'
+      +rows.map(function(r){ var neg=r.net<0; return '<tr style="cursor:pointer" onclick="Atlas.openAsset(\''+esc(r.a.id)+'\')"><td><b>'+esc(r.a.name)+'</b></td><td class="tnum">'+money(r.rev)+'</td><td class="tnum"'+(r.exp>0?' style="color:var(--danger)"':'')+'>'+money(r.exp)+'</td><td class="tnum"'+(neg?' style="color:var(--danger)"':'')+'><b>'+money(r.net)+'</b></td><td class="tnum">'+r.margin+'%</td></tr>'; }).join('')
+      +'</tbody></table></div>'; }
+  function assetPnlSetPeriod(k){ _assetPnlPeriod=k; var b=document.getElementById('assetPnlBody'); if(b)b.innerHTML=_assetPnlHtml(); }
+  // ---- Utilization heatmap: assets x last 30 days, filled cell = booked that day ----
+  function _utilHeatmapHtml(){ var assets=(DATA.assets||[]); if(!assets.length) return '<div class="bk-lenhint" style="margin:0">Add a '+esc(S.fleet.noun||'asset')+' to see the heatmap.</div>';
+    var D=86400000, days=30, d0=new Date(); d0.setHours(0,0,0,0); var start=d0.getTime()-(days-1)*D;
+    var byKey={}; (DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&b.startTs&&b.endTs&&b.endTs>start;}).forEach(function(b){ var k=b.assetId||b.asset; (byKey[k]=byKey[k]||[]).push(b); });
+    var rows=assets.slice(0,40).map(function(a){ var list=(byKey[a.id]||byKey[a.name]||[]); var cells=''; for(var i=0;i<days;i++){ var ds=start+i*D, de=ds+D, on=false; for(var j=0;j<list.length;j++){ if(list[j].startTs<de&&list[j].endTs>ds){on=true;break;} } cells+='<span style="display:inline-block;width:9px;height:15px;border-radius:2px;background:'+(on?'var(--brand)':'var(--line-2)')+'"></span>'; } return '<div style="display:flex;align-items:center;gap:2px;margin-bottom:3px"><span style="width:96px;min-width:96px;font-size:11px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+esc(a.name)+'">'+esc(a.name)+'</span><span style="display:flex;gap:1px">'+cells+'</span></div>'; }).join('');
+    return '<div style="min-width:400px">'+rows+'</div><div class="bk-lenhint" style="margin:8px 0 0">Each cell = one day (oldest left, today right); filled = booked. Last 30 days across your '+esc(S.fleet.nouns||'assets')+'.</div>'; }
   /* ---- Revenue Optimizer (Smart Pricing Increment 2): turns THIS tenant's own utilization + trailing booking
      history into concrete, one-tap pricing suggestions -- deterministic + transparent (no AI in the compute path;
      the "Ask Atlas.io" link on the card is a separate, optional natural-language layer on top). Every number is
@@ -7210,7 +7242,9 @@ const Atlas = (function(){
     try{ _loadMoney(); }catch(e){}
     _renderBudgetCard();
     renderPnl();
-    var _fcCard=document.getElementById('anaForecastCard'); if(_fcCard){ if(_flags().betaForecast){ _fcCard.style.display=''; var _fb=document.getElementById('anaForecast'); if(_fb)_fb.innerHTML=_forecastHtml(); } else _fcCard.style.display='none'; }   // betaForecast owner flag now drives a real projection
+    var _fcCard=document.getElementById('anaForecastCard'); if(_fcCard){ _fcCard.style.display=''; var _fb=document.getElementById('anaForecast'); if(_fb)_fb.innerHTML=_forecastHtml(); }   // forecast (asset-generic): already-booked upcoming + trailing-trend projection
+    var _apb=document.getElementById('assetPnlBody'); if(_apb) _apb.innerHTML=_assetPnlHtml();
+    var _uhb=document.getElementById('utilHeatBody'); if(_uhb){ var _uht=document.getElementById('utilHeatTitle'); if(_uht)_uht.textContent=cap(_fterm('util'))+' heatmap'; _uhb.innerHTML=_utilHeatmapHtml(); }
     var _cc=document.getElementById('anaCohorts'); if(_cc) _cc.innerHTML=_cohortHtml();
     renderReports(); renderLog(); renderReviews();
     setTimeout(()=>drawSrcChart(),30);
@@ -13292,7 +13326,7 @@ const Atlas = (function(){
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetPhotoAdd,assetPhotoRmGallery,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,ovCustomizeKpis,ovCustomizeAna,ovKpiToggle,ovKpiMove,ovKpiSave,ovKpiDragStart,ovKpiDrop,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
-    _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,renderPnl,
+    _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,assetPnlSetPeriod,renderPnl,
     renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,webMetaImageUpload,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
