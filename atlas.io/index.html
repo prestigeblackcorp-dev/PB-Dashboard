@@ -2229,7 +2229,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.21g';
+  var APP_VERSION='2026.7.21h';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -3809,6 +3809,7 @@ const Atlas = (function(){
   /* ---- Booking-model builder (Settings > Bookings): edit the base for your preference ---- */
   function setAutoHold(on){ if(!_canMod('settings'))return; S.autoHoldOverdue=!!on; save(); toast(on?'On \u2014 you will be warned before booking an asset overdue for service':'Auto-hold off'); }
   function setTurnaround(v){ if(!_canMod('settings'))return; S.turnaroundMin=Math.max(0,parseInt(v,10)||0); save(); renderSet(); toast(S.turnaroundMin?'Turnaround buffer saved':'Turnaround buffer off'); }
+  function setIdScanRetention(v){ if(!_canMod('settings'))return; S.privacy=S.privacy||{}; S.privacy.idScanRetentionDays=Math.max(0,Math.min(3650,parseInt(v,10)||0)); if(!S._kt)S._kt={}; S._kt.privacy=Date.now(); save(); renderSet(); toast(S.privacy.idScanRetentionDays?('ID scans will auto-delete '+S.privacy.idScanRetentionDays+' days after a booking closes'):'ID-scan auto-delete off'); }
   function setBookingCfg(path,v){ if(!S.money.booking) S.money.booking={time:true,durationMode:'end',fields:{phone:true,notes:true}};
     var bk=S.money.booking; bk.fields=bk.fields||{phone:true,notes:true};
     if(path==='rateModel') S.money.rateModel=v;
@@ -6016,7 +6017,7 @@ const Atlas = (function(){
   }
   function setMoneyStack(id,on){ if(!_canMod('settings'))return; if(!S.payments)S.payments={}; var ms=S.payments.moneyStack||{}; ms.on=!!on; ms.cardOnFile=!!on; S.payments.moneyStack=ms; save(); if(id)openBooking(id); toast(on?'Card on file enabled':'Card on file turned off'); }
   function bkSaveCard(id){ var b=_getBooking(id); if(!b)return; toast('Opening secure card setup...'); _api('/api/booking/setup-card',{method:'POST',body:{bookingId:id}}).then(function(r){ var j=(r&&r.json)||{}; if(j.ok&&j.url){ try{ window.open(j.url,'_blank'); }catch(e){ location.href=j.url; } toast('Secure card page opened \u2014 the saved card shows here once entered.'); } else { toast(j.message||'Could not start card setup.'); } }).catch(function(){ toast('Could not reach the payment server.'); }); }
-  function bkChargeCard(id){ var b=_getBooking(id); if(!b||!b.savedCard)return; var amt=prompt('Amount to charge the card on file (e.g. 75.00):'); if(amt==null)return; var cents=Math.round(parseFloat(amt)*100); if(!(cents>=50)){ toast('Enter an amount of at least $0.50'); return; } var note=prompt('What is this charge for? (shown on the receipt)','Incidental charge')||'Card-on-file charge'; toast('Charging the card on file...'); _api('/api/booking/charge-saved',{method:'POST',body:{bookingId:id,amountCents:cents,note:note}}).then(function(r){ var j=(r&&r.json)||{}; if(j.ok){ toast('Charged $'+((j.amountCents||cents)/100).toFixed(2)+' to the card on file'); try{ if(typeof _srvHydrate==='function'&&store.session()) _srvHydrate(store.session().tenantId); }catch(e){} setTimeout(function(){ try{ openBooking(id); }catch(e){} },700); } else { toast(j.message||'The card could not be charged.'); } }).catch(function(){ toast('Could not reach the payment server.'); }); }
+  function bkChargeCard(id){ var b=_getBooking(id); if(!b||!b.savedCard)return; var amt=prompt('Amount to charge the card on file (e.g. 75.00):'); if(amt==null)return; var cents=Math.round(parseFloat(amt)*100); if(!(cents>=50)){ toast('Enter an amount of at least $0.50'); return; } var note=prompt('What is this charge for? (shown on the receipt)','Incidental charge')||'Card-on-file charge'; var _dupChg=(b.charges||[]).some(function(c){ return c&&c.source==='card_on_file'&&c.paidAt&&!c.refunded&&!c.voided&&Math.round((Number(c.amount)||0)*100)===cents&&String(c.label||'')===note; }); var _cbody={bookingId:id,amountCents:cents,note:note}; if(_dupChg){ if(!confirm('A paid charge of $'+(cents/100).toFixed(2)+' for "'+note+'" is already on this booking. Charge the card AGAIN (a second, separate charge)?')) return; _cbody.force=true; _cbody.nonce='n'+Date.now().toString(36)+Math.random().toString(36).slice(2,10); } toast('Charging the card on file...'); _api('/api/booking/charge-saved',{method:'POST',body:_cbody}).then(function(r){ var j=(r&&r.json)||{}; if(j.ok){ toast('Charged $'+((j.amountCents||cents)/100).toFixed(2)+' to the card on file'); try{ if(typeof _srvHydrate==='function'&&store.session()) _srvHydrate(store.session().tenantId); }catch(e){} setTimeout(function(){ try{ openBooking(id); }catch(e){} },700); } else { toast(j.message||'The card could not be charged.'); } }).catch(function(){ toast('Could not reach the payment server.'); }); }
   // ---- Cancellation-policy engine: cancel with a smart fee (kept via the reconciled portal-charge model) ----
   function _cxWindow(){ return (S.money&&S.money.cancelWindowHrs!=null)?S.money.cancelWindowHrs:48; }
   // === VOID / early-termination: contract broken -> KEEP earnings (+ any captured deposit) as revenue, free the asset the
@@ -8423,6 +8424,15 @@ const Atlas = (function(){
           <option value="1440" ${(+S.turnaroundMin)===1440?'selected':''}>1 full day</option>
         </select><div class="hint">A new booking cannot start until this much time has passed after an existing one ends (and the reverse). Multi-unit ${esc(S.fleet.nouns)} still book up to their unit count at once.</div></div>
         <label class="cfg-check" style="margin-top:10px"><input type="checkbox" ${S.autoHoldOverdue?'checked':''} onchange="Atlas.setAutoHold(this.checked)">Warn me before booking a ${esc(S.fleet.noun)} that is overdue for service</label>
+      </div>
+      <div class="set-block"><h3>Privacy &amp; data retention <span style="color:var(--muted);font-weight:500;font-size:13px">&mdash; auto-delete ID scans</span></h3><div class="desc">Permanently delete uploaded ID / driver&rsquo;s-license scans a set time after a booking closes, for privacy / GDPR data-minimization. <b>Off by default</b> &mdash; nothing is deleted until you choose a window. Only ID scans are removed; condition / pickup / return photos are always kept as dispute evidence.</div>
+        <div class="field" style="margin-bottom:0"><label>Delete ID scans after a closed booking</label><select class="select" onchange="Atlas.setIdScanRetention(this.value)">
+          <option value="0" ${!(+((S.privacy||{}).idScanRetentionDays))?'selected':''}>Never (keep forever)</option>
+          <option value="90" ${(+((S.privacy||{}).idScanRetentionDays))===90?'selected':''}>90 days</option>
+          <option value="180" ${(+((S.privacy||{}).idScanRetentionDays))===180?'selected':''}>180 days</option>
+          <option value="365" ${(+((S.privacy||{}).idScanRetentionDays))===365?'selected':''}>1 year</option>
+          <option value="730" ${(+((S.privacy||{}).idScanRetentionDays))===730?'selected':''}>2 years</option>
+        </select><div class="hint">Runs daily. Deletion is permanent and cannot be undone &mdash; the booking record is kept, only the sensitive ID image is erased.</div></div>
       </div>
       <div class="set-block" data-bkb="fields"><h3>Fields to collect</h3><div class="desc">Turn optional fields on or off. Name, email and ${cap(S.fleet.noun)} are always asked.</div>
         <label class="cfg-check"><input type="checkbox" ${bc.fields.phone?'checked':''} onchange="Atlas.setBookingCfg('fields.phone',this.checked)">Phone number</label>
