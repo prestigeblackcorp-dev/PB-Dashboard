@@ -10,6 +10,7 @@
 // Run locally (needs Node 20+):  node test/smoke.mjs
 
 import worker from '../worker.js';
+import { readFileSync } from 'node:fs';
 
 // --- stub the network so no route makes a real request (competitor add snapshots a URL, etc.) ---
 globalThis.fetch = () => Promise.resolve({ ok: false, status: 0, headers: { get: () => null }, text: async () => '', json: async () => ({}) });
@@ -46,7 +47,7 @@ function mockDB() {
 
 const env = { DB: mockDB(), ADMIN_TOKEN: 'test-token', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
-const EXPECT_BUILD = '2026.08.07y';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
+const EXPECT_BUILD = '2026.08.07z';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
 
 function mkReq(method, path, opts = {}) {
   return new Request('https://atlasrental.io' + path, {
@@ -68,6 +69,7 @@ let r = await worker.fetch(mkReq('GET', '/api/health'), env, ctx);
 let j = await r.json();
 ok(r.status === 200, 'GET /api/health -> 200');
 ok(j.build === EXPECT_BUILD, 'health build == ' + EXPECT_BUILD + ' (got ' + j.build + ')');
+try { const _adm = readFileSync(new URL('../../admin.html', import.meta.url), 'utf8'); const _m = _adm.match(/ATLAS_EXPECT_BUILD='([^']*)'/); ok(!!(_m && _m[1] === EXPECT_BUILD), 'admin.html ATLAS_EXPECT_BUILD (' + (_m ? _m[1] : 'MISSING') + ') == ' + EXPECT_BUILD); } catch (e) { console.log('  --  admin.html stamp check skipped: ' + e.message); }   // readiness LOW L18: enforce the 3rd build stamp in lockstep
 
 // 2) admin auth rejects a bad token
 r = await worker.fetch(mkReq('GET', '/api/admin/competitors', { headers: { 'X-Admin-Token': 'WRONG' } }), env, ctx);
