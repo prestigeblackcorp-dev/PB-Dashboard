@@ -4943,7 +4943,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v378';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v379';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -7805,7 +7805,16 @@ function initGCal(){
   if(_gcTok && _gcTok.t && _gcTok.exp && Date.now() < _gcTok.exp){
     gcalAccessToken = _gcTok.t;
   } else if(localStorage.getItem('pb_gcal_connected')){
-    gcalTokenClient.requestAccessToken({ prompt:'none' });
+    // ONE automatic token request per dashboard login. sessionStorage survives the frequent SW/version
+    // auto-reloads but clears on tab close (= a genuinely new login), so this fires AT MOST ONCE. A GIS
+    // access token dies in ~1h and silent renewal can still flash a Google popup on Safari / browsers with
+    // 3rd-party cookies blocked; without this guard that popup returned on EVERY reload after expiry. After
+    // the single auto-try the calendar just waits -- the owner reconnects with one deliberate tap.
+    var _gcAutoTried=false; try{ _gcAutoTried=(sessionStorage.getItem('pb_gcal_autotried')==='1'); }catch(e){}
+    if(!_gcAutoTried){
+      try{ sessionStorage.setItem('pb_gcal_autotried','1'); }catch(e){}
+      gcalTokenClient.requestAccessToken({ prompt:'none' });
+    }
   }
   updateGCalUI();
 }
@@ -26646,9 +26655,12 @@ function initLock(){
 function showLockScreen(){
   var ls=$d('lockScreen'); if(!ls) return;
   ls.style.display='flex';
+  // Freeze page scroll while the PIN overlay is up. The overlay is position:fixed, but the page BEHIND it
+  // still scrolled -- which showed as a scrollbar sliding up/down on the lock screen (a small content leak).
+  try{ document.documentElement.style.overflow='hidden'; document.body.style.overflow='hidden'; }catch(e){}
   setTimeout(function(){ var inp=$d('lockPinInput'); if(inp) inp.focus(); },100);
 }
-function hideLockScreen(){ var ls=$d('lockScreen'); if(ls) ls.style.display='none'; }
+function hideLockScreen(){ var ls=$d('lockScreen'); if(ls) ls.style.display='none'; try{ document.documentElement.style.overflow=''; document.body.style.overflow=''; }catch(e){} }
 async function unlockApp(){
   var now=Date.now();
   if(_pinLockedUntil>now){
