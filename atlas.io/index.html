@@ -1971,11 +1971,11 @@ const Atlas = (function(){
       else if(res && res.status>=200 && res.status<300){ _ok(); }
     }).catch(function(){}); }
   function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; delete _pushedHash[kind+':'+id]; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).catch(function(){}); }
-  function _srvMirrorProfile(){ if(!ATLAS_BACKEND||!_apiCsrf||!S||_bootSync) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; }
+  function _srvMirrorProfile(pend){ if(!ATLAS_BACKEND||!_apiCsrf||!S||_bootSync) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; }
     // never mirror provider secrets in plaintext: send a shallow copy of the secret-bearing subtrees with the keys stripped (local S keeps them; the wire/server does not)
     if(settings.trackers){ var _tk={}; for(var _a in settings.trackers) _tk[_a]=settings.trackers[_a]; delete _tk.apiKey; settings.trackers=_tk; }
     if(settings.comms){ var _cm={}; for(var _b in settings.comms) _cm[_b]=settings.comms[_b]; delete _cm.resendKey; settings.comms=_cm; }
-    _api('/api/tenant/profile',{method:'PUT',body:{name:(S.brand&&S.brand.name)||'',brand:S.brand,money:S.money,settings:settings}}).catch(function(){}); }
+    _api('/api/tenant/profile',{method:'PUT',body:{name:(S.brand&&S.brand.name)||'',brand:S.brand,money:S.money,settings:settings}}).then(function(res){ if(res&&res.status>=200&&res.status<300&&pend){ for(var _pk in pend) _pushedKeys[_pk]=pend[_pk]; } }).catch(function(){}); }
   // Diff current local state vs last-mirrored -> PUT the changed (stamp _t), DELETE the removed, PUT the profile if changed.
   function _srvSyncPush(){ if(!ATLAS_BACKEND||!_apiCsrf) return;
     var cols={ bookings:(typeof _bookings==='function'?_bookings():[]), assets:(typeof DATA!=='undefined'&&DATA.assets)||[] };
@@ -1991,8 +1991,8 @@ const Atlas = (function(){
     if(!S._kt||typeof S._kt!=='object') S._kt={};
     var parts={ brand:S.brand, money:S.money }; for(var k in S){ if(k!=='brand'&&k!=='money'&&k!=='_kt'&&k!=='_t') parts[k]=S[k]; }
     var nowT=_monoNow(), changed=false;
-    for(var pk in parts){ var pjs=JSON.stringify(parts[pk]===undefined?null:parts[pk]); if(_pushedKeys[pk]!==pjs){ S._kt[pk]=nowT; _pushedKeys[pk]=pjs; changed=true; } }
-    if(changed){ S._t=nowT; _srvMirrorProfile(); }
+    var _pend={}; for(var pk in parts){ var pjs=JSON.stringify(parts[pk]===undefined?null:parts[pk]); if(_pushedKeys[pk]!==pjs){ S._kt[pk]=nowT; _pend[pk]=pjs; changed=true; } }
+    if(changed){ S._t=nowT; _srvMirrorProfile(_pend); }
   }
   // #360 Live dashboard: a flag-gated (livePoll, DEFAULT OFF) poll so a website booking appears in an already-open
   // dashboard WITHOUT a manual refresh. Safety first (see project_sync_deep_audit): it FLUSHES local edits (_srvSyncPush
@@ -2230,7 +2230,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.22';
+  var APP_VERSION='2026.7.22a';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
