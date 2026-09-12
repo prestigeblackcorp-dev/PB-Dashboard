@@ -2230,7 +2230,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.22i';
+  var APP_VERSION='2026.7.22j';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -4660,9 +4660,9 @@ const Atlas = (function(){
     var revTotal=_r2(s.rev+s.cancelFee+s.income), netNeg=(s.net<0), kindLabel=(_pnlKind==='all')?'All types':_pnlKind;
     var byKind=_pnlByKind(B), byMonth=_pnlByMonth(_pnlKind);
     return '<div class="kpi-row" style="margin-bottom:12px">'
-      +'<div class="kpi kpi--clk" onclick="Atlas.drillKpi(\'rev\')"><div class="kpi__top"><span class="kpi__label">Revenue</span></div><div class="kpi__val tnum">'+money(revTotal)+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
-      +'<div class="kpi kpi--clk" onclick="Atlas.drillLedger(\'expense\')"><div class="kpi__top"><span class="kpi__label">Expenses</span></div><div class="kpi__val tnum" style="color:var(--danger)">'+money(s.exp)+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
-      +'<div class="kpi kpi--clk" onclick="Atlas.drillKpi(\'net\')"><div class="kpi__top"><span class="kpi__label">'+(netNeg?'Net Loss':'Net Profit')+'</span></div><div class="kpi__val tnum"'+(netNeg?' style="color:var(--danger)"':'')+'>'+money(s.net)+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
+      +'<div class="kpi kpi--clk" onclick="Atlas.pnlRevDrill()"><div class="kpi__top"><span class="kpi__label">Revenue</span></div><div class="kpi__val tnum">'+money(revTotal)+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
+      +'<div class="kpi kpi--clk" onclick="Atlas.pnlExpDrill()"><div class="kpi__top"><span class="kpi__label">Expenses</span></div><div class="kpi__val tnum" style="color:var(--danger)">'+money(s.exp)+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
+      +'<div class="kpi kpi--clk" onclick="Atlas.pnlNetDrill()"><div class="kpi__top"><span class="kpi__label">'+(netNeg?'Net Loss':'Net Profit')+'</span></div><div class="kpi__val tnum"'+(netNeg?' style="color:var(--danger)"':'')+'>'+money(s.net)+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
       +'<div class="kpi kpi--clk" onclick="Atlas.pnlMarginDrill()"><div class="kpi__top"><span class="kpi__label">Margin</span></div><div class="kpi__val tnum">'+(s.margin||0)+'%</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
       +'</div>'
       +(s.payout>0?('<div style="font-size:12px;color:var(--muted);margin:-4px 0 12px">Net already subtracts '+money(s.payout)+' in '+esc(_payoutLabel().toLowerCase())+'.</div>'):'')
@@ -4683,9 +4683,33 @@ const Atlas = (function(){
   function pnlSetKind(k){ _pnlKind=k; renderPnl(); }
   function pnlMarginDrill(){ var B=_pnlBounds(_pnlPeriod), s=_pnlSummary(B,_pnlKind); var revTotal=_r2(s.rev+s.cancelFee+s.income);
     _drill('Profit margin', 'Net Profit as a share of revenue &mdash; '+esc(B.label).toLowerCase()+(_pnlKind==='all'?'':(' &middot; '+esc(_pnlKind)))+'. '+money(s.net)+' net &divide; '+money(revTotal)+' revenue = <b>'+(s.margin||0)+'%</b>.',
-      [ {label:'<b>Net Profit</b>',sub:'revenue minus all costs',amt:s.net,neg:(s.net<0),onClick:"Atlas.drillKpi('net')"},
-        {label:'<b>Total revenue</b>',sub:'bookings + other income + fees kept',amt:revTotal,onClick:"Atlas.drillKpi('rev')"} ],
+      [ {label:'<b>Net Profit</b>',sub:'revenue minus all costs',amt:s.net,neg:(s.net<0),onClick:"Atlas.pnlNetDrill()"},
+        {label:'<b>Total revenue</b>',sub:'bookings + other income + fees kept',amt:revTotal,onClick:"Atlas.pnlRevDrill()"} ],
       {showTotal:false, empty:'No revenue in this period yet.'}); }
+  // ---- Period-scoped P&L drills (M-F2 fix): the P&L card KPIs are scoped to _pnlPeriod/_pnlKind, so their drills must be too --
+  // built entirely from _pnlSummary's already-period-scoped subtotals so the drill FOOTS to the exact card value (the global
+  // drillKpi('rev'/'net')/drillLedger are _ovRange/all-time and disagreed with the card whenever the two selectors differed).
+  function _pnlScopeSub(B){ return esc(B.label)+(_pnlKind==='all'?'':(' &middot; '+esc(_pnlKind))); }
+  function pnlRevDrill(){ var B=_pnlBounds(_pnlPeriod), s=_pnlSummary(B,_pnlKind), revTotal=_r2(s.rev+s.cancelFee+s.income);
+    var rows=_bkList(function(b){ return _bkInRange(b,B) && (_pnlKind==='all'||_assetKindByName(b.asset)===_pnlKind); },{earned:true}).sort(function(a,b){return b.amt-a.amt;});
+    if(s.cancelFee>0) rows.push({label:'<b>Cancellation fees kept</b>',sub:'collected on cancelled '+_fterm('books'),amt:_r2(s.cancelFee)});
+    if(s.income>0) rows.push({label:'<b>Other income</b>',sub:_allIncomes().length+' logged',amt:_r2(s.income)});
+    _drill('Revenue', _pnlScopeSub(B)+' &mdash; rental + collected add-on charges'+(s.cancelFee>0?', cancellation fees':'')+(s.income>0?', other income':''), rows, {total:revTotal, totalLabel:'Total revenue', empty:'No revenue in this period yet.'}); }
+  function pnlNetDrill(){ var B=_pnlBounds(_pnlPeriod), s=_pnlSummary(B,_pnlKind), netNeg=(s.net<0);
+    var rows=[{label:'<b>Booking revenue</b>',sub:'earned '+_fterm('books')+' in this period',amt:_r2(s.rev)}];
+    if(s.income>0) rows.push({label:'<b>Other income</b>',sub:_allIncomes().length+' logged',amt:_r2(s.income)});
+    if(s.cancelFee>0) rows.push({label:'<b>Cancellation fees kept</b>',sub:'collected on cancelled '+_fterm('books'),amt:_r2(s.cancelFee)});
+    rows.push({label:'<b>Expenses</b>',sub:'costs logged in this period',amt:_r2(s.exp),neg:true,onClick:"Atlas.pnlExpDrill()"});
+    if(s.payout>0) rows.push({label:'<b>'+esc(_payoutLabel())+'</b>',sub:'commission on '+_fterm('books'),amt:_r2(s.payout),neg:true});
+    if(s.tax>0) rows.push({label:'<b>Sales tax collected</b>',sub:'held for the state - a liability, not income',amt:_r2(s.tax),neg:true});
+    _drill(netNeg?'Net Loss':'Net Profit', _pnlScopeSub(B)+' &mdash; revenue minus all costs', rows, {total:s.net, totalLabel:(netNeg?'Net Loss':'Net Profit')}); }
+  function pnlExpDrill(){ var B=_pnlBounds(_pnlPeriod), s=_pnlSummary(B,_pnlKind);
+    var items=_ledger().expenses.filter(function(e){ return _expInRange(e,B)&&(_pnlKind==='all'||(e.assetKind||'')===_pnlKind); }).slice().sort(function(a,b){return (b.date||0)-(a.date||0);});
+    _drill('Expenses', _pnlScopeSub(B)+' &mdash; costs you have logged', items.map(function(x){
+      var _as=x.assetId?(DATA.assets||[]).filter(function(a){return a.id===x.assetId;})[0]:null;
+      var bits=[]; if(x.category) bits.push(esc(x.category)); if(_as) bits.push(esc(_as.name)); bits.push(_csvDate(x.date)); if(x.recurring) bits.push('Repeats '+esc(x.recurring).toLowerCase()); if(x._auto) bits.push('Auto');
+      return {label:'<b>'+esc(x.label)+'</b>'+(x.photo?' <span title="Has a receipt photo">&#128247;</span>':''),sub:bits.join(' &middot; '),amt:x.amount,neg:true,chip:'<button class="btn btn--ghost btn--sm" style="padding:2px 7px" onclick="Atlas.editLedger(\'expense\',\''+x.id+'\')">Edit</button> <button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:2px 7px" onclick="Atlas.rmLedger(\'expense\',\''+x.id+'\')">Remove</button>'};}),
+      {totalLabel:'Total expenses', empty:'No expenses in this period.', foot:'<button class="btn btn--primary btn--full btn--sm" style="margin-top:12px" onclick="Atlas.logLedger(\'expense\')">+ Log an expense</button>'}); }
   function logIncome(){ logLedger('income'); }
   function logExpense(){ logLedger('expense'); }
   // ---- Budgets: per-category MONTHLY spending ceiling vs this-month actual (from the expense ledger). Additive display + set-modal. ----
@@ -13349,7 +13373,7 @@ const Atlas = (function(){
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetPhotoAdd,assetPhotoRmGallery,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,ovCustomizeKpis,ovCustomizeAna,ovKpiToggle,ovKpiMove,ovKpiSave,ovKpiDragStart,ovKpiDrop,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
-    _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,assetPnlSetPeriod,renderPnl,
+    _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,pnlRevDrill,pnlNetDrill,pnlExpDrill,assetPnlSetPeriod,renderPnl,
     renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,webMetaImageUpload,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
