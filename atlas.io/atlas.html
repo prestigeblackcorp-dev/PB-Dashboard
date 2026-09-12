@@ -2230,7 +2230,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.22g';
+  var APP_VERSION='2026.7.22h';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -4338,7 +4338,7 @@ const Atlas = (function(){
   function _customersFromBookings(){ var map={}, now=Date.now();
     (DATA.bookings||[]).forEach(function(b){ if(b.status==='Cancelled')return; var k=b.cust||'Guest';
       if(!map[k]) map[k]={name:k,trips:0,spent:0,email:b.custEmail||'',_t:0};
-      map[k].trips++; map[k].spent+=Math.round((b.quote&&b.quote.total)||0);
+      map[k].trips++; map[k].spent+=_r2((b.quote&&b.quote.total)||0);   /* re-audit LOW: was Math.round (whole dollars) -> latent cents drift in per-customer spend; _r2 keeps cents (other spend surfaces already use exact totals) */
       var t=b.createdAt||b.startTs||0; if(t>map[k]._t){ map[k]._t=t; if(b.custEmail)map[k].email=b.custEmail; } });
     // X2: graft hydrated SERVER customers -- fill phone/id on email matches; surface server-only customers (created on another device or by a public booking that hasn't synced its booking row here yet).
     // PERF: index the map by lowercased email ONCE (O(m)) then look each server customer up in O(1) -- was a full map
@@ -4488,8 +4488,8 @@ const Atlas = (function(){
     else if(which==='active'){ _drill(cap(_fterm('active')), 'Out on rent right now', _bkList(function(b){return b.status==='On rent';},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing active right now.'}); }   // KPI value (_ovKpiDefs, ~L4779) counts On rent ONLY -- Confirmed belongs to the Upcoming KPI -> the drill must match the card, else the count and the listed rows disagree
     else if(which==='util'){ _drill(cap(_fterm('util')), 'Utilization per '+esc(S.fleet.noun), (DATA.assets||[]).slice().sort(function(a,b){return b.util-a.util;}).map(function(a){return {label:'<b>'+esc(a.name)+'</b>',sub:esc(a.status),chip:'<b class="tnum">'+a.util+'%</b>',onClick:"Atlas.closeModal();Atlas.openAsset('"+a.id+"')"};}), {showTotal:false}); }
     else if(which==='upcoming'){ _drill('Upcoming', 'Confirmed and pending '+_fterm('books'), _bkList(function(b){return b.status==='Confirmed'||b.status==='Pending';},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing upcoming.'}); }
-    else if(which==='count'){ _drill(cap(_fterm('books')), 'Earned '+_fterm('books')+' (pending + cancelled excluded)', _bkList(nc), {totalLabel:'Total revenue'}); }
-    else if(which==='avg'){ _drill('Average '+_fterm('book'), 'The average is the mean of these', _bkList(nc).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total'}); }
+    else if(which==='count'){ _drill(cap(_fterm('books')), 'Earned '+_fterm('books')+' (pending + cancelled excluded)'+(_ovRange!=='all'?(' &middot; '+_ovRangeBounds(_ovRange).short):''), _bkList(function(b){return nc(b)&&_inOvRange(b);}), {totalLabel:'Total revenue'}); }   /* re-audit MED: the count KPI VALUE is range-filtered (_inOvRange) but the drill listed ALL committed -> value and list disagreed when a range was set. Now the drill matches the value + discloses the range. */
+    else if(which==='avg'){ _drill('Average '+_fterm('book'), 'The average is the mean of these'+(_ovRange!=='all'?(' &middot; '+_ovRangeBounds(_ovRange).short):''), _bkList(function(b){return nc(b)&&_inOvRange(b);}).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total'}); }   /* re-audit MED: match the avg KPI's range-filtered value (was all-time) */
     else if(which==='repeat'){ var by={}; (DATA.bookings||[]).filter(nc).forEach(function(b){ (by[b.cust]=by[b.cust]||[]).push(b); });
       _drill('Repeat customers', 'Customers with 2 or more '+_fterm('books'), Object.keys(by).filter(function(c){return by[c].length>=2;}).map(function(c){return {n:by[c].length,name:c};}).sort(function(a,b){return b.n-a.n;}).map(function(x){return {label:'<b>'+esc(x.name)+'</b>',sub:x.n+' '+(x.n===1?_fterm('book'):_fterm('books')),chip:x.n>=2?'<span class="chip chip--ok" style="font-size:11px">Repeat</span>':''};}), {showTotal:false}); }   // fix: list only repeat customers (n>=2) to match the heading
     else if(which==='net'){ var _pay=_totalPayouts(), _cf=_cancelledFeeIncome(); var _nrows=[
@@ -5719,7 +5719,7 @@ const Atlas = (function(){
       +list.map(function(b){ return '<tr style="cursor:pointer" onclick="Atlas.openBooking(\''+b.id+'\')"><td><b>'+b.id+'</b>'+(_bkHasReq(b)?' <span class="chip chip--warn" style="padding:1px 6px;font-size:10.5px;vertical-align:1px">Request</span>':'')+'</td><td><div class="cust"><span class="avatar">'+esc((b.cust||'?')[0])+'</span>'+esc(b.cust)+'</div></td><td>'+esc(b.asset)+'</td><td class="tnum">'+_fmtWhen(b.startTs,b.time)+' &middot; '+b.periods+pu+'</td><td class="tnum"><b>'+money(_bkTotal(b))+'</b></td><td>'+statusChip(b.status)+'</td></tr>'; }).join('')+'</tbody>';
   }
   function bkFilter(s){ _bkFilter=s; renderBookings(); }
-  function newBooking(){ if(!_guard('bookEdit','Creating bookings'))return; _bookingForm(null); }
+  function newBooking(){ if(!_guard('bookEdit','Creating bookings'))return; _waitConvertId=null; _bookingForm(null); }   /* re-audit MED: clear any stale waitlist-conversion id so a NEW booking never inherits an abandoned conversion and silently deletes an unrelated waitlist entry. waitToBooking re-sets it AFTER calling this. */
   function editBooking(id){ if(!_guard('bookEdit','Editing bookings'))return; _bookingForm(_getBooking(id)); }
   // The date / time / duration inputs -- shape depends on the operator's Booking model (Settings > Bookings).
   function _bkWhenFieldsHtml(periods){ var cfg=_bookingCfg(), unitLbl=cap(_perUnit());
@@ -5936,7 +5936,7 @@ const Atlas = (function(){
       +(q.taxAmt?'<div class="mp-row"><span>Tax</span><span class="tnum">'+money(q.taxAmt)+'</span></div>':'')
       +'<div class="mp-row mp-total"><span>Total</span><span class="tnum">'+money(q.total)+'</span></div>'
       +'<div class="mp-row mp-brand"><span>Due to reserve</span><span class="tnum">'+money(q.dueNow)+'</span></div>'
-      +(_giftApplied(b)?('<div class="mp-row mp-ok"><span>Gift card applied</span><span class="tnum">&minus;'+money(_giftApplied(b))+'</span></div><div class="mp-row mp-brand"><span>Net due to reserve</span><span class="tnum">'+money(Math.max(0,Math.round((q.dueNow||0)-_giftApplied(b))))+'</span></div>'):'')
+      +(_giftApplied(b)?('<div class="mp-row mp-ok"><span>Gift card applied</span><span class="tnum">&minus;'+money(_giftApplied(b))+'</span></div><div class="mp-row mp-brand"><span>Net due to reserve</span><span class="tnum">'+money(Math.max(0,(q.dueNow||0)-_giftApplied(b)))+'</span></div>'):'')
       +(q.hold?'<div class="mp-row mp-muted"><span>+ Refundable hold</span><span class="tnum">'+money(q.hold)+'</span></div>':'')
       +(function(){ var p=S.money.payout||{}; if(!p.enabled||!p.value) return ''; var base=(p.base==='total')?(q.total||0):(q.subtotal||q.total||0); var amt=(p.kind==='percent'?base*(p.value||0)/100:(p.value||0)); var net=Math.max(0,(q.total||0)-(q.taxAmt||0)-amt);
         return '<div class="mp-row mp-ok"><span>'+esc(p.label||'Payout')+'</span><span class="tnum">&minus;'+money(amt)+'</span></div><div class="mp-row"><span style="font-weight:650;color:var(--ink)">Your net</span><span class="tnum" style="font-weight:750">'+money(net)+'</span></div>'; })()
@@ -6534,12 +6534,10 @@ const Atlas = (function(){
     setTimeout(function(){ _coCalc(); },20); }
   function doCloseOut(id){ var b=_getBooking(id); if(!b)return; var c=_coCompute(); if(!c){ closeModal(); return; } var F=_flowFor(b), applied=[];
     var ck=function(rid){ var e=document.getElementById(rid); return !!(e&&e.checked); };
-    if(c.ovAmt>0 && ck('coApOv')){ b.charges=_charges(b).filter(function(x){ return !((x.kind==='meter'||/^Usage:/.test(String(x.label||'')))&&!x.paidAt); });
-      b.charges.push({id:_chId(), kind:'meter', label:'Usage: '+c.over+' '+c.unit+' over', amount:c.ovAmt, at:Date.now(), paidAt:null}); applied.push('overage '+money(c.ovAmt)); }
-    if(c.fuelAmt>0 && ck('coApFuel')){ if(_fuelRate()>0){ S.money.fuelRate=_fuelRate(); } b.charges=_charges(b).filter(function(x){ return !(x.kind==='fuel'&&!x.paidAt); });
-      b.charges.push({id:_chId(), kind:'fuel', label:'Fuel: returned '+c.fi+' (out '+c.fo+'), '+c.fuelShort+'/8 short', amount:c.fuelAmt, at:Date.now(), paidAt:null}); applied.push('fuel '+money(c.fuelAmt)); }
-    if(c.lateAmt>0 && ck('coApLate')){ b.charges=_charges(b).filter(function(x){ return !(x.kind==='late'&&!x.paidAt); });
-      b.charges.push({id:_chId(), kind:'late', label:(c.lt||'Late return')+': '+c.lateNote, amount:c.lateAmt, at:Date.now(), paidAt:null}); applied.push('late '+money(c.lateAmt)); }
+    b.charges=_charges(b).filter(function(x){ return !((x.kind==='meter'||x.kind==='fuel'||x.kind==='late'||/^Usage:/.test(String(x.label||'')))&&!x.paidAt); });   // re-audit HIGH: strip prior UNPAID meter/fuel/late charges ONCE up front, then re-add only the ticked+nonzero ones below. Was: the strip lived INSIDE each if(amt>0 && ck) gate, so unticking (waiving) or a $0 recompute skipped the gate and left the earlier unpaid charge LIVE -> the customer was still billed a charge the owner waived. Now a waived/zeroed category is correctly removed. Matches the standalone bkMeterBill/saveFuel/saveLate invariant (one unpaid charge per kind, recomputed fresh).
+    if(c.ovAmt>0 && ck('coApOv')){ b.charges.push({id:_chId(), kind:'meter', label:'Usage: '+c.over+' '+c.unit+' over', amount:c.ovAmt, at:Date.now(), paidAt:null}); applied.push('overage '+money(c.ovAmt)); }
+    if(c.fuelAmt>0 && ck('coApFuel')){ if(_fuelRate()>0){ S.money.fuelRate=_fuelRate(); } b.charges.push({id:_chId(), kind:'fuel', label:'Fuel: returned '+c.fi+' (out '+c.fo+'), '+c.fuelShort+'/8 short', amount:c.fuelAmt, at:Date.now(), paidAt:null}); applied.push('fuel '+money(c.fuelAmt)); }
+    if(c.lateAmt>0 && ck('coApLate')){ b.charges.push({id:_chId(), kind:'late', label:(c.lt||'Late return')+': '+c.lateNote, amount:c.lateAmt, at:Date.now(), paidAt:null}); applied.push('late '+money(c.lateAmt)); }
     b.closeOut={ odoIn:(val('coOdoIn')!==''?_r2(parseFloat(val('coOdoIn'))||0):null), fuelIn:val('coFuelIn')||null, checks:_flowTicked(F.co,'coChk'), returnedAt:c.ret||Date.now(), at:Date.now() };
     _upsertBooking(b); _logEvent('booking','Close-out on '+b.id+(applied.length?(' -- billed '+applied.join(', ')):' -- no charges'),{booking:b.id}); save(); closeModal();
     if(b.status==='On rent'){ setBookingStatus(id,'Returned'); } else { openBooking(id); }
@@ -7143,8 +7141,8 @@ const Atlas = (function(){
   function saveWaitlistEdit(id){ if(!_guard('bookEdit'))return; var w=_waitlist().filter(function(x){return x.id===id;})[0]; if(!w)return; var nm=(val('wlName')||'').trim(); if(!nm){ toast('Add a name'); return; }
     w.cust=nm; w.contact=(val('wlContact')||'').trim(); w.asset=(val('wlAsset')||'').trim(); w.note=(val('wlNote')||'').trim();
     save(); closeModal(); _renderWaitCard(); toast('Waitlist entry updated'); }
-  function waitToBooking(id){ if(!_guard('bookEdit'))return; var w=_waitlist().filter(function(x){return x.id===id;})[0]; if(!w)return; _waitConvertId=id;   // fix: keep the waitlist entry until the booking is actually saved (createBooking removes it) -> no data loss if the operator abandons the form
-    go('bookings'); newBooking(); setTimeout(function(){ var n=document.getElementById('bkCust'); if(n)n.value=w.cust; if(w.contact){ var e=document.getElementById('bkEmail'); if(e)e.value=w.contact; } var a=document.getElementById('bkAsset'); if(a&&w.asset){ try{ a.value=w.asset; }catch(_){}} try{ bkPreview&&bkPreview(); }catch(_){}}, 250);
+  function waitToBooking(id){ if(!_guard('bookEdit'))return; var w=_waitlist().filter(function(x){return x.id===id;})[0]; if(!w)return;   // fix: keep the waitlist entry until the booking is actually saved (createBooking removes it) -> no data loss if the operator abandons the form
+    go('bookings'); newBooking(); _waitConvertId=id; setTimeout(function(){ var n=document.getElementById('bkCust'); if(n)n.value=w.cust; if(w.contact){ var e=document.getElementById('bkEmail'); if(e)e.value=w.contact; } var a=document.getElementById('bkAsset'); if(a&&w.asset){ try{ a.value=w.asset; }catch(_){}} try{ bkPreview&&bkPreview(); }catch(_){}}, 250);
     toast('Filling from the waitlist -- finish the booking'); }
   function _waitSurface(assetName){ var wl=_waitlist().filter(function(w){ return !w.asset || w.asset===assetName; }); if(!wl.length) return;
     toast(wl.length+' on the waitlist for this '+S.fleet.noun+' -- check Customers to fill it'); }
@@ -12374,7 +12372,7 @@ const Atlas = (function(){
       else if(w.type==='faq'){ inner=(w.items||[]).map(function(it){return '<div class="pw-faq"><b>'+esc(it.q||'')+'</b><div>'+esc(it.a||'')+'</div></div>';}).join(''); }
       else if(w.type==='link'){ inner=(w.body?'<div class="pw-body">'+esc(w.body)+'</div>':'')+(w.url?'<a class="btn btn--ghost btn--sm" style="margin-top:8px" href="'+esc(_safeUrl(w.url))+'" target="_blank" rel="noopener noreferrer">'+esc(w.linkLabel||'Open')+'</a>':''); }
       else if(w.type==='notice'){ return '<div class="portal__perks"><div class="pw-notice pw-notice--'+(w.tone==='warn'?'warn':'info')+'">'+(w.title?'<b>'+esc(w.title)+'</b>':'')+(w.body?'<div>'+esc(w.body)+'</div>':'')+'</div></div>'; }
-      else if(w.type==='payment'){ var _t=(S.money.tax||0)/100, _amt=Math.max(0,Number(w.amount)||0), _base=(w.mode==='pct')?Math.round((b&&b.quote&&b.quote.total||0)*_amt/100):_amt, _gross=Math.round(w.taxable?_base*(1+_t):_base);
+      else if(w.type==='payment'){ var _t=(S.money.tax||0)/100, _amt=Math.max(0,Number(w.amount)||0), _base=(w.mode==='pct')?_r2((b&&b.quote&&b.quote.total||0)*_amt/100):_amt, _gross=_r2(w.taxable?_base*(1+_t):_base);   /* re-audit HIGH: was Math.round (whole DOLLARS) while the charge path (portalPayWidget) uses _r2 (cents) -> the portal button showed a price that differed from what was charged for pct/taxable widgets with cents. Now _r2 on both. */
         var _paid=b&&(b.charges||[]).some(function(c){return c.fromWidget===w.id&&c.paidAt;});
         return '<div class="portal__acts" style="margin:14px 0 4px"><div class="portal__act"><div class="portal__act__ic'+(_paid?' done':'')+'">'+(_paid?'&#10003;':'')+'</div><div style="flex:1;min-width:0"><b>'+esc(w.title||'Payment')+(w.mode==='pct'?(' <span style="font-weight:600;color:var(--muted)">('+_amt+'%)</span>'):'')+'</b><div>'+(w.body?esc(w.body)+' &middot; ':'')+money(_gross)+(w.taxable&&_t>0?' incl. tax':'')+'</div></div>'+(_paid?'<span class="chip chip--ok" style="font-size:11px"><span class="dot"></span>Paid</span>':'<button class="btn btn--primary btn--sm" onclick="Atlas.portalPayWidget(\''+w.id+'\')">Pay '+money(_gross)+'</button>')+'</div></div>'; }
       else { inner='<div class="pw-body">'+esc(w.body||'')+'</div>'; }
@@ -12721,7 +12719,7 @@ const Atlas = (function(){
       +(rec.deposit?('<tr><td>Recovered from deposit / hold</td><td class="r">'+money(rec.deposit)+'</td></tr>'):'')
       +(rec.charged?('<tr><td>Recovered from renter charges (paid)</td><td class="r">'+money(rec.charged)+'</td></tr>'):'')
       +(cl.settledAmount!=null?('<tr><td>Insurer settlement</td><td class="r">'+money(cl.settledAmount)+'</td></tr>'):'')
-      +'<tr class="tot"><td>Net still outstanding</td><td class="r">'+money(Math.max(0,Math.round((cl.estAmount||0)-rec.total-(cl.settledAmount||0))))+'</td></tr>';
+      +'<tr class="tot"><td>Net still outstanding</td><td class="r">'+money(Math.max(0,(cl.estAmount||0)-rec.total-(cl.settledAmount||0)))+'</td></tr>';
     var _pgrid=function(t,arr){ return arr.length?('<h2>'+t+' ('+arr.length+')</h2><div class="ph">'+arr.map(function(m){ return '<figure><img src="'+m.src+'" alt="condition photo"><figcaption>'+_stamp(m.at)+'</figcaption></figure>'; }).join('')+'</div>'):''; };
     var photoHtml=_pgrid('Condition evidence &mdash; at pickup',pickPh)+_pgrid('Condition evidence &mdash; at return',retPh);
     var verified=b.idVerified?('ID verified '+_stamp(b.idVerifiedAt)):(b.idRejected?('ID rejected '+_stamp(b.idRejectedAt)):'ID not verified');
