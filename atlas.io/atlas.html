@@ -2230,7 +2230,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.22j';
+  var APP_VERSION='2026.7.22k';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -2884,8 +2884,18 @@ const Atlas = (function(){
     var pay=m.payout||{}, payBase=(pay.base==='total')?total:subtotal;
     var payoutAmt=(pay.enabled && pay.value)? (pay.kind==='percent'? payBase*(pay.value||0)/100 : (pay.value||0)) : 0;
     var netToYou=Math.max(0, total - taxAmt - payoutAmt);   // your take-home: revenue minus pass-through tax minus the payout/commission
-    return {gross:gross,disc:disc,subtotal:subtotal,fees:fees,feeTotal:feeTotal,taxAmt:taxAmt,total:total,dueNow:dueNow,balance:Math.max(0,total-dueNow),hold:holdAmt,extrasLines:exLines,extrasTotal:exTotal,payoutAmt:payoutAmt,netToYou:netToYou,rateMult:_rm};
+    return {gross:gross,disc:disc,subtotal:subtotal,fees:fees,feeTotal:feeTotal,taxAmt:taxAmt,total:total,dueNow:dueNow,balance:Math.max(0,total-dueNow),hold:holdAmt,extrasLines:exLines,extrasTotal:exTotal,payoutAmt:payoutAmt,netToYou:netToYou,rentBase:_rentBase,usedWeekly:_usedWeekly,weeklyRate:(+m.assetWeekly||0),dayRate:(m.baseRate||0),wks:(_usedWeekly?_wks:0),rem:(_usedWeekly?_rem:0),rateMult:_rm};   // M-F5: rent breakdown so the itemized rent line foots to the weekly-priced total
   }
+  // M-F5: render the rent line(s) so they FOOT to the total. When a per-asset flat weekly rate applied (q.usedWeekly), the rent
+  // is full weeks at the weekly price + remainder days at the daily price -- show that split (was a single rate*periods line that
+  // overstated the rent and did not foot). Non-weekly path is byte-identical to the old single line. Amounts derive from q's OWN
+  // rates (q.weeklyRate/q.dayRate) so the two lines sum to q.rentBase exactly regardless of any external rate passed for the label.
+  function _rentLineHtml(q, rate, per, rmNote){ rmNote=rmNote||''; var mult=(q&&q.rateMult)||1;
+    if(q && q.usedWeekly){ var wr=q.weeklyRate||0, dr=(q.dayRate!=null?q.dayRate:rate), wks=q.wks||0, rem=q.rem||0, um=_perUnit();
+      var h='<div class="mp-row"><span>'+money(wr)+' &times; '+wks+' '+(wks===1?'week':'weeks')+rmNote+'</span><span class="tnum">'+money(wr*mult*wks)+'</span></div>';
+      if(rem>0) h+='<div class="mp-row"><span>'+money(dr)+' &times; '+rem+' '+um+'</span><span class="tnum">'+money(dr*mult*rem)+'</span></div>';
+      return h; }
+    return '<div class="mp-row"><span>'+money(rate)+' &times; '+per+' '+_perUnit()+rmNote+'</span><span class="tnum">'+money(rate*mult*per)+'</span></div>'; }
   // ---- Smart Pricing Increment 1: owner-controlled dynamic rate MULTIPLIER (weekend uplift, seasonal date-range overrides,
   // lead-time last-minute/early-bird). DEFAULT OFF (money.smartPricing absent or on!==true) -> always returns 1, so an
   // existing tenant's pricing is byte-identical until they opt in. Kept BYTE-IDENTICAL to the worker's copy in backend/worker.js --
@@ -3609,7 +3619,7 @@ const Atlas = (function(){
         <div class="field"><label>Status</label><select class="select" onchange="Atlas.setField('firstAsset.status',this.value)"><option ${S.firstAsset.status==='Maintenance'?'':'selected'}>Available</option><option ${S.firstAsset.status==='Maintenance'?'selected':''}>Maintenance</option></select></div>
       </div>
       <div class="field" style="margin-bottom:4px"><label>Photo</label>
-        <label class="logo-drop" for="obAssetPhoto"><div class="logo-drop__prev" id="obAssetPrev">${S.firstAsset.photo?`<img src="${S.firstAsset.photo}" alt="asset photo">`:`<svg viewBox="0 0 24 24" width="26" height="26" fill="none" style="color:var(--faint)"><path d="M3 6h18v12H3zM3 15l5-4 4 3 3-2 6 4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`}</div>
+        <label class="logo-drop" for="obAssetPhoto"><div class="logo-drop__prev" id="obAssetPrev">${S.firstAsset.photo?`<img src="${esc(S.firstAsset.photo)}" alt="asset photo">`:`<svg viewBox="0 0 24 24" width="26" height="26" fill="none" style="color:var(--faint)"><path d="M3 6h18v12H3zM3 15l5-4 4 3 3-2 6 4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`}</div>
         <div><b style="color:var(--ink);font-size:14px">Add a photo</b><div style="font-size:12.5px;color:var(--muted)">Optional &mdash; makes your portal shine.</div></div></label>
         <input type="file" id="obAssetPhoto" accept="image/*" style="display:none" onchange="Atlas._obAssetPhoto(this)"></div>${''/* fix: dead dropzone now wired -> stores S.firstAsset.photo with a live preview (carried into the created asset at seed) */}
       ${obNav()}`,
@@ -4948,7 +4958,7 @@ const Atlas = (function(){
       +'<div class="field"><label>Max booking length <span style="color:var(--muted);font-weight:400;font-size:12px">('+esc(S.money.rateModel)+'s)</span></label><input class="input tnum" id="aMaxLen" value="'+((a.maxLen>0)?a.maxLen:'')+'" placeholder="no maximum"'+dis+'></div></div>'
       +((ro||!_extrasCatalog().length)?'':('<div class="field"><label>Booking extras offered <span style="color:var(--muted);font-weight:400;font-size:12px">(uncheck any to hide on this '+esc(S.fleet.noun)+')</span></label><div id="aExtras" style="display:flex;flex-direction:column;gap:7px;margin-top:4px">'+_extrasCatalog().map(function(e){ var on=!Array.isArray(a.extraIds)||a.extraIds.indexOf(e.id)>=0; return '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink)"><input type="checkbox" class="aEx" value="'+esc(e.id)+'"'+(on?' checked':'')+'> '+esc(e.name)+' <span style="color:var(--muted)">'+money(e.price)+' / '+esc(e.per)+'</span></label>'; }).join('')+'</div><div class="bk-lenhint" style="margin:5px 0 0">Manage the master list in Settings &rarr; Money. All checked = every extra is offered on this '+esc(S.fleet.noun)+'.</div></div>'))
       +((_fleetSel().length>1)?('<div class="field"><label>Type</label><select class="select" id="aType"'+dis+'>'+_fleetSel().map(function(tid){ var ft=_typeById(tid)||{}; return '<option value="'+esc(tid)+'"'+(((a.type||_fleetSel()[0])===tid)?' selected':'')+'>'+esc((ft.emoji?ft.emoji+' ':'')+(ft.label||tid))+'</option>'; }).join('')+'</select></div>'):'')   // fix: multi-type fleets can re-tag a mis-categorized asset in place
-      +(ro?'':'<div class="field"><label>Photo</label><div style="display:flex;align-items:center;gap:12px">'+(a.photo?('<img src="'+a.photo+'" alt="asset photo" style="width:56px;height:42px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">'):'<div style="width:56px;height:42px;border-radius:8px;border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px">None</div>')+'<label class="btn btn--ghost btn--sm" style="cursor:pointer;margin:0">'+(a.photo?'Replace photo':'Add photo')+'<input type="file" accept="image/*" style="display:none" onchange="Atlas.assetPhotoPick(\''+id+'\',this)"></label>'+(a.photo?('<button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.assetPhotoRemove(\''+id+'\')">Remove photo</button>'):'')+'</div></div>')   // fix: assets created via add/CSV/bulk can now get a photo (a.photo, downscaled); and it can now be removed, not only replaced
+      +(ro?'':'<div class="field"><label>Photo</label><div style="display:flex;align-items:center;gap:12px">'+(a.photo?('<img src="'+esc(a.photo)+'" alt="asset photo" style="width:56px;height:42px;object-fit:cover;border-radius:8px;border:1px solid var(--line)">'):'<div style="width:56px;height:42px;border-radius:8px;border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px">None</div>')+'<label class="btn btn--ghost btn--sm" style="cursor:pointer;margin:0">'+(a.photo?'Replace photo':'Add photo')+'<input type="file" accept="image/*" style="display:none" onchange="Atlas.assetPhotoPick(\''+id+'\',this)"></label>'+(a.photo?('<button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.assetPhotoRemove(\''+id+'\')">Remove photo</button>'):'')+'</div></div>')   // fix: assets created via add/CSV/bulk can now get a photo (a.photo, downscaled); and it can now be removed, not only replaced
       +(ro?'':'<div class="field"><label>More photos <span style="color:var(--muted);font-weight:400;font-size:12px">(gallery &mdash; up to 12)</span></label><div id="aGallery" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">'+((a.photos||[]).map(function(ph,gi){ return '<div style="position:relative"><img src="'+ph+'" alt="photo" style="width:56px;height:42px;object-fit:cover;border-radius:8px;border:1px solid var(--line)"><button onclick="Atlas.assetPhotoRmGallery(\''+id+'\','+gi+')" title="Remove" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;border:none;background:var(--danger);color:#fff;font-size:11px;line-height:1;cursor:pointer">&times;</button></div>'; }).join(''))+'<label class="btn btn--ghost btn--sm" style="cursor:pointer;margin:0">+ Add<input type="file" accept="image/*" multiple style="display:none" onchange="Atlas.assetPhotoAdd(\''+id+'\',this)"></label></div></div>')   // D1: multi-photo gallery (a.photos[]) alongside the primary a.photo
       +'<div style="font-size:13px;font-weight:750;color:var(--ink);margin:14px 0 8px">Current '+rl+' <span style="color:var(--muted);font-weight:500">'+(t.name?('&middot; since '+_fmtWhen(t.since)):'&middot; vacant')+'</span></div>'
       +'<div class="row2"><div class="field"><label>'+cap(rl)+' name</label><input class="input" id="aTenName" value="'+esc(t.name||'')+'" placeholder="Vacant"'+dis+'></div>'
@@ -5837,7 +5847,7 @@ const Atlas = (function(){
     var q=calcQuote(mEff,{periods:per,addons:0,extras:(_bkDraft?_bkDraft.extras:[]),discount:_bkReadDiscount(),startsAt:w.startTs});
     var el=document.getElementById('bkPreview'); if(!el)return;
     var _rmNote=(q.rateMult&&q.rateMult!==1)? (' <span style="color:var(--brand)">('+(q.rateMult>1?'+':'')+Math.round((q.rateMult-1)*100)+'% smart pricing)</span>') : '';   // Smart Pricing Increment 1: only shows once a tenant enables it (rateMult===1 otherwise) -- matches rate*rateMult*periods, the same rate portion baked into q.total below
-    var h='<div class="mp-row"><span>'+money(rate)+' &times; '+per+' '+_perUnit()+_rmNote+'</span><span class="tnum">'+money(rate*(q.rateMult||1)*per)+'</span></div>';
+    var h=_rentLineHtml(q, rate, per, _rmNote);
     (q.extrasLines||[]).forEach(function(l){ h+='<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(l.amt)+'</span></div>'; });
     if(q.disc) h+='<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(q.disc)+'</span></div>';
     (q.fees||[]).forEach(function(f){ h+='<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(f.amt)+'</span></div>'; });
@@ -5953,7 +5963,7 @@ const Atlas = (function(){
       +'<div class="mp-row"><span>Length</span><span class="tnum">'+b.periods+' '+_perUnit()+'</span></div>'
       +(b.pickupTime?('<div class="mp-row"><span>Pickup time</span><span class="tnum">'+esc(b.pickupTime)+'</span></div>'):'')
       +(b.deliveryAddr?('<div class="mp-row"><span>Delivery</span><span class="tnum" style="text-align:right;max-width:62%">'+esc(b.deliveryAddr)+'</span></div>'):'')
-      +'<div class="mp-row"><span>'+money(b.rate!=null?b.rate:S.money.baseRate)+' &times; '+b.periods+' '+_perUnit()+'</span><span class="tnum">'+money((b.rate!=null?b.rate:S.money.baseRate)*b.periods)+'</span></div>'
+      +_rentLineHtml(q, (b.rate!=null?b.rate:S.money.baseRate), b.periods, '')
       +(q.extrasLines||[]).map(function(l){return '<div class="mp-row"><span>'+esc(l.name)+'</span><span class="tnum">'+money(l.amt)+'</span></div>';}).join('')
       +(q.disc?'<div class="mp-row mp-ok"><span>Discount</span><span class="tnum">&minus;'+money(q.disc)+'</span></div>':'')
       +(q.fees||[]).map(function(f){return '<div class="mp-row"><span>'+esc(f.name)+'</span><span class="tnum">'+money(f.amt)+'</span></div>';}).join('')
