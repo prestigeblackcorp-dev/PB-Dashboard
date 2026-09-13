@@ -609,13 +609,13 @@ let state = {
 
 // --- Vehicle data (mirrors index.html) ------------------------------------
 var VEHICLE_MILEAGE = {
-  "Corvette":           { miles: 150, overage: 2.00  },
-  "Corvette Z51":       { miles: 150, overage: 2.00  },
-  "BMW M3":             { miles: 150, overage: 3.50  },
-  "BMW i4":             { miles: 200, overage: 1.50  },
-  "Macan":              { miles: 200, overage: 2.00  },
-  "Porsche Boxster S":  { miles: 150, overage: 3.00  },
-  "C300":               { miles: 200, overage: 1.25  },
+  "Corvette":           { miles: 125, overage: 5.00  },
+  "Corvette Z51":       { miles: 125, overage: 5.00  },
+  "BMW M3":             { miles: 125, overage: 5.00  },
+  "BMW i4":             { miles: 150, overage: 3.00  },
+  "Macan":              { miles: 150, overage: 3.00  },
+  "Porsche Boxster S":  { miles: 125, overage: 5.00  },
+  "C300":               { miles: 150, overage: 3.00  },
   "Lambo Huracan":      { miles: 125, overage: 10.00 },
   "Polaris Slingshot":  { miles: 300, overage: 1.00  },
 };
@@ -711,7 +711,7 @@ function _buildContractBreakdown(bk){
   var dateLockAmt = Number(bk.dateLock)||0;
   var balanceDue = bk.remainingBalance != null ? Math.max(0,Number(bk.remainingBalance)||0) : Math.max(0,rentalRev+depositAmt-dateLockAmt);
   var dailyRateNum = days > 0 ? baseRev / days : 0;
-  return {baseRev,days,dailyRateNum,unlimitedPD,unlimitedTot,deliveryAmt,stopAmt,waitAmt,petAmt,photoAmt,champagneAmt,redcarpetAmt,decorAmt,bouquetAmt,addonsTotal,subtotal,dateLockAmt,depositAmt,balanceDue};
+  return {baseRev,days,dailyRateNum,unlimitedPD,unlimitedTot,doubleMiles:!!bk.doubleMiles,deliveryAmt,stopAmt,waitAmt,petAmt,photoAmt,champagneAmt,redcarpetAmt,decorAmt,bouquetAmt,addonsTotal,subtotal,dateLockAmt,depositAmt,balanceDue};
 }
 
 function _buildBreakdownTable(bk){
@@ -720,7 +720,7 @@ function _buildBreakdownTable(bk){
   var durLabel = (bk.type==='hourly'||bk.type==='chauffeur') ? 'hr' : 'day';
   var rows = '';
   rows += '<tr><td style="padding:4px 8px 4px 0">Base Rental ('+f(bd.dailyRateNum)+'/'+durLabel+' \u00D7 '+bd.days+' '+durLabel+(bd.days!==1?'s':'')+')</td><td style="text-align:right;padding:4px 0;font-weight:700">'+f(bd.baseRev)+'</td></tr>';
-  if(bd.unlimitedPD>0) rows += '<tr><td style="padding:4px 8px 4px 0;color:#aaa">Unlimited Mileage ('+f(bd.unlimitedPD)+'/day \u00D7 '+bd.days+' day'+(bd.days!==1?'s':'')+')</td><td style="text-align:right;padding:4px 0">'+f(bd.unlimitedTot)+'</td></tr>';
+  if(bd.unlimitedPD>0) rows += '<tr><td style="padding:4px 8px 4px 0;color:#aaa">'+(bd.doubleMiles?'Double Miles':'Unlimited Mileage')+' ('+f(bd.unlimitedPD)+'/day \u00D7 '+bd.days+' day'+(bd.days!==1?'s':'')+')</td><td style="text-align:right;padding:4px 0">'+f(bd.unlimitedTot)+'</td></tr>';
   if(bd.deliveryAmt>0) rows += '<tr><td style="padding:4px 8px 4px 0;color:#aaa">Delivery Fee</td><td style="text-align:right;padding:4px 0">'+f(bd.deliveryAmt)+'</td></tr>';
   if(bd.stopAmt>0)     rows += '<tr><td style="padding:4px 8px 4px 0;color:#aaa">Extra Stop</td><td style="text-align:right;padding:4px 0">'+f(bd.stopAmt)+'</td></tr>';
   if(bd.waitAmt>0)     rows += '<tr><td style="padding:4px 8px 4px 0;color:#aaa">Extra Wait</td><td style="text-align:right;padding:4px 0">'+f(bd.waitAmt)+'</td></tr>';
@@ -1040,7 +1040,7 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
   var _sTripTot = (Number(bk.includedMiles)>0)?Number(bk.includedMiles):((Number(_sVm.miles)||0)*_sDaysM);
   var _sPerDay = (Number(bk.includedMiles)>0&&_sDaysM>0)?Math.round(Number(bk.includedMiles)/_sDaysM):(Number(_sVm.miles)||0);
   var _sOvRate = Number(bk.overageRate)||_sVm.overage||0;
-  var _sIsUnlim = Number(bk.unlimited)>0||!_sPerDay;
+  var _sIsUnlim = (Number(bk.unlimited)>0 && !bk.doubleMiles)||!_sPerDay;   // legacy uncapped only; Double Miles uses the standard clause with the doubled allowance
   var _sMilesDisp = _sIsUnlim?'Unlimited':_sPerDay.toLocaleString()+' mi/day';
   var _sTripMiles = _sIsUnlim?'Unlimited':_sTripTot.toLocaleString()+' mi';
   var _sOverageDisp = _sIsUnlim?'N/A':(_sOvRate?'$'+_sOvRate+'/mi over limit':'N/A');
@@ -1082,7 +1082,7 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
     .replace(/\{\{breakdown_table\}\}/gi, _sr(_sBdTable))
     .replace(/\{\{addons\}\}/gi, _sr(
       [bk.delivery&&Number(bk.delivery)?'Delivery ($'+bk.delivery+')':null,
-       bk.unlimited&&Number(bk.unlimited)?'Unlimited Miles ($'+bk.unlimited+'/day)':null,
+       bk.unlimited&&Number(bk.unlimited)?(bk.doubleMiles?'Double Miles':'Unlimited Miles')+' ($'+bk.unlimited+'/day)':null,
        bk.pet&&Number(bk.pet)?'Pet Fee ($'+bk.pet+')':null,
        bk.photo&&Number(bk.photo)?'Photoshoot ($'+bk.photo+')':null,
        bk.champagne&&Number(bk.champagne)?'Champagne ($'+bk.champagne+')':null,
@@ -1339,7 +1339,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     var _sTripTot = (Number(bk.includedMiles)>0)?Number(bk.includedMiles):((Number(_sVm.miles)||0)*_sDaysM);
     var _sPerDay = (Number(bk.includedMiles)>0&&_sDaysM>0)?Math.round(Number(bk.includedMiles)/_sDaysM):(Number(_sVm.miles)||0);
     var _sOvRate = Number(bk.overageRate)||_sVm.overage||0;
-    var _sIsUnlim = Number(bk.unlimited)>0||!_sPerDay;
+    var _sIsUnlim = (Number(bk.unlimited)>0 && !bk.doubleMiles)||!_sPerDay;   // legacy uncapped only; Double Miles uses the standard clause with the doubled allowance
     var _sMilesDisp = _sIsUnlim?'Unlimited':_sPerDay.toLocaleString()+' mi/day';
     var _sTripMiles = _sIsUnlim?'Unlimited':_sTripTot.toLocaleString()+' mi';
     var _sOverageDisp = _sIsUnlim?'N/A':(_sOvRate?'$'+_sOvRate+'/mi over limit':'N/A');
@@ -1382,7 +1382,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
       .replace(/\{\{breakdown_table\}\}/gi, _sr(_sBdTable))
       .replace(/\{\{addons\}\}/gi, _sr(
         [bk.delivery&&Number(bk.delivery)?'Delivery ($'+bk.delivery+')':null,
-         bk.unlimited&&Number(bk.unlimited)?'Unlimited Miles ($'+bk.unlimited+'/day)':null,
+         bk.unlimited&&Number(bk.unlimited)?(bk.doubleMiles?'Double Miles':'Unlimited Miles')+' ($'+bk.unlimited+'/day)':null,
          bk.pet&&Number(bk.pet)?'Pet Fee ($'+bk.pet+')':null,
          bk.photo&&Number(bk.photo)?'Photoshoot ($'+bk.photo+')':null,
          bk.champagne&&Number(bk.champagne)?'Champagne ($'+bk.champagne+')':null,
@@ -2548,7 +2548,7 @@ function showMileageTracker(b){
   const start=Number(b.odomIn)||0;
   const inc=Number(b.includedMiles)||0;
   const rate=Number(b.overageRate)||0;
-  const unlimited=!!b.unlimited||inc<=0;
+  const unlimited=(!!b.unlimited && !b.doubleMiles)||inc<=0;   // legacy uncapped only; Double Miles shows the doubled cap + overage tracker
   const fuel=b.fuelIn?esc(String(b.fuelIn)):'';
   const bid=esc(b.id);
   let saved=''; try{ saved=localStorage.getItem('pb_miles_'+b.id)||''; }catch(e){}
@@ -2820,18 +2820,18 @@ function showAddUnlimited(b){
   var fee = Math.round(rate*days*100)/100;
   return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
     <div style="background:rgba(124,196,255,.07);border:1px solid rgba(124,196,255,.25);border-radius:12px;padding:12px 14px;">
-      <div style="font-size:13px;font-weight:800;color:#7cc4ff;margin-bottom:3px;">\u221e Add Unlimited Miles</div>
-      <div style="font-size:11px;color:rgba(255,255,255,.55);line-height:1.5;margin-bottom:10px;">Drive as far as you want \u2014 no per-mile overage. Available until you sign your agreement. <strong style="color:#7cc4ff">+$${fee.toFixed(2)}</strong> is added to your balance.</div>
+      <div style="font-size:13px;font-weight:800;color:#7cc4ff;margin-bottom:3px;">\u00d7 Add Double Miles</div>
+      <div style="font-size:11px;color:rgba(255,255,255,.55);line-height:1.5;margin-bottom:10px;">Double your daily mileage allowance \u2014 overage only applies after the doubled limit. Available until you sign your agreement. <strong style="color:#7cc4ff">+$${fee.toFixed(2)}</strong> is added to your balance.</div>
       <button onclick="addUnlimited('${b.id}')" id="unlBtn_${b.id}"
         style="width:100%;padding:10px;background:rgba(124,196,255,.12);color:#7cc4ff;border:1px solid rgba(124,196,255,.4);border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;">
-        Add Unlimited Miles \u2014 +$${fee.toFixed(2)} \u2192
+        Add Double Miles \u2014 +$${fee.toFixed(2)} \u2192
       </button>
     </div>
   </div>`;
 }
 
 async function addUnlimited(bookingId){
-  if(!confirm('Add Unlimited Miles? The fee is added to your balance and this booking switches to unlimited mileage.')) return;
+  if(!confirm('Add Double Miles? The fee is added to your balance and this doubles your daily mileage allowance.')) return;
   var btn = document.getElementById('unlBtn_'+bookingId);
   if(btn){ btn.disabled=true; btn.textContent='Adding\u2026'; }
   try{
@@ -2842,17 +2842,17 @@ async function addUnlimited(bookingId){
     var d = await r.json();
     if(r.status===401){ _portalSessionExpired(); return; }
     if(!r.ok || !d.ok){
-      toast(d.error||'Could not add unlimited miles. Call (214) 207-2481.','error');
-      if(btn){ btn.disabled=false; btn.textContent='Add Unlimited Miles \u2192'; }
+      toast(d.error||'Could not add double miles. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Add Double Miles \u2192'; }
       return;
     }
     await loadPortalData();
     renderBookings();
-    if(btn){ btn.disabled=false; btn.textContent='Add Unlimited Miles \u2192'; }
-    toast('Unlimited miles added \u2014 $'+(Number(d.fee)||0).toFixed(2)+' added to your balance.','success');
+    if(btn){ btn.disabled=false; btn.textContent='Add Double Miles \u2192'; }
+    toast('Double miles added \u2014 $'+(Number(d.fee)||0).toFixed(2)+' added to your balance.','success');
   }catch(e){
     toast('Network error. Call (214) 207-2481.','error');
-    if(btn){ btn.disabled=false; btn.textContent='Add Unlimited Miles \u2192'; }
+    if(btn){ btn.disabled=false; btn.textContent='Add Double Miles \u2192'; }
   }
 }
 
