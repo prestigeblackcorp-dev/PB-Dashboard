@@ -2230,7 +2230,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.22k';
+  var APP_VERSION='2026.7.22l';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -5380,7 +5380,18 @@ const Atlas = (function(){
     var _uq=Math.max(1,Number(a.qty)||1); return Math.max(0,Math.min(100,Math.round(booked/(win*_uq)*100)));   // AUDIT-FIX: divide by unit count -- a 1-of-N booking was reading 100% utilization
   }
   // Recompute util onto every asset so the Overview KPI, fleet grid, Top Performers + AI read the SAME value.
-  function _recomputeUtil(){ try{ (DATA.assets||[]).forEach(function(a){ a.util=_assetUtil(a); }); }catch(e){} }
+  function _recomputeUtil(){ try{   // PERF: ONE pass over bookings (was _assetUtil() per asset -> O(assets x bookings) + a full JSON.parse of the bookings blob per asset). Byte-identical to _assetUtil's math; runs on the Overview landing page + every booking mutation.
+    var now=Date.now(), win=30*86400000, from=now-win, pm=_periodMs(), by={};
+    (_bookings()||[]).forEach(function(b){
+      if(!_isCommitted(b)||!b.asset) return;
+      var s=Number(b.startTs)||Number(b.createdAt)||0; if(!s) return;
+      var e=_bkEffectiveEndTs(b)||(s+(Number(b.periods)||1)*pm);   // effective (extended) occupancy, same as _assetUtil
+      var lo=Math.max(s,from), hi=Math.min(e,now);
+      if(hi>lo) by[b.asset]=(by[b.asset]||0)+(hi-lo);
+    });
+    (DATA.assets||[]).forEach(function(a){ if(!a) return; if(!a.name){ a.util=0; return; }
+      var _uq=Math.max(1,Number(a.qty)||1); a.util=Math.max(0,Math.min(100,Math.round((by[a.name]||0)/(win*_uq)*100))); });   // divide by unit count -- matches _assetUtil
+  }catch(e){} }
   // 8-week revenue + booking-count series (oldest..newest) from real bookings, for the Overview chart.
   function _revSeries(){
     var now=Date.now(), wk=7*86400000, weeks=8, rev=[], cnt=[], i;
@@ -5730,9 +5741,9 @@ const Atlas = (function(){
     return {segs:segs,total:total};
   }
   // Per-customer trips + spend from real bookings (excludes cancelled), keyed by email then name (matches viewCustomer).
-  function _custStats(name,email){
+  function _custStats(name,email,_bks){   // PERF: accept a pre-read bookings array so renderCustomers reads/parses the blob ONCE, not once per customer (was O(customers) full JSON.parses). Union match logic unchanged.
     var trips=0, spent=0, key=(email||'').toLowerCase(), nm=(name||'').toLowerCase();
-    (_bookings()||[]).forEach(function(b){ if(!_isCommitted(b))return; var m=(key&&(b.custEmail||'').toLowerCase()===key)||(nm&&(b.cust||'').toLowerCase()===nm); if(m){ trips++; spent+=_bkTotal(b); } });   // email-OR-name union: matches the customer profile modal (viewCustomer) + loyalty basis (_loySpend) exactly, so the Customers row, the profile, and loyalty points never disagree on a customer whose bookings have mixed/blank emails
+    (_bks||_bookings()||[]).forEach(function(b){ if(!_isCommitted(b))return; var m=(key&&(b.custEmail||'').toLowerCase()===key)||(nm&&(b.cust||'').toLowerCase()===nm); if(m){ trips++; spent+=_bkTotal(b); } });   // email-OR-name union: matches the customer profile modal (viewCustomer) + loyalty basis (_loySpend) exactly, so the Customers row, the profile, and loyalty points never disagree on a customer whose bookings have mixed/blank emails
     return {trips:trips,spent:spent};
   }
   function _fmtDay(ts){ try{ return new Date(ts).toLocaleDateString(undefined,{month:'short',day:'numeric'}); }catch(e){ return ''; } }
@@ -7114,8 +7125,9 @@ const Atlas = (function(){
   function tabTour(nav){ nav=nav||'overview'; if(nav==='bookings'){ return bkTour(); } if(!(document.querySelector('.panel[data-panel="'+nav+'"]'))) return; try{ closeAio(); }catch(e){} go(nav); var steps=_tabTourSteps(nav); if(steps&&steps.length) setTimeout(function(){ startTour(steps,{key:'atlas_tour_'+nav}); }, 360); }
   function renderCustomers(){
     var _ct=document.getElementById('custTbl'); if(!_ct)return;   // fix: self-guard so booking mutators can call this safely (incl. website-preview context)
+    var _allBk=_bookings();   // PERF: read + parse the bookings blob ONCE, then pass it to every _custStats (was a full parse per customer)
     _ct.innerHTML=`<thead><tr><th>${cap(_custNoun())}</th><th>${cap(_fterm('books'))}</th><th>Total spent</th><th>Last active</th><th></th></tr></thead><tbody>`+
-      (DATA.customers.length ? DATA.customers.map((c,i)=>{ var _cs=_custStats(c.name,c.email); return `<tr><td><div class="cust"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b><div style="font-size:12px;color:var(--muted)">${esc(c.email)}</div></div></div></td>
+      (DATA.customers.length ? DATA.customers.map((c,i)=>{ var _cs=_custStats(c.name,c.email,_allBk); return `<tr><td><div class="cust"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b><div style="font-size:12px;color:var(--muted)">${esc(c.email)}</div></div></div></td>
       <td class="tnum">${_cs.trips}</td><td class="tnum"><b>${money(_cs.spent)}</b></td><td class="tnum">${c.last} ago</td>
       <td><button class="btn btn--ghost btn--sm" onclick="Atlas.viewCustomer(${i})">View</button></td></tr>`; }).join('') : `<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:22px 8px">No ${esc(_custNoun(true))} yet &mdash; they appear here automatically after their first booking.</td></tr>`)+`</tbody>`;
     _renderLeadCard(); _renderWaitCard();
