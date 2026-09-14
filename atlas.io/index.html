@@ -2230,7 +2230,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.22y';
+  var APP_VERSION='2026.7.22z';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -4505,8 +4505,8 @@ const Atlas = (function(){
     else if(which==='upcoming'){ _drill('Upcoming', 'Confirmed and pending '+_fterm('books'), _bkList(function(b){return b.status==='Confirmed'||b.status==='Pending';},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing upcoming.'}); }
     else if(which==='count'){ _drill(cap(_fterm('books')), 'Earned '+_fterm('books')+' (pending + cancelled excluded)'+(_ovRange!=='all'?(' &middot; '+_ovRangeBounds(_ovRange).short):''), _bkList(function(b){return nc(b)&&_inOvRange(b);}), {totalLabel:'Total revenue'}); }   /* re-audit MED: the count KPI VALUE is range-filtered (_inOvRange) but the drill listed ALL committed -> value and list disagreed when a range was set. Now the drill matches the value + discloses the range. */
     else if(which==='avg'){ _drill('Average '+_fterm('book'), 'The average is the mean of these'+(_ovRange!=='all'?(' &middot; '+_ovRangeBounds(_ovRange).short):''), _bkList(function(b){return nc(b)&&_inOvRange(b);}).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total'}); }   /* re-audit MED: match the avg KPI's range-filtered value (was all-time) */
-    else if(which==='repeat'){ var by={}; (DATA.bookings||[]).filter(nc).forEach(function(b){ (by[b.cust]=by[b.cust]||[]).push(b); });
-      _drill('Repeat customers', 'Customers with 2 or more '+_fterm('books'), Object.keys(by).filter(function(c){return by[c].length>=2;}).map(function(c){return {n:by[c].length,name:c};}).sort(function(a,b){return b.n-a.n;}).map(function(x){return {label:'<b>'+esc(x.name)+'</b>',sub:x.n+' '+(x.n===1?_fterm('book'):_fterm('books')),chip:x.n>=2?'<span class="chip chip--ok" style="font-size:11px">Repeat</span>':''};}), {showTotal:false}); }   // fix: list only repeat customers (n>=2) to match the heading
+    else if(which==='repeat'){ var by={}; (DATA.bookings||[]).filter(function(b){return nc(b)&&_inOvRange(b);}).forEach(function(b){ (by[b.cust]=by[b.cust]||[]).push(b); });   /* Wave4 MED: range-scope the drill to match the range-filtered headline (was all-time; mirrors count/avg) */
+      _drill('Repeat customers', 'Customers with 2 or more '+_fterm('books')+(_ovRange!=='all'?(' &middot; '+_ovRangeBounds(_ovRange).short):''), Object.keys(by).filter(function(c){return by[c].length>=2;}).map(function(c){return {n:by[c].length,name:c};}).sort(function(a,b){return b.n-a.n;}).map(function(x){return {label:'<b>'+esc(x.name)+'</b>',sub:x.n+' '+(x.n===1?_fterm('book'):_fterm('books')),chip:x.n>=2?'<span class="chip chip--ok" style="font-size:11px">Repeat</span>':''};}), {showTotal:false}); }   // fix: list only repeat customers (n>=2) to match the heading
     else if(which==='net'){ var _pay=_totalPayouts(), _cf=_cancelledFeeIncome(); var _nrows=[
       {label:'<b>Booking revenue</b>',sub:'earned '+_fterm('books'),amt:_bookingRevenue(),onClick:"Atlas.drillKpi('rev')"},
       {label:'<b>Other income</b>',sub:_allIncomes().length+' logged',amt:_otherIncome(),onClick:"Atlas.drillLedger('income')"}];
@@ -4660,7 +4660,7 @@ const Atlas = (function(){
   function _pnlMonthLabel(d){ try{ return d.toLocaleDateString('en-US',{month:'short',year:'numeric'}); }catch(e){ return (d.getMonth()+1)+'/'+d.getFullYear(); } }
   function _pnlByMonth(kind){ var all=(kind==='all'), now=new Date(), out=[];
     for(var i=11;i>=0;i--){ var d=new Date(now.getFullYear(),now.getMonth()-i,1);
-      var B={from:d.getTime(), to:new Date(d.getFullYear(),d.getMonth()+1,1).getTime()-1};
+      var B={from:d.getTime(), to:Math.min(new Date(d.getFullYear(),d.getMonth()+1,1).getTime()-1, now.getTime())};   // Wave4 MED: clamp the current month to now (MTD) so future-dated confirmed bookings don't inflate the trend cell -- matches the This-month card + _revSeries
       var bks=(DATA.bookings||[]).filter(function(b){ return _bkInRange(b,B)&&(all||_assetKindByName(b.asset)===kind); });
       var rev=bks.reduce(function(s,b){return s+_bkEarnedRev(b);},0);
       var cancelFee=(DATA.bookings||[]).filter(function(b){ var t=_bDate(b); return b&&b.status==='Cancelled'&&t>=B.from&&t<=B.to&&(all||_assetKindByName(b.asset)===kind); }).reduce(function(s,b){return s+_collectedCharges(b);},0);
