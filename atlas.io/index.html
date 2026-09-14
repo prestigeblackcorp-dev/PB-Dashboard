@@ -2230,7 +2230,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.22w';
+  var APP_VERSION='2026.7.22x';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -4404,6 +4404,7 @@ const Atlas = (function(){
     if(_curConvOn() && _d!==_b){ var _r=_fxRate(_d); if(_r!=null) return _fmtCur(v*_r,_d);
       return (v<0?'-':'')+_curSym(_b)+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }   // live convert base->display; rates not yet loaded -> show the honest BASE amount, never a mislabeled symbol
     return (v<0?'-':'')+_curSym(_d)+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); };   // feature off (or display==base): symbol relabel only. negatives read as -$12.50 (refunds/credits), not $-12.50; garbage -> $0.00 via _r2
+  const _moneyBase=n=>{ var v=_r2(n), _b=_baseCur(); return (v<0?'-':'')+_curSym(_b)+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); };   // ALWAYS base currency (USD), ignoring the liveCurrency display toggle: receipts, chargeback evidence and void legal reports are settlement/legal records that MUST reconcile with the USD processor ledger (the toggle copy: you always price, charge and settle in USD)
   /* ---- Multi-currency DISPLAY layer (flag: liveCurrency, default OFF) --------------------------------------------
      Money is ALWAYS stored, charged and settled in the BASE currency (USD today). This layer only CONVERTS numbers for
      VIEW at today's ECB rate (worker /api/fx, cached), so a viewer can see every amount in their region's currency while
@@ -6033,7 +6034,7 @@ const Atlas = (function(){
         +'<div class="cond-sub">Grace window, then hourly &mdash; capped at the daily rate.</div>'
         +_lateHtml(b)+'</div>'
       +'<div class="cond-sec"><div class="cond-hd"><span>Authorized drivers</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkDriver(\''+b.id+'\')">Add driver</button></div>'
-        +'<div class="cond-sub">Everyone allowed to operate it &mdash; name + license, with an optional fee.</div>'
+        +'<div class="cond-sub">Everyone allowed to operate the '+esc(S.fleet.noun)+' &mdash; name + license, with an optional fee.</div>'
         +_driversHtml(b)+'</div>'
       +'<div class="cond-sec"><div class="cond-hd"><span>Insurance / coverage</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkInsurance(\''+b.id+'\')">'+((b.insurance&&(b.insurance.carrier||b.insurance.waiverAccepted))?'Update':'Add')+'</button></div>'
         +'<div class="cond-sub">Renter coverage or damage-waiver acceptance, on the record.</div>'
@@ -6124,7 +6125,7 @@ const Atlas = (function(){
   function bkVoidReport(id){ _voidLegalReport(id); }
   function _voidLegalReport(id){ var b=_getBooking(id); if(!b){ toast('Booking not found.'); return; }
     var E=function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
-    var mny=function(n){ return money(_r2(Number(n)||0)); };
+    var mny=function(n){ return _moneyBase(_r2(Number(n)||0)); };
     var when=function(ms){ if(!ms)return '&mdash;'; try{ return E(_stamp(ms)); }catch(e){ return '&mdash;'; } };
     var rk=function(k,v){ return '<tr><td class="k">'+k+'</td><td class="v">'+(v==null||v===''?'&mdash;':v)+'</td></tr>'; };
     var p=_portal(b)||{}, tr=b.sigTrail||{};
@@ -6169,7 +6170,7 @@ const Atlas = (function(){
   // condition-photo evidence. Read-only; mirrors _voidLegalReport's self-contained HTML + window.print. Never mutates.
   function _genChargebackEvidence(id){ var b=_getBooking(id); if(!b){ toast('Booking not found.'); return; }
     var E=function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
-    var mny=function(n){ return money(_r2(Number(n)||0)); };
+    var mny=function(n){ return _moneyBase(_r2(Number(n)||0)); };
     var when=function(ms){ if(!ms)return '&mdash;'; try{ return E(_stamp(ms)); }catch(e){ return '&mdash;'; } };
     var rk=function(k,v){ return '<tr><td class="k">'+k+'</td><td class="v">'+(v==null||v===''?'&mdash;':v)+'</td></tr>'; };
     var p=_portal(b)||{}, tr=b.sigTrail||{}, q=b.quote||{}, dev=p.signDevice||{};
@@ -12585,7 +12586,7 @@ const Atlas = (function(){
   /* ---- Customer reviews (top-tier: stars + text, verified customer) ---- */
   var _pReviewRating=0;
   function portalSetStars(n){ _pReviewRating=n; var st=document.getElementById('revStars'); if(!st)return;
-    [].slice.call(st.querySelectorAll('.rev-star')).forEach(function(s){ s.classList.toggle('on', (+s.getAttribute('data-n'))<=n); }); }
+    [].slice.call(st.querySelectorAll('.rev-star')).forEach(function(s){ var on=(+s.getAttribute('data-n'))<=n; s.classList.toggle('on', on); s.setAttribute('aria-checked', on?'true':'false'); }); }
   function _portalReviewHtml(b){ var rv=b.review;
     var back='<button class="btn btn--ghost btn--sm" onclick="Atlas.portalView(\'home\')">&larr; Back</button>';
     if(rv){ return '<div class="portal__body">'+back
@@ -12598,7 +12599,7 @@ const Atlas = (function(){
     return '<div class="portal__body">'+back
       +'<div class="portal__hi" style="margin-top:12px">How was your '+esc(b.asset)+'?</div>'
       +'<div style="font-size:13px;color:var(--muted);margin-bottom:12px">Your honest review helps '+esc(S.brand.name)+' and future renters.</div>'
-      +'<div class="rev-stars" id="revStars" style="justify-content:center;margin:8px 0 4px">'+[1,2,3,4,5].map(function(n){return '<button type="button" class="rev-star" data-n="'+n+'" onclick="Atlas.portalSetStars('+n+')">&#9733;</button>';}).join('')+'</div>'
+      +'<div class="rev-stars" id="revStars" role="radiogroup" aria-label="Star rating, 1 to 5" style="justify-content:center;margin:8px 0 4px">'+[1,2,3,4,5].map(function(n){return '<button type="button" role="radio" aria-checked="false" aria-label="'+n+' star'+(n>1?'s':'')+'" class="rev-star" data-n="'+n+'" onclick="Atlas.portalSetStars('+n+')">&#9733;</button>';}).join('')+'</div>'
       +'<textarea class="input" id="revText" rows="5" style="resize:vertical;font-family:inherit;margin-top:10px" placeholder="What stood out? Anything we could do better?"></textarea>'
       +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:14px" onclick="Atlas.portalSubmitReview()">Submit review</button>'
       +'<div style="font-size:11.5px;color:var(--muted);margin-top:10px;text-align:center">Posted as a verified '+esc(S.brand.name)+' customer.</div></div>'; }
@@ -12865,7 +12866,7 @@ const Atlas = (function(){
     if(q.fees&&q.fees.length){ q.fees.forEach(function(f){ items.push({label:f.name, amt:_r2(f.amt)}); }); } else if(_r2(q.feeTotal||0)>0){ items.push({label:'Fees', amt:_r2(q.feeTotal||0)}); }   // fix: _r2 not Math.round -> a % fee foots; single Fees line for an old stored quote that lacks the itemized array
     var _preTax=items.reduce(function(t,it){return t+(it.amt||0);},0);items.push({label:'Sales tax ('+(Number(m.tax)||0)+'%)', amt:_r2((q.total!=null?q.total:(_preTax+(q.taxAmt||0)))-_preTax)});   // footing: tax line absorbs the <=2c per-line rounding residual so the visible items sum EXACTLY to the charged total q.total (fallback to q.taxAmt when total absent)
     return {q:q, items:items}; }
-  function _receiptHtml(b){ var r=_receiptItems(b), q=r.q, pm=_portalMoney(b);
+  function _receiptHtml(b){ var money=_moneyBase; var r=_receiptItems(b), q=r.q, pm=_portalMoney(b);
     var logo=S.brand.logo?('<img src="'+esc(S.brand.logo)+'" alt="business logo" style="height:36px;border-radius:8px">'):('<div class="rcpt-logo" style="background:'+S.brand.color+'">'+esc(S.brand.initial)+'</div>');
     var rows=r.items.map(function(it){ return '<div class="rcpt-line'+(it.disc?' rcpt-disc':'')+'"><span>'+esc(it.label)+'</span><span class="tnum">'+(it.amt<0?'-'+money(-it.amt):money(it.amt))+'</span></div>'; }).join('');
     var extra=pm.gift||pm.chTotal;   // when there is a gift or add-on charges, "Total" becomes "Rental total" and we show the breakdown
