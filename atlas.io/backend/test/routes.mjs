@@ -1045,6 +1045,85 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(gr.status === 200 && updatedTo === 'rejected', 'sponge Stage11: owner reject -> status rejected');
 }
 
+// ---- SPONGE Stage 15 (corpus export): the owner downloads the de-identified, scrubbed, stable-only reservoir as a
+// training dataset -- no figure/contact/name survives. ----
+{
+  function cxDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => { if (/sqlite_master/.test(sql)) return { n: 30 }; return null; },
+        all: async () => { if (/FROM ai_answers WHERE kind='stable'/.test(sql)) return { results: [{ qtext: 'how do I price for tenant Bob', answer: 'Charge $1,540/week and target 43% for Bob; email bob@acme.com. In general, price by season and demand and adjust for slow midweeks.', intent: 'pricing', vertical: 'marine', hits: 4 }] }; return { results: [] }; },
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const cxEnv = { DB: cxDB(), ADMIN_TOKEN: 'cx-token', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const cxReq = { method: 'GET', url: 'https://atlasrental.io/api/admin/ai/corpus', headers: { get: (k) => { const m = { 'x-admin-token': 'cx-token', origin: 'https://atlasrental.io' }; return m[String(k).toLowerCase()] || null; } }, json: async () => ({}), text: async () => '' };
+  let cxr = await worker.fetch(cxReq, cxEnv, ctx);
+  let cxj = await cxr.json();
+  ok(cxr.status === 200 && Array.isArray(cxj.corpus) && cxj.corpus.length === 1, 'sponge Stage15: corpus export returns the de-identified reservoir');
+  const _cxs = JSON.stringify((cxj.corpus && cxj.corpus[0]) || {});
+  ok(!/\$?1,?540/.test(_cxs) && !/43\s?%/.test(_cxs) && !/bob@acme/.test(_cxs) && !/\bBob\b/.test(_cxs), 'sponge Stage15 NO-LEAKAGE: exported corpus has NO amount/percentage/email/name');
+}
+
+// ---- SPONGE Stage 16-17 (local model router): a common non-sensitive question is answered by the owner's configured
+// local model BEFORE the council (0 credits, local:true); a sensitive question skips it; OFF/unset -> council. ----
+{
+  const NOW = Date.now(), SID = 'sid_lm', CSRF = 'CSRFlm', TEN = 't_lm';
+  let councilCalls = 0, localCalls = 0;
+  function lmDB(lmOn) {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: 'u_lm', tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: 'u_lm', email: 'lm@x.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM platform_config WHERE k/.test(sql)) { if (a[0] === 'sponge_local_model_enabled') return { v: lmOn ? '1' : '0' }; return null; }
+          if (/FROM ai_answers WHERE id/.test(sql)) return null;
+          if (/FROM tenants WHERE id/.test(sql)) return { tier: 'pro', credits_purchased: 0, credits_free: 500, credits_week: 999999999 };
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/FROM ai_day_cost/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const lmEnv = (on) => ({ DB: lmDB(on), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', ANTHROPIC_KEY: 'sk-ant-test', SPONGE_MODEL_URL: 'https://model.test/infer' });
+  const lmReq = (body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }; return { method: 'POST', url: 'https://atlasrental.io/api/aio', headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+  const lmFetch = () => { globalThis.fetch = (u) => { if (/model\.test/.test(String(u))) { localCalls++; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ answer: 'LOCAL MODEL ANSWER: price by season.' }) }); } councilCalls++; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ content: [{ type: 'text', text: 'COUNCIL' }] }) }); }; };
+  const Q = 'how should I organize my fleet cleaning routine';
+
+  // (a) local model ON + configured + stable Q -> served by the local model, council NOT called
+  localCalls = 0; councilCalls = 0; lmFetch();
+  let lr = await worker.fetch(lmReq({ q: Q, single: true }), lmEnv(true), ctx);
+  let lj = await lr.json();
+  ok(lr.status === 200 && lj.local === true && /LOCAL MODEL ANSWER/.test(lj.synthesis || ''), 'sponge Stage16-17: a common question is answered by the local model before the council');
+  ok(localCalls === 1 && councilCalls === 0, 'sponge Stage16-17: local model answers -> council NOT called (shrinking fallback)');
+
+  // (b) HARD RAIL: a sensitive question skips the local model and uses the council
+  localCalls = 0; councilCalls = 0; lmFetch();
+  lr = await worker.fetch(lmReq({ q: 'what refund and tax policy should I set', single: true }), lmEnv(true), ctx);
+  lj = await lr.json();
+  ok(!lj.local && localCalls === 0 && councilCalls > 0, 'sponge Stage16-17 HARD RAIL: a sensitive question skips the local model, uses the council');
+
+  // (c) OFF -> council (inert until enabled)
+  localCalls = 0; councilCalls = 0; lmFetch();
+  lr = await worker.fetch(lmReq({ q: Q, single: true }), lmEnv(false), ctx);
+  lj = await lr.json();
+  ok(!lj.local && localCalls === 0 && councilCalls > 0, 'sponge Stage16-17: local model OFF -> council');
+}
+
 // ---- SECURITY (comp/grant rework): owner/platform-admin authority is EMAIL-ONLY -- no comp_grants role, including
 // a legacy role='admin' row left over from before this was retired, may ever confer it. ------------------------------
 {
