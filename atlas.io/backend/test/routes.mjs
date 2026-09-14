@@ -740,28 +740,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!sj.cached, 'sponge: flag OFF -> never serves from cache (feature inert until the owner opts in)');
 }
 
-// ---- SPONGE Stage 5 (near-duplicate serving, SEPARATE flag): a same-intent PARAPHRASE of an established/fresh/stable
-// answer is served via SimHash when its Hamming distance is within maxbits; too far -> recompute; near-dup OFF ->
-// exact-only; a sensitive paraphrase is NEVER served. A test copy of the worker's SimHash seeds deterministic sigs. ----
+// ---- SPONGE Stage 5 (near-duplicate serving, SEPARATE flag): a same-intent PARAPHRASE that shares enough CONTENT WORDS
+// with an established/fresh/stable answer is served (Jaccard >= sponge_neardup_min_pct); an unrelated same-intent question
+// is NOT; near-dup OFF -> exact-only; a sensitive question is NEVER served. Pure word-overlap, no hashing. ----
 {
-  const enc2 = (s) => new TextEncoder().encode(String(s));
-  async function tSha(s) { const b = await crypto.subtle.digest('SHA-256', enc2(s)); return Array.from(new Uint8Array(b)).map(x => ('0' + x.toString(16)).slice(-2)).join(''); }
-  function tNorm(q) { return String(q || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
-  async function tSimHash(qn) {
-    const s = String(qn || ''); if (s.length < 3) return '';
-    const toks = {}; for (let i = 0; i + 3 <= s.length; i++) { const t = s.slice(i, i + 3); toks[t] = (toks[t] || 0) + 1; }
-    const keys = Object.keys(toks).slice(0, 80); const acc = new Array(64).fill(0);
-    for (const kk of keys) { const h = await tSha(kk); const w = toks[kk]; for (let b = 0; b < 64; b++) { const nib = parseInt(h[b >> 2], 16); const bit = (nib >> (3 - (b & 3))) & 1; acc[b] += bit ? w : -w; } }
-    let out = ''; for (let g = 0; g < 16; g++) { let v = 0; for (let j = 0; j < 4; j++) { if (acc[g * 4 + j] > 0) v |= (1 << (3 - j)); } out += v.toString(16); }
-    return out;
-  }
   const NOW = Date.now(), SID = 'sid_nd', CSRF = 'CSRFnd', TEN = 't_nd';
-  const Q = 'how should I schedule my weekend cleaning crew for the busy season';   // stable (no money words), intent=operations
-  const qsig = await tSimHash(tNorm(Q));
-  const sigClose = ((parseInt(qsig[0], 16) ^ 0x7).toString(16)) + qsig.slice(1);          // 3 bits off -> within default maxbits (6)
-  const sigFar = qsig.split('').map(c => (parseInt(c, 16) ^ 0xF).toString(16)).join('');   // 64 bits off -> beyond any threshold
+  const Q = 'how should I schedule cleaning of my rental vessels between charters';   // stable, intent=operations
+  const PARA = 'what is the best way to clean my rental vessels between charters';    // shares clean/rental/vessel/between/charter -> Jaccard ~0.83
+  const UNREL = 'how do I market my yachts to attract corporate clients';             // 0 shared content words -> Jaccard 0
   let fetchCalls = 0;
-  function ndDB(ndEnabled, seedSig) {
+  function ndDB(ndEnabled, seedQtext) {
     function stmt(sql) {
       let a = [];
       const api = {
@@ -778,7 +766,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           if (/sqlite_master/.test(sql)) return { n: 30 };
           return null;
         },
-        all: async () => { if (/FROM ai_answers WHERE tenant_id/.test(sql)) return { results: [{ answer: 'NEARDUP: staff up for the busy weekends.', hits: 5, sig: seedSig }] }; return { results: [] }; },
+        all: async () => { if (/FROM ai_answers WHERE tenant_id/.test(sql)) return { results: [{ answer: 'NEARDUP: stagger turnovers and prep the night before.', qtext: seedQtext, qkey: 'q:seed' }] }; return { results: [] }; },
         run: async () => ({ success: true, meta: { changes: 1 } }),
       };
       return api;
@@ -789,30 +777,30 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const ndReq = (body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }; return { method: 'POST', url: 'https://atlasrental.io/api/aio', headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
   const ndFetch = () => { globalThis.fetch = () => { fetchCalls++; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ content: [{ type: 'text', text: 'FRESH' }] }) }); }; };
 
-  // (a) near-dup ON + a within-threshold paraphrase (exact miss) -> served from memory, ZERO provider calls
+  // (a) near-dup ON + a content-word paraphrase (exact miss) -> served via Jaccard, ZERO provider calls
   fetchCalls = 0; ndFetch();
-  let nr = await worker.fetch(ndReq({ q: Q, single: true }), ndEnv(true, sigClose), ctx);
+  let nr = await worker.fetch(ndReq({ q: Q, single: true }), ndEnv(true, PARA), ctx);
   let nj = await nr.json();
-  ok(nr.status === 200 && nj.cached === true && /NEARDUP:/.test(nj.synthesis || ''), 'sponge Stage5: a within-threshold same-intent paraphrase is served via SimHash near-dup');
+  ok(nr.status === 200 && nj.cached === true && /NEARDUP:/.test(nj.synthesis || ''), 'sponge Stage5: a content-word paraphrase is served via Jaccard near-dup');
   ok(fetchCalls === 0, 'sponge Stage5: a near-dup hit makes ZERO provider calls');
 
-  // (b) near-dup ON but the only candidate is TOO FAR (Hamming > maxbits) -> recompute, never a bad serve
+  // (b) near-dup ON but the only candidate is UNRELATED (no shared content words) -> recompute, never a bad serve
   fetchCalls = 0; ndFetch();
-  nr = await worker.fetch(ndReq({ q: Q, single: true }), ndEnv(true, sigFar), ctx);
+  nr = await worker.fetch(ndReq({ q: Q, single: true }), ndEnv(true, UNREL), ctx);
   nj = await nr.json();
-  ok(!nj.cached && fetchCalls > 0, 'sponge Stage5: a too-far candidate is NOT served (recomputes)');
+  ok(!nj.cached && fetchCalls > 0, 'sponge Stage5: an unrelated same-intent candidate is NOT served (recomputes)');
 
-  // (c) near-dup OFF -> exact-only; the same query (exact miss) recomputes even with a close candidate seeded
+  // (c) near-dup OFF -> exact-only; recompute even with a strong paraphrase seeded
   fetchCalls = 0; ndFetch();
-  nr = await worker.fetch(ndReq({ q: Q, single: true }), ndEnv(false, sigClose), ctx);
+  nr = await worker.fetch(ndReq({ q: Q, single: true }), ndEnv(false, PARA), ctx);
   nj = await nr.json();
-  ok(!nj.cached && fetchCalls > 0, 'sponge Stage5: near-dup OFF -> falls back to recompute (never near-dup served)');
+  ok(!nj.cached && fetchCalls > 0, 'sponge Stage5: near-dup OFF -> falls back to recompute (exact-only)');
 
-  // (d) HARD RAIL: a sensitive paraphrase is NEVER near-dup served even with a close candidate + both flags on
+  // (d) HARD RAIL: a sensitive question is NEVER near-dup served even with a strong paraphrase candidate + both flags on
   fetchCalls = 0; ndFetch();
-  nr = await worker.fetch(ndReq({ q: 'what tax and refund policy should I set for deposits', single: true }), ndEnv(true, sigClose), ctx);
+  nr = await worker.fetch(ndReq({ q: 'what deposit and refund policy should I set for charters', single: true }), ndEnv(true, 'what deposit and refund policy should I use for charters'), ctx);
   nj = await nr.json();
-  ok(!nj.cached && fetchCalls > 0, 'sponge Stage5 HARD RAIL: a sensitive paraphrase is NEVER near-dup served (recomputes)');
+  ok(!nj.cached && fetchCalls > 0, 'sponge Stage5 HARD RAIL: a sensitive question is NEVER near-dup served (recomputes)');
 }
 
 // ---- SPONGE Stage 6 (live re-grounding, flag-gated): a reused answer that cites figures gets a staleness note + the
