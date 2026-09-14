@@ -991,7 +991,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           return null;
         },
         all: async () => {
-          if (/GROUP BY intent HAVING/.test(sql)) return { results: [{ intent: 'marketing', n: 8 }] };
+          if (/GROUP BY intent/.test(sql)) return { results: [{ intent: 'marketing', vertical: '', n: 8 }] };
           if (/FROM ai_answers WHERE kind='stable' AND intent=/.test(sql)) return { results: [
             { answer: 'For tenant Bob charge $1,540/week and target 43% utilization; his email is bob@acme.com.' },
             { answer: 'List across 3 channels and respond within 24 hours.' },
@@ -1001,7 +1001,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           ] };
           return { results: [] };
         },
-        run: async () => { if (/INSERT INTO platform_playbooks/.test(sql)) storedPlaybook = a[1]; return { success: true, meta: { changes: 1 } }; },
+        run: async () => { if (/INSERT INTO platform_playbooks/.test(sql)) storedPlaybook = a[2]; return { success: true, meta: { changes: 1 } }; },
       };
       return api;
     }
