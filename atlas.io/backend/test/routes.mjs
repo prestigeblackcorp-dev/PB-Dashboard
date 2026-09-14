@@ -1014,6 +1014,37 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(distillBody && !/\$?1,?540/.test(distillBody) && !/bob@acme/.test(distillBody) && !/43\s?%/.test(distillBody) && !/\bBob\b/.test(distillBody), 'sponge Stage8 NO-LEAKAGE: the corpus SENT to the model already had figures/contacts/names removed (input scrubbed -- the model never sees them)');
 }
 
+// ---- SPONGE Stage 11 (governance): the owner lists distilled playbooks and approves/rejects them; a review-pending
+// (money/legal) playbook only goes 'live' via this owner-gated review. ----
+{
+  let updatedTo = null;
+  function gvDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => { if (/sqlite_master/.test(sql)) return { n: 30 }; return null; },
+        all: async () => { if (/FROM platform_playbooks/.test(sql)) return { results: [{ intent: 'legal', vertical: '', playbook: 'General: confirm licensing; specifics need professional verification.', based_on_n: 6, status: 'review-pending', updated_at: 1 }] }; return { results: [] }; },
+        run: async () => { if (/UPDATE platform_playbooks SET status=/.test(sql)) updatedTo = a[0]; return { success: true, meta: { changes: 1 } }; },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const gvEnv = { DB: gvDB(), ADMIN_TOKEN: 'gv-token', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const gvReq = (method, path, body) => { const headers = { 'content-type': 'application/json', 'x-admin-token': 'gv-token', origin: 'https://atlasrental.io' }; return { method, url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+  let gr = await worker.fetch(gvReq('GET', '/api/admin/ai/playbooks', null), gvEnv, ctx);
+  let gj = await gr.json();
+  ok(gr.status === 200 && Array.isArray(gj.playbooks) && gj.playbooks.length === 1 && gj.playbooks[0].status === 'review-pending', 'sponge Stage11: owner lists distilled playbooks incl. review-pending');
+  gr = await worker.fetch(gvReq('POST', '/api/admin/ai/playbooks/review', { intent: 'legal', vertical: '', action: 'approve' }), gvEnv, ctx);
+  gj = await gr.json();
+  ok(gr.status === 200 && gj.ok === true && updatedTo === 'live', 'sponge Stage11: owner approve -> status live');
+  updatedTo = null;
+  gr = await worker.fetch(gvReq('POST', '/api/admin/ai/playbooks/review', { intent: 'legal', vertical: '', action: 'reject' }), gvEnv, ctx);
+  gj = await gr.json();
+  ok(gr.status === 200 && updatedTo === 'rejected', 'sponge Stage11: owner reject -> status rejected');
+}
+
 // ---- SECURITY (comp/grant rework): owner/platform-admin authority is EMAIL-ONLY -- no comp_grants role, including
 // a legacy role='admin' row left over from before this was retired, may ever confer it. ------------------------------
 {
