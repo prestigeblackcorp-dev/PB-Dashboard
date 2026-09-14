@@ -424,6 +424,20 @@
     <div class="card-h"><h2>AI Command Center</h2><span class="sub" id="aiStatus"></span><div class="sp"></div><button class="chip" id="aiToggleBtn" onclick="aiToggle()">&hellip;</button></div>
     <div class="card-b" id="aiBody"><div class="mut" style="padding:10px 12px">Loading&hellip;</div></div>
   </div>
+  <style>
+  .spg-stats{display:flex;flex-wrap:wrap;gap:14px 22px;padding:12px 14px;border-bottom:1px solid var(--line)}
+  .spg-stats>div{min-width:118px}.spg-stats .n{display:block;font-size:22px;font-weight:700;font-family:Georgia,serif}.spg-stats .l{display:block;font-size:11.5px;color:var(--mut);margin-top:2px}
+  .spg-list{padding:4px 14px 12px}
+  .spg-row{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--line)}.spg-row:last-child{border-bottom:0}
+  .sw{position:relative;display:inline-block;width:38px;height:22px;flex:none;margin-top:1px}.sw input{opacity:0;width:0;height:0}
+  .sw .sl{position:absolute;inset:0;background:#b7bcc4;border-radius:22px;transition:.15s;cursor:pointer}.sw .sl:before{content:"";position:absolute;height:16px;width:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.15s}
+  .sw input:checked+.sl{background:#1E6E4E}.sw input:checked+.sl:before{transform:translateX(16px)}
+  .spg-note{padding:8px 14px 12px;font-size:12px;color:var(--mut)}
+  </style>
+  <div class="card" id="spongeCard">
+    <div class="card-h"><h2>AI Sponge</h2><span class="sub" id="spongeStat"></span><div class="sp"></div><button class="chip" onclick="spongeAll(true)">Enable all</button><button class="chip" style="margin-left:4px" onclick="spongeAll(false)">Disable all</button></div>
+    <div class="card-b" id="spongeBody"><div class="mut" style="padding:10px 12px">Loading&hellip;</div></div>
+  </div>
   </section>
 
   <section class="hqsec" data-sec="analytics">
@@ -807,7 +821,7 @@ function loadAll(quiet){ _lastFetch=Date.now();
     if(r[2].json&&r[2].json.ok){ DATA.txns=r[2].json.transactions||[]; renderTxns(); }
     if(r[3].json&&r[3].json.ok){ DATA.bugs=r[3].json.feedback||[]; renderBugs(); }
     if(r[4]&&r[4].json&&r[4].json.ok){ DATA.tickets=r[4].json.tickets||[]; renderTickets(); }
-    if(r[5]&&r[5].json&&r[5].json.config){ DATA.aiCfg=r[5].json.config; DATA.enterprise=r[5].json.enterprise||{}; DATA.you=r[5].json.you||{}; renderEnterprise(); applyTierBrand(); } else { DATA.aiCfg={ai_hq_enabled:false,ai_available:false,needsDeploy:true}; } renderAI();
+    if(r[5]&&r[5].json&&r[5].json.config){ DATA.aiCfg=r[5].json.config; DATA.enterprise=r[5].json.enterprise||{}; DATA.you=r[5].json.you||{}; renderEnterprise(); applyTierBrand(); } else { DATA.aiCfg={ai_hq_enabled:false,ai_available:false,needsDeploy:true}; } renderAI(); try{ renderSponge(); }catch(e){}
     if(r[6]&&r[6].json&&r[6].json.ok){ DATA.visits=r[6].json; renderVisits(); }
     if(r[7]&&r[7].json&&r[7].json.ok){ DATA.inbox=r[7].json.messages||[]; DATA.inboxCounts=r[7].json.counts||{}; DATA.inboxCanSend=!!r[7].json.can_send; renderInbox(); }
     if(r[8]&&r[8].json&&r[8].json.ok){ DATA.competitors=r[8].json.competitors||[]; DATA.searchAvailable=!!r[8].json.search_available; renderCompetitors(); }
@@ -1451,6 +1465,40 @@ function renderAttacks(){ var d=DATA.attacks||{}, atk=d.attacks||[], rec=d.recom
     return '<div class="sx-item"><div class="sx-main"><div class="sx-t">'+esc(a.kind||'event')+' '+badge+'</div><div class="sx-b">'+meta+'</div>'+(a.next_move?('<div class="sx-b" style="color:var(--amber)">Next: '+esc(a.next_move)+'</div>'):'')+'</div><div class="mut" style="font-size:11px;white-space:nowrap">'+ago(a.ts)+'</div></div>'; }).join(''):'<div class="sx-empty">No attack attempts recorded in this range &mdash; a good sign.</div>';
   el.innerHTML=recHtml+rows;
 }
+/* AI Sponge control panel: toggles for the learning/serving flags + live stats, from GET /api/admin/ai/sponge.
+   Reads state from the observatory's short-named config; writes the full-named flags to POST /api/admin/config. */
+function renderSponge(){
+  var bd=$('spongeBody'); if(!bd) return;
+  api('/api/admin/ai/sponge').then(function(r){
+    var d=(r&&r.json)||{};
+    if(!d.ok){ bd.innerHTML='<div class="mut" style="padding:10px 12px">Sponge status unavailable (needs the sponge worker deployed).</div>'; return; }
+    DATA.sponge=d; var c=d.config||{}, iv=d.interactions||{}, pb=d.playbooks||{}, rv=d.reservoir||{};
+    var flags=[
+      ['sponge_serve_enabled', c.serve_enabled, 'Serve exact repeats', 'Answer an identical repeat from memory -- no API call, no credit.'],
+      ['sponge_neardup_enabled', c.neardup_enabled, 'Serve paraphrases', 'Match a reworded question via SimHash. Needs Serve on.'],
+      ['sponge_reground_enabled', c.reground_enabled, 'Refresh figures', 'Append current live numbers + a staleness note to a reused answer.'],
+      ['sponge_confidence_enabled', c.confidence_enabled, 'Confidence gate', 'Never re-serve advice you reverted.'],
+      ['sponge_distill_enabled', c.distill_enabled, 'Distill playbooks', 'Nightly cross-tenant de-identified playbooks. Spends a little API.'],
+      ['sponge_playbook_serve_enabled', c.playbook_serve_enabled, 'Serve playbooks', 'Answer new questions from the shared brain. Needs Distill.'],
+      ['sponge_local_model_enabled', c.local_model_enabled, 'Local model', 'Route to your fine-tuned model'+(c.local_model_configured?'.':' -- set SPONGE_MODEL_URL first.')]
+    ];
+    var rows=flags.map(function(f){
+      return '<div class="spg-row"><label class="sw"><input type="checkbox" '+(f[1]?'checked':'')+' onchange="spongeSet(\''+f[0]+'\',this.checked)"><span class="sl"></span></label><div style="flex:1"><b>'+esc(f[2])+'</b><div class="mut" style="font-size:12px">'+esc(f[3])+'</div></div></div>';
+    }).join('');
+    var indep=(iv.independence_pct!=null?iv.independence_pct:0);
+    var stats='<div class="spg-stats">'
+      +'<div><span class="n">'+indep+'%</span><span class="l">answered without an API call</span></div>'
+      +'<div><span class="n">'+(rv.answers||0)+'</span><span class="l">answers in the reservoir</span></div>'
+      +'<div><span class="n">'+(pb.live||0)+'</span><span class="l">live playbooks</span></div>'
+      +'<div><span class="n">'+(iv.total||0)+'</span><span class="l">AI interactions logged</span></div>'
+      +'</div>';
+    var note=(pb.review_pending?('<div class="spg-note">'+pb.review_pending+' money/legal playbook(s) awaiting your review before they can serve.</div>'):'');
+    bd.innerHTML=stats+'<div class="spg-list">'+rows+'</div>'+note;
+    var stx=$('spongeStat'); if(stx) stx.textContent=(c.serve_enabled?'serving':'off');
+  }).catch(function(){ bd.innerHTML='<div class="mut" style="padding:10px 12px">Sponge status unavailable.</div>'; });
+}
+function spongeSet(key,val){ var b={}; b[key]=!!val; api('/api/admin/config',{method:'POST',body:b}).then(function(r){ if(r&&r.json&&r.json.ok){ toast(key.replace(/sponge_/,'').replace(/_/g,' ')+' '+(val?'on':'off')); renderSponge(); } else toast('Save failed'); }); }
+function spongeAll(on){ if(on && !confirm('Turn ON every Sponge feature? Distillation will start spending a little API to build the cross-tenant playbooks; the rest are free. Money/legal playbooks still wait for your review.')) return; var keys=['sponge_serve_enabled','sponge_neardup_enabled','sponge_reground_enabled','sponge_confidence_enabled','sponge_distill_enabled','sponge_playbook_serve_enabled','sponge_local_model_enabled']; var b={}; keys.forEach(function(k){ b[k]=!!on; }); api('/api/admin/config',{method:'POST',body:b}).then(function(r){ if(r&&r.json&&r.json.ok){ toast('Sponge '+(on?'enabled':'disabled')+' (all)'); renderSponge(); } else toast('Save failed'); }); }
 function renderAI(){ renderBuildBanner(); var c=DATA.aiCfg||{}, on=!!c.ai_hq_enabled, hasKey=!!c.ai_available; var st=$('aiStatus'), tg=$('aiToggleBtn'), bd=$('aiBody'); if(!st) return;
   if(c.needsDeploy){ st.innerHTML='<span class="pill gray">Not deployed</span>'; tg.style.display='none'; bd.innerHTML='<div class="mut" style="padding:10px 12px">Paste the latest worker into Cloudflare to enable the AI Command Center and the new safety features (recoverable delete, working audit trail, admin rate-limit).</div>'; return; } tg.style.display='';
   st.innerHTML = on ? (hasKey?'<span class="pill active">On</span>':'<span class="pill past">On &middot; no AI key</span>') : '<span class="pill gray">Off</span>';
