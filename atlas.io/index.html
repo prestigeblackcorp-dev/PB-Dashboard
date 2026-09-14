@@ -2230,7 +2230,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.22s';
+  var APP_VERSION='2026.7.22t';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -2479,7 +2479,7 @@ const Atlas = (function(){
     var _gfComp=document.getElementById('gfComp');   // FIX: was el('gfComp') -- `el` is not defined in the client (only in the worker's portal code), so saveGift threw ReferenceError EVERY time and no gift card could be created. Caught by driving it as a user.
     var g={ id:'gc'+Date.now().toString(36), code:code, initial:amt, balance:amt, to:(val('gfTo')||'').trim(), from:(val('gfFrom')||'').trim(), msg:(val('gfMsg')||'').trim(), comped:!!(_gfComp&&_gfComp.checked), createdAt:Date.now(), redeemed:[] };
     _giftcards().push(g); save(); _logEvent('gift','Gift card '+code+' issued ('+money(amt)+')',{code:code}); closeModal(); renderSet(); toast('Gift card '+code+' created ('+money(amt)+')'); giftCert(g.id); }
-  function deleteGift(id){ if(!_canMod('settings'))return; var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return; if(_giftUsed(g.code)>0){ toast('This gift card has been redeemed -- deleting it would erase recognized revenue. Turn it OFF via Edit instead.'); return; } if(!confirm('Delete gift card '+g.code+((g.initial||0)-(g.balance||0)>0?' (partly used)':'')+'?'))return; S.giftcards=_giftcards().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Gift card deleted'); }
+  function deleteGift(id){ if(!_canMod('settings'))return; var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return; if(_giftUsed(g.code)>0){ toast('This gift card has been redeemed -- deleting it would erase recognized revenue. Turn it OFF via Edit instead.'); return; } if(!confirm('Delete gift card '+g.code+(_giftUsed(g.code)>0?' (partly used)':'')+'?'))return; S.giftcards=_giftcards().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Gift card deleted'); }
   function giftCert(id){ var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return; var doc=_giftCertHtml(g);
     try{ var blob=new Blob([doc],{type:'text/html'}); var url=URL.createObjectURL(blob); var w=window.open(url,'_blank','noopener'); if(!w){ var a=document.createElement('a'); a.href=url; a.download='gift-card-'+g.code+'.html'; a.click(); } setTimeout(function(){URL.revokeObjectURL(url);},6000); }catch(e){ toast('Could not open the certificate here'); } }
   function _giftApplied(b){ return (b.giftRedemptions||[]).reduce(function(s,r){ return s+(r.amt||0); },0); }
@@ -2518,21 +2518,20 @@ const Atlas = (function(){
       +(g.to?('<div class="meta">For: <b>'+esc(g.to)+'</b></div>'):'')+(g.from?('<div class="meta">From: '+esc(g.from)+'</div>'):'')
       +(g.msg?('<div class="msg">&ldquo;'+esc(g.msg)+'&rdquo;</div>'):'')
       +'<div class="code">'+esc(g.code)+'</div>'
-      +'<div class="meta">Redeemable toward any rental'+(city?(' in '+esc(city)):'')+'. Balance: '+money(g.balance||0)+'.</div>'
+      +'<div class="meta">Redeemable toward any rental'+(city?(' in '+esc(city)):'')+'. Balance: '+money(_giftAvail(g))+'.</div>'
       +'<div class="foot">Issued '+_stamp(g.createdAt)+' &middot; Present this code at checkout</div>'
       +'</div></body></html>'; }
   function giftEdit(id){ if(!_canMod('settings'))return; var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return;
     openModal('<div class="modal__head"><h3>Gift card '+esc(g.code)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<label style="display:flex;align-items:center;gap:10px;margin-bottom:14px"><label class="switch"><input type="checkbox" id="geOn" '+(g.disabled?'':'checked')+'><span class="switch__t"></span></label><span style="font-size:13.5px;color:var(--ink)">Active (can be redeemed)</span></label>'
-      +'<div class="field"><label>Balance</label><div class="rule-input" style="padding:0 12px"><span>'+_baseSym()+'</span><input class="tnum" id="geBal" inputmode="decimal" style="width:auto;flex:1;text-align:left" value="'+(g.balance||0)+'"></div><div class="bk-lenhint" style="margin:5px 0 0">Issued '+money(g.initial||0)+'. Adjust the remaining balance up or down at any time.</div></div>'
+      +'<div class="field"><label>Remaining balance</label><div class="rule-input" style="padding:11px 12px;align-items:baseline"><b class="tnum" style="font-size:16px;color:var(--ink)">'+money(_giftAvail(g))+'</b><span style="font-size:12.5px;color:var(--muted);margin-left:8px">of '+money(g.initial||0)+' issued'+(((g.initial||0)-_giftAvail(g))>0?(' &middot; '+money((g.initial||0)-_giftAvail(g))+' redeemed'):'')+'</span></div><div class="bk-lenhint" style="margin:5px 0 0">Updates automatically as the card is redeemed. To change a card&rsquo;s value, turn it off below and issue a new one.</div></div>'
       +'<div class="row2"><div class="field"><label>To</label><input class="input" id="geTo" value="'+esc(g.to||'')+'"></div><div class="field"><label>From</label><input class="input" id="geFrom" value="'+esc(g.from||'')+'"></div></div>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveGiftEdit(\''+id+'\')">Save</button>'
       +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.deleteGift(\''+id+'\')">Delete gift card</button></div>'); }
   function saveGiftEdit(id){ if(!_canMod('settings'))return; var g=_giftcards().filter(function(x){return x.id===id;})[0]; if(!g)return;
     g.disabled=!(document.getElementById('geOn')&&document.getElementById('geOn').checked);
-    g.balance=Math.max(0, Math.round((parseFloat(val('geBal'))||0)*100)/100);
     g.to=(val('geTo')||'').trim(); g.from=(val('geFrom')||'').trim();
-    save(); _logEvent('gift','Gift card '+g.code+' updated (balance '+money(g.balance)+(g.disabled?', OFF':'')+')',{code:g.code}); closeModal(); renderSet(); toast('Gift card updated'); }
+    save(); _logEvent('gift','Gift card '+g.code+(g.disabled?' turned OFF':' updated')+' (remaining '+money(_giftAvail(g))+')',{code:g.code}); closeModal(); renderSet(); toast(g.disabled?'Gift card turned off':'Gift card updated'); }
   function _custGiftCards(c){ if(!c) return []; var key=_loyKey(c.email), nm=(c.name||'').toLowerCase();
     var mine={}; (DATA.bookings||[]).forEach(function(b){ if((b.custEmail&&b.custEmail.toLowerCase()===key)||(b.cust&&b.cust.toLowerCase()===nm)) mine[b.id]=1; });
     return _giftcards().filter(function(g){ if(g.to && String(g.to).toLowerCase()===nm) return true; return (g.redeemed||[]).some(function(r){ return mine[r.bookingId]; }); }); }
