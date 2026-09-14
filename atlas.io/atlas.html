@@ -2230,7 +2230,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23a';
+  var APP_VERSION='2026.7.23b';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -2388,8 +2388,18 @@ const Atlas = (function(){
   function _loyMemberKey(email,name){ return _loyKey(email)||_loyNameKey(name); }   // customers may have NO email -> fall back to a stable name key so per-customer edits/opt-out/redeem actually persist
   function _loyMember(email,name){ var L=_loy(), k=_loyMemberKey(email,name); if(!k) return {bonus:0,redeemed:0}; if(!L.members[k]) L.members[k]={bonus:0,redeemed:0}; return L.members[k]; }
   function _loyOff(email,name){ return !!_loyMember(email,name).off; }   // per-customer opt-out
+  // Rental cash a customer ACTUALLY paid on a booking (reserve/balance stamps + plan installments), gift-netted, capped at the rental
+  // total, lowered by a refund (revCents). Returns 0 when there is NO payment evidence -> the server's G5 accrual estimate (which sets
+  // revCents = full quote total for a committed-but-never-paid booking) must NOT mint loyalty. This is what "points from PAID spend" means.
+  function _loyPaid(b){ var q=b.quote||{}, rt=_r2(q.total||0); if(rt<=0) return 0; var p=b.portal||{};
+    var inst=(b.plan&&Array.isArray(b.plan.installments))?b.plan.installments.reduce(function(s,x){return s+(x&&x.paidAt?_r2(x.amount||0):0);},0):0;
+    var ev=_r2(Math.min(rt, _r2(_portalMoney(b).rentalPaid||0)+inst));
+    var anyPaid = ev>0 || !!(p.reservePaidAt||p.balancePaidAt||p.depositPaidAt) || inst>0;
+    if(!anyPaid) return 0;
+    if(typeof b.revCents==='number'){ var rc=_r2(b.revCents/100); if(rc<ev) ev=Math.max(0,rc); }   // net refunds: the server-reconciled collected figure lowers a refunded booking
+    return _r2(Math.max(0, Math.min(rt, ev))); }
   function _loySpend(email,name){ var key=_loyKey(email), nm=(name||'').toLowerCase();
-    return (DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && ((b.custEmail&&b.custEmail.toLowerCase()===key)||(b.cust&&b.cust.toLowerCase()===nm)); }).reduce(function(s,b){ return s+((b.quote&&b.quote.total)||0); },0); }
+    return (DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && ((b.custEmail&&b.custEmail.toLowerCase()===key)||(b.cust&&b.cust.toLowerCase()===nm)); }).reduce(function(s,b){ return s+_loyPaid(b); },0); }   // was gross quote.total (incl. unpaid/refunded) -> now PAID rental spend only
   function _loyEarned(email,name){ return Math.floor(_loySpend(email,name)*(_loy().perDollar||1)); }
   function _loyPoints(email,name){ var m=_loyMember(email,name); if(m.off) return 0; return Math.max(0, _loyEarned(email,name)+(m.bonus||0)-(m.redeemed||0)); }
   function _loyCode(email,name){ var base=String(name||email||'GUEST').replace(/[^a-z0-9]/gi,'').toUpperCase().slice(0,6)||'FRIEND'; var s=_loyKey(email)||String(name||''); var h=0; for(var i=0;i<s.length;i++){ h=(h*31+s.charCodeAt(i))>>>0; } return base+('00'+(h%1000)).slice(-3); }
@@ -2444,7 +2454,8 @@ const Atlas = (function(){
     var code='RWD'+(''+Date.now()).slice(-6);
     _promos().push({ id:'pm'+Date.now().toString(36), code:code, type:'amt', value:(L.rewardVal||50), minDays:0, cap:1, expiry:'', used:0, active:true, createdAt:Date.now(), loyaltyFor:_loyKey(c.email), personal:true });   // fix: mark personal so it never shows on the public site / can't be redeemed anonymously
     save(); _logEvent('loyalty','Redeemed '+need+' pts -> '+money(L.rewardVal||50)+' coupon '+code+' for '+(c.name||c.email),{}); viewCustomer(i); toast(money(L.rewardVal||50)+' coupon '+code+' created &mdash; give it to '+String(c.name||'them').split(' ')[0]); }
-  function _loyOnComplete(b){ var L=_loy(); if(!L.on||!b||b.refAwarded) return; var code=String(b.referredByCode||'').trim().toUpperCase(); if(!code) return;
+  function _loyOnComplete(b){ var L=_loy(); if(!L.on||!b||b.refAwarded) return; if(_loyPaid(b)<=0) return;   // referral bonus only once the referred booking is actually PAID (was: any Completed booking, unpaid included)
+    var code=String(b.referredByCode||'').trim().toUpperCase(); if(!code) return;
     var meKey=_loyKey(b.custEmail);
     if(!L.referredKeys) L.referredKeys={};   // fix: per-referred-customer ledger so N completed bookings with the same code != N bonuses
     var _refdKey=meKey||_loyNameKey(b.cust);
