@@ -1054,7 +1054,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
       const api = {
         bind: (...x) => { a = x; return api; },
         first: async () => { if (/sqlite_master/.test(sql)) return { n: 30 }; return null; },
-        all: async () => { if (/FROM ai_answers WHERE kind='stable'/.test(sql)) return { results: [{ qtext: 'how do I price for tenant Bob', answer: 'Charge $1,540/week and target 43% for Bob; email bob@acme.com. In general, price by season and demand and adjust for slow midweeks.', intent: 'pricing', vertical: 'marine', hits: 4 }] }; return { results: [] }; },
+        all: async () => { if (/FROM ai_answers WHERE kind='stable'/.test(sql)) return { results: [{ qtext: 'how do I price for tenant Bob', answer: 'Charge $1,540/week and target 43% utilization; email bob@acme.com. In general, price by season and demand and adjust for slow midweeks.', intent: 'pricing', vertical: 'marine', hits: 4 }] }; return { results: [] }; },
         run: async () => ({ success: true, meta: { changes: 1 } }),
       };
       return api;
