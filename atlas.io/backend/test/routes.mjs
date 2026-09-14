@@ -862,6 +862,60 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(rj.cached === true && rj.synthesis === CACHED, 'sponge Stage6: reground OFF -> answer served verbatim (no footer)');
 }
 
+// ---- SPONGE Stage 7 (confidence/staleness gate, flag-gated): before re-serving, a cached answer the owner recently
+// reverted/rejected (Stage 3 outcomes: bad >= good) is skipped so the council recomputes; a well-received one is served;
+// OFF -> the gate is inert. ----
+{
+  const NOW = Date.now(), SID = 'sid_cf', CSRF = 'CSRFcf', TEN = 't_cf';
+  function cfDB(confOn, good, bad) {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: 'u_cf', tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: 'u_cf', email: 'cf@x.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM platform_config WHERE k/.test(sql)) { if (a[0] === 'sponge_serve_enabled') return { v: '1' }; if (a[0] === 'sponge_confidence_enabled') return { v: confOn ? '1' : '0' }; return null; }
+          if (/FROM ai_interaction WHERE tenant_id/.test(sql) && /outcome/.test(sql)) return { good: good, bad: bad };
+          if (/FROM ai_answers WHERE id/.test(sql)) return { answer: 'CACHED: batch your turnovers on Mondays.', kind: 'stable', hits: 5, last_at: NOW };
+          if (/FROM tenants WHERE id/.test(sql)) return { tier: 'pro', credits_purchased: 0, credits_free: 500, credits_week: 999999999 };
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/FROM ai_day_cost/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const cfEnv = (c, g, b) => ({ DB: cfDB(c, g, b), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', ANTHROPIC_KEY: 'sk-ant-test' });
+  const cfReq = (body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }; return { method: 'POST', url: 'https://atlasrental.io/api/aio', headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+  let cfetch = 0; const cfFetch = () => { globalThis.fetch = () => { cfetch++; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ content: [{ type: 'text', text: 'FRESH' }] }) }); }; };
+  const Q = 'how should I organize my cleaning turnovers each week';
+
+  // (a) conf ON + a BAD outcome history (bad >= good) -> NOT served, recompute
+  cfetch = 0; cfFetch();
+  let cr = await worker.fetch(cfReq({ q: Q, single: true }), cfEnv(true, 0, 3), ctx);
+  let cj = await cr.json();
+  ok(!cj.cached && cfetch > 0, 'sponge Stage7: conf ON + a recently-rejected answer -> NOT served (recomputes)');
+
+  // (b) conf ON + a GOOD outcome history -> served from memory
+  cfetch = 0; cfFetch();
+  cr = await worker.fetch(cfReq({ q: Q, single: true }), cfEnv(true, 5, 0), ctx);
+  cj = await cr.json();
+  ok(cj.cached === true, 'sponge Stage7: conf ON + a well-received answer -> served from memory');
+
+  // (c) conf OFF -> gate inert; even a rejected answer is served (Stage 4 behavior unchanged)
+  cfetch = 0; cfFetch();
+  cr = await worker.fetch(cfReq({ q: Q, single: true }), cfEnv(false, 0, 3), ctx);
+  cj = await cr.json();
+  ok(cj.cached === true, 'sponge Stage7: conf OFF -> gate inert (a rejected answer is still served)');
+}
+
 // ---- SECURITY (comp/grant rework): owner/platform-admin authority is EMAIL-ONLY -- no comp_grants role, including
 // a legacy role='admin' row left over from before this was retired, may ever confer it. ------------------------------
 {
