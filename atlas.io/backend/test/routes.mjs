@@ -815,6 +815,53 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!nj.cached && fetchCalls > 0, 'sponge Stage5 HARD RAIL: a sensitive paraphrase is NEVER near-dup served (recomputes)');
 }
 
+// ---- SPONGE Stage 6 (live re-grounding, flag-gated): a reused answer that cites figures gets a staleness note + the
+// tenant's CURRENT verified numbers appended (prose never rewritten); OFF -> the answer is served verbatim. ----
+{
+  const NOW = Date.now(), SID = 'sid_rg', CSRF = 'CSRFrg', TEN = 't_rg';
+  const CACHED = 'CACHED: your idle boat runs about $1200 per week when unbooked.';
+  function rgDB(regroundOn) {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: 'u_rg', tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: 'u_rg', email: 'rg@x.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM platform_config WHERE k/.test(sql)) { if (a[0] === 'sponge_serve_enabled') return { v: '1' }; if (a[0] === 'sponge_reground_enabled') return { v: regroundOn ? '1' : '0' }; return null; }
+          if (/FROM ai_answers WHERE id/.test(sql)) return { answer: CACHED, kind: 'stable', hits: 5, last_at: NOW };
+          if (/FROM tenant_insights WHERE tenant_id/.test(sql)) return { json: JSON.stringify({ findings: [{ title: 'Idle boat', detail: 'currently $1,540/week' }, { title: 'Utilization', detail: '43% this month' }] }) };
+          if (/FROM tenants WHERE id/.test(sql)) return { tier: 'pro', credits_purchased: 0, credits_free: 500, credits_week: 999999999 };
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/FROM ai_day_cost/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const rgEnv = (rg) => ({ DB: rgDB(rg), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', ANTHROPIC_KEY: 'sk-ant-test' });
+  const rgReq = (body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }; return { method: 'POST', url: 'https://atlasrental.io/api/aio', headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+  globalThis.fetch = () => Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ content: [{ type: 'text', text: 'FRESH' }] }) });
+  const Q = 'how do I reduce idle time on my boats';
+
+  // (a) reground ON: a figure-citing cached answer is served WITH a staleness note + the tenant's CURRENT numbers
+  let rr = await worker.fetch(rgReq({ q: Q, single: true }), rgEnv(true), ctx);
+  let rj = await rr.json();
+  ok(rj.cached === true && /CACHED:/.test(rj.synthesis || '') && /earlier analysis/.test(rj.synthesis || '') && /current live numbers/i.test(rj.synthesis || ''), 'sponge Stage6: reground ON -> figure-citing answer served with a staleness note + current live numbers');
+  ok(/43% this month|1,540/.test(rj.synthesis || ''), 'sponge Stage6: the appended footer carries the tenant\'s CURRENT verified figures');
+
+  // (b) reground OFF: the same cached answer is served verbatim (prose unchanged, no footer)
+  rr = await worker.fetch(rgReq({ q: Q, single: true }), rgEnv(false), ctx);
+  rj = await rr.json();
+  ok(rj.cached === true && rj.synthesis === CACHED, 'sponge Stage6: reground OFF -> answer served verbatim (no footer)');
+}
+
 // ---- SECURITY (comp/grant rework): owner/platform-admin authority is EMAIL-ONLY -- no comp_grants role, including
 // a legacy role='admin' row left over from before this was retired, may ever confer it. ------------------------------
 {
