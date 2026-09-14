@@ -1971,7 +1971,7 @@ const Atlas = (function(){
       else if(res && res.status>=200 && res.status<300){ _ok(); }
     }).catch(function(){}); }
   function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; delete _pushedHash[kind+':'+id]; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).catch(function(){}); }
-  function _srvMirrorProfile(pend){ if(!ATLAS_BACKEND||!_apiCsrf||!S||_bootSync) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money') settings[k]=S[k]; }
+  function _srvMirrorProfile(pend){ if(!ATLAS_BACKEND||!_apiCsrf||!S||_bootSync) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money'&&k!=='_actAs'&&k!=='_selfActor'&&k!=='_srvCustomers') settings[k]=S[k]; }   // _actAs/_selfActor are device-local preview state (never share across devices/teammates); _srvCustomers is a PII fetch-cache (re-fetched each hydrate)
     // never mirror provider secrets in plaintext: send a shallow copy of the secret-bearing subtrees with the keys stripped (local S keeps them; the wire/server does not)
     if(settings.trackers){ var _tk={}; for(var _a in settings.trackers) _tk[_a]=settings.trackers[_a]; delete _tk.apiKey; settings.trackers=_tk; }
     if(settings.comms){ var _cm={}; for(var _b in settings.comms) _cm[_b]=settings.comms[_b]; delete _cm.resendKey; settings.comms=_cm; }
@@ -2230,7 +2230,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.22u';
+  var APP_VERSION='2026.7.22w';
   var APP_CHANGELOG=[
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
@@ -6299,7 +6299,7 @@ const Atlas = (function(){
   function bkClearVerify(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; b.idVerified=false; delete b.idVerifiedAt; b.idRejected=false; delete b.idRejectedAt;
     _upsertBooking(b); _logEvent('booking','ID status cleared for '+b.id,{booking:b.id}); save(); openBooking(id); toast('ID status cleared'); }
   // ---- Payment plans / partial payments: split a booking total into a tracked schedule ----
-  function _planHtml(b){ var p=b.plan; if(!p||!p.installments||!p.installments.length) return '<div class="bk-lenhint" style="margin:0">Paid in full. Split it into installments if the customer prefers.</div>';
+  function _planHtml(b){ var p=b.plan; if(!p||!p.installments||!p.installments.length) return '<div class="bk-lenhint" style="margin:0">No installment plan &mdash; this customer pays in full. Split it into installments if they prefer.</div>';
     var paidN=p.installments.filter(function(x){return x.paidAt;}).length;
     return '<div style="font-size:11.5px;color:var(--muted);margin-bottom:2px">'+paidN+' of '+p.installments.length+' paid'+(p.autopay?' <span style="color:var(--brand);font-weight:600">\u00b7 auto-charging card on file</span>':'')+'</div>'+p.installments.map(function(x){ var paid=!!x.paidAt; return '<div style="display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.label)+' &middot; '+money(x.amount)+'</b><div style="font-size:11.5px;color:var(--muted)">'+(paid?('Paid '+_stamp(x.paidAt)):('Due '+_fmtWhen(x.dueTs)))+'</div></div>'+(paid?'<span class="chip chip--ok"><span class="dot"></span>Paid</span>':'<button class="btn btn--primary btn--sm" onclick="Atlas.bkPlanPaid(\''+b.id+'\',\''+x.id+'\')">Mark paid</button>')+'</div>'; }).join(''); }
   // Custom payment-plan builder: owner adds/removes installment rows and edits each amount / due date / label; must sum to the total.
@@ -7240,8 +7240,8 @@ const Atlas = (function(){
   function sendCustEmail(i){ var c=DATA.customers[i]; if(!c||!c.email)return; var subj=(val('ceSubj')||'').trim(), body=(val('ceBody')||'').trim();
     if(!subj){ toast('Add a subject'); return; } if(!body){ toast('Write a message'); return; }
     if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Connect your Atlas backend to send email'); return; }
-    toast('Sending...'); _api('/api/outreach/send',{method:'POST',body:{subject:subj,body:body,recipients:[c.email]}}).then(function(res){
-      if(res.json&&res.json.ok&&(res.json.sent>0)){ _logEvent('email','Emailed '+c.email+': '+subj,{to:c.email}); closeModal(); toast('Email sent'); }
+    closeModal(); toast('Sending...'); _api('/api/outreach/send',{method:'POST',body:{subject:subj,body:body,recipients:[c.email]}}).then(function(res){
+      if(res.json&&res.json.ok&&(res.json.sent>0)){ _logEvent('email','Emailed '+c.email+': '+subj,{to:c.email}); toast('Email sent'); }
       else { toast((res.json&&(res.json.error))||((res.json&&res.json.skipped)?'Not sent -- this customer is unsubscribed':'Could not send')); } }).catch(function(){ toast('Network error'); }); }
   function _cohortHtml(){
     var nc=(DATA.bookings||[]).filter(_isCommitted);
