@@ -972,6 +972,48 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!pj.cached && pbfetch > 0, 'sponge Stage8b HARD RAIL: a sensitive question is never served a playbook (recomputes)');
 }
 
+// ---- SPONGE Stage 8 NO-LEAKAGE: cross-tenant distillation must let ONLY general understanding cross tenants -- never an
+// actual amount, percentage, contact, or customer name. Proven end-to-end through the cron: the corpus SENT to the model
+// AND the playbook STORED are both scrubbed, even when the model tries to emit specifics. (no network) ----
+{
+  let bodies = [];       // every request body the cron sends out
+  let storedPlaybook = null;   // what got written to platform_playbooks
+  globalThis.fetch = (u, opts) => { try { bodies.push((opts && opts.body) ? String(opts.body) : ''); } catch (e) {} return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ content: [{ type: 'text', text: 'Charge $1,540 per week, aim for 43% utilization, email bob@acme.com, call 555-123-4567.' }] }) }); };
+  function dsDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM platform_config WHERE k/.test(sql)) { if (a[0] === 'sponge_distill_enabled') return { v: '1' }; return null; }   // distill ON; due_* null -> _due fires
+          if (/SELECT 1 AS x/.test(sql)) return { x: 1 };
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => {
+          if (/GROUP BY intent HAVING/.test(sql)) return { results: [{ intent: 'marketing', n: 8 }] };
+          if (/FROM ai_answers WHERE kind='stable' AND intent=/.test(sql)) return { results: [
+            { answer: 'For tenant Bob charge $1,540/week and target 43% utilization; his email is bob@acme.com.' },
+            { answer: 'List across 3 channels and respond within 24 hours.' },
+            { answer: 'Discount slow midweeks a little to fill gaps.' },
+            { answer: 'Follow up with past renters within a day.' },
+            { answer: 'Bundle add-ons for peak weekends.' },
+          ] };
+          return { results: [] };
+        },
+        run: async () => { if (/INSERT INTO platform_playbooks/.test(sql)) storedPlaybook = a[1]; return { success: true, meta: { changes: 1 } }; },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  await worker.scheduled({ cron: '' }, { DB: dsDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', ANTHROPIC_KEY: 'sk-ant-test' }, ctx);
+  const distillBody = bodies.find(b => /TOPIC:/.test(b)) || '';
+  ok(storedPlaybook !== null, 'sponge Stage8 distill: a playbook was distilled + stored');
+  ok(storedPlaybook !== null && !/\$?1,?540/.test(storedPlaybook) && !/43\s?%/.test(storedPlaybook) && !/bob@acme/.test(storedPlaybook) && !/555.?123.?4567/.test(storedPlaybook), 'sponge Stage8 NO-LEAKAGE: the STORED playbook has NO amount/percentage/email/phone (output scrubbed)');
+  ok(distillBody && !/\$?1,?540/.test(distillBody) && !/bob@acme/.test(distillBody) && !/43\s?%/.test(distillBody) && !/\bBob\b/.test(distillBody), 'sponge Stage8 NO-LEAKAGE: the corpus SENT to the model already had figures/contacts/names removed (input scrubbed -- the model never sees them)');
+}
+
 // ---- SECURITY (comp/grant rework): owner/platform-admin authority is EMAIL-ONLY -- no comp_grants role, including
 // a legacy role='admin' row left over from before this was retired, may ever confer it. ------------------------------
 {
