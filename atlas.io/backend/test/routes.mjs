@@ -685,6 +685,61 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(pr.status === 403, 'aio/plan: viewer role -> 403 read-only (got ' + pr.status + ')');
 }
 
+// ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
+// ai_answers reservoir with NO provider call + 0 credits; a SENSITIVE (money/legal/live-data) question is NEVER served
+// from cache -- it always recomputes via the council; flag OFF is inert. Locks the hard rail in CI (no network). ----
+{
+  const NOW = Date.now(), SID = 'sid_sp', CSRF = 'CSRFsp', TEN = 't_sp';
+  let fetchCalls = 0;
+  function spDB(enabled) {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: 'u_sp', tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: 'u_sp', email: 'sp@x.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM platform_config WHERE k/.test(sql)) return (a[0] === 'sponge_serve_enabled') ? { v: enabled ? '1' : '0' } : null;
+          if (/FROM ai_answers WHERE id/.test(sql)) return { answer: 'CACHED: rebalance your weekend crew hours.', kind: 'stable', hits: 5, last_at: NOW };
+          if (/FROM tenants WHERE id/.test(sql)) return { tier: 'pro', credits_purchased: 0, credits_free: 500, credits_week: 999999999 };
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/FROM ai_day_cost/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const spEnv = (enabled) => ({ DB: spDB(enabled), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', ANTHROPIC_KEY: 'sk-ant-test' });
+  const spReq = (body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }; return { method: 'POST', url: 'https://atlasrental.io/api/aio', headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+  const spCouncilFetch = () => { globalThis.fetch = (u, opts) => { fetchCalls++; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ content: [{ type: 'text', text: 'FRESH COUNCIL ANSWER' }] }) }); }; };
+
+  // (a) flag ON + a stable/established/fresh repeat -> served from memory, ZERO provider calls, cached:true
+  fetchCalls = 0; spCouncilFetch();
+  let sr = await worker.fetch(spReq({ q: 'how should I schedule my weekend cleaning crew', single: true }), spEnv(true), ctx);
+  let sj = await sr.json();
+  ok(sr.status === 200 && sj.cached === true && /CACHED:/.test(sj.synthesis || ''), 'sponge: flag ON + stable repeat -> served from memory (cached:true, stored answer)');
+  ok(fetchCalls === 0, 'sponge: a cache hit makes ZERO provider calls (the API call is cut)');
+
+  // (b) HARD RAIL: a money/legal/live-data question is NEVER served from cache, even with a seeded row + flag ON
+  fetchCalls = 0; spCouncilFetch();
+  sr = await worker.fetch(spReq({ q: 'what refund and tax policy should I set for deposits', single: true }), spEnv(true), ctx);
+  sj = await sr.json();
+  ok(!sj.cached, 'sponge HARD RAIL: a sensitive (refund/tax/deposit) question is NEVER served from cache');
+  ok(fetchCalls > 0, 'sponge HARD RAIL: a sensitive question RECOMPUTES via the council (provider IS called)');
+
+  // (c) flag OFF -> inert: even a perfect repeat recomputes (never served from cache)
+  fetchCalls = 0; spCouncilFetch();
+  sr = await worker.fetch(spReq({ q: 'how should I schedule my weekend cleaning crew', single: true }), spEnv(false), ctx);
+  sj = await sr.json();
+  ok(!sj.cached, 'sponge: flag OFF -> never serves from cache (feature inert until the owner opts in)');
+}
+
 // ---- SECURITY (comp/grant rework): owner/platform-admin authority is EMAIL-ONLY -- no comp_grants role, including
 // a legacy role='admin' row left over from before this was retired, may ever confer it. ------------------------------
 {
