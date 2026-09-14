@@ -916,6 +916,62 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(cj.cached === true, 'sponge Stage7: conf OFF -> gate inert (a rejected answer is still served)');
 }
 
+// ---- SPONGE Stage 8b (cross-tenant playbook serving, flag-gated): a brand-new question (no own answer) is answered from
+// the shared de-identified GENERIC playbook for its intent (status='live' only); OFF -> recompute; a sensitive question
+// never reaches the playbook path (kind gate). ----
+{
+  const NOW = Date.now(), SID = 'sid_pb', CSRF = 'CSRFpb', TEN = 't_pb';
+  let pbfetch = 0;
+  function pbDB(pbOn) {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: 'u_pb', tenant_id: TEN, csrf: CSRF, expires_at: NOW + 1e12, idle_at: NOW, revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: 'u_pb', email: 'pb@x.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM platform_config WHERE k/.test(sql)) { if (a[0] === 'sponge_serve_enabled') return { v: '1' }; if (a[0] === 'sponge_playbook_serve_enabled') return { v: pbOn ? '1' : '0' }; return null; }
+          if (/FROM ai_answers WHERE id/.test(sql)) return null;   // no own exact answer -> reach the playbook fallback
+          if (/FROM platform_playbooks WHERE intent/.test(sql)) return { playbook: 'GENERIC: list on multiple channels, price by season, and follow up with past renters fast.' };
+          if (/FROM tenants WHERE id/.test(sql)) return { tier: 'pro', credits_purchased: 0, credits_free: 500, credits_week: 999999999 };
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/FROM ai_day_cost/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true, meta: { changes: 1 } }),
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const pbEnv = (on) => ({ DB: pbDB(on), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', ANTHROPIC_KEY: 'sk-ant-test' });
+  const pbReq = (body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }; return { method: 'POST', url: 'https://atlasrental.io/api/aio', headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
+  const pbFetch = () => { globalThis.fetch = () => { pbfetch++; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ content: [{ type: 'text', text: 'FRESH' }] }) }); }; };
+  const Q = 'how do I get more bookings for my rental gear';
+
+  // (a) playbook serving ON + no own answer -> served from the shared GENERIC playbook, ZERO provider calls, playbook:true
+  pbfetch = 0; pbFetch();
+  let pr = await worker.fetch(pbReq({ q: Q, single: true }), pbEnv(true), ctx);
+  let pj = await pr.json();
+  ok(pr.status === 200 && pj.cached === true && pj.playbook === true && /GENERIC:/.test(pj.synthesis || ''), 'sponge Stage8b: a new question is answered from the shared de-identified playbook (playbook:true)');
+  ok(pbfetch === 0, 'sponge Stage8b: a playbook serve makes ZERO provider calls');
+
+  // (b) playbook serving OFF -> recompute (never cross-tenant served)
+  pbfetch = 0; pbFetch();
+  pr = await worker.fetch(pbReq({ q: Q, single: true }), pbEnv(false), ctx);
+  pj = await pr.json();
+  ok(!pj.cached && pbfetch > 0, 'sponge Stage8b: playbook serving OFF -> recompute (no cross-tenant serve)');
+
+  // (c) HARD RAIL: a sensitive question never reaches the playbook path (kind gate) even with a live playbook + flag on
+  pbfetch = 0; pbFetch();
+  pr = await worker.fetch(pbReq({ q: 'what deposit and refund policy should I use', single: true }), pbEnv(true), ctx);
+  pj = await pr.json();
+  ok(!pj.cached && pbfetch > 0, 'sponge Stage8b HARD RAIL: a sensitive question is never served a playbook (recomputes)');
+}
+
 // ---- SECURITY (comp/grant rework): owner/platform-admin authority is EMAIL-ONLY -- no comp_grants role, including
 // a legacy role='admin' row left over from before this was retired, may ever confer it. ------------------------------
 {
