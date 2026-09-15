@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -726,6 +726,22 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/customer \[name\]/.test(_deIdentifyPlaybook('customer Bob is often late')), 'PII scrub: lowercase "customer Bob" still scrubbed (no regression)');
   ok(/customer service/.test(_deIdentifyPlaybook('improve your customer service response time')) && !/\[name\]/.test(_deIdentifyPlaybook('improve your customer service response time')), 'PII scrub: "customer service" is NOT mistaken for a name (Title-case name only)');
   ok(!/\$?\d|1,540|43\s?%/.test(_deIdentifyPlaybook('tenant Bob paid $1,540 which is 43% of the total')), 'PII scrub: amounts/percentages/figures still removed');
+}
+
+// ---- RBAC no-privilege-amplification: a non-owner delegate that assigns a ROLE with no caps blob must NOT be able to
+// mint/relevel a teammate whose effective caps exceed the delegate's own. The bug: caps stored NULL/{} -> _can falls to
+// the FULL _roleCaps(role) preset, defeating _grantableCaps. _clampRoleCapsToGranter materializes the preset clamped to
+// the granter (owner unrestricted -> null). ----
+{
+  const nonOwner = (capsObj) => ({ user: { role: 'manager', caps: JSON.stringify({ caps: capsObj }) }, isOwner: false });
+  const clamped = _clampRoleCapsToGranter(nonOwner({ teamManage: 1, bookEdit: 1 }), 'manager');
+  ok(clamped && clamped.caps && clamped.caps.bookEdit === 1, 'RBAC clamp: granter keeps a cap it holds (bookEdit)');
+  ok(clamped && clamped.caps && !clamped.caps.pricing && !clamped.caps.settings && !clamped.caps.webEdit && !clamped.caps.fleetEdit && !clamped.caps.customers && !clamped.caps.analytics, 'RBAC clamp: a teamManage delegate CANNOT mint a manager holding pricing/settings/webEdit/fleetEdit/customers/analytics it never held');
+  const c2 = _clampRoleCapsToGranter(nonOwner({ pricing: 1, customers: 1 }), 'manager');
+  ok(c2 && c2.caps && c2.caps.pricing === 1 && c2.caps.customers === 1 && !c2.caps.settings && !c2.caps.webEdit && !c2.caps.bookEdit, 'RBAC clamp: manager preset intersected to the granter caps {pricing,customers}');
+  ok(_clampRoleCapsToGranter({ user: { role: 'owner', caps: null }, isOwner: true }, 'manager') === null, 'RBAC clamp: owner granter is unrestricted (null -> full preset applies)');
+  const cv = _clampRoleCapsToGranter(nonOwner({ bookEdit: 1 }), 'viewer');
+  ok(cv && cv.caps && Object.keys(cv.caps).length === 0, 'RBAC clamp: viewer preset is empty regardless of granter');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
