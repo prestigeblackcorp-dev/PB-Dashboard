@@ -764,11 +764,22 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // (b5) HARD RAIL coverage: LEGAL questions phrased in everyday words must tag sensitive. The gate had the stem
   // "liabilit" (missed the adjective "liable") and no sue/obligation/negligence terms -- measured live, "can I be sued",
   // "am I liable ...", "what are my obligations" all classified stable (cacheable). Legal advice must always recompute.
-  for (const q of ['can I be sued by a customer after an accident', 'am I liable if a guest gets hurt on my boat', 'what are my obligations when a renter cancels early', 'who is responsible if my equipment fails']) {
+  for (const q of ['can I be sued by a customer after an accident', 'am I liable if a guest gets hurt on my boat', 'what are my obligations when a renter cancels early', 'could I face a lawsuit over a rental accident']) {
     fetchCalls = 0; spCouncilFetch();
     sr = await worker.fetch(spReq({ q, single: true }), spEnv(true), ctx);
     sj = await sr.json();
     ok(!sj.cached && fetchCalls > 0, 'sponge HARD RAIL (legal): "' + q.slice(0, 32) + '..." tags sensitive + recomputes');
+  }
+
+  // (b6) PRECISION regression: money/legal stems must NOT be so broad they swallow common OPERATIONAL/CUSTOMER questions.
+  // "responsib" once matched "who is responsible for cleaning" (operations) and "earn" matched "earn customer loyalty"
+  // (retention) -- both mis-tagged sensitive + never cached (measured live). Removed both (their real sense is covered by
+  // liab/legal/obligat and income/revenue/money). These must serve from cache like any stable question.
+  for (const q of ['who is responsible for cleaning the boats between rentals', 'how do I earn repeat customers and their loyalty']) {
+    fetchCalls = 0; spCouncilFetch();
+    sr = await worker.fetch(spReq({ q, single: true }), spEnv(true), ctx);
+    sj = await sr.json();
+    ok(sj.cached === true && fetchCalls === 0, 'sponge PRECISION: a non-sensitive operational/customer question ("' + q.slice(0, 24) + '...") is NOT mis-tagged sensitive');
   }
 
   // (c) flag OFF -> inert: even a perfect repeat recomputes (never served from cache)
