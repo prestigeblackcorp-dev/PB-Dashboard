@@ -761,6 +761,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     ok(!sj.cached && fetchCalls > 0, 'sponge HARD RAIL (everyday money): "' + q.slice(0, 32) + '..." tags sensitive + recomputes');
   }
 
+  // (b5) HARD RAIL coverage: LEGAL questions phrased in everyday words must tag sensitive. The gate had the stem
+  // "liabilit" (missed the adjective "liable") and no sue/obligation/negligence terms -- measured live, "can I be sued",
+  // "am I liable ...", "what are my obligations" all classified stable (cacheable). Legal advice must always recompute.
+  for (const q of ['can I be sued by a customer after an accident', 'am I liable if a guest gets hurt on my boat', 'what are my obligations when a renter cancels early', 'who is responsible if my equipment fails']) {
+    fetchCalls = 0; spCouncilFetch();
+    sr = await worker.fetch(spReq({ q, single: true }), spEnv(true), ctx);
+    sj = await sr.json();
+    ok(!sj.cached && fetchCalls > 0, 'sponge HARD RAIL (legal): "' + q.slice(0, 32) + '..." tags sensitive + recomputes');
+  }
+
   // (c) flag OFF -> inert: even a perfect repeat recomputes (never served from cache)
   fetchCalls = 0; spCouncilFetch();
   sr = await worker.fetch(spReq({ q: 'how should I schedule my weekend cleaning crew', single: true }), spEnv(false), ctx);
