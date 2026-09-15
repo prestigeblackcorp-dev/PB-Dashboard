@@ -809,6 +809,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   nr = await worker.fetch(ndReq({ q: 'what deposit and refund policy should I set for charters', single: true }), ndEnv(true, 'what deposit and refund policy should I use for charters'), ctx);
   nj = await nr.json();
   ok(!nj.cached && fetchCalls > 0, 'sponge Stage5 HARD RAIL: a sensitive question is NEVER near-dup served (recomputes)');
+
+  // (e) INFLECTION RECALL: "schedule"/"cleaning" (query) vs "scheduling"/"cleaning" (seed) must near-dup match. The light
+  // stemmer collapses base "-e" verbs to their inflections (schedule->schedul == scheduling->schedul); WITHOUT the ed +
+  // trailing-e pass these split and Jaccard here is ~25% (miss). WITH it, ~67% (served). Locks the 09x recall optimization.
+  fetchCalls = 0; ndFetch();
+  nr = await worker.fetch(ndReq({ q: 'how should I schedule the cleaning', single: true }), ndEnv(true, 'best scheduling and cleaning tips'), ctx);
+  nj = await nr.json();
+  ok(nj.cached === true && fetchCalls === 0, 'sponge Stage5: an inflected paraphrase (schedule~scheduling) near-dup matches after stemmer unification');
 }
 
 // ---- SPONGE Stage 6 (live re-grounding, flag-gated): a reused answer that cites figures gets a staleness note + the
