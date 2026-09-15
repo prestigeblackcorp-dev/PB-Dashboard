@@ -733,6 +733,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!sj.cached, 'sponge HARD RAIL: a sensitive (refund/tax/deposit) question is NEVER served from cache');
   ok(fetchCalls > 0, 'sponge HARD RAIL: a sensitive question RECOMPUTES via the council (provider IS called)');
 
+  // (b2) HARD RAIL regression: a question whose ONLY money terms are PLURAL/inflected ("deposits","refunds") must STILL
+  // tag sensitive. The stem regex once carried a trailing \b so \bdeposit\b missed "deposits" -> mis-tagged 'stable' ->
+  // served from cache (a real hard-rail leak, confirmed live). This locks the fix: plural-only money words recompute.
+  fetchCalls = 0; spCouncilFetch();
+  sr = await worker.fetch(spReq({ q: 'what should my deposits and refunds be for peak season charters', single: true }), spEnv(true), ctx);
+  sj = await sr.json();
+  ok(!sj.cached && fetchCalls > 0, 'sponge HARD RAIL (regression): a PLURAL-only sensitive question (deposits/refunds) is tagged sensitive + recomputes, never served from cache');
+
   // (c) flag OFF -> inert: even a perfect repeat recomputes (never served from cache)
   fetchCalls = 0; spCouncilFetch();
   sr = await worker.fetch(spReq({ q: 'how should I schedule my weekend cleaning crew', single: true }), spEnv(false), ctx);
