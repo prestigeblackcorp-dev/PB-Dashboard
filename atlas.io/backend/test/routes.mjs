@@ -741,6 +741,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   sj = await sr.json();
   ok(!sj.cached && fetchCalls > 0, 'sponge HARD RAIL (regression): a PLURAL-only sensitive question (deposits/refunds) is tagged sensitive + recomputes, never served from cache');
 
+  // (b3) PRECISION regression (opposite direction): a NON-sensitive question that merely CONTAINS a money word as a
+  // prefix ("feedback" starts with "fee") must NOT be mis-tagged sensitive -- it should serve from cache like any stable
+  // question. "fee" is a whole word so it's bounded (fees?\b); over-tagging it sensitive would defeat caching on a common
+  // question class (measured live: a "customer feedback" question recomputed every time). This locks the fee boundary.
+  fetchCalls = 0; spCouncilFetch();
+  sr = await worker.fetch(spReq({ q: 'how do I get more customer feedback on my rentals', single: true }), spEnv(true), ctx);
+  sj = await sr.json();
+  ok(sj.cached === true && fetchCalls === 0, 'sponge PRECISION: a non-sensitive "feedback" question (contains "fee") is NOT mis-tagged sensitive -- served from cache');
+
   // (c) flag OFF -> inert: even a perfect repeat recomputes (never served from cache)
   fetchCalls = 0; spCouncilFetch();
   sr = await worker.fetch(spReq({ q: 'how should I schedule my weekend cleaning crew', single: true }), spEnv(false), ctx);
