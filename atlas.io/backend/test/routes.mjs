@@ -744,6 +744,47 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(cv && cv.caps && Object.keys(cv.caps).length === 0, 'RBAC clamp: viewer preset is empty regardless of granter');
 }
 
+// ---- RTBF (right-to-erasure) must reach dashboard/phone-in bookings. Those store the customer by EMAIL in the data blob
+// with customer_id=NULL, so the old customer_id-only match SKIPPED them and left PII live after a "successful" erase. The
+// booking query now also matches the blob custEmail. This mock returns the dashboard booking ONLY for the email-inclusive
+// query (and [] for a customer_id-only query), so the test fails if the fix ever regresses. ----
+{
+  const SID = 'sid_er', CSRF = 'CSRFer', TEN = 't_er', UID = 'u_er', EMAIL = 'jane@example.com';
+  const bookingData = JSON.stringify({ cust: 'Jane Doe', custEmail: EMAIL, custPhone: '555-0100', idLast4: '4242' });
+  let redacted = null;
+  function erDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: Date.now() + 1e12, idle_at: Date.now(), revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: 'owner@er.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM customers WHERE id/.test(sql)) return { id: 'C1', email: EMAIL };
+          if (/SELECT data, updated_at FROM bookings WHERE id/.test(sql)) return { data: bookingData, updated_at: null };   // _bkPatch read
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => {
+          if (/FROM bookings WHERE tenant_id=\? AND \(customer_id/.test(sql)) return { results: [{ id: 'B1' }] };   // email-inclusive query -> matches the dashboard booking
+          if (/FROM bookings WHERE tenant_id=\? AND customer_id=\? LIMIT/.test(sql)) return { results: [] };          // old customer_id-only query -> would MISS it
+          return { results: [] };
+        },
+        run: async () => { if (/UPDATE bookings SET data=/.test(sql)) redacted = a[0]; return { success: true, meta: { changes: 1 } }; },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const erEnv = { DB: erDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const erReq = (cid) => ({ method: 'POST', url: 'https://atlasrental.io/api/customers/' + cid + '/erase', headers: { get: (k) => { const h = { 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }; const v = h[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => ({}), text: async () => '{}' });
+  const er = await worker.fetch(erReq('C1'), erEnv, ctx);
+  const ej = await er.json();
+  ok(er.status === 200 && ej.ok && ej.bookings_redacted === 1, 'RTBF: a dashboard booking (customer_id NULL, linked by blob email) is matched + redacted (bookings_redacted=1, got ' + JSON.stringify(ej) + ')');
+  ok(redacted && /\[erased\]/.test(redacted) && redacted.indexOf(EMAIL) < 0, 'RTBF: the matched booking blob has PII redacted (name [erased], email cleared)');
+}
+
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
 // ai_answers reservoir with NO provider call + 0 credits; a SENSITIVE (money/legal/live-data) question is NEVER served
 // from cache -- it always recomputes via the council; flag OFF is inert. Locks the hard rail in CI (no network). ----
