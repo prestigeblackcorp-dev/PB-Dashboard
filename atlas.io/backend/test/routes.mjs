@@ -785,6 +785,22 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(redacted && /\[erased\]/.test(redacted) && redacted.indexOf(EMAIL) < 0, 'RTBF: the matched booking blob has PII redacted (name [erased], email cleared)');
 }
 
+// ---- LOGIN-CSRF / session fixation: the cookie-ISSUING pre-session routes (login/signup) must reject a cross-site Origin
+// (the session cookie is SameSite=None, so a cross-site page could otherwise fixate the victim on the attacker's account).
+// A same-origin or no-Origin request must pass the guard and proceed to normal validation. ----
+{
+  const csEnv = { DB: { prepare: () => ({ bind: () => ({ first: async () => null, all: async () => ({ results: [] }), run: async () => ({ success: true, meta: { changes: 1 } }) }) }) }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const authReq = (p, origin, body) => ({ method: 'POST', url: 'https://atlasrental.io' + p, headers: { get: (k) => { const h = { 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4' }; if (origin) h['origin'] = origin; const v = h[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) });
+  for (const p of ['/api/auth/login', '/api/auth/signup']) {
+    const r = await worker.fetch(authReq(p, 'https://evil.example', {}), csEnv, ctx);
+    ok(r.status === 403, 'login-CSRF: ' + p + ' with a cross-site Origin -> 403 (got ' + r.status + ')');
+  }
+  const r2 = await worker.fetch(authReq('/api/auth/login', 'https://atlasrental.io', {}), csEnv, ctx);
+  ok(r2.status !== 403, 'login-CSRF: a same-origin login passes the origin guard (got ' + r2.status + ', not a 403 block)');
+  const r3 = await worker.fetch(authReq('/api/auth/login', null, {}), csEnv, ctx);
+  ok(r3.status !== 403, 'login-CSRF: a no-Origin request is not blocked (non-browser client cannot mount CSRF) (got ' + r3.status + ')');
+}
+
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
 // ai_answers reservoir with NO provider call + 0 credits; a SENSITIVE (money/legal/live-data) question is NEVER served
 // from cache -- it always recomputes via the council; flag OFF is inert. Locks the hard rail in CI (no network). ----
