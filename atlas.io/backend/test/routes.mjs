@@ -750,6 +750,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   sj = await sr.json();
   ok(sj.cached === true && fetchCalls === 0, 'sponge PRECISION: a non-sensitive "feedback" question (contains "fee") is NOT mis-tagged sensitive -- served from cache');
 
+  // (b4) HARD RAIL coverage: money/live-data questions that use only EVERYDAY vocabulary (cost/pay/income/expense/earn/
+  // money/cash/budget/spend) -- not the formal terms (revenue/margin/invoice) -- must STILL tag sensitive. Measured live:
+  // "what are my monthly costs" / "how much should guests pay" / "grow my income" all classified stable (cacheable) until
+  // these words were added, so a tenant's own cost/income question could be served from cache. Recompute, never cache.
+  for (const q of ['what are my typical monthly costs to run the fleet', 'how much should guests pay to rent my yacht', 'how do I grow my income each month', 'how do I lower my expenses']) {
+    fetchCalls = 0; spCouncilFetch();
+    sr = await worker.fetch(spReq({ q, single: true }), spEnv(true), ctx);
+    sj = await sr.json();
+    ok(!sj.cached && fetchCalls > 0, 'sponge HARD RAIL (everyday money): "' + q.slice(0, 32) + '..." tags sensitive + recomputes');
+  }
+
   // (c) flag OFF -> inert: even a perfect repeat recomputes (never served from cache)
   fetchCalls = 0; spCouncilFetch();
   sr = await worker.fetch(spReq({ q: 'how should I schedule my weekend cleaning crew', single: true }), spEnv(false), ctx);
