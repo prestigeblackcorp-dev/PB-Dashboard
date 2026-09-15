@@ -90,7 +90,7 @@ function devDB(scn) {
       bind: (...x) => { a = x; return api; },
       first: async () => {
         if (/FROM platform_config/.test(sql)) return scn === 'off' ? null : { v: '1' };
-        if (/FROM api_keys WHERE key_hash/.test(sql)) return scn === 'ok' ? { id: 'k1', tenant_id: 't_1', revoked_at: null } : null;
+        if (/FROM api_keys k JOIN tenants/.test(sql)) return scn === 'ok' ? { id: 'k1', tenant_id: 't_1', revoked_at: null } : null;   // JOIN tenants: row present == key found AND tenant still exists
         if (/FROM rate_limits/.test(sql)) return null;
         if (/FROM tenants WHERE id/.test(sql)) return { id: 't_1', name: 'Alpha', subdomain: 'alpha', fleet_type: 'cars', plan: 'pro' };
         if (/sqlite_master/.test(sql)) return { n: 30 };
@@ -789,7 +789,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // (the session cookie is SameSite=None, so a cross-site page could otherwise fixate the victim on the attacker's account).
 // A same-origin or no-Origin request must pass the guard and proceed to normal validation. ----
 {
-  const csEnv = { DB: { prepare: () => ({ bind: () => ({ first: async () => null, all: async () => ({ results: [] }), run: async () => ({ success: true, meta: { changes: 1 } }) }) }) }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const _csChain = { bind: () => _csChain, first: async () => null, all: async () => ({ results: [] }), run: async () => ({ success: true, meta: { changes: 1 } }) };
+  const csEnv = { DB: { prepare: () => _csChain }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
   const authReq = (p, origin, body) => ({ method: 'POST', url: 'https://atlasrental.io' + p, headers: { get: (k) => { const h = { 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4' }; if (origin) h['origin'] = origin; const v = h[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) });
   for (const p of ['/api/auth/login', '/api/auth/signup']) {
     const r = await worker.fetch(authReq(p, 'https://evil.example', {}), csEnv, ctx);
