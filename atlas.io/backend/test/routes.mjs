@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -991,6 +991,21 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_bookCanon(_self, '', null) === _self, 'seo #27: no custom domain -> self-canonical, unchanged');
   ok(_bookCanon(_self, 'acme.com', null) === _self, 'seo #27: a custom domain with no live status -> self-canonical');
   ok(_bookCanon(_self, 'https://Acme.com/booking', 'live') === 'https://acme.com/', 'seo #27: a stored scheme/path/case is normalized to the bare domain root');
+}
+
+// ---- ERROR CAPTURE for locally-caught 500s (observability #36): a booking-save or signature-persist failure that returns
+// its OWN err(500) never reached the top-level catch, so _recordError never saw it -- the failure was invisible in
+// /api/admin/errors while a real customer booking / legal signature silently failed to persist. _captureErr routes such a
+// catch onto the same dedup + owner-alert path, best-effort + non-blocking (waitUntil), and MUST never throw into the caller. ----
+{
+  const promises = [];
+  const ectx = { waitUntil: (p) => { promises.push(p); } };
+  const req = { headers: { get: () => '' } };
+  const errEnv = { DB: { prepare: () => { const c = { bind: () => c, run: async () => ({ success: true, meta: { changes: 1 } }), first: async () => null, all: async () => ({ results: [] }) }; return c; } }, OWNER_EMAIL: '' };   // OWNER_EMAIL '' -> skip the throttled alert email; tolerant DB so _recordError's schema-ensure + INSERT just resolve
+  let threw = false;
+  try { _captureErr(errEnv, ectx, req, new Error('booking-save failed'), '/api/public/x/book', 'POST'); } catch (e) { threw = true; }
+  await Promise.all(promises).catch(() => {});
+  ok(!threw && promises.length === 1, '#36: _captureErr schedules the error record via waitUntil (a locally-caught booking-save/sig-persist 500 now reaches /api/admin/errors) and never throws into the caller');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
