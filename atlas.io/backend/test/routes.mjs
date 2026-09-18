@@ -841,6 +841,63 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_overlap(w3, Date.parse('2026-09-20T10:00:00Z'), Date.parse('2026-09-20T12:00:00Z')) === true && _overlap(w3, Date.parse('2026-09-21T10:00:00Z'), Date.parse('2026-09-21T12:00:00Z')) === false, 'blackout: legacy midnight start/end still blocks its day + releases the next');
 }
 
+// ---- SYNC stale-push rejection SIGNAL (data-loss fix): when an OLDER client blob (data._t below the server's) is
+// pushed, the server drops it (never clobbering the newer server row -- the pre-existing guard) but MUST answer
+// stale:true + serverT instead of a bare ok:true. A bare ok is indistinguishable from a real save, so the client marks
+// the record clean and never retries -> the edit is silently LOST, then overwritten on the next hydrate. stale:true lets
+// the client re-hydrate + re-push with a _t past serverT (monotonic savedAt=max(now,lastRemote+1)). A genuinely NEWER
+// push (_t above the server) still saves normally. Additive: the fields ride on a 200, so an un-updated client that only
+// checks ok:true is byte-identical to before. Drives the REAL worker.fetch PUT path against a stateful bookings mock. ----
+{
+  const SID = 'sid_stale', CSRF = 'csrf_stale', TEN = 't_stale', UID = 'u_stale';
+  let serverT = 200;            // the server row's current data._t (a Sep-write from another device)
+  let bkUpdateRan = false;      // true once an `UPDATE bookings SET ...` actually runs -> proves the row WAS (or was NOT) written
+  function stmt(sql) {
+    let a = [];
+    const api = {
+      bind: (...x) => { a = x; return api; },
+      first: async () => {
+        if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: Date.now() + 1e12, idle_at: Date.now(), revoked_at: null } : null;
+        if (/FROM users WHERE id/.test(sql)) return { id: UID, email: 'owner@stale.com', tenant_id: TEN, role: 'owner', caps: null };
+        if (/FROM comp_grants WHERE email/.test(sql)) return null;
+        if (/FROM platform_config WHERE k=\?/.test(sql)) return null;                                   // every flag OFF (feature gate, sync_tombstones_enabled, ...)
+        if (/SELECT data, revenue_cents, updated_at FROM bookings/.test(sql)) return { data: JSON.stringify({ _t: serverT, cust: 'Server' }), revenue_cents: 0, updated_at: 5000 };   // _bookingMirrorWrite CAS read
+        if (/SELECT data FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) return { data: JSON.stringify({ _t: serverT, cust: 'Server' }) };   // the stale-push guard read
+        if (/SELECT id FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) return { id: a[0] };       // the PUT `owns` check -> not 404
+        if (/FROM tenants WHERE id/.test(sql)) return { id: TEN, tier: 'pro', plan: 'active', settings: '{}' };
+        if (/FROM rate_limits/.test(sql)) return null;
+        if (/sqlite_master/.test(sql)) return { n: 30 };
+        return null;
+      },
+      all: async () => ({ results: [] }),
+      run: async () => { if (/^UPDATE bookings SET/.test(sql)) bkUpdateRan = true; return { success: true, meta: { changes: 1 } }; },
+    };
+    return api;
+  }
+  const env = { DB: { prepare: stmt }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'owner@x.com' };
+  const putReq = (body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }; return { method: 'PUT', url: 'https://atlasrental.io/api/data/bookings/BK1', headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => body, text: async () => JSON.stringify(body) }; };
+
+  // (a) STALE push: an older blob (_t 100 < server 200) is dropped, and the response SIGNALS the rejection.
+  bkUpdateRan = false;
+  let r = await worker.fetch(putReq({ id: 'BK1', status: 'confirmed', starts: 1, ends: 2, data: { _t: 100, cust: 'StaleEdit' } }), env, ctx);
+  let j = await r.json();
+  ok(r.status === 200 && j.stale === true && j.serverT === 200, 'sync stale-push: an older blob (_t<server) returns stale:true + serverT (not a bare ok the client reads as "saved")');
+  ok(bkUpdateRan === false, 'sync stale-push: the stale blob NEVER reaches an UPDATE -> the newer server row is untouched');
+
+  // (b) NEWER push: a genuinely newer blob (_t 300 > server 200) still saves normally, with no stale flag.
+  bkUpdateRan = false;
+  r = await worker.fetch(putReq({ id: 'BK1', status: 'confirmed', starts: 1, ends: 2, data: { _t: 300, cust: 'RealEdit' } }), env, ctx);
+  j = await r.json();
+  ok(r.status === 200 && j.ok === true && !j.stale, 'sync stale-push: a genuinely NEWER blob (_t>server) still saves with NO stale flag');
+  ok(bkUpdateRan === true, 'sync stale-push: the newer blob DOES reach the booking UPDATE (normal save path unchanged)');
+
+  // (c) EQUAL _t (200 == 200): the guard uses strict `<`, so an equal-_t re-push is NOT stale -> saves (idempotent), no flag.
+  bkUpdateRan = false;
+  r = await worker.fetch(putReq({ id: 'BK1', status: 'confirmed', starts: 1, ends: 2, data: { _t: 200, cust: 'SameEdit' } }), env, ctx);
+  j = await r.json();
+  ok(r.status === 200 && !j.stale, 'sync stale-push: an EQUAL-_t re-push is not flagged stale (strict <, so idempotent re-push still saves)');
+}
+
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
 // ai_answers reservoir with NO provider call + 0 credits; a SENSITIVE (money/legal/live-data) question is NEVER served
 // from cache -- it always recomputes via the council; flag OFF is inert. Locks the hard rail in CI (no network). ----

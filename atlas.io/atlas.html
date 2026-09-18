@@ -1935,7 +1935,7 @@ const Atlas = (function(){
       for(var i=0;i<bs.length;i++){ if(await _offloadObj(bs[i])) chg=true; }
       for(var j=0;j<as.length;j++){ if(await _offloadObj(as[j])) chg=true; }
       if(S&&S.brand&&_isBigDataUri(S.brand.logo)){ var lu=await _uploadBlob(S.brand.logo,'logo'); if(lu){ S.brand.logo=lu; chg=true; } }
-      if(chg){ var s=store.session(); if(s){ if(bs.length)_lsSet('atlas_bookings_'+s.tenantId,bs); if(as.length)_lsSet('atlas_assets_'+s.tenantId,as); if(S)_lsSet('atlas_tenant_'+s.tenantId,S); } }   // persist slimmed rows locally WITHOUT re-triggering sync
+      if(chg){ var s=store.session(); if(s){ if(bs.length){ var _slimB={}; bs.forEach(function(x){ if(x&&x.id!=null)_slimB[x.id]=x; }); var _curB=(typeof _bookings==='function'?_bookings():[])||[]; if(_curB.length)_lsSet('atlas_bookings_'+s.tenantId,_curB.map(function(x){ var sl=(x&&x.id!=null)?_slimB[x.id]:null; return (sl&&Number(x._t||0)<=Number(sl._t||0))?sl:x; })); } if(as.length){ var _slimA={}; as.forEach(function(x){ if(x&&x.id!=null)_slimA[x.id]=x; }); var _curA=((typeof DATA!=='undefined'&&DATA.assets)||[]); if(_curA.length)_lsSet('atlas_assets_'+s.tenantId,_curA.map(function(x){ var sl=(x&&x.id!=null)?_slimA[x.id]:null; return (sl&&Number(x._t||0)<=Number(sl._t||0))?sl:x; })); } if(S)_lsSet('atlas_tenant_'+s.tenantId,S); } }   // sync data-loss fix: merge slimmed (offloaded-URL) rows BY ID into the CURRENT arrays (re-read AFTER the awaits) instead of blind-writing the pre-await snapshot bs/as -- a booking added/edited during the R2 uploads is otherwise dropped from localStorage, and the reconcile sweep then DELETEs the live server row. The _t guard keeps a concurrently-edited record's newer version (its offload just retries next sync).
     }catch(e){}
     _offloading=false; try{ _srvSyncPush(); }catch(e){}
   }
@@ -1961,14 +1961,20 @@ const Atlas = (function(){
     }
     return b;
   }catch(e){ return {id:row.id}; } }
+  var _staleRehydrateT=null;
+  function _reHydrateSoon(){ if(_staleRehydrateT) return; _staleRehydrateT=setTimeout(function(){ _staleRehydrateT=null; try{ if(typeof _srvHydrate==='function'){ var _s=store.session(); if(_s) _srvHydrate(_s.tenantId); } }catch(e){} }, 800); }   // sync data-loss fix: debounce so one stale burst triggers ONE hydrate, not one per record
   function _srvMirror(kind,item,hk,hv){ if(!ATLAS_BACKEND||!_apiCsrf||!item||!item.id) return; var body=_srvShape(kind,item);
     // #294 Gap 4: record the "synced" hash ONLY after the server actually accepted the write. If the PUT/POST fails
     // (network, or a too-large row rejected by D1), _pushedHash stays stale so the very next sync retries it -- instead
     // of the old behaviour where the hash was set optimistically and a failed write silently dropped the record forever.
     function _ok(){ if(hk) _pushedHash[hk]=hv; }
-    _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){
-      if(res && res.status===404){ _api('/api/data/'+kind,{method:'POST',body:body}).then(function(r2){ if(r2&&r2.status>=200&&r2.status<300) _ok(); }).catch(function(){}); }
-      else if(res && res.status>=200 && res.status<300){ _ok(); }
+    // sync data-loss fix: the server DROPS an older-_t push (stale:true) rather than clobber a newer server row. Do NOT
+    // mark it clean -- that strands the local edit AND lets the reconcile sweep delete it. Advance the monotonic clock past
+    // the server's _t so the NEXT push wins, then (debounced) re-hydrate so newest-wins merges the server's version in.
+    function _stale(j){ try{ if(j&&j.serverT) _seenT(j.serverT); }catch(e){} _reHydrateSoon(); }
+    _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){ var j=(res&&res.json)||{};
+      if(res && res.status===404){ _api('/api/data/'+kind,{method:'POST',body:body}).then(function(r2){ var j2=(r2&&r2.json)||{}; if(r2&&r2.status>=200&&r2.status<300){ if(j2.stale)_stale(j2); else _ok(); } }).catch(function(){}); }
+      else if(res && res.status>=200 && res.status<300){ if(j.stale)_stale(j); else _ok(); }
     }).catch(function(){}); }
   function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; delete _pushedHash[kind+':'+id]; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).catch(function(){}); }
   function _srvMirrorProfile(pend){ if(!ATLAS_BACKEND||!_apiCsrf||!S||_bootSync) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money'&&k!=='_actAs'&&k!=='_selfActor'&&k!=='_srvCustomers') settings[k]=S[k]; }   // _actAs/_selfActor are device-local preview state (never share across devices/teammates); _srvCustomers is a PII fetch-cache (re-fetched each hydrate)
