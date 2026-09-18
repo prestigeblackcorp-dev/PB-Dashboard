@@ -972,11 +972,11 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // BreadcrumbList "Home" + WebSite/Organization url from origin+'/' -- i.e. the ATLAS marketing homepage -- telling Google
 // the tenant's page belongs to Atlas, not the tenant. Now "home" is the tenant's OWN booking-page root. ----
 {
-  const _bh = _bookHeadTags({ name: 'Acme Rentals', settings: {} }, 'https://atlasrental.io/api/book/acme', null);
+  const _bh = _bookHeadTags({ name: 'Acme Rentals', settings: {} }, 'https://atlasrental.io/api/book/acme', null).head;   // _bookHeadTags returns { title, head, noscript } -- the JSON-LD lives in .head
   ok(_bh.indexOf('https://atlasrental.io/api/book/acme') >= 0, 'seo #26: the tenant booking-page url is present as its structured-data home');
   ok(!/"https:\/\/atlasrental\.io\/"/.test(_bh), 'seo #26: the bare Atlas homepage url no longer appears (was WebSite.url + Breadcrumb Home) on a path-served tenant booking page');
   // a custom-domain tenant (served at its own root) still resolves home to its own '/'
-  const _bhc = _bookHeadTags({ name: 'Acme Rentals', settings: {} }, 'https://acmerentals.com/', null);
+  const _bhc = _bookHeadTags({ name: 'Acme Rentals', settings: {} }, 'https://acmerentals.com/', null).head;
   ok(/"https:\/\/acmerentals\.com\/"/.test(_bhc), 'seo #26: a custom-domain tenant still uses its own root as home');
 }
 
