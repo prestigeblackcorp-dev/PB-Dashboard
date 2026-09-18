@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -896,6 +896,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   r = await worker.fetch(putReq({ id: 'BK1', status: 'confirmed', starts: 1, ends: 2, data: { _t: 200, cust: 'SameEdit' } }), env, ctx);
   j = await r.json();
   ok(r.status === 200 && !j.stale, 'sync stale-push: an EQUAL-_t re-push is not flagged stale (strict <, so idempotent re-push still saves)');
+}
+
+// ---- SSO pre-hijacking RECLAIM decision (auth-takeover defense): binding an SSO identity to a PRE-EXISTING local account
+// by verified-email alone lets a pre-registration attacker (who made a password account on the victim's email -- login does
+// NOT gate on email_verified) share the account once the real owner signs in via the IdP. On the FIRST link (no bound sub) or
+// a DIFFERENT IdP subject, the callback revokes sessions + blanks the password to evict the attacker. This locks the decision:
+// never reclaim a freshly provisioned account or a returning matched-sub login; always reclaim first-link / sub-mismatch. ----
+{
+  ok(_ssoReclaim(true, '', 'sub-123') === false, 'sso reclaim: a freshly SSO-provisioned account is NEVER reclaimed (no attacker to evict)');
+  ok(_ssoReclaim(true, 'anything', 'sub-123') === false, 'sso reclaim: _isNew wins regardless of any stored sub');
+  ok(_ssoReclaim(false, '', 'sub-123') === true, 'sso reclaim: FIRST link to a pre-existing account (no bound sub) -> reclaim (revoke sessions + blank password)');
+  ok(_ssoReclaim(false, 'sub-123', 'sub-123') === false, 'sso reclaim: a returning SSO user whose bound sub MATCHES -> plain no-op login (no reclaim)');
+  ok(_ssoReclaim(false, 'sub-OLD', 'sub-123') === true, 'sso reclaim: a DIFFERENT IdP subject claiming the same verified email -> reclaim (rebind, evict)');
+  ok(_ssoReclaim(false, 'sub-123', '') === true, 'sso reclaim: an empty incoming sub never silently matches a bound sub (the callback also rejects a sub-less token upstream)');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
