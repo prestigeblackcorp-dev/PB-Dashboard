@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -910,6 +910,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ssoReclaim(false, 'sub-123', 'sub-123') === false, 'sso reclaim: a returning SSO user whose bound sub MATCHES -> plain no-op login (no reclaim)');
   ok(_ssoReclaim(false, 'sub-OLD', 'sub-123') === true, 'sso reclaim: a DIFFERENT IdP subject claiming the same verified email -> reclaim (rebind, evict)');
   ok(_ssoReclaim(false, 'sub-123', '') === true, 'sso reclaim: an empty incoming sub never silently matches a bound sub (the callback also rejects a sub-less token upstream)');
+}
+
+// ---- SECURITY roll-up watermark accumulation (owner alerting): the cron advanced last_sec_alert_ts UNCONDITIONALLY every
+// pass, so a sub-threshold trickle (e.g. 3-4 blocked attacks per 2h window, never crossing the 5-event bar in any single
+// window) was reset + forgotten every pass and NEVER alerted -- sustained low-level attack traffic stayed invisible. Now the
+// watermark advances ONLY on an alert (count>=threshold) or a clean window (count 0); 0<count<threshold HOLDS it so the
+// trickle accumulates until it crosses. A 7d look-back cap (in the caller) bounds a held window. ----
+{
+  ok(_secShouldAdvance(0, 5) === true, 'sec watermark: a CLEAN window (0 events) advances (nothing to carry)');
+  ok(_secShouldAdvance(5, 5) === true, 'sec watermark: hitting the threshold advances (we just alerted -> reset the window)');
+  ok(_secShouldAdvance(9, 5) === true, 'sec watermark: over the threshold advances too');
+  ok(_secShouldAdvance(1, 5) === false, 'sec watermark: a sub-threshold trickle (1) HOLDS -> accumulates into the next pass');
+  ok(_secShouldAdvance(4, 5) === false, 'sec watermark: 4 events (one below the bar) HOLDS -> the classic evasion window is closed');
+  ok(_secShouldAdvance(3, 5) === false && _secShouldAdvance(4, 5) === false && _secShouldAdvance(5, 5) === true, 'sec watermark: 3,4 hold but the 5th (accumulated) crosses + advances -> the trickle finally alerts');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
