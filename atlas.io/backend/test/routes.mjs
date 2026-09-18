@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _sweepNextCursor, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -924,6 +924,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_secShouldAdvance(1, 5) === false, 'sec watermark: a sub-threshold trickle (1) HOLDS -> accumulates into the next pass');
   ok(_secShouldAdvance(4, 5) === false, 'sec watermark: 4 events (one below the bar) HOLDS -> the classic evasion window is closed');
   ok(_secShouldAdvance(3, 5) === false && _secShouldAdvance(4, 5) === false && _secShouldAdvance(5, 5) === true, 'sec watermark: 3,4 hold but the 5th (accumulated) crosses + advances -> the trickle finally alerts');
+}
+
+// ---- PAGED-SWEEP cursor rotation (GDPR ID-scan retention #39): the retention sweep fetched opted-in tenants with a bare
+// `LIMIT 200` (no ORDER BY, no cursor), so once >200 tenants configured a retention window some were NEVER swept -> their
+// customers' ID scans were retained forever. Now the sweep pages by a persistent cursor: a FULL page resumes past the last
+// id, a SHORT/empty page wraps to the start -- so every tenant is covered within ceil(N/pageSize) daily runs. ----
+{
+  const _full = []; for (let i = 0; i < 200; i++) _full.push({ id: 't' + String(1000 + i) });   // exactly a full page
+  ok(_sweepNextCursor(_full, 200) === 't1199', 'sweep cursor: a FULL page (200) -> resume PAST the last id next run');
+  ok(_sweepNextCursor([{ id: 'tA' }, { id: 'tB' }, { id: 'tC' }], 200) === '', 'sweep cursor: a SHORT page -> end of list, wrap to the start');
+  ok(_sweepNextCursor([], 200) === '', 'sweep cursor: an EMPTY page -> wrap (never gets stuck past the end)');
+  const _full5 = [{ id: 'x1' }, { id: 'x2' }, { id: 'x3' }, { id: 'x4' }, { id: 'x5' }];
+  ok(_sweepNextCursor(_full5, 5) === 'x5', 'sweep cursor: a full page at a different pageSize resumes at its own last id');
+  ok(_sweepNextCursor([{ id: 'x1' }, { id: 'x2' }], 5) === '', 'sweep cursor: fewer than pageSize -> wrap (the coverage guarantee: no row past the first page is permanently skipped)');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
