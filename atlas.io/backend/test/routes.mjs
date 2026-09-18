@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -800,6 +800,25 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(r2.status !== 403, 'login-CSRF: a same-origin login passes the origin guard (got ' + r2.status + ', not a 403 block)');
   const r3 = await worker.fetch(authReq('/api/auth/login', null, {}), csEnv, ctx);
   ok(r3.status !== 403, 'login-CSRF: a no-Origin request is not blocked (non-browser client cannot mount CSRF) (got ' + r3.status + ')');
+}
+
+// ---- PAYPAL-RECOVER idempotency (money): the audit found a captured-but-uncredited PayPal order was never recovered
+// (re-capture -> 422 ORDER_ALREADY_CAPTURED -> the reconcile gave up, losing the payment). The fix GETs the order and
+// credits the EXISTING capture -- which is SAFE only because _paypalCreditBooking is idempotent on the CAPTURE id:
+// crediting the same capture twice adds revenue exactly ONCE. This locks that guarantee (a reconcile/return replay can
+// never double-credit). ----
+{
+  let _bkData = JSON.stringify({ custEmail: 'c@x.com', asset: 'Boat' }), _bkRev = 0, _bkUpd = null;
+  const ppEnv = { DB: { prepare: (sql) => { let a = []; const api = {
+    bind: (...x) => { a = x; return api; },
+    first: async () => (/FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) ? { id: 'BK1', tenant_id: 'T1', data: _bkData, revenue_cents: _bkRev, status: 'confirmed', updated_at: _bkUpd, starts: 0 } : null,
+    run: async () => { if (/UPDATE bookings SET data=/.test(sql)) { _bkData = a[0]; _bkRev = a[1]; _bkUpd = a[3]; } return { success: true, meta: { changes: 1 } }; },
+    all: async () => ({ results: [] }),
+  }; return api; } } };
+  const _r1 = await _paypalCreditBooking(ppEnv, 'T1', 'BK1', 'balance', 'CAP123', 'ORD1', 5000);
+  ok(_r1 && _r1.credited === true && _bkRev === 5000, 'paypal-recover: crediting a recovered capture adds revenue ONCE (credited, rev=5000, got ' + JSON.stringify({ c: _r1 && _r1.credited, rev: _bkRev }) + ')');
+  const _r2 = await _paypalCreditBooking(ppEnv, 'T1', 'BK1', 'balance', 'CAP123', 'ORD1', 5000);
+  ok(_r2 && _r2.credited === false && _r2.dup === true && _bkRev === 5000, 'paypal-recover: replaying the SAME capture id is a dup no-op -- NO double-credit (rev still 5000, got ' + JSON.stringify({ c: _r2 && _r2.credited, dup: _r2 && _r2.dup, rev: _bkRev }) + ')');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
