@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -966,6 +966,18 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const clientD2 = { paid: {}, giftRedemptions: [] };
   _graftServerPay(clientD2, { giftRedemptions: [] });
   ok(clientD2.giftRedemptions.length === 0, 'gift graft: an unredeemed (server-removed) credit is never resurrected');
+}
+
+// ---- SEO structured-data home URL (#26): a path-served tenant booking page (atlasrental.io/api/book/<slug>) built its
+// BreadcrumbList "Home" + WebSite/Organization url from origin+'/' -- i.e. the ATLAS marketing homepage -- telling Google
+// the tenant's page belongs to Atlas, not the tenant. Now "home" is the tenant's OWN booking-page root. ----
+{
+  const _bh = _bookHeadTags({ name: 'Acme Rentals', settings: {} }, 'https://atlasrental.io/api/book/acme', null);
+  ok(_bh.indexOf('https://atlasrental.io/api/book/acme') >= 0, 'seo #26: the tenant booking-page url is present as its structured-data home');
+  ok(!/"https:\/\/atlasrental\.io\/"/.test(_bh), 'seo #26: the bare Atlas homepage url no longer appears (was WebSite.url + Breadcrumb Home) on a path-served tenant booking page');
+  // a custom-domain tenant (served at its own root) still resolves home to its own '/'
+  const _bhc = _bookHeadTags({ name: 'Acme Rentals', settings: {} }, 'https://acmerentals.com/', null);
+  ok(/"https:\/\/acmerentals\.com\/"/.test(_bhc), 'seo #26: a custom-domain tenant still uses its own root as home');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
