@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -978,6 +978,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // a custom-domain tenant (served at its own root) still resolves home to its own '/'
   const _bhc = _bookHeadTags({ name: 'Acme Rentals', settings: {} }, 'https://acmerentals.com/', null).head;
   ok(/"https:\/\/acmerentals\.com\/"/.test(_bhc), 'seo #26: a custom-domain tenant still uses its own root as home');
+}
+
+// ---- SEO duplicate-content canonical (#27): the same booking page is reachable at atlasrental.io/api/book/<slug> AND at a
+// tenant's connected custom domain root; both self-canonicalized -> Google split the ranking across two URLs. The path version
+// now canonicalizes to the custom domain ONLY when it is actually serving (status 'live', the host router's own gate) -- never
+// to a non-serving domain (which would de-index the working page). ----
+{
+  const _self = 'https://atlasrental.io/api/book/acme';
+  ok(_bookCanon(_self, 'acme.com', 'live') === 'https://acme.com/', 'seo #27: a LIVE custom domain becomes the canonical (dedupes the two serving URLs)');
+  ok(_bookCanon(_self, 'acme.com', 'pending') === _self, 'seo #27: a PENDING (not-yet-serving) custom domain does NOT hijack the canonical (would de-index the live path page)');
+  ok(_bookCanon(_self, '', null) === _self, 'seo #27: no custom domain -> self-canonical, unchanged');
+  ok(_bookCanon(_self, 'acme.com', null) === _self, 'seo #27: a custom domain with no live status -> self-canonical');
+  ok(_bookCanon(_self, 'https://Acme.com/booking', 'live') === 'https://acme.com/', 'seo #27: a stored scheme/path/case is normalized to the bare domain root');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
