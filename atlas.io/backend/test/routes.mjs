@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -819,6 +819,26 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_r1 && _r1.credited === true && _bkRev === 5000, 'paypal-recover: crediting a recovered capture adds revenue ONCE (credited, rev=5000, got ' + JSON.stringify({ c: _r1 && _r1.credited, rev: _bkRev }) + ')');
   const _r2 = await _paypalCreditBooking(ppEnv, 'T1', 'BK1', 'balance', 'CAP123', 'ORD1', 5000);
   ok(_r2 && _r2.credited === false && _r2.dup === true && _bkRev === 5000, 'paypal-recover: replaying the SAME capture id is a dup no-op -- NO double-credit (rev still 5000, got ' + JSON.stringify({ c: _r2 && _r2.credited, dup: _r2 && _r2.dup, rev: _bkRev }) + ')');
+}
+
+// ---- BLACKOUT day-boundary math (availability/money): blackout from/to are stored as NOON-of-day. The overlap gate
+// used e = to + 86400000 (noon + 24h = noon of the day AFTER), a 12h over-block that WRONGLY REJECTED a valid next-day
+// booking and let an early first-day-morning booking slip through. _blkWin snaps to [midnight(D1), midnight(D2+1)).
+// A single-day block must reject the same day and ALLOW the next day. ----
+{
+  const _overlap = (w, s, e) => !!(w && w.s < e && w.e > s);
+  const noonD = Date.parse('2026-09-20T12:00:00Z');                                   // a Sep-20 blackout, stored at noon
+  const w = _blkWin({ from: noonD, to: noonD });
+  ok(_overlap(w, Date.parse('2026-09-20T10:00:00Z'), Date.parse('2026-09-20T12:00:00Z')) === true, 'blackout: a same-day (Sep20) booking is BLOCKED');
+  ok(_overlap(w, Date.parse('2026-09-21T10:00:00Z'), Date.parse('2026-09-21T12:00:00Z')) === false, 'blackout: a next-day (Sep21) booking is ALLOWED (was wrongly blocked by the +24h-on-noon 12h overshoot)');
+  ok(_overlap(w, Date.parse('2026-09-21T00:30:00Z'), Date.parse('2026-09-21T02:00:00Z')) === false, 'blackout: an early Sep21-morning booking is ALLOWED (the over-block was worst right after midnight of the day after)');
+  ok(_overlap(w, Date.parse('2026-09-20T08:00:00Z'), Date.parse('2026-09-20T10:00:00Z')) === true, 'blackout: an early Sep20-morning booking is BLOCKED (the old +12h shift under-blocked the first-day morning)');
+  const w2 = _blkWin({ from: noonD, to: Date.parse('2026-09-21T12:00:00Z') });        // 2-day block Sep20..Sep21
+  ok(_overlap(w2, Date.parse('2026-09-21T15:00:00Z'), Date.parse('2026-09-21T17:00:00Z')) === true, 'blackout: a 2-day block still covers the last blocked day (Sep21)');
+  ok(_overlap(w2, Date.parse('2026-09-22T09:00:00Z'), Date.parse('2026-09-22T11:00:00Z')) === false, 'blackout: a 2-day block releases the day AFTER (Sep22)');
+  // legacy string start/end (Date.parse -> midnight) keeps the +1-day exclusive end
+  const w3 = _blkWin({ start: '2026-09-20', end: '2026-09-20' });
+  ok(_overlap(w3, Date.parse('2026-09-20T10:00:00Z'), Date.parse('2026-09-20T12:00:00Z')) === true && _overlap(w3, Date.parse('2026-09-21T10:00:00Z'), Date.parse('2026-09-21T12:00:00Z')) === false, 'blackout: legacy midnight start/end still blocks its day + releases the next');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
