@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _sweepNextCursor, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -938,6 +938,34 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const _full5 = [{ id: 'x1' }, { id: 'x2' }, { id: 'x3' }, { id: 'x4' }, { id: 'x5' }];
   ok(_sweepNextCursor(_full5, 5) === 'x5', 'sweep cursor: a full page at a different pageSize resumes at its own last id');
   ok(_sweepNextCursor([{ id: 'x1' }, { id: 'x2' }], 5) === '', 'sweep cursor: fewer than pageSize -> wrap (the coverage guarantee: no row past the first page is permanently skipped)');
+}
+
+// ---- GIFT-REDEMPTION graft on sync (money #19): a gift redemption is server-authoritative for BOTH channels (portal self-
+// redeem AND owner dashboard redeem go through /api/booking/gift-redeem|gift-unredeem server-side). _graftServerPay re-adds a
+// server redemption the incoming client blob is missing so a newer owner mirror write from a device that hadn't seen it can't
+// DROP it (which would re-inflate the balance while gift_uses still holds the claim -> prepaid gift consumed, credited to
+// nothing). Was gated on via==='portal' -> owner redemptions silently lost; now preserves both. ----
+{
+  // (a) an OWNER redemption on the server, absent from a newer client blob -> grafted (the #19 fix)
+  const clientA = { paid: {}, giftRedemptions: [] };
+  const serverA = { giftRedemptions: [{ id: 'gr1', code: 'GIFT50', amt: 50, at: 111, via: 'owner' }] };
+  _graftServerPay(clientA, serverA);
+  ok(clientA.giftRedemptions.length === 1 && clientA.giftRedemptions[0].id === 'gr1', 'gift graft: an OWNER redemption missing from the client blob is preserved (was dropped when the graft only kept via:portal)');
+
+  // (b) a PORTAL redemption is still preserved (no regression)
+  const clientB = { paid: {}, giftRedemptions: [] };
+  _graftServerPay(clientB, { giftRedemptions: [{ id: 'gr2', code: 'GC', amt: 20, at: 222, via: 'portal' }] });
+  ok(clientB.giftRedemptions.length === 1 && clientB.giftRedemptions[0].id === 'gr2', 'gift graft: a PORTAL redemption is still preserved (unchanged behavior)');
+
+  // (c) no duplicate when the client already carries the same redemption id
+  const clientC = { paid: {}, giftRedemptions: [{ id: 'gr3', code: 'X', amt: 10, at: 333, via: 'owner' }] };
+  _graftServerPay(clientC, { giftRedemptions: [{ id: 'gr3', code: 'X', amt: 10, at: 333, via: 'owner' }] });
+  ok(clientC.giftRedemptions.length === 1, 'gift graft: a redemption already on the client blob is not duplicated (dedup by id)');
+
+  // (d) a redemption REMOVED server-side (unredeem) is NOT resurrected -- graft only adds what serverD still has
+  const clientD2 = { paid: {}, giftRedemptions: [] };
+  _graftServerPay(clientD2, { giftRedemptions: [] });
+  ok(clientD2.giftRedemptions.length === 0, 'gift graft: an unredeemed (server-removed) credit is never resurrected');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
