@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -1089,6 +1089,21 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_deliberateRefundNonce('capture', { force: true, nonce: 'n-abc' }) === '', 'refund #10691: only a REFUND op is eligible -- capture/release never get a repeat nonce');
   ok(_deliberateRefundNonce('refund', { force: true, nonce: '' }) === '', 'refund #10691: an empty nonce is rejected (stays stable-keyed)');
   ok(_deliberateRefundNonce('refund', null) === '', 'refund #10691: a missing body is safely stable-keyed (never throws)');
+}
+
+// ---- EXTENSION effective-end must be rateModel-INDEPENDENT (CRITICAL availability/money): the occupied-until end of a signed
+// extension was computed as addedPeriods * the tenant's CURRENT rateModel period, so a later Settings>Money>Pricing-model change
+// retroactively moved every signed extension's end -> over-block (day->week) or a real DOUBLE-BOOKING (week->day). Now the FROZEN
+// signed newEndTs (captured at extend time) is authoritative, so the same booking yields the same effective end under any pms. ----
+{
+  const dayPms = 86400000, weekPms = 604800000;
+  const d = { endTs: 1000000, startTs: 0, periods: 1, extensions: [{ addedPeriods: 2, newEndTs: 5000000, _deleted: false }] };
+  ok(_bkEffEndServer(0, d, dayPms) === 5000000 && _bkEffEndServer(0, d, weekPms) === 5000000, 'ext-end #crit: a signed extension resolves to its FROZEN newEndTs regardless of the live rateModel period (day==week) -> a pricing-model change can no longer double-book or over-block');
+  const leg = { endTs: 1000000, extensions: [{ addedPeriods: 2, _deleted: false }] };  // legacy row with no newEndTs
+  ok(_bkEffEndServer(0, leg, dayPms) === 1000000 + 2 * dayPms, 'ext-end #crit: a legacy extension without a frozen newEndTs still uses the count*period estimate (backward-compatible)');
+  ok(_bkEffEndServer(2000000, { endTs: 1000000 }, dayPms) === 2000000, 'ext-end #crit: no extensions -> max(colEnds, base), unchanged');
+  const del = { endTs: 1000000, extensions: [{ addedPeriods: 2, newEndTs: 5000000, _deleted: true }] };  // a deleted extension does not extend
+  ok(_bkEffEndServer(0, del, weekPms) === 1000000, 'ext-end #crit: a _deleted extension is ignored (effective end stays at base)');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
