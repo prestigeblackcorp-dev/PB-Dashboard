@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -1006,6 +1006,18 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   try { _captureErr(errEnv, ectx, req, new Error('booking-save failed'), '/api/public/x/book', 'POST'); } catch (e) { threw = true; }
   await Promise.all(promises).catch(() => {});
   ok(!threw && promises.length === 1, '#36: _captureErr schedules the error record via waitUntil (a locally-caught booking-save/sig-persist 500 now reaches /api/admin/errors) and never throws into the caller');
+}
+
+// ---- SSO must not BYPASS account MFA (#21): an account owner who turned on 2FA must not have it skipped by signing in via
+// SSO. The callback lets SSO stand in for the account's MFA ONLY when the IdP asserts a second factor in the id_token `amr`
+// (RFC 8176); otherwise it routes them to the password+code flow. This locks the amr decision. ----
+{
+  ok(_ssoAmrMfa({ amr: ['pwd', 'otp'] }) === true, 'sso mfa: amr with a second factor (otp) -> SSO satisfies the account 2FA');
+  ok(_ssoAmrMfa({ amr: ['mfa'] }) === true, 'sso mfa: the explicit "mfa" amr token counts');
+  ok(_ssoAmrMfa({ amr: ['fido'] }) === true, 'sso mfa: a phishing-resistant factor (fido) counts');
+  ok(_ssoAmrMfa({ amr: ['pwd'] }) === false, 'sso mfa: password-only amr does NOT satisfy 2FA -> the callback blocks + routes to the MFA login');
+  ok(_ssoAmrMfa({}) === false, 'sso mfa: no amr claim -> not satisfied (fail-closed: an MFA account is sent to the enforcing login path)');
+  ok(_ssoAmrMfa(null) === false, 'sso mfa: a null id_token payload is safely not-satisfied');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
