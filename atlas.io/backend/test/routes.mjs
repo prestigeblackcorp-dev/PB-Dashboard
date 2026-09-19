@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -1074,6 +1074,21 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   cap = 0; const before = store[_k(T, D)];
   const o0 = await _aiDayReserve(rEnv, T, D, 999999);
   ok(o0 === false && store[_k(T, D)] === before, 'cost-cap #11737: cap 0 DISABLES the cap -> no reservation booked, never blocks (byte-identical to cap-off)');
+}
+
+// ---- REFUND idempotency-key discriminator (money #10691): the refund idem key was amount-only (rf:pi:amount), so a legit
+// SECOND equal-amount refund silently no-op'd (the provider deduped it against the first). The fix folds a per-op nonce into
+// the key ONLY for an owner-CONFIRMED (force:true) deliberate repeat -> distinct key -> the 2nd refund issues; every other
+// case keeps the stable amount-only key so an accidental double-submit still dedups. _deliberateRefundNonce is that gate --
+// the "get it wrong -> double-refund" safety point. ----
+{
+  ok(_deliberateRefundNonce('refund', { force: true, nonce: 'n-abc' }) === 'n-abc', 'refund #10691: an owner-CONFIRMED repeat (force:true + nonce) -> distinct idem key so the 2nd equal-amount refund actually issues');
+  ok(_deliberateRefundNonce('refund', { force: false, nonce: 'n-abc' }) === '', 'refund #10691: a nonce WITHOUT force is ignored -> stable amount-only key -> an accidental double-submit still dedups (no double-refund)');
+  ok(_deliberateRefundNonce('refund', { nonce: 'n-abc' }) === '', 'refund #10691: nonce with no force flag -> ignored');
+  ok(_deliberateRefundNonce('refund', { force: true }) === '', 'refund #10691: force with no nonce -> stable key (nothing to distinguish)');
+  ok(_deliberateRefundNonce('capture', { force: true, nonce: 'n-abc' }) === '', 'refund #10691: only a REFUND op is eligible -- capture/release never get a repeat nonce');
+  ok(_deliberateRefundNonce('refund', { force: true, nonce: '' }) === '', 'refund #10691: an empty nonce is rejected (stays stable-keyed)');
+  ok(_deliberateRefundNonce('refund', null) === '', 'refund #10691: a missing body is safely stable-keyed (never throws)');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
