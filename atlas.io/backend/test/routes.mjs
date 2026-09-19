@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -1018,6 +1018,23 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ssoAmrMfa({ amr: ['pwd'] }) === false, 'sso mfa: password-only amr does NOT satisfy 2FA -> the callback blocks + routes to the MFA login');
   ok(_ssoAmrMfa({}) === false, 'sso mfa: no amr claim -> not satisfied (fail-closed: an MFA account is sent to the enforcing login path)');
   ok(_ssoAmrMfa(null) === false, 'sso mfa: a null id_token payload is safely not-satisfied');
+}
+
+// ---- EXTENSION charge collectable after the balance is paid (money #17): a pre-trip charge is normally FOLDED into the
+// balance. But once the balance is fully paid its single d.paid['balance'] slot is closed and /pay refuses a 2nd 'balance', so
+// a charge added AFTER balancePaidAt was uncollectable (portal showed due but the balance button 500'd/refused). _portalDue now
+// bills a charge created after balancePaidAt as its OWN separately-payable post-charge (its own charge: slot). ----
+{
+  const FAR = 9999999999999;   // trip start far in the future so nothing is post-by-trip-start
+  // (a) charge added AFTER the balance was paid -> billed SEPARATELY (post), NOT folded into the settled balance
+  const dPaid = { quote: { total: 100 }, portal: { balancePaidAt: 1000 }, paid: { balance: { amountCents: 10000 } }, charges: [{ id: 'ext1', label: 'Extension', amount: 50, at: 2000 }] };
+  const duePaid = _portalDue(dPaid, { starts: FAR });
+  ok(duePaid.postCharges.some(c => c.id === 'ext1') && !duePaid.preCharges.some(c => c.id === 'ext1'), 'money #17: a charge added AFTER balancePaidAt is a separately-payable post-charge (was folded into the closed balance -> uncollectable)');
+  ok(duePaid.dueCents === 0, 'money #17: the settled balance stays settled (dueCents 0); the new charge is collected on its OWN charge slot, not a 2nd balance payment that would corrupt settled');
+  // (b) control: with NO balancePaidAt, the same charge folds into the balance exactly as before (byte-identical classification)
+  const dUnpaid = { quote: { total: 100 }, portal: {}, paid: {}, charges: [{ id: 'ext1', label: 'Extension', amount: 50, at: 2000 }] };
+  const dueUnpaid = _portalDue(dUnpaid, { starts: FAR });
+  ok(dueUnpaid.preCharges.some(c => c.id === 'ext1') && dueUnpaid.dueCents === 15000, 'money #17: before the balance is paid, a pre-trip charge still folds into the balance (total 10000 + charge 5000), unchanged');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
