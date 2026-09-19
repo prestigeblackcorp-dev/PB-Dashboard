@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -1104,6 +1104,30 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_bkEffEndServer(2000000, { endTs: 1000000 }, dayPms) === 2000000, 'ext-end #crit: no extensions -> max(colEnds, base), unchanged');
   const del = { endTs: 1000000, extensions: [{ addedPeriods: 2, newEndTs: 5000000, _deleted: true }] };  // a deleted extension does not extend
   ok(_bkEffEndServer(0, del, weekPms) === 1000000, 'ext-end #crit: a _deleted extension is ignored (effective end stays at base)');
+}
+
+// ---- GIFT-CARD value returned on cancel (money #3): cancelling a booking refunded real payments but never released the
+// redeemed gift-card value in gift_uses, so the customer's prepaid balance was silently forfeited. _collectGiftReturns lists
+// the redemptions to release and stamps giftReturnedAt so a re-cancel is a no-op (never double-releases). ----
+{
+  const dd = { giftRedemptions: [{ code: 'gc50', amt: 50, at: 1 }, { code: 'gc20', amt: 20, at: 2 }] };
+  const first = _collectGiftReturns(dd);
+  ok(first.length === 2 && first[0].code === 'gc50' && first[0].cents === 5000 && first[1].cents === 2000, 'gift-cancel #3: a cancel returns every applied gift redemption (code + cents) so gift_uses can be released');
+  ok(dd.giftRedemptions.every((r) => r.giftReturnedAt), 'gift-cancel #3: each returned redemption is stamped giftReturnedAt');
+  const second = _collectGiftReturns(dd);
+  ok(second.length === 0, 'gift-cancel #3: a SECOND cancel returns nothing (idempotent -> never double-releases the gift balance)');
+  ok(_collectGiftReturns({ giftRedemptions: [{ code: 'x', amt: 0 }] }).length === 0 && _collectGiftReturns({}).length === 0, 'gift-cancel #3: a zero-amount redemption and a booking with none both yield an empty list (no-op)');
+}
+
+// ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
+// auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
+// stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
+{
+  ok(_BAN_EXEMPT.test('/api/auth/login') === false, 'ban #10: /api/auth/login is NOT ban-exempt -> a banned IP is blocked on the brute-force route (the whole point of the ban)');
+  ok(_BAN_EXEMPT.test('/api/auth/signup') === false, 'ban #10: /api/auth/signup is NOT ban-exempt');
+  ok(_BAN_EXEMPT.test('/api/auth/mfa/verify') === false, 'ban #10: mfa verify is NOT ban-exempt');
+  ok(_BAN_EXEMPT.test('/api/auth/forgot-password') === true && _BAN_EXEMPT.test('/api/auth/reset') === true, 'ban #10: forgot-password + reset STAY exempt -> a logged-out mistakenly-banned owner can still recover');
+  ok(_BAN_EXEMPT.test('/api/health') === true && _BAN_EXEMPT.test('/api/billing/checkout') === true && _BAN_EXEMPT.test('/api/stripe/webhook') === true, 'ban #10: health / billing / stripe-webhook stay exempt');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
