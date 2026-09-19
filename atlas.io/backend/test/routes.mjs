@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -1035,6 +1035,45 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const dUnpaid = { quote: { total: 100 }, portal: {}, paid: {}, charges: [{ id: 'ext1', label: 'Extension', amount: 50, at: 2000 }] };
   const dueUnpaid = _portalDue(dUnpaid, { starts: FAR });
   ok(dueUnpaid.preCharges.some(c => c.id === 'ext1') && dueUnpaid.dueCents === 15000, 'money #17: before the balance is paid, a pre-trip charge still folds into the balance (total 10000 + charge 5000), unchanged');
+}
+
+// ---- AI COST-CAP race (money/COGS #11737): the old flow checked the committed daily cost, then made the call, then added the
+// cost AFTER the response -> a burst of concurrent calls all passed one stale read before any committed, overrunning the cap.
+// _aiDayReserve books the estimate ATOMICALLY before the call and checks the post-increment total, so concurrent calls see each
+// other; a reservation that would cross the cap refunds itself and refuses. _aiDayUnreserve releases a reservation whose call
+// then failed outright. Drives a stateful ai_day_cost mock. ----
+{
+  let cap = 100000;
+  const store = {}; const _k = (t, d) => t + '|' + d;
+  function db(sql) {
+    let a = [];
+    const api = {
+      bind: (...x) => { a = x; return api; },
+      first: async () => {
+        if (/FROM platform_config WHERE k/.test(sql)) return a[0] === 'ai_day_micros_cap' ? { v: String(cap) } : null;
+        if (/SELECT micros FROM ai_day_cost/.test(sql)) { const v = store[_k(a[0], a[1])]; return (v == null) ? null : { micros: v }; }
+        return null;
+      },
+      all: async () => ({ results: [] }),
+      run: async () => {
+        if (/INSERT INTO ai_day_cost/.test(sql)) { const key = _k(a[0], a[1]); store[key] = (store[key] || 0) + Number(a[2] || 0); }       // bind: tid, day, est, est
+        else if (/UPDATE ai_day_cost SET micros=MAX\(0,micros-/.test(sql)) { const key = _k(a[1], a[2]); store[key] = Math.max(0, (store[key] || 0) - Number(a[0] || 0)); }   // bind: micros, tid, day
+        return { success: true, meta: { changes: 1 } };
+      },
+    };
+    return api;
+  }
+  const rEnv = { DB: { prepare: db } }, T = 't1', D = '2026-09-19';
+  const o1 = await _aiDayReserve(rEnv, T, D, 40000);
+  const o2 = await _aiDayReserve(rEnv, T, D, 40000);
+  ok(o1 === false && o2 === false && store[_k(T, D)] === 80000, 'cost-cap #11737: reserves under the cap succeed and ACCUMULATE (80000/100000) -> a later call sees the earlier in-flight reservation');
+  const o3 = await _aiDayReserve(rEnv, T, D, 40000);
+  ok(o3 === true && store[_k(T, D)] === 80000, 'cost-cap #11737: a reserve that would CROSS the cap returns true and refunds its own reservation (total stays 80000, not 120000) -> the race is closed');
+  const waited = []; _aiDayUnreserve({ waitUntil: (p) => waited.push(p) }, rEnv, T, D, 30000); await Promise.all(waited);
+  ok(store[_k(T, D)] === 50000, 'cost-cap #11737: unreserve releases a reservation whose call failed outright (80000 - 30000)');
+  cap = 0; const before = store[_k(T, D)];
+  const o0 = await _aiDayReserve(rEnv, T, D, 999999);
+  ok(o0 === false && store[_k(T, D)] === before, 'cost-cap #11737: cap 0 DISABLES the cap -> no reservation booked, never blocks (byte-identical to cap-off)');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
