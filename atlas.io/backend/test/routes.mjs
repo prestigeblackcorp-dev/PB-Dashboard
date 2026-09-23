@@ -1339,6 +1339,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/was kept by '\+esc\(j\.business\)\+' toward damages or charges/.test(_WORKER_SRC), '#cycle6-8: the portal shows a captured/kept deposit as kept-for-damage, not released/returned');
   // #9: _portalDue nets out refunded amounts from settled so the customer balance matches the server ledger.
   ok(/settled \+= Math\.max\(0, Math\.round\(Number\(x\.amountCents\) \|\| 0\) - Math\.round\(Number\(x\.refunded && x\.refunded\.amountCents\) \|\| 0\)\)/.test(_WORKER_SRC), '#cycle6-9: _portalDue subtracts x.refunded from settled (refunded money no longer counts as paid)');
+
+  // ---- CYCLE-6 part 2 (build 12f): the intricate money/security twin fixes. ----
+  // #4: a security-deposit DISPUTE decrements revenue ONLY when the deposit was CAPTURED (booked via #17), capped at the captured amount; an uncaptured hold decrements 0.
+  ok(/var _decD = _isSecD \? \(_secBookedD \? Math\.min\(_dAmt, _capAmtD\) : 0\) : _dAmt;/.test(_WORKER_SRC), '#cycle6-4: a security dispute decrements only a CAPTURED deposit, capped at the captured amount (uncaptured hold = 0)');
+  // #2: the GPS tracker host guard resolves DNS + blocks a private/metadata IP (parity with webhook delivery + the crawler), not just a literal-string match, and EVERY call site awaits it.
+  ok(/async function _trkSafeHost\(raw\)/.test(_WORKER_SRC), '#cycle6-2: _trkSafeHost is async');
+  ok(/if \(await _ssrfResolvedBlocked\(hn\)\) return \{ ok: false, reason: 'blocked_host' \};   \/\/ cycle-6 #2/.test(_WORKER_SRC), '#cycle6-2: _trkSafeHost applies the resolved-IP SSRF guard');
+  ok(!/= _trkSafeHost\(/.test(_WORKER_SRC), '#cycle6-2: no un-awaited "= _trkSafeHost(" call remains (all call sites are "= await _trkSafeHost(")');
+  ok((_WORKER_SRC.match(/= await _trkSafeHost\(/g) || []).length === 8, '#cycle6-2: all 8 _trkSafeHost call sites are awaited');
+  // #7: the OFFLINE/cash committed-booking revenue estimate is injected on BOTH the POST (create) and PUT (status-confirm) branches -- was POST-only.
+  ok((_WORKER_SRC.match(/cols\.push\('revenue_cents'\); vals\.push\(Math\.round\(Number\(_g5\.quote\.total\) \* 100\)\)/g) || []).length >= 2, '#cycle6-7: the G5 cash-revenue estimate is injected on both POST and PUT');
+  // #3: the council interaction log nets out the COGS released on a partial outage.
+  ok(/cost_micros: Math\.max\(0, _estN - _relN\)/.test(_WORKER_SRC), '#cycle6-3: the council cost log subtracts _relN (COGS released on a partial outage)');
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
