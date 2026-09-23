@@ -1232,6 +1232,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!/SELECT email FROM customers WHERE tenant_id=\?'\)/.test(_WORKER_SRC), 'outreach #15: no bare (unbounded) customers-by-tenant scan remains');
 }
 
+// ---- audit #18: the delete-resurrection guard (flag-gated sync_tombstones_enabled, default OFF, now with an admin toggle)
+// must stay wired end-to-end -- source-guard its three parts so it can't silently rot into unreachable dead code. ----
+{
+  ok(/sync_tombstones_enabled/.test(_WORKER_SRC), 'tombstone #18: the sync_tombstones_enabled flag is read + exposed');
+  ok(/resurrect_blocked/.test(_WORKER_SRC), 'tombstone #18: the stale-re-create block (audits <coll>.resurrect_blocked) is present');
+  ok(/INSERT OR REPLACE INTO sync_tombstones/.test(_WORKER_SRC), 'tombstone #18: the delete writes a tombstone row');
+}
+
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
 // email must NOT mint a fresh 7-day trial or re-claim a founder slot. The signup_ledger (keyed on email, survives tenant
 // delete) drives these two pure decisions. ----

@@ -2110,15 +2110,20 @@ const Atlas = (function(){
   function _hidePolicyBanner(){ var b=document.getElementById('policyBanner'); if(b&&b.parentNode) b.parentNode.removeChild(b); }
   function policyAccept(){ if(!(ATLAS_BACKEND&&_apiCsrf)){ _hidePolicyBanner(); return; }
     _api('/api/policy/accept',{method:'POST',body:{}}).then(function(res){ if(res.json&&res.json.ok){ _hidePolicyBanner(); try{ var tid=store.session()&&store.session().tenantId; var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb){ _tb.tosVersion=res.json.version; _lsSet('atlas_tenant_'+tid,_tb); } }catch(e){} toast('Thank you -- your acceptance is recorded'); } else { toast('Could not record acceptance'); } }).catch(function(){ toast('Network error - please try again'); }); }
-  function _srvMergeColl(lsKey,kind,rows){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[];
+  function _srvMergeColl(lsKey,kind,rows){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[], _srvIds={};
     local.forEach(function(x){ if(x&&x.id&&!byId[x.id]){ byId[x.id]=x; order.push(x.id); if(x._t) _seenT(x._t); } });
-    rows.forEach(function(row){ var srv=_srvUnshape(kind,row); if(!srv||!srv.id) return; _seenT(srv._t); var loc=byId[srv.id];   // #294: feed the monotonic clock so our next local stamp is after the server's newest
+    rows.forEach(function(row){ var srv=_srvUnshape(kind,row); if(!srv||!srv.id) return; _srvIds[String(srv.id)]=1; _seenT(srv._t); var loc=byId[srv.id];   // #294: feed the monotonic clock so our next local stamp is after the server's newest; #19: record the COMPLETE server id set (rows come from _apiAll -> all pages) for the pb-mirror prune below
       if(!loc){ byId[srv.id]=srv; order.push(srv.id); _pushedHash[kind+':'+srv.id]=JSON.stringify(srv); }   // audit HIGH #16: adopted from server -> matches server, mark synced
       else if((srv._t||0)>(loc._t||0)){ byId[srv.id]=srv; _pushedHash[kind+':'+srv.id]=JSON.stringify(srv); }   // server newer -> adopt + mark synced
       else if(kind==='bookings' && Array.isArray(srv.extensions) && Array.isArray(loc.extensions)){   // #extfix: local booking wins by _t, but never drop a server-recorded extension SIGNATURE (mirrors the worker _graftServerPay)
         var _sx={}; srv.extensions.forEach(function(e){ if(e&&e.id!=null&&e.signedAt) _sx[String(e.id)]=e; });
         loc.extensions.forEach(function(e){ if(e&&e.id!=null){ var s=_sx[String(e.id)]; if(s&&!e.signedAt){ e.signedAt=s.signedAt; if(s.signerName!=null)e.signerName=s.signerName; if(s.sigId!=null)e.sigId=s.sigId; } } }); }
       });   // audit HIGH #16: when LOCAL wins, do NOT touch _pushedHash -> the local edit stays dirty and the next _srvSyncPush actually sends it (was set unconditionally to the LOCAL blob -> the edit was marked already-synced and silently never reached the server = cross-device data loss)
+    // audit #19: PB-sync PRUNES stale pb-mirror rows server-side (DELETE), but this merge is a pure UNION, so a pruned
+    // pb-mirror booking/asset lingered locally as a PHANTOM (calendar / KPIs / reports). Drop ONLY a server-origin
+    // pb-mirror row (read-only; the client never authors these) that is absent from the COMPLETE server set. A native or
+    // local row absent from the server set is KEPT -- never drop a local edit or a not-yet-pushed booking (no data loss).
+    order = order.filter(function(id){ if(_srvIds[String(id)]) return true; var x=byId[id]; var _pbm = x && (x.source==='pb-mirror' || (x.mirror && x.mirror.source==='pb') || (x.data && x.data.source==='pb-mirror')); if(_pbm){ delete byId[id]; return false; } return true; });
     _lsSet(lsKey, order.map(function(id){ return byId[id]; })); }
   function _srvMergeProfile(tid,prof){ _profileHydrated=true;   // #294 Gap 6: a valid server profile was received -> the profile push is now safe to run
     var loc=_lsGet('atlas_tenant_'+tid,null)||{}; var s=(prof&&prof.settings)||{};
@@ -3781,6 +3786,7 @@ const Atlas = (function(){
     save(); _updMoneyPrev();
   }
   function setCancelPolicy(v){ if(!_guard('pricing','Editing the cancellation policy'))return; if(!S.legal)S.legal={}; S.legal.cancelPolicy=String(v||'').slice(0,1200); save(); }
+  function setSenderAddress(v){ if(!S.legal)S.legal={}; S.legal.senderAddress=String(v||'').replace(/\s+/g,' ').trim().slice(0,200); save(); }   // audit #26 (CAN-SPAM): the business mailing address rendered in the marketing-email footer (synced in S.legal, read server-side by the outreach send)
   function toggleRule(id){ var r=(S.money.rules||[]).find(function(x){return x.id===id;}); if(r){ r.on=!r.on; save(); _updMoneyPrev(); } }
   function setRule(id,f,v){ var r=(S.money.rules||[]).find(function(x){return x.id===id;}); if(!r)return; r[f]=(f==='value')?(parseFloat(v)||0):v; save(); _updMoneyPrev(); }
   function removeRule(id){ S.money.rules=(S.money.rules||[]).filter(function(x){return x.id!==id;}); save(); renderSet(); }
@@ -8431,6 +8437,9 @@ const Atlas = (function(){
       <div class="set-block"><h3>Cancellation policy</h3><div class="desc">Shown to customers on your booking page <b>before they pay</b> and merged into your rental agreement &mdash; so what they agree to and what the contract says are the same. A non-refundable amount is only enforceable if it was disclosed here first.</div>
         <div class="field"><label>Free-cancellation window</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="${_cxWindow()}" oninput="Atlas.setMoney('cancelWindowHrs',this.value)"><span>hours before start</span></div></div>
         <div class="field" style="margin-bottom:0"><label>Policy the customer sees &amp; signs</label><textarea class="input" rows="3" placeholder="e.g. Free cancellation up to 48 hours before pickup. Within 48 hours the deposit is non-refundable. No-shows are charged in full." oninput="Atlas.setCancelPolicy(this.value)">${esc((S.legal&&S.legal.cancelPolicy)||'')}</textarea><div class="bk-lenhint" style="margin:8px 0 0">Publish your booking site after editing so customers see the current policy.</div></div>
+      </div>
+      <div class="set-block"><h3>Business mailing address</h3><div class="desc">Your business's physical postal address. It appears in the footer of the <b>marketing emails</b> you send from Outreach, as US CAN-SPAM law requires. Leave blank if you never send marketing email.</div>
+        <div class="field" style="margin-bottom:0"><label>Mailing address (street, city, state, ZIP)</label><input class="input" placeholder="e.g. 123 Main St, Suite 4, Austin, TX 78701" value="${esc((S.legal&&S.legal.senderAddress)||'')}" oninput="Atlas.setSenderAddress(this.value)"></div>
       </div>
       <div class="set-block"><h3>Rules &amp; fees</h3><div class="desc">Add any fee or rule your business charges &mdash; card processing, airport surcharge, eco fee, anything. Toggle it on to apply. <b>Nothing here is on by default</b> &mdash; a 13.25% card fee, for example, is yours to add, never baked in.</div>
         <div style="border:1px solid var(--line);border-radius:12px;padding:2px 14px">
@@ -13454,7 +13463,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,setTypeRate,setCancelPolicy,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,syncTax,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,setTypeRate,setCancelPolicy,setSenderAddress,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,syncTax,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
