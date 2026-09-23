@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1316,6 +1316,24 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_councilReleaseMicros([{ name: 'Claude', out: 15 }], [], MT, SR) === 4000, 'council #34: a 1-leg council that failed releases just its leg (no synth reserved when crN<=1)');
   ok(_councilReleaseMicros([{ name: 'X' }], [], 100, 15) === 2500 + Math.round(100 * 15), 'council #34: a leg with no out rate defaults to 15/1M');
   ok(_councilReleaseMicros([], [], MT, SR) === 0, 'council #34: empty panel -> release 0 (no crash)');
+}
+
+// ---- audit #20 (availability tz): _wallToUtcMs anchors a wall-clock date+time in the tenant's IANA tz to an absolute
+// UTC ms, so the public /book and the owner dashboard agree on what "9 AM" means (the overlap/double-book gate + smart
+// pricing then agree). Deterministic ms math (Intl is full-ICU on Node 20 + Workers + browsers). ----
+{
+  ok(_wallToUtcMs('2026-06-15', '09:00', 'America/Chicago') === Date.UTC(2026, 5, 15, 14, 0), 'tz #20: 9am CDT (summer, UTC-5) -> 14:00 UTC');
+  ok(_wallToUtcMs('2026-01-15', '09:00', 'America/Chicago') === Date.UTC(2026, 0, 15, 15, 0), 'tz #20: 9am CST (winter, UTC-6) -> 15:00 UTC (DST handled)');
+  ok(_wallToUtcMs('2026-06-15', '09:00', '') === Date.UTC(2026, 5, 15, 9, 0), 'tz #20: no tz -> UTC anchoring (legacy /book behavior, unchanged for tz-less tenants)');
+  ok(_wallToUtcMs('2026-06-15', '09:00', 'UTC') === Date.UTC(2026, 5, 15, 9, 0), 'tz #20: UTC tz -> 9:00 UTC');
+  ok(_wallToUtcMs('2026-06-15', '', 'America/Chicago') === Date.UTC(2026, 5, 15, 5, 0), 'tz #20: date-only midnight in CDT -> 05:00 UTC (availability preview path)');
+  ok(_wallToUtcMs('2026-06-15', '09:00', 'America/New_York') === Date.UTC(2026, 5, 15, 13, 0), 'tz #20: 9am EDT (UTC-4) -> 13:00 UTC (different tenant tz)');
+  ok(Number.isNaN(_wallToUtcMs('not-a-date', '09:00', 'UTC')), 'tz #20: a malformed date -> NaN (caller falls back)');
+  // client + server compute the SAME instant for the same input -> quote==charge holds (this is the worker copy; the atlas.html copy is parity-enforced to be identical)
+  ok(_wallToUtcMs('2026-11-01', '01:30', 'America/Chicago') === Date.UTC(2026, 10, 1, 6, 30), 'tz #20: a fall-back DST day resolves deterministically (first 1:30, CDT UTC-5)');
+  // _tzAbbr: a non-empty short label for a valid tz, empty for none
+  ok(_tzAbbr(Date.UTC(2026, 5, 15, 14, 0), 'America/Chicago').length >= 2, 'tz #20: _tzAbbr returns a label for a valid tz');
+  ok(_tzAbbr(Date.now(), '') === '', 'tz #20: _tzAbbr with no tz -> empty string (legacy display)');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own

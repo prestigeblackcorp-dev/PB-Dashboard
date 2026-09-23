@@ -35,7 +35,7 @@ ADMIN = os.path.join(REPO, "atlas.io", "admin.html")
 WORKER = os.path.join(REPO, "atlas.io", "backend", "worker.js")
 SMOKE = os.path.join(REPO, "atlas.io", "backend", "test", "smoke.mjs")
 
-PARITY_FNS = ["_smartRateMult", "_dayFactor", "_inSeason", "_ymdNum"]
+PARITY_FNS = ["_smartRateMult", "_dayFactor", "_inSeason", "_ymdNum", "_wallToUtcMs"]
 
 GREEN, RED, YEL, DIM, OFF = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
 if not sys.stdout.isatty():

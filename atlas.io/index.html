@@ -2090,6 +2090,7 @@ const Atlas = (function(){
       _srvMergeColl('atlas_bookings_'+tid,'bookings', r[0].json&&r[0].json.items);
       _srvMergeColl('atlas_assets_'+tid,'assets', r[1].json&&r[1].json.items);
       var prof=r[2].json&&r[2].json.profile; if(prof) _srvMergeProfile(tid,prof);
+      try{ if(prof && typeof prof.tz==='string' && prof.tz) _bizTz=prof.tz; }catch(e){}   // audit #20: adopt the business IANA tz so the dashboard anchors new bookings in it (matching /book) and labels times with it
       // X2: hydrate the SERVER customer store (was one-way -- the client only ever wrote it). Grafted into the derived
       // customer list so a customer created on another device / by a public booking surfaces here with their phone + data.
       try{ if(r[3]&&r[3].json&&Array.isArray(r[3].json.items)&&typeof S!=='undefined'&&S){ S._srvCustomers=r[3].json.items.map(function(c){ var d={}; try{ d=JSON.parse(c.data||'{}'); }catch(e){} return { id:c.id, name:c.name||'', email:(c.email||'').toLowerCase(), phone:c.phone||'', data:d }; }).filter(function(c){return c.email;}); if(typeof DATA!=='undefined'){ try{ DATA.customers=_customersFromBookings(); }catch(e){} } } }catch(e){}
@@ -2970,6 +2971,20 @@ const Atlas = (function(){
     if(pf==null||pt==null) return false; return ymd>=pf && ymd<=pt;
   }
   function _ymdNum(s){ var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s||'')); return m?(parseInt(m[1],10)*10000+parseInt(m[2],10)*100+parseInt(m[3],10)):null; }
+  // audit #20 (availability tz): BYTE-IDENTICAL to the worker copy (parity-enforced). Convert a wall-clock date+time in an
+  // IANA tz to absolute UTC ms so the dashboard anchors bookings in the BUSINESS timezone, matching /book -> the overlap
+  // gate + smart-pricing agree (was browser-local here vs UTC on the server). No tz -> Date.UTC (unchanged for tz-less).
+  function _wallToUtcMs(dateStr, timeStr, tz){
+    var dm=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateStr||'')); if(!dm) return NaN;
+    var tm=/^(\d{1,2}):(\d{2})/.exec(String(timeStr||''));
+    var y=+dm[1], mo=+dm[2], d=+dm[3], h=tm?Math.min(23,+tm[1]):0, mi=tm?Math.min(59,+tm[2]):0;
+    var guess=Date.UTC(y,mo-1,d,h,mi);
+    if(!tz) return guess;
+    var off=function(ms){ try{ var f=new Intl.DateTimeFormat('en-US',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}); var p={}; f.formatToParts(new Date(ms)).forEach(function(x){p[x.type]=x.value;}); return Date.UTC(+p.year,+p.month-1,+p.day,(p.hour==='24'?0:+p.hour),+p.minute,+p.second)-ms; }catch(e){ return null; } };
+    var o1=off(guess); if(o1==null) return guess; var utc=guess-o1, o2=off(utc); if(o2!=null&&o2!==o1) utc=guess-o2; return utc;
+  }
+  function _tzAbbr(utcMs, tz){ if(!tz) return ''; try{ var p=new Intl.DateTimeFormat('en-US',{timeZone:tz,timeZoneName:'short'}).formatToParts(new Date(utcMs)); for(var i=0;i<p.length;i++){ if(p[i].type==='timeZoneName') return p[i].value; } }catch(e){} return ''; }
+  var _bizTz='';   // audit #20: the business IANA tz, adopted from the server profile on hydrate (empty -> legacy browser-local/UTC behavior)
 
   /* ---------- theming ---------- */
   function applyBrand(){
@@ -5825,9 +5840,9 @@ const Atlas = (function(){
   // Read the current form's when/duration inputs into {startTs,endTs,periods,time}, per the model.
   function _bkReadWhen(){ var cfg=_bookingCfg();
     var sd=val('bkStart'), stime=cfg.time?(val('bkStartT')||'12:00'):'12:00';
-    var startTs=sd? new Date(sd+'T'+stime+':00').getTime() : Date.now();
+    var startTs=sd? _wallToUtcMs(sd,stime,_bizTz) : Date.now();   // audit #20: anchor in the BUSINESS tz (was browser-local -> mismatched the UTC-anchored /book)
     if(cfg.durationMode==='end'){ var ed=val('bkEnd'), etime=cfg.time?(val('bkEndT')||'12:00'):'12:00';
-      var endTs=ed? new Date(ed+'T'+etime+':00').getTime() : startTs+_periodMs();
+      var endTs=ed? _wallToUtcMs(ed,etime,_bizTz) : startTs+_periodMs();   // audit #20: anchor in the BUSINESS tz (matches the start above + /book)
       if(endTs<=startTs) endTs=startTs+_periodMs();
       return { startTs:startTs, endTs:endTs, periods:_derivePeriods(startTs,endTs), time:cfg.time }; }
     var per=Math.max(1,parseFloat(val('bkPeriods'))||1);
@@ -6725,8 +6740,8 @@ const Atlas = (function(){
   function _protPerLabel(per){ return per==='hour'?'hour':(per==='pday'?'day':(per==='week'?'week':(per==='pmonth'?'month':(per==='trip'?'trip':_perUnitOne())))); }   // 'day' (legacy) = adaptive "matches your rate"; explicit units render literally
   function _extraPerLabel(per){ return per==='flat'?'one-time':(per==='hour'?'per hour':(per==='pday'?'per day':(per==='week'?'per week':(per==='pmonth'?'per month':('per '+_perUnitOne()))))); }   // extras: flat=one-time, unit=matches rate, explicit hour/pday/week/pmonth
   function _extraPerOptions(sel){ return [['flat','One-time'],['unit','Match rate ('+_perUnitOne()+')'],['hour','Per hour'],['pday','Per day'],['week','Per week'],['pmonth','Per month']].map(function(o){return '<option value="'+o[0]+'"'+((sel||'flat')===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join(''); }
-  function _fmtWhen(ts, withTime){ if(!ts) return ''; try{ var d=new Date(ts); var s=d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
-    if(withTime) s+=', '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}); return s; }catch(e){ return ''; } }
+  function _fmtWhen(ts, withTime){ if(!ts) return ''; try{ var d=new Date(ts); var _o=_bizTz?{timeZone:_bizTz}:{}; var s=d.toLocaleDateString(undefined,Object.assign({month:'short',day:'numeric'},_o));
+    if(withTime){ s+=', '+d.toLocaleTimeString(undefined,Object.assign({hour:'numeric',minute:'2-digit'},_o)); var _tz=_tzAbbr(ts,_bizTz); if(_tz) s+=' '+_tz; } return s; }catch(e){ return ''; } }   // audit #20: render booking times in the BUSINESS tz (matching how they're now anchored) and SHOW the tz label after the time (e.g. "Jul 16, 2:00 PM CDT"); no _bizTz -> browser-local, unchanged
   // A booking's when-label: "Jul 16" | "Jul 16, 2:00 PM" | "Jul 16 -> Jul 20" | "Jul 16, 2 PM -> Jul 18, 10 AM"
   function _bkWhen(b){ var t=!!b.time; var a=_fmtWhen(b.startTs,t); if(b.endTs){ return a+' &rarr; '+_fmtWhen(b.endTs,t); } return a; }
   /* ---- booking extras: toggle catalog items, adjust quantity, add custom one-offs ---- */
