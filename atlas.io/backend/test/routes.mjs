@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _reconcileCreditTerminal, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1210,6 +1210,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/SELECT data FROM bookings WHERE tenant_id=\?\s+ORDER BY created_at DESC LIMIT 5000/.test(_WORKER_SRC), 'outreach #15: the email-branch opt-out prescan is bounded (LIMIT 5000)');
   // there must be NO remaining UNBOUNDED tenant-wide scan of these two tables in the outreach path (belt-and-suspenders: catch a reintroduced bare query).
   ok(!/SELECT email FROM customers WHERE tenant_id=\?'\)/.test(_WORKER_SRC), 'outreach #15: no bare (unbounded) customers-by-tenant scan remains');
+}
+
+// ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
+// email must NOT mint a fresh 7-day trial or re-claim a founder slot. The signup_ledger (keyed on email, survives tenant
+// delete) drives these two pure decisions. ----
+{
+  const NOW = 1_700_000_000_000, WEEK = 7 * 24 * 3600 * 1000;
+  ok(_signupTrialEnds(false, NOW) === NOW + WEEK, 'trial #8: a first-time email gets the full 7-day trial');
+  ok(_signupTrialEnds(true, NOW) === NOW, 'trial #8 CRUX: a returning email (prior trial) gets trial_ends=now -- NO fresh free week (delete + re-signup can no longer farm trials)');
+  ok(_signupMayFounder(false, true) === true, 'founder #8: a first-time email may claim a founder slot while the program is on');
+  ok(_signupMayFounder(true, true) === false, 'founder #8 CRUX: an email that already claimed a founder slot may NOT re-claim (delete + re-signup cannot burn a second of the 1000 slots)');
+  ok(_signupMayFounder(false, false) === false, 'founder #8: program OFF -> never claim (feature stays inert)');
+  ok(_signupMayFounder(true, false) === false, 'founder #8: program OFF + prior claim -> never claim');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
