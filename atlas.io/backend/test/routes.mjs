@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1223,6 +1223,29 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_signupMayFounder(true, true) === false, 'founder #8 CRUX: an email that already claimed a founder slot may NOT re-claim (delete + re-signup cannot burn a second of the 1000 slots)');
   ok(_signupMayFounder(false, false) === false, 'founder #8: program OFF -> never claim (feature stays inert)');
   ok(_signupMayFounder(true, false) === false, 'founder #8: program OFF + prior claim -> never claim');
+}
+
+// ---- audit #9 (SSRF): the config-time guard checks the hostname STRING; the fix adds a real DNS resolve-check on the
+// RESOLVED IP at fetch/delivery time. _ipStrBlocked is the pure classifier for a resolved address -- block private/loopback/
+// link-local/CGNAT/ULA, allow public. ----
+{
+  // IPv4 blocked ranges
+  ['127.0.0.1', '10.1.2.3', '192.168.0.1', '169.254.169.254', '172.16.0.1', '172.31.255.255', '100.64.0.1', '0.0.0.0'].forEach(function (ip) {
+    ok(_ipStrBlocked(ip) === true, 'ssrf #9: ' + ip + ' (private/loopback/link-local/CGNAT) is blocked');
+  });
+  // the classic rebind target: a public name resolving here must be refused
+  ok(_ipStrBlocked('169.254.169.254') === true, 'ssrf #9 CRUX: 169.254.169.254 (cloud metadata) is blocked even when reached via a public hostname that resolves to it');
+  // IPv4 public allowed
+  ['8.8.8.8', '1.1.1.1', '93.184.216.34', '172.15.0.1', '172.32.0.1', '100.63.0.1', '100.128.0.1'].forEach(function (ip) {
+    ok(_ipStrBlocked(ip) === false, 'ssrf #9: public ' + ip + ' is allowed (boundary of the private ranges)');
+  });
+  // IPv6
+  ok(_ipStrBlocked('::1') === true && _ipStrBlocked('::') === true, 'ssrf #9: IPv6 loopback/unspecified blocked');
+  ok(_ipStrBlocked('fd00::1') === true && _ipStrBlocked('fc00::1') === true, 'ssrf #9: IPv6 ULA (fc00::/7) blocked');
+  ok(_ipStrBlocked('fe80::1') === true, 'ssrf #9: IPv6 link-local (fe80::/10) blocked');
+  ok(_ipStrBlocked('::ffff:127.0.0.1') === true, 'ssrf #9: IPv4-mapped IPv6 to a private v4 is blocked (re-judged as v4)');
+  ok(_ipStrBlocked('2606:4700:4700::1111') === false && _ipStrBlocked('2001:4860:4860::8888') === false, 'ssrf #9: normal public IPv6 is allowed');
+  ok(_ipStrBlocked('') === false && _ipStrBlocked('example.com') === false, 'ssrf #9: empty / a non-IP CNAME target in the answer set matches nothing here (harmless)');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
