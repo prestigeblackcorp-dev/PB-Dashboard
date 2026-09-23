@@ -1352,6 +1352,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/cols\.push\('revenue_cents'\); vals\.push\(Math\.round\(Number\(_g5\.quote\.total\) \* 100\)\)/g) || []).length >= 2, '#cycle6-7: the G5 cash-revenue estimate is injected on both POST and PUT');
   // #3: the council interaction log nets out the COGS released on a partial outage.
   ok(/cost_micros: Math\.max\(0, _estN - _relN\)/.test(_WORKER_SRC), '#cycle6-3: the council cost log subtracts _relN (COGS released on a partial outage)');
+
+  // ---- FULL-SYSTEM AUDIT batch 12g (build 12g): additive security/privacy guards from cycle-7 + the full-system audit. ----
+  // #13 (stored XSS): a client-supplied booking/record id is charset-constrained (vStr only bounds length) before being stored + spliced into the owner dashboard's innerHTML.
+  ok(/vStr\(body\.id, 40\) && \/\^\[A-Za-z0-9_-\]\+\$\/\.test\(body\.id\)/.test(_WORKER_SRC), '#13: a client-supplied /api/data record id is charset-constrained (safe-charset) before use');
+  // #1: the irreversible /api/account/delete step-up check is rate-limited (a stolen-cookie attacker cannot brute-force the password/MFA code).
+  ok(/rateLimit\(env, 'acctdel:' \+ _actx\.user\.id, 8, 3600000\)/.test(_WORKER_SRC), '#1: /api/account/delete step-up is per-user rate-limited');
+  // #15: /api/health (IP-ban-exempt) is rate-limited so a flood cannot burn shared D1 quota; a throttled hit still returns the live build.
+  ok(/rateLimit\(env, 'health:' \+/.test(_WORKER_SRC), '#15: /api/health is per-IP rate-limited (DoS/D1-amplification guard)');
+  // c7#5: the garmininreach tracker fetch uses redirect:'manual' like every other _trkSafeHost-guarded connector.
+  ok(/giUrls\[giI\], \{ redirect: 'manual', headers: giHeaders \}/.test(_WORKER_SRC), '#c7-5: the garmininreach fetch pins redirect:manual (SSRF parity with the other tracker connectors)');
+  // c7#3: the PayPal + Square payment-return endpoints check tenants.deleted_at (twin of the #5 portal-token gate).
+  ok((_WORKER_SRC.match(/SELECT deleted_at FROM tenants WHERE id=\?'\)\.bind\(_[ps]brow\.tenant_id\)/g) || []).length === 2, '#c7-3: both /api/paypal/return and /api/square/return gate on tenants.deleted_at');
+  // #10: GDPR/CCPA erasure also redacts the TCPA SMS-consent IP.
+  ok(/if \(fd\.smsConsentIp != null\) fd\.smsConsentIp = '';/.test(_WORKER_SRC), '#10: customer erasure redacts the TCPA smsConsentIp');
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
