@@ -373,9 +373,9 @@ async function resolveSession(env, req) {
   const now = Date.now();
   if (now > s.expires_at || now - s.idle_at > IDLE_MS) { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE id=?').bind(now, sid).run(); return null; }
   await env.DB.prepare('UPDATE sessions SET idle_at=? WHERE id=?').bind(now, sid).run();
-  const user = await env.DB.prepare('SELECT u.id AS id, u.email AS email, u.tenant_id AS tenant_id, u.role AS role, u.caps AS caps, t.deleted_at AS _tdel FROM users u LEFT JOIN tenants t ON t.id=u.tenant_id WHERE u.id=?').bind(s.user_id).first();
+  const user = await env.DB.prepare('SELECT (SELECT deleted_at FROM tenants WHERE id=users.tenant_id) AS _tdel,id,email,tenant_id,role,caps FROM users WHERE id=?').bind(s.user_id).first();
   if (!user) return null;
-  if (user._tdel) return null;   // cycle-4 #13: BACKSTOP -- a SOFT-DELETED tenant's sessions are dead even if the delete-time `UPDATE sessions SET revoked_at WHERE tenant_id` failed (it is best-effort/swallowed). Folded into the existing user load (LEFT JOIN, no extra query); mirrors the api_keys path's `t.deleted_at IS NULL` join. Fail-open on a read error (join just yields NULL).
+  if (user._tdel) return null;   // cycle-4 #13: BACKSTOP -- a SOFT-DELETED tenant's sessions are dead even if the delete-time `UPDATE sessions SET revoked_at WHERE tenant_id` failed (it is best-effort/swallowed). Folded into the existing user load as a correlated subquery (NO extra round-trip; the base `... FROM users WHERE id=?` shape is preserved). Fail-open on an orphan/read error (subquery just yields NULL).
   const comp = await env.DB.prepare('SELECT role FROM comp_grants WHERE email=?').bind(user.email).first();
   const compRole = comp ? (comp.role === 'admin' ? 'gold' : comp.role) : null;   // read-time coercion: a legacy 'admin' comp row reads as 'gold' -- safe even before the ensurePlatformSchema migration runs
   const isOwner = _isOwnerEmail(env, user.email);   // THE ONE INVARIANT: platform-owner authority is EMAIL-ONLY (OWNER_EMAIL or the hidden OWNER_EMAIL_2 backup). comp_grants can never confer it (see /api/admin/comp, which only accepts role in {gold, free}).

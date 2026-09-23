@@ -1299,7 +1299,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/cost_micros: _est1\b/.test(_WORKER_SRC) && /cost_micros: _estS\b/.test(_WORKER_SRC) && /cost_micros: _estP\b/.test(_WORKER_SRC), '#10: single/schedule/plan logs record the reserved estimate (_est1/_estS/_estP)');
 
   // #13 a soft-deleted/frozen tenant's live sessions die even if the per-session revoke UPDATE never ran.
-  ok(/LEFT JOIN tenants t ON t\.id=u\.tenant_id/.test(_WORKER_SRC), '#13: resolveSession joins tenants to observe a tenant-level delete/freeze');
+  ok(/\(SELECT deleted_at FROM tenants WHERE id=users\.tenant_id\) AS _tdel/.test(_WORKER_SRC), '#13: resolveSession reads the tenant delete/freeze flag via a correlated subquery (no extra round-trip, base FROM users WHERE id=? preserved)');
   ok(/if \(user\._tdel\) return null;/.test(_WORKER_SRC), '#13: a deleted tenant (_tdel) kills the session (returns null) -- backstop for a failed revoke');
 
   // #16 the public /api/unsub endpoint is rate-limited per IP (was an unmetered public POST).
