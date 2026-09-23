@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1246,6 +1246,28 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ipStrBlocked('::ffff:127.0.0.1') === true, 'ssrf #9: IPv4-mapped IPv6 to a private v4 is blocked (re-judged as v4)');
   ok(_ipStrBlocked('2606:4700:4700::1111') === false && _ipStrBlocked('2001:4860:4860::8888') === false, 'ssrf #9: normal public IPv6 is allowed');
   ok(_ipStrBlocked('') === false && _ipStrBlocked('example.com') === false, 'ssrf #9: empty / a non-IP CNAME target in the answer set matches nothing here (harmless)');
+}
+
+// ---- audit #7 (legal): a base rental-agreement signature must be content-bound to the booking's MATERIAL terms so a
+// post-signature edit is detectable. _bkSignTerms snapshots {asset, periods, total, deposit, security} in cents; _bkTermsDrifted
+// compares a stored snapshot to the current booking. ----
+{
+  const bk = { asset: 'Cabin 4', periods: 3, quote: { totalCents: 90000, depositCents: 20000, securityCents: 50000 } };
+  const t0 = _bkSignTerms(bk);
+  ok(t0.a === 'Cabin 4' && t0.p === 3 && t0.t === 90000 && t0.d === 20000 && t0.s === 50000, 'sig-terms #7: snapshot captures asset/periods/total/deposit/security in cents');
+  // dollar-form quote is normalized the same way _quoteCents does (no mutation of the source)
+  const bkD = { asset: 'Cabin 4', periods: 3, quote: { total: 900, dueNow: 200, security: 500 } };
+  ok(_bkSignTermsStr(bkD) === _bkSignTermsStr(bk), 'sig-terms #7: a dollar-form quote yields the SAME material-terms string as its cents form (normalized, source not mutated)');
+  ok(bkD.quote.totalCents === undefined, 'sig-terms #7: _bkSignTerms did NOT mutate the source quote object (read-only)');
+  // no drift when nothing changed
+  ok(_bkTermsDrifted(t0, bk) === false, 'sig-terms #7: identical current terms -> NOT stale');
+  // each material field, changed after signing, is detected
+  ok(_bkTermsDrifted(t0, { ...bk, quote: { ...bk.quote, totalCents: 95000 } }) === true, 'sig-terms #7 CRUX: a post-signature TOTAL change is detected (the signature no longer covers the price)');
+  ok(_bkTermsDrifted(t0, { ...bk, periods: 5 }) === true, 'sig-terms #7: a post-signature PERIODS change is detected (dates/duration)');
+  ok(_bkTermsDrifted(t0, { ...bk, asset: 'Cabin 9' }) === true, 'sig-terms #7: a post-signature ASSET swap is detected');
+  ok(_bkTermsDrifted(t0, { ...bk, quote: { ...bk.quote, securityCents: 0 } }) === true, 'sig-terms #7: a post-signature deposit/security change is detected');
+  // legacy signature with no snapshot must never false-flag
+  ok(_bkTermsDrifted(null, bk) === false && _bkTermsDrifted(undefined, bk) === false, 'sig-terms #7: a legacy signature with NO snapshot is never flagged stale (nothing to compare)');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
