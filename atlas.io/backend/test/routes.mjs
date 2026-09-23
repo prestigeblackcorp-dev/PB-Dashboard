@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1188,6 +1188,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_emailBlocked('unsubscribe', false) === true, 'email #13: a plain unsubscribe still blocks marketing');
   ok(_emailBlocked('error', true) === false && _emailBlocked('error', false) === true, 'email #13: a fail-closed DB error blocks marketing but NOT a transactional send (never drop a receipt on a hiccup)');
   ok(_emailBlocked('', true) === false && _emailBlocked('', false) === false, 'email #13: no suppression -> send either way');
+}
+
+// ---- audit #27: SMS suppression must not let a customer marketing STOP-scope silence an owner's first-party
+// OPERATIONAL alerts, while still honoring a hard carrier STOP (legally binding for every SMS) and failing closed on a
+// DB error. _smsBlocked(reason, transactional) is the gate. ----
+{
+  ok(_smsBlocked('stop', true) === true && _smsBlocked('stop', false) === true, 'sms #27: a hard carrier STOP blocks EVERY SMS incl. a transactional owner alert (TCPA/carrier)');
+  ok(_smsBlocked('error', true) === true && _smsBlocked('error', false) === true, 'sms #27: a DB error fails CLOSED for both (can\'t verify consent)');
+  ok(_smsBlocked('unsubscribe', false) === true, 'sms #27: a soft marketing opt-down blocks a marketing SMS');
+  ok(_smsBlocked('unsubscribe', true) === false, 'sms #27 CRUX: a soft marketing opt-down does NOT block a transactional owner ops alert (separate scope)');
+  ok(_smsBlocked('', true) === false && _smsBlocked('', false) === false, 'sms #27: no suppression -> send either way');
 }
 
 // ---- audit #14 (money HIGH): the pending-payment reconcile sweep must NEVER settle (stop tracking) a captured payment that
