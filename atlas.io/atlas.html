@@ -2080,15 +2080,18 @@ const Atlas = (function(){
   // ONE page -> a tenant with >1000 bookings/assets/customers silently dropped the tail from the calendar/reports/rollups.
   // _apiAll follows hasMore (offset += limit) and returns the SAME { json:{ items:[...] } } shape the merge code expects.
   function _apiAll(path){
-    var items=[];
-    function page(off){ return _api(path+(path.indexOf('?')<0?'?':'&')+'offset='+off).then(function(r){ var j=r&&r.json; if(!j||!Array.isArray(j.items)) return { json:{ items:items } }; items=items.concat(j.items); var lim=Number(j.limit)||j.items.length||1000; if(j.hasMore && j.items.length>0 && off<100000) return page(off+lim); return { json:{ items:items } }; }); }
+    var items=[], complete=true;
+    // cycle-4 #8: track whether EVERY page was a clean 2xx with a real items array. A failed/short page (error, non-2xx,
+    // or a rejected fetch) sets complete=false so the caller's #19 pb-mirror PRUNE is SKIPPED -- otherwise an error mid-
+    // pagination would look like a "complete" (empty/partial) server set and the prune would mass-delete live local rows.
+    function page(off){ return _api(path+(path.indexOf('?')<0?'?':'&')+'offset='+off).then(function(r){ var j=r&&r.json; var _ok=r&&typeof r.status==='number'&&r.status>=200&&r.status<300; if(!_ok||!j||!Array.isArray(j.items)){ complete=false; return { json:{ items:items }, complete:false }; } items=items.concat(j.items); var lim=Number(j.limit)||j.items.length||1000; if(j.hasMore && j.items.length>0 && off<100000) return page(off+lim); return { json:{ items:items }, complete:complete }; }).catch(function(){ complete=false; return { json:{ items:items }, complete:false }; }); }
     return page(0);
   }
   // Login/refresh: pull server rows + MERGE newest-wins into local (never overwrite a newer/local-only record).
   function _srvHydrate(tid){ if(!ATLAS_BACKEND||!_apiCsrf) return Promise.resolve();
     return Promise.all([_apiAll('/api/data/bookings'),_apiAll('/api/data/assets'),_api('/api/tenant/profile'),_apiAll('/api/data/customers')]).then(function(r){
-      _srvMergeColl('atlas_bookings_'+tid,'bookings', r[0].json&&r[0].json.items);
-      _srvMergeColl('atlas_assets_'+tid,'assets', r[1].json&&r[1].json.items);
+      _srvMergeColl('atlas_bookings_'+tid,'bookings', r[0].json&&r[0].json.items, r[0].complete!==false);   // cycle-4 #8: only allow the pb-mirror prune when _apiAll confirms the FULL bookings set was fetched cleanly
+      _srvMergeColl('atlas_assets_'+tid,'assets', r[1].json&&r[1].json.items, r[1].complete!==false);
       var prof=r[2].json&&r[2].json.profile; if(prof) _srvMergeProfile(tid,prof);
       try{ if(prof && typeof prof.tz==='string' && prof.tz) _bizTz=prof.tz; }catch(e){}   // audit #20: adopt the business IANA tz so the dashboard anchors new bookings in it (matching /book) and labels times with it
       // X2: hydrate the SERVER customer store (was one-way -- the client only ever wrote it). Grafted into the derived
@@ -2111,7 +2114,7 @@ const Atlas = (function(){
   function _hidePolicyBanner(){ var b=document.getElementById('policyBanner'); if(b&&b.parentNode) b.parentNode.removeChild(b); }
   function policyAccept(){ if(!(ATLAS_BACKEND&&_apiCsrf)){ _hidePolicyBanner(); return; }
     _api('/api/policy/accept',{method:'POST',body:{}}).then(function(res){ if(res.json&&res.json.ok){ _hidePolicyBanner(); try{ var tid=store.session()&&store.session().tenantId; var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb){ _tb.tosVersion=res.json.version; _lsSet('atlas_tenant_'+tid,_tb); } }catch(e){} toast('Thank you -- your acceptance is recorded'); } else { toast('Could not record acceptance'); } }).catch(function(){ toast('Network error - please try again'); }); }
-  function _srvMergeColl(lsKey,kind,rows){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[], _srvIds={};
+  function _srvMergeColl(lsKey,kind,rows,canPrune){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[], _srvIds={};
     local.forEach(function(x){ if(x&&x.id&&!byId[x.id]){ byId[x.id]=x; order.push(x.id); if(x._t) _seenT(x._t); } });
     rows.forEach(function(row){ var srv=_srvUnshape(kind,row); if(!srv||!srv.id) return; _srvIds[String(srv.id)]=1; _seenT(srv._t); var loc=byId[srv.id];   // #294: feed the monotonic clock so our next local stamp is after the server's newest; #19: record the COMPLETE server id set (rows come from _apiAll -> all pages) for the pb-mirror prune below
       if(!loc){ byId[srv.id]=srv; order.push(srv.id); _pushedHash[kind+':'+srv.id]=JSON.stringify(srv); }   // audit HIGH #16: adopted from server -> matches server, mark synced
@@ -2124,7 +2127,7 @@ const Atlas = (function(){
     // pb-mirror booking/asset lingered locally as a PHANTOM (calendar / KPIs / reports). Drop ONLY a server-origin
     // pb-mirror row (read-only; the client never authors these) that is absent from the COMPLETE server set. A native or
     // local row absent from the server set is KEPT -- never drop a local edit or a not-yet-pushed booking (no data loss).
-    order = order.filter(function(id){ if(_srvIds[String(id)]) return true; var x=byId[id]; var _pbm = x && (x.source==='pb-mirror' || (x.mirror && x.mirror.source==='pb') || (x.data && x.data.source==='pb-mirror')); if(_pbm){ delete byId[id]; return false; } return true; });
+    if(canPrune) order = order.filter(function(id){ if(_srvIds[String(id)]) return true; var x=byId[id]; var _pbm = x && (x.source==='pb-mirror' || (x.mirror && x.mirror.source==='pb') || (x.data && x.data.source==='pb-mirror')); if(_pbm){ delete byId[id]; return false; } return true; });   // cycle-4 #8: prune ONLY when the server page set was fetched COMPLETE (canPrune) -- an error/partial _apiAll must never drive a delete (else a transient API failure mass-deletes live pb-mirror rows). The merge/union above always runs (additive, safe).
     _lsSet(lsKey, order.map(function(id){ return byId[id]; })); }
   function _srvMergeProfile(tid,prof){ _profileHydrated=true;   // #294 Gap 6: a valid server profile was received -> the profile push is now safe to run
     var loc=_lsGet('atlas_tenant_'+tid,null)||{}; var s=(prof&&prof.settings)||{};
