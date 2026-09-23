@@ -4764,6 +4764,22 @@ function _graftSignatures(base, other){
   }
   return base;
 }
+// A stale merge winner (newer _t, from a device that never synced the payment) must NEVER wipe a paid stamp
+// -- the money mirror of _graftSignatures. If the winner has NO payment evidence at all (a full clobber) and
+// the loser DOES, carry the loser's paid fields forward. An intentional un-mark KEEPS balancePayments (so the
+// winner still has evidence -> it is NOT re-marked), and a refund/dispute on the winner is left untouched.
+// Unit-tested (16 assertions: clobber recovery, un-mark respected, partial preserved, refund/dispute skipped).
+function _graftPayments(merged, loser){
+  if(!merged || !loser) return merged;
+  if(merged.refundSent || Number(merged._refundedTotal)>0 || (Array.isArray(merged.disputes)&&merged.disputes.length)) return merged;
+  var ev=function(x){ return !!(x.balancePaidAt || (Array.isArray(x.balancePayments)&&x.balancePayments.length) || Number(x.balancePaidAmount)>0 || x.dateLockPaidAt); };
+  if(ev(merged) || !ev(loser)) return merged;
+  ['balancePaidAt','paidInFull','balancePaidAmount','balancePaidMethod','balancePayments','dateLockPaidAt','dateLock','dateLockGross','dateLockMethod','remainingBalance'].forEach(function(f){
+    if(loser[f]!==undefined && loser[f]!==null) merged[f]=loser[f];
+  });
+  merged._paymentGrafted=Date.now();
+  return merged;
+}
 function mergeArray(local, cloud) {
   var map = {};
   (local || []).forEach(function(item) { if (item && item.id) map[item.id] = item; });
@@ -4777,6 +4793,7 @@ function mergeArray(local, cloud) {
       var winner = (ct > lt) ? item : map[item.id];
       var loser  = (ct > lt) ? map[item.id] : item;
       var _merged = _graftSignatures(winner, loser); // never drop a signature on merge
+      _merged = _graftPayments(_merged, loser); // never drop a PAID stamp on merge (money mirror of signatures)
       // gcalEventId / _gcalSig are LOCAL calendar bookkeeping (which Google event mirrors this booking).
       // Cal Sync no longer bumps _t to propagate them, so the _t-based merge could otherwise drop them
       // when a newer real edit from a device that never Cal-Synced wins -> a duplicate calendar event on
@@ -17154,16 +17171,35 @@ function _detectAndLogPayments(){
     var raw=null; try{ raw=localStorage.getItem('pb_logged_pay'); }catch(_e){}
     var firstRun=(raw===null);   // first ever run: SEED existing payments as seen WITHOUT logging (no historical flood)
     var seen={}; try{ seen=JSON.parse(raw||'{}')||{}; }catch(_e){ seen={}; }
-    var changed=false;
+    var changed=false, _emailed=false;
+    var _RECENT=72*3600*1000;   // only auto-email a payment recorded in the last 72h -> NEVER re-emails historical bookings
+    // Sends the client's TWO booking emails (full confirmation + ID-verify) through the reliable dashboard
+    // sender (MESSAGING_URL), exactly once per booking. Guarded by _clientBkEmailedAt (persisted to Firebase =
+    // cross-device) so it can't double with the markDateLockPaid path or across open tabs/devices.
+    function _autoClientEmails(b){
+      if(!b || !b.email || b._clientBkEmailedAt) return;
+      b._clientBkEmailedAt=Date.now(); b._t=Date.now(); _emailed=true;
+      try{ if(typeof sendConfirmationEmail==='function') sendConfirmationEmail(b); }catch(_e){}
+      try{ if(typeof autoSendVerification==='function') autoSendVerification(b); }catch(_e){}
+    }
     (bookings||[]).forEach(function(b){
       if(!b || b._deleted || !b.id) return;
       var who=b.name||b.email||'';
       var dlAt=Number(b.dateLockPaidAt)||0;
-      if(dlAt){ var k='dl|'+b.id+'|'+dlAt; if(!seen[k]){ seen[k]=1; changed=true; if(!firstRun) logNotif('payment','Date Lock paid \u2014 '+$$(Number(b.dateLock)||0),who,b.id); } }
+      if(dlAt){ var k='dl|'+b.id+'|'+dlAt; if(!seen[k]){ seen[k]=1; changed=true; if(!firstRun){ logNotif('payment','Date Lock paid \u2014 '+$$(Number(b.dateLock)||0),who,b.id);
+        // A date lock recorded WITHOUT the owner marking it (markDateLockPaid stamps _clientBkEmailedAt) = a
+        // website/Stripe payment -> the worker never emailed the client, so send their 2 emails now.
+        if((Date.now()-dlAt) < _RECENT) _autoClientEmails(b);
+      } } }
       var balAt=Number(b.balancePaidAt)||0;
-      if(balAt){ var k2='bal|'+b.id+'|'+balAt; if(!seen[k2]){ seen[k2]=1; changed=true; if(!firstRun){ var amt=Number(b.balancePaidAmount)||0; logNotif('payment',(b.paidInFull?'Paid in full':'Balance paid')+(amt?' \u2014 '+$$(amt):''),who,b.id); } } }
+      if(balAt){ var k2='bal|'+b.id+'|'+balAt; if(!seen[k2]){ seen[k2]=1; changed=true; if(!firstRun){ var amt=Number(b.balancePaidAmount)||0; logNotif('payment',(b.paidInFull?'Paid in full':'Balance paid')+(amt?' \u2014 '+$$(amt):''),who,b.id);
+        // Full/balance paid ONLINE stamps balancePaidMethod 'Stripe (website)' -> send the 2 emails. Manual
+        // owner marks (Cash/Zelle/etc, never 'website') stay silent, as intended.
+        if((Date.now()-balAt) < _RECENT && /website/i.test(String(b.balancePaidMethod||''))) _autoClientEmails(b);
+      } } }
     });
     if(changed||firstRun){ try{ localStorage.setItem('pb_logged_pay', JSON.stringify(seen)); }catch(_e){} }
+    if(_emailed){ try{ cloudSave(); }catch(_e){} }
   }catch(e){}
 }
 
@@ -20162,11 +20198,18 @@ function markDateLockPaid(id){
   } else {
     b.remainingBalance=Math.max(0,rev+dep-100);
   }
+  if(!_wasPaid) b._clientBkEmailedAt = Date.now();   // dedup flag: the online-payment detector must NOT re-email a booking already emailed here
   b._t=Date.now();
   save(); if(typeof flushCloudSave==='function') flushCloudSave();
-  // Send the customer "date lock received" email only now, when it's actually collected (not auto on
-  // booking creation). Only on the first transition to collected, so repeat clicks don't re-email.
-  if(!_wasPaid && typeof sendDateLockConfirmation==='function') sendDateLockConfirmation(b);
+  // On the first transition to collected, send the TWO emails the client actually needs -- the FULL
+  // confirmation (address + "Need to Know", identical to the "Resend Confirmation" button) AND the ID-verify
+  // link -- through the same dashboard sender that reliably delivers (MESSAGING_URL). Replaces the old partial
+  // "date lock received" email. autoSendVerification is self-guarded (skips chauffeur/event + already-verified
+  // + a 23h resend window) so it never doubles the link. (markBalancePaid stays silent by design.)
+  if(!_wasPaid){
+    if(typeof sendConfirmationEmail==='function') sendConfirmationEmail(b);
+    if(typeof autoSendVerification==='function') autoSendVerification(b);
+  }
   render();
   showBookingDetail(id);
   showToast('\u2705 $100 date lock marked as paid for '+b.name);
