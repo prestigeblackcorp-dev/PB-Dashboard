@@ -4764,6 +4764,22 @@ function _graftSignatures(base, other){
   }
   return base;
 }
+// A stale merge winner (newer _t, from a device that never synced the payment) must NEVER wipe a paid stamp
+// -- the money mirror of _graftSignatures. If the winner has NO payment evidence at all (a full clobber) and
+// the loser DOES, carry the loser's paid fields forward. An intentional un-mark KEEPS balancePayments (so the
+// winner still has evidence -> it is NOT re-marked), and a refund/dispute on the winner is left untouched.
+// Unit-tested (16 assertions: clobber recovery, un-mark respected, partial preserved, refund/dispute skipped).
+function _graftPayments(merged, loser){
+  if(!merged || !loser) return merged;
+  if(merged.refundSent || Number(merged._refundedTotal)>0 || (Array.isArray(merged.disputes)&&merged.disputes.length)) return merged;
+  var ev=function(x){ return !!(x.balancePaidAt || (Array.isArray(x.balancePayments)&&x.balancePayments.length) || Number(x.balancePaidAmount)>0 || x.dateLockPaidAt); };
+  if(ev(merged) || !ev(loser)) return merged;
+  ['balancePaidAt','paidInFull','balancePaidAmount','balancePaidMethod','balancePayments','dateLockPaidAt','dateLock','dateLockGross','dateLockMethod','remainingBalance'].forEach(function(f){
+    if(loser[f]!==undefined && loser[f]!==null) merged[f]=loser[f];
+  });
+  merged._paymentGrafted=Date.now();
+  return merged;
+}
 function mergeArray(local, cloud) {
   var map = {};
   (local || []).forEach(function(item) { if (item && item.id) map[item.id] = item; });
@@ -4777,6 +4793,7 @@ function mergeArray(local, cloud) {
       var winner = (ct > lt) ? item : map[item.id];
       var loser  = (ct > lt) ? map[item.id] : item;
       var _merged = _graftSignatures(winner, loser); // never drop a signature on merge
+      _merged = _graftPayments(_merged, loser); // never drop a PAID stamp on merge (money mirror of signatures)
       // gcalEventId / _gcalSig are LOCAL calendar bookkeeping (which Google event mirrors this booking).
       // Cal Sync no longer bumps _t to propagate them, so the _t-based merge could otherwise drop them
       // when a newer real edit from a device that never Cal-Synced wins -> a duplicate calendar event on
