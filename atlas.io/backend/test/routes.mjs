@@ -1326,6 +1326,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(r && r\.id && String\(r\.id\)\.indexOf\('sx'\) === 0\) \{ _sids\[String\(r\.id\)\] = 1; _hasSx = true; \}/.test(_WORKER_SRC), "#cycle5-C: _stripUnbackedSig backs an extension sig only from 'sx' rows");
   // E: the signed-agreement retrieval (portal download + owner record) excludes 'sx' extension rows so the BASE rental agreement is returned, not the latest addendum.
   ok((_WORKER_SRC.match(/FROM signatures WHERE tenant_id=\? AND booking_id=\? AND id NOT LIKE 'sx%' ORDER BY signed_at DESC LIMIT 1/g) || []).length >= 2, "#cycle5-E: both agreement-retrieval queries exclude 'sx' extension rows (base agreement, not the extension addendum)");
+
+  // ---- CYCLE-6 regression guards (build 12e): the critical regression cycle-6 caught in my own 12d fix, + the clear customer-facing money/legal fixes. ----
+  // A (regression, CRITICAL): the dispute _cbKey MUST be declared BEFORE the try block -- a `let` inside try is out of scope in the paired catch, so cycle-5 declaring it INSIDE made the sentinel-delete a swallowed-ReferenceError no-op. STRUCTURAL check (text-only guards missed this): `let _cbKey` is immediately followed on the next line by the try opener.
+  ok(/let _cbKey = '';[^\n]*\n\s*try\b/.test(_WORKER_SRC), '#cycle6-A: _cbKey is declared BEFORE the dispute try block so the catch sentinel-delete is actually in scope (a let inside try is unreachable in its catch)');
+  // #5: the customer portal-token path checks tenants.deleted_at and blocks pay/sign for a soft-deleted tenant (twin of the #13 session backstop).
+  ok(/SELECT name,brand,settings,money,deleted_at FROM tenants WHERE id=\?/.test(_WORKER_SRC), '#cycle6-5: the portal loads tenants.deleted_at');
+  ok(/tr && tr\.deleted_at && !\(psub === 'data' \|\| psub === 'receipt' \|\| psub === 'agreement'\)/.test(_WORKER_SRC), '#cycle6-5: a deleted tenant blocks state-changing portal subpaths (reads stay open)');
+  // #6: /book rejects a start string _wallToUtcMs cannot parse (a NaN anchor silently bypassed the blackout/overlap guard).
+  ok(/if \(!\(Number\(startTs\) > 0\)\) return err\(400, 'Please choose a valid start date/.test(_WORKER_SRC), '#cycle6-6: /book rejects a NaN/non-positive start anchor (Date.parse was looser than the _wallToUtcMs it feeds)');
+  // #8: the portal discloses a KEPT (captured) security deposit as kept-for-damage, not "released"/"returned".
+  ok(/was kept by '\+esc\(j\.business\)\+' toward damages or charges/.test(_WORKER_SRC), '#cycle6-8: the portal shows a captured/kept deposit as kept-for-damage, not released/returned');
+  // #9: _portalDue nets out refunded amounts from settled so the customer balance matches the server ledger.
+  ok(/settled \+= Math\.max\(0, Math\.round\(Number\(x\.amountCents\) \|\| 0\) - Math\.round\(Number\(x\.refunded && x\.refunded\.amountCents\) \|\| 0\)\)/.test(_WORKER_SRC), '#cycle6-9: _portalDue subtracts x.refunded from settled (refunded money no longer counts as paid)');
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
