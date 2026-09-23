@@ -1295,8 +1295,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_scrubSettingsSecrets('not valid json') === 'not valid json', '#15 scrub: invalid JSON passes through unchanged (never throws)');
 
   // #10 AI cost logs use the REAL reserved per-provider estimate, never a hardcoded (2500 + 3000*11).
-  ok(!/cost_micros: \(2500 \+ 3000 \* 11\)/.test(_WORKER_SRC), '#10: no hardcoded fake cost_micros (2500+3000*11) remains in any AI interaction log');
-  ok(/cost_micros: _est1\b/.test(_WORKER_SRC) && /cost_micros: _estS\b/.test(_WORKER_SRC) && /cost_micros: _estP\b/.test(_WORKER_SRC), '#10: single/schedule/plan logs record the reserved estimate (_est1/_estS/_estP)');
+  ok(!/cost_micros:[^,]*\* *11\b/.test(_WORKER_SRC), '#10 (cycle-5-hardened): NO cost_micros log uses a hardcoded blended 11-micros/token rate -- the original single/schedule/plan fix MISSED the council path, which logged _crN*(2500+_mt*11)+12000');
+  ok(/cost_micros: _est1\b/.test(_WORKER_SRC) && /cost_micros: _estN\b/.test(_WORKER_SRC) && /cost_micros: _estS\b/.test(_WORKER_SRC) && /cost_micros: _estP\b/.test(_WORKER_SRC), '#10: single/council/schedule/plan logs all record the reserved estimate (_est1/_estN/_estS/_estP)');
 
   // #13 a soft-deleted/frozen tenant's live sessions die even if the per-session revoke UPDATE never ran.
   ok(/\(SELECT deleted_at FROM tenants WHERE id=users\.tenant_id\) AS _tdel/.test(_WORKER_SRC), '#13: resolveSession reads the tenant delete/freeze flag via a correlated subquery (no extra round-trip, base FROM users WHERE id=? preserved)');
@@ -1315,6 +1315,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/const _reSign = !!\(d\.portal && d\.portal\.signedAt\) && _bkTermsDrifted\(/.test(_WORKER_SRC), '#14: /sign computes _reSign from post-signature term drift');
   ok(/if \(d\.portal && d\.portal\.signedAt && !_reSign\) return json\(\{ ok: true, signedAt: d\.portal\.signedAt, already: true \}\)/.test(_WORKER_SRC), '#14: /sign stays idempotent ONLY when terms did not drift (a drifted signature is re-collected)');
   ok(/j\.signed&&j\.sigStale/.test(_WORKER_SRC), '#14: the customer portal surfaces sigStale -> shows the updated agreement + a re-sign prompt');
+
+  // ---- CYCLE-5 regression guards (build 12d): incomplete-fix follow-ons the cycle-4 remediation left behind, each caught by the verification cycle. ----
+  // A: the dispute revenue-decrement dedup sentinel is deleted on a THROWN _bkRMW too (not only a clean CAS non-commit), mirroring the refund path -- else a Stripe retry finds the sentinel, skips the decrement, and the chargeback revenue loss is permanent.
+  ok(/if \(_cbKey\) await env\.DB\.prepare\("DELETE FROM platform_transactions WHERE stripe_id=\?"\)\.bind\(_cbKey\)\.run\(\)/.test(_WORKER_SRC), '#cycle5-A: charge.dispute outer catch deletes the cbrev: sentinel on a thrown error (symmetry with the refund path)');
+  // B: _competitorCrawl SSRF-guards EVERY discovered link (not just startUrl), and the same-origin filter is an exact-origin boundary (not a raw string prefix).
+  ok(/if \(!_whUrlOk\(toFetch\[i\]\) \|\| await _ssrfResolvedBlocked\(/.test(_WORKER_SRC), '#cycle5-B: every crawled link (toFetch[i]) gets the SSRF host+resolve guard, not only startUrl');
+  ok(/u\.charAt\(origin\.length\) === '\/'/.test(_WORKER_SRC), "#cycle5-B: the crawl same-origin filter uses an exact-origin boundary (compete.co.attacker.tld no longer passes as same-origin with compete.co)");
+  // C: an extension signature is backed ONLY by an 'sx' row -- a base 'sg' row's id must not satisfy x.sigId (else a staffer who signed the base agreement forges an extension Signed).
+  ok(/if \(r && r\.id && String\(r\.id\)\.indexOf\('sx'\) === 0\) \{ _sids\[String\(r\.id\)\] = 1; _hasSx = true; \}/.test(_WORKER_SRC), "#cycle5-C: _stripUnbackedSig backs an extension sig only from 'sx' rows");
+  // E: the signed-agreement retrieval (portal download + owner record) excludes 'sx' extension rows so the BASE rental agreement is returned, not the latest addendum.
+  ok((_WORKER_SRC.match(/FROM signatures WHERE tenant_id=\? AND booking_id=\? AND id NOT LIKE 'sx%' ORDER BY signed_at DESC LIMIT 1/g) || []).length >= 2, "#cycle5-E: both agreement-retrieval queries exclude 'sx' extension rows (base agreement, not the extension addendum)");
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
