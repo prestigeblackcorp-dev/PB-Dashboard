@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _scrubSettingsSecrets, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1274,6 +1274,47 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/sync_tombstones_enabled/.test(_WORKER_SRC), 'tombstone #18: the sync_tombstones_enabled flag is read + exposed');
   ok(/resurrect_blocked/.test(_WORKER_SRC), 'tombstone #18: the stale-re-create block (audits <coll>.resurrect_blocked) is present');
   ok(/INSERT OR REPLACE INTO sync_tombstones/.test(_WORKER_SRC), 'tombstone #18: the delete writes a tombstone row');
+}
+
+// ---- CYCLE-4 remediation guards (build 12c): each verifies one confirmed cycle-4 finding stays fixed. ----
+{
+  // #15 settings secret-scrub for tenant/admin export (pure): strips secrets, keeps CAN-SPAM sender address + non-secret settings.
+  const scrubbed = JSON.parse(_scrubSettingsSecrets(JSON.stringify({
+    comms: { resendKey: 're_secret_123', senderAddress: '123 Main St, Dallas TX 75201' },
+    stripeSecret: 'sk_live_x', apiToken: 'tok_y', password: 'p', webhookKey: 'wk',
+    name: 'Acme Rentals', legal: { senderAddress: 'PO Box 1' }
+  })));
+  ok(scrubbed.comms.resendKey === undefined, '#15 scrub: settings.comms.resendKey (ends in "key") removed');
+  ok(scrubbed.stripeSecret === undefined, '#15 scrub: a *secret* key removed');
+  ok(scrubbed.apiToken === undefined, '#15 scrub: a *token* key removed');
+  ok(scrubbed.password === undefined, '#15 scrub: a password key removed');
+  ok(scrubbed.webhookKey === undefined, '#15 scrub: a *-key-suffix key removed');
+  ok(scrubbed.comms.senderAddress === '123 Main St, Dallas TX 75201', '#15 scrub: senderAddress KEPT (CAN-SPAM physical address still exports)');
+  ok(scrubbed.legal.senderAddress === 'PO Box 1', '#15 scrub: nested legal.senderAddress KEPT');
+  ok(scrubbed.name === 'Acme Rentals', '#15 scrub: a non-secret setting KEPT');
+  ok(_scrubSettingsSecrets('not valid json') === 'not valid json', '#15 scrub: invalid JSON passes through unchanged (never throws)');
+
+  // #10 AI cost logs use the REAL reserved per-provider estimate, never a hardcoded (2500 + 3000*11).
+  ok(!/cost_micros: \(2500 \+ 3000 \* 11\)/.test(_WORKER_SRC), '#10: no hardcoded fake cost_micros (2500+3000*11) remains in any AI interaction log');
+  ok(/cost_micros: _est1\b/.test(_WORKER_SRC) && /cost_micros: _estS\b/.test(_WORKER_SRC) && /cost_micros: _estP\b/.test(_WORKER_SRC), '#10: single/schedule/plan logs record the reserved estimate (_est1/_estS/_estP)');
+
+  // #13 a soft-deleted/frozen tenant's live sessions die even if the per-session revoke UPDATE never ran.
+  ok(/LEFT JOIN tenants t ON t\.id=u\.tenant_id/.test(_WORKER_SRC), '#13: resolveSession joins tenants to observe a tenant-level delete/freeze');
+  ok(/if \(user\._tdel\) return null;/.test(_WORKER_SRC), '#13: a deleted tenant (_tdel) kills the session (returns null) -- backstop for a failed revoke');
+
+  // #16 the public /api/unsub endpoint is rate-limited per IP (was an unmetered public POST).
+  ok(/rateLimit\(env, 'unsub:' \+/.test(_WORKER_SRC), '#16: /api/unsub is rate-limited per CF-Connecting-IP');
+
+  // #9 the reconcile sweep retries an unsettled payment for ~30 days, not 2-4.
+  ok(/now - 30 \* DAY/.test(_WORKER_SRC) && /now - 31 \* DAY/.test(_WORKER_SRC), '#9: reconcile sweep window widened to 30/31 days (was 2/4 -> premature give-up on a real payment)');
+
+  // #11/#12 the availability preview anchors at the pickup TIME (not midnight), so the quote matches the /book charge.
+  ok(/_wallToUtcMs\(url\.searchParams\.get\('start'\) \|\| '', url\.searchParams\.get\('time'\) \|\| ''/.test(_WORKER_SRC), '#11/#12: /avail reads the start TIME (not just the date) so smart-pricing day-of-week matches /book');
+
+  // #14 a stale signature (material terms changed after signing) can be re-signed on the portal; idempotent otherwise.
+  ok(/const _reSign = !!\(d\.portal && d\.portal\.signedAt\) && _bkTermsDrifted\(/.test(_WORKER_SRC), '#14: /sign computes _reSign from post-signature term drift');
+  ok(/if \(d\.portal && d\.portal\.signedAt && !_reSign\) return json\(\{ ok: true, signedAt: d\.portal\.signedAt, already: true \}\)/.test(_WORKER_SRC), '#14: /sign stays idempotent ONLY when terms did not drift (a drifted signature is re-collected)');
+  ok(/j\.signed&&j\.sigStale/.test(_WORKER_SRC), '#14: the customer portal surfaces sigStale -> shows the updated agreement + a re-sign prompt');
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
