@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
@@ -1169,6 +1169,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // provider rate; this locks the rates it depends on. ----
 {
   ok(AI_PRICES['claude-sonnet-5'].output === 15 && AI_PRICES['gpt-4o'].output === 10 && AI_PRICES['gemini-3.6-flash'].output === 7.5, 'ai-cost #12: the per-provider output rates the reservation now uses are correct (Claude 15, not the old blended 11) -> a Claude-only path reserves ~27% more, closing the cap leak');
+}
+
+// ---- HARD-BOUNCE / spam-complaint suppression blocks TRANSACTIONAL too (deliverability #13): sendEmail only checked
+// suppression for marketing (!transactional), so once an address hard-bounced its first email, every later transactional send
+// (receipt/reminder/installment) kept bouncing against the ONE shared platform sending domain, degrading deliverability for
+// every tenant. A hard bounce / spam complaint now blocks all sends; a plain unsubscribe or a fail-closed DB error blocks only
+// marketing so a receipt/verify is never dropped on a hiccup. ----
+{
+  ok(_emailBlocked('hard_bounce', true) === true && _emailBlocked('spam_complaint', true) === true, 'email #13: a hard bounce / spam complaint blocks even a TRANSACTIONAL send (dead/flagging mailbox)');
+  ok(_emailBlocked('hard_bounce', false) === true, 'email #13: ...and marketing too');
+  ok(_emailBlocked('unsubscribe', true) === false, 'email #13: a plain unsubscribe does NOT block a transactional receipt/verify (only marketing)');
+  ok(_emailBlocked('unsubscribe', false) === true, 'email #13: a plain unsubscribe still blocks marketing');
+  ok(_emailBlocked('error', true) === false && _emailBlocked('error', false) === true, 'email #13: a fail-closed DB error blocks marketing but NOT a transactional send (never drop a receipt on a hiccup)');
+  ok(_emailBlocked('', true) === false && _emailBlocked('', false) === false, 'email #13: no suppression -> send either way');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
