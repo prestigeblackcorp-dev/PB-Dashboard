@@ -173,9 +173,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   sent = [];
   wr = await worker.fetch(whReq('POST', '/api/tenant/webhooks', { test: WID }), wenv, ctx); wj = await wr.json();
   ok(wr.status === 200 && wj.delivered === true, 'webhooks: signed test ping delivered');
-  const sig = (sent[0] && (sent[0].opts.headers || {})['X-Atlas-Signature']) || '';
-  const exp = 'sha256=' + crypto.createHmac('sha256', SECRET).update(sent[0].opts.body).digest('hex');
-  ok(sig === exp, 'webhooks: X-Atlas-Signature is a valid HMAC-SHA256 of the exact body');
+  // audit #9: webhook delivery now resolve-checks the host first (DoH lookups to cloudflare-dns.com fire BEFORE the POST),
+  // so target the actual webhook POST to hooks.example.com rather than sent[0] (which is now a bodyless DoH GET).
+  const _wpost = sent.find(s => /hooks\.example\.com/.test(s.url) && s.opts && s.opts.method === 'POST') || { opts: {} };
+  const sig = (_wpost.opts.headers || {})['X-Atlas-Signature'] || '';
+  const exp = 'sha256=' + crypto.createHmac('sha256', SECRET).update(_wpost.opts.body || '').digest('hex');
+  ok(!!_wpost.opts.body && sig === exp, 'webhooks: X-Atlas-Signature is a valid HMAC-SHA256 of the exact body');
   wr = await worker.fetch(whReq('DELETE', '/api/tenant/webhooks?id=' + WID), wenv, ctx);
   ok(wr.status === 200, 'webhooks: delete -> 200');
   wr = await worker.fetch(whReq('POST', '/api/tenant/webhooks', { url: 'https://a.example.com/h' }, { 'x-csrf-token': 'WRONG' }), wenv, ctx);

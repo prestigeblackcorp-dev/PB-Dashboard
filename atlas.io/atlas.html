@@ -1915,6 +1915,13 @@ const Atlas = (function(){
   function _monoNow(){ var n=Date.now(); if(n<=_lastSyncT) n=_lastSyncT+1; _lastSyncT=n; return n; }
   function _seenT(t){ t=Number(t)||0; if(t>_lastSyncT) _lastSyncT=t; }
   function _srvSyncSoon(){ if(!ATLAS_BACKEND||!_apiCsrf||_syncTimer) return; _syncTimer=setTimeout(function(){ _syncTimer=null; try{ _offloadThenPush(); }catch(e){ try{_srvSyncPush();}catch(_){} } }, 1500); }   // #295: offload big inline blobs to R2 BEFORE pushing, so the row stays small and always syncs
+  // audit #5 (sync data-loss): a debounced sync (above, 1.5s) that has NOT fired yet is lost if the tab is hidden or closed
+  // inside that window -> the edit strands in localStorage. Flush any pending push the instant the page is backgrounded or
+  // unloaded. On visibilitychange->hidden the page is still alive so the normal fetch completes (the reliable path); pagehide
+  // is the last-chance belt on a hard close. Idempotent -- _srvSyncPush only sends genuinely-dirty records -- so an extra
+  // flush is a safe no-op, and anything a hard close still drops is re-pushed by the boot retry (see the boot hydrate .then).
+  function _srvFlushNow(){ try{ if(!(ATLAS_BACKEND&&_apiCsrf)) return; if(_syncTimer){ clearTimeout(_syncTimer); _syncTimer=null; } _srvSyncPush(); }catch(e){} }
+  if(!window._syncFlushBound){ window._syncFlushBound=true; try{ document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='hidden') _srvFlushNow(); }); window.addEventListener('pagehide',_srvFlushNow); }catch(e){} }
   // #295 BIG-BLOB OFFLOAD: keep D1 rows small (and always syncable) by moving large inline base64 photos / signatures /
   // PDFs out to R2 and storing the capability URL instead. Runs opportunistically before each push -- once a blob is a
   // URL it is skipped, so each file uploads exactly once. Degrades safely: a failed/absent upload leaves the base64 in
@@ -12391,6 +12398,10 @@ const Atlas = (function(){
   var _portalBk=null, _portalView='home';
   function _pBk(){ return _getBooking(_portalBk); }
   function _portal(b){ if(!b.portal) b.portal={ signedAt:null, sig:null, signDevice:null, reservePaidAt:null, balancePaidAt:null, depositPaidAt:null, docs:[] }; if(!b.portal.docs) b.portal.docs=[]; return b.portal; }
+  // audit #7 (client): mirror the worker's material-terms drift check. The worker stamps b.sigTrail.terms {a,p,t,d,s} (asset/
+  // periods/total/deposit/security in cents) at sign time; if the booking's CURRENT material terms differ, the signature no
+  // longer covers them and the owner should re-send for signature. A legacy signature with no snapshot never flags.
+  function _bkTermsDriftedC(b){ try{ var st=b&&b.sigTrail&&b.sigTrail.terms; if(!st||typeof st!=='object') return false; var q=(b.quote&&typeof b.quote==='object')?b.quote:{}; var toC=function(v){ return Math.round((Number(v)||0)*100); }; var t=(q.totalCents!=null)?(Number(q.totalCents)||0):toC(q.total); var d=(q.depositCents!=null)?(Number(q.depositCents)||0):toC(q.dueNow!=null?q.dueNow:q.deposit); var s=(q.securityCents!=null)?(Number(q.securityCents)||0):toC(q.security!=null?q.security:q.hold); return String(st.a||'')!==String(b.asset||'')||(Number(st.p)||0)!==(Number(b.periods)||0)||(Number(st.t)||0)!==t||(Number(st.d)||0)!==d||(Number(st.s)||0)!==s; }catch(e){ return false; } }
   /* ---- owner-customizable portal config + auto-generated perks ---- */
   var PORTAL_SECTIONS=[['agreement','Sign rental agreement'],['balance','Pay balance'],['deposit','Refundable deposit hold'],['upload','Upload ID &amp; documents'],['documents','View documents'],['perks','Perks &amp; benefits'],['support','Support contact']];
   function _defaultPerks(){ var map={
@@ -12565,7 +12576,7 @@ const Atlas = (function(){
       +(hold?'<div class="portal__row"><span>Refundable hold</span><b>'+money(hold)+'</b></div>':'')+'</div>';
     var acts='';
     var _W=_pWords(b);   // same wording the served portal shows this customer (villa = check-in, wedding tent = delivery)
-    if(sec.agreement) acts+=_pAct('Sign rental agreement', signed?('Signed '+_stamp(p.signedAt)):('Required before '+esc(_pHandover(_W))), signed, 'Atlas.portalView(\'sign\')', signed?'View':'Sign');
+    if(sec.agreement){ var _sigDrift=(signed&&_bkTermsDriftedC(b)); acts+=_pAct('Sign rental agreement', signed?('Signed '+_stamp(p.signedAt)+(_sigDrift?' &middot; terms changed since signing':'')):('Required before '+esc(_pHandover(_W))), signed, 'Atlas.portalView(\'sign\')', (signed&&_sigDrift)?'Re-send':(signed?'View':'Sign')); }   // audit #7: flag a signature whose material terms (asset/dates/price/deposit) changed after it was signed -> the owner can re-send for a fresh signature
     if(sec.balance){ var pm=_portalMoney(b);
       if(pm.twoStep){   // owner set a partial deposit: reserve first, then the remaining balance -- paying the reserve no longer marks the whole booking paid
         acts+=_pAct('Pay deposit to reserve', pm.reservePaid?('Paid '+_stamp(p.reservePaidAt)):('Reserve '+money(pm.reserve)), pm.reservePaid, 'Atlas.portalPay(\'reserve\')', pm.reservePaid?'Paid':('Pay '+money(pm.reserve)));
@@ -13409,6 +13420,7 @@ const Atlas = (function(){
           if(res && res.json && res.json.csrf){ _apiCsrf=res.json.csrf; if(res.json.ip)_clientIp=res.json.ip; return _srvHydrate(_bootTid); }
         }).catch(function(){}).then(function(){ _bootSync=false;
           try{ var _s2=load(); if(_s2){ S=_s2; var _ap=document.getElementById('app'); if(S.onboarded && _ap && _ap.classList.contains('on')){ applyBrand(); buildApp(); } } }catch(e){}
+          try{ _srvSyncPush(); }catch(e){}   // audit #5: after the boot hydrate merge lands (and _bootSync is cleared so the profile push is allowed), flush any STRANDED local edit -- one made in a prior session whose 1.5s debounced sync never fired before the tab closed. Safe: the hydrate merge already set _pushedHash, so ONLY a local-newer record is still dirty and gets pushed (no clobber of newer server data, no churn). Mirrors the flush-before-hydrate the live-poll/refresh paths already do.
         });
       }
       if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); _billingReturn(); _kickLiveTour(); }
