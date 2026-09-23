@@ -1296,7 +1296,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 
   // #10 AI cost logs use the REAL reserved per-provider estimate, never a hardcoded (2500 + 3000*11).
   ok(!/cost_micros:[^,]*\* *11\b/.test(_WORKER_SRC), '#10 (cycle-5-hardened): NO cost_micros log uses a hardcoded blended 11-micros/token rate -- the original single/schedule/plan fix MISSED the council path, which logged _crN*(2500+_mt*11)+12000');
-  ok(/cost_micros: _est1\b/.test(_WORKER_SRC) && /cost_micros: _estN\b/.test(_WORKER_SRC) && /cost_micros: _estS\b/.test(_WORKER_SRC) && /cost_micros: _estP\b/.test(_WORKER_SRC), '#10: single/council/schedule/plan logs all record the reserved estimate (_est1/_estN/_estS/_estP)');
+  ok(/cost_micros: _est1\b/.test(_WORKER_SRC) && /cost_micros: Math\.max\(0, _estN - _relN\)/.test(_WORKER_SRC) && /cost_micros: _estS\b/.test(_WORKER_SRC) && /cost_micros: _estP\b/.test(_WORKER_SRC), '#10: single/council/schedule/plan logs all record the reserved estimate (_est1 / _estN net of any partial-outage release / _estS / _estP)');
 
   // #13 a soft-deleted/frozen tenant's live sessions die even if the per-session revoke UPDATE never ran.
   ok(/\(SELECT deleted_at FROM tenants WHERE id=users\.tenant_id\) AS _tdel/.test(_WORKER_SRC), '#13: resolveSession reads the tenant delete/freeze flag via a correlated subquery (no extra round-trip, base FROM users WHERE id=? preserved)');
