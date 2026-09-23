@@ -1174,6 +1174,42 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(rr.status === 200, 'rbac #6: the SAME role CAN GET /api/data/bookings (module allowed) -> the gate is per-module, not a blanket block');
 }
 
+// ---- cycle-4 CRITICAL regression guard (#6): a ROLE-PRESET teammate (no stored caps -> _roleCaps) must be able to READ
+// the modules its role grants. The read gate briefly keyed off 'fleet'/'bookings' caps that NO role preset holds (roles
+// grant fleetEdit/bookEdit), so every manager/ops/desk teammate was 403'd (-> empty Fleet/Bookings/Charges). The gate must
+// accept the module's EDIT cap too. This block exercises the ROLE-PRESET path the earlier stored-caps test could not. ----
+{
+  function rp(role) {
+    const SID = 'sid_rp_' + role, TEN = 't_rp', UID = 'u_rp_' + role;
+    function stmt(sql) {
+      let a = [];
+      const api = { bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: 'c', expires_at: Date.now() + 1e12, idle_at: Date.now(), revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: role + '@rp.com', tenant_id: TEN, role: role, caps: null };   // ROLE PRESET: no stored caps -> _roleCaps(role) decides
+          if (/FROM comp_grants WHERE email/.test(sql)) return null;
+          if (/FROM platform_config WHERE k=\?/.test(sql)) return null;
+          if (/FROM tenants WHERE id/.test(sql)) return { id: TEN, tier: 'pro', plan: 'active', settings: '{}' };
+          if (/FROM rate_limits/.test(sql)) return null;
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        }, all: async () => ({ results: [] }), run: async () => ({ success: true, meta: { changes: 1 } }) };
+      return api;
+    }
+    const env2 = { DB: { prepare: stmt }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'owner@x.com' };
+    const req = (path) => ({ method: 'GET', url: 'https://atlasrental.io' + path, headers: { get: (k) => (String(k).toLowerCase() === 'cookie' ? 'atlas_sid=' + SID : (String(k).toLowerCase() === 'origin' ? 'https://atlasrental.io' : null)) }, json: async () => ({}), text: async () => '' });
+    return { env2, req };
+  }
+  const ops = rp('ops');   // _roleCaps('ops') = { fleetEdit, bookEdit, customers, analytics }
+  ok((await worker.fetch(ops.req('/api/data/assets'), ops.env2, ctx)).status === 200, 'rbac #6 CRIT: a role-preset ops teammate (fleetEdit) CAN GET /api/data/assets (regression: was 403 -> empty Fleet)');
+  ok((await worker.fetch(ops.req('/api/data/bookings'), ops.env2, ctx)).status === 200, 'rbac #6 CRIT: a role-preset ops teammate (bookEdit) CAN GET /api/data/bookings (regression: was 403 -> empty Bookings)');
+  ok((await worker.fetch(ops.req('/api/data/charges'), ops.env2, ctx)).status === 200, 'rbac #6 CRIT: a role-preset ops teammate CAN GET /api/data/charges (bookEdit gates charges too)');
+  ok((await worker.fetch(ops.req('/api/data/customers'), ops.env2, ctx)).status === 200, 'rbac #6: a role-preset ops teammate (customers) CAN GET /api/data/customers');
+  const desk = rp('desk');   // _roleCaps('desk') = { bookEdit, customers } -- NO fleet module
+  ok((await worker.fetch(desk.req('/api/data/bookings'), desk.env2, ctx)).status === 200, 'rbac #6: a role-preset desk teammate (bookEdit) CAN GET /api/data/bookings');
+  ok((await worker.fetch(desk.req('/api/data/assets'), desk.env2, ctx)).status === 403, 'rbac #6: a role-preset desk teammate (NO fleet module) is STILL 403 on /api/data/assets -> the module-hiding intent holds');
+}
+
 // ---- AI cost-cap uses REAL per-provider output rates (money/COGS #12): the day-cap reservation priced output at a flat 11
 // micros/token (the 3-provider blend), but the single-mode chat, the scheduler and the planner are Claude-ONLY (real rate 15)
 // -> ~27% undercount, a permeable COGS ceiling on the cheapest-looking paths. The reservation now prices each path at its real
