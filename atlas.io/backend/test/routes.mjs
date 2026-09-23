@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1271,6 +1271,26 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_bkTermsDrifted(t0, { ...bk, quote: { ...bk.quote, securityCents: 0 } }) === true, 'sig-terms #7: a post-signature deposit/security change is detected');
   // legacy signature with no snapshot must never false-flag
   ok(_bkTermsDrifted(null, bk) === false && _bkTermsDrifted(undefined, bk) === false, 'sig-terms #7: a legacy signature with NO snapshot is never flagged stale (nothing to compare)');
+}
+
+// ---- audit #34 (money/COGS): on a PARTIAL council outage, _councilReleaseMicros must release EXACTLY the reserved COGS
+// for the legs that never ran (+ the synth-judge estimate when synthesis is skipped, i.e. <2 answered), mirroring the
+// _estN reservation formula so the per-tenant/day cap is left holding only what actually ran. ----
+{
+  const panel = [{ name: 'Claude', out: 15 }, { name: 'GPT', out: 10 }, { name: 'Gemini', out: 7.5 }];
+  const MT = 100, SR = 15;
+  // reservation _estN = (2500+1500)+(2500+1000)+(2500+750) + round(900*15) = 4000+3500+3250+13500 = 24250
+  ok(_councilReleaseMicros(panel, ['Claude', 'GPT', 'Gemini'], MT, SR) === 0, 'council #34: all 3 answered -> release 0 (full COGS was incurred)');
+  // only Claude answered: release GPT(3500)+Gemini(3250)+synth(13500)=20250 -> leaves 4000 = Claude leg, no synth ran
+  ok(_councilReleaseMicros(panel, ['Claude'], MT, SR) === 20250, 'council #34 CRUX: 1 of 3 answered -> release the 2 dead legs + the synth estimate (synthesis is skipped when <2 answered)');
+  // Claude+GPT answered (Gemini dead), 2 answered so synthesis RUNS -> release only the Gemini leg (3250), keep synth
+  ok(_councilReleaseMicros(panel, ['Claude', 'GPT'], MT, SR) === 3250, 'council #34: 2 of 3 answered -> release only the dead leg; synthesis ran so its estimate is NOT released');
+  // released never exceeds reserved: 20250 + incurred(4000) == 24250; 3250 + incurred(21000) == 24250
+  ok(_councilReleaseMicros(panel, ['Claude'], MT, SR) + 4000 === 24250 && _councilReleaseMicros(panel, ['Claude', 'GPT'], MT, SR) + 21000 === 24250, 'council #34: release + incurred == the original _estN reservation (no under/over-release)');
+  // single-leg council reserves no synth; a missing out defaults to 15; empty panel -> 0
+  ok(_councilReleaseMicros([{ name: 'Claude', out: 15 }], [], MT, SR) === 4000, 'council #34: a 1-leg council that failed releases just its leg (no synth reserved when crN<=1)');
+  ok(_councilReleaseMicros([{ name: 'X' }], [], 100, 15) === 2500 + Math.round(100 * 15), 'council #34: a leg with no out rate defaults to 15/1M');
+  ok(_councilReleaseMicros([], [], MT, SR) === 0, 'council #34: empty panel -> release 0 (no crash)');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
