@@ -1130,6 +1130,47 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_BAN_EXEMPT.test('/api/health') === true && _BAN_EXEMPT.test('/api/billing/checkout') === true && _BAN_EXEMPT.test('/api/stripe/webhook') === true, 'ban #10: health / billing / stripe-webhook stay exempt');
 }
 
+// ---- RBAC read-gate on /api/data (#6): the generic collection GET path enforced only tenant scope, so a teammate whose role
+// HIDES a module (custom caps, or built-in viewer/desk) could still GET /api/data/customers|bookings directly and pull up to
+// 1000 full PII rows -- the write path gated via _needW but the read path did not. Now the GET branch checks the view module. ----
+{
+  const SID = 'sid_rbac', CSRF = 'csrf_rbac', TEN = 't_rbac', UID = 'u_rbac';
+  const CAPS = JSON.stringify({ mods: { customers: false, bookings: true, fleet: true }, caps: {} });   // Customers module HIDDEN, Bookings allowed
+  function stmt(sql) {
+    let a = [];
+    const api = {
+      bind: (...x) => { a = x; return api; },
+      first: async () => {
+        if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: Date.now() + 1e12, idle_at: Date.now(), revoked_at: null } : null;
+        if (/FROM users WHERE id/.test(sql)) return { id: UID, email: 'ops@rbac.com', tenant_id: TEN, role: 'ops', caps: CAPS };
+        if (/FROM comp_grants WHERE email/.test(sql)) return null;
+        if (/FROM platform_config WHERE k=\?/.test(sql)) return null;
+        if (/FROM tenants WHERE id/.test(sql)) return { id: TEN, tier: 'pro', plan: 'active', settings: '{}' };
+        if (/FROM rate_limits/.test(sql)) return null;
+        if (/sqlite_master/.test(sql)) return { n: 30 };
+        return null;
+      },
+      all: async () => ({ results: [] }),
+      run: async () => ({ success: true, meta: { changes: 1 } }),
+    };
+    return api;
+  }
+  const rbacEnv = { DB: { prepare: stmt }, SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'owner@x.com' };
+  const getReq = (path) => { const h = { cookie: 'atlas_sid=' + SID, origin: 'https://atlasrental.io' }; return { method: 'GET', url: 'https://atlasrental.io' + path, headers: { get: (k) => { const v = h[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => ({}), text: async () => '' }; };
+  let rr = await worker.fetch(getReq('/api/data/customers'), rbacEnv, ctx);
+  ok(rr.status === 403, 'rbac #6: a role with the Customers module HIDDEN gets 403 on GET /api/data/customers (was 200 + up to 1000 PII rows)');
+  rr = await worker.fetch(getReq('/api/data/bookings'), rbacEnv, ctx);
+  ok(rr.status === 200, 'rbac #6: the SAME role CAN GET /api/data/bookings (module allowed) -> the gate is per-module, not a blanket block');
+}
+
+// ---- AI cost-cap uses REAL per-provider output rates (money/COGS #12): the day-cap reservation priced output at a flat 11
+// micros/token (the 3-provider blend), but the single-mode chat, the scheduler and the planner are Claude-ONLY (real rate 15)
+// -> ~27% undercount, a permeable COGS ceiling on the cheapest-looking paths. The reservation now prices each path at its real
+// provider rate; this locks the rates it depends on. ----
+{
+  ok(AI_PRICES['claude-sonnet-5'].output === 15 && AI_PRICES['gpt-4o'].output === 10 && AI_PRICES['gemini-3.6-flash'].output === 7.5, 'ai-cost #12: the per-provider output rates the reservation now uses are correct (Claude 15, not the old blended 11) -> a Claude-only path reserves ~27% more, closing the cap leak');
+}
+
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
 // ai_answers reservoir with NO provider call + 0 credits; a SENSITIVE (money/legal/live-data) question is NEVER served
 // from cache -- it always recomputes via the council; flag OFF is inert. Locks the hard rail in CI (no network). ----
