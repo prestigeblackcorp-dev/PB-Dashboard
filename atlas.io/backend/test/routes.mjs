@@ -3,8 +3,10 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _reconcileCreditTerminal, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
+const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
 
 // --- switchable Stripe mock (read-only endpoints the self-test calls) ---
 let scn = 'ready';
@@ -1183,6 +1185,31 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_emailBlocked('unsubscribe', false) === true, 'email #13: a plain unsubscribe still blocks marketing');
   ok(_emailBlocked('error', true) === false && _emailBlocked('error', false) === true, 'email #13: a fail-closed DB error blocks marketing but NOT a transactional send (never drop a receipt on a hiccup)');
   ok(_emailBlocked('', true) === false && _emailBlocked('', false) === false, 'email #13: no suppression -> send either way');
+}
+
+// ---- audit #14 (money HIGH): the pending-payment reconcile sweep must NEVER settle (stop tracking) a captured payment that
+// was verified-paid but lost the credit CAS -- that would orphan the money. _reconcileCreditTerminal(res) is the sole gate:
+// true = terminal (safe to _pendSettle + 'done'); false = retry ('pending'). Terminal ONLY for a genuinely done booking row. ----
+{
+  // both _paypalCreditBooking and _squareCreditBooking return this exact shape.
+  ok(_reconcileCreditTerminal({ credited: false, dup: true, committed: false }) === true, 'reconcile #14: dup (already recorded) -> terminal, stop tracking');
+  ok(_reconcileCreditTerminal({ credited: false, dup: false, committed: false, notfound: true }) === true, 'reconcile #14: notfound (booking row gone) -> terminal');
+  ok(_reconcileCreditTerminal({ credited: false, dup: false, committed: true, cancelled: true }) === true, 'reconcile #14: cancelled/voided booking -> terminal (credit refused)');
+  // THE FIX: a bare CAS-loss must NOT be terminal (else the captured payment is orphaned forever).
+  ok(_reconcileCreditTerminal({ credited: false, dup: false, committed: false, cancelled: false }) === false, 'reconcile #14 CRUX: a bare CAS-loss (committed=false, dup/notfound/cancelled all false) is NOT terminal -> retry next sweep, never orphan the money');
+  ok(_reconcileCreditTerminal(null) === false && _reconcileCreditTerminal(undefined) === false, 'reconcile #14: an unexpected null/undefined result is NOT terminal -> retry (safe direction: never stop tracking captured money on an unknown outcome)');
+  // sanity: a SUCCESSFUL credit never reaches this gate (the caller checks _res.credited first), but if it did it would read non-terminal by these fields -- harmless, the credited path returns 'credited' above it.
+  ok(_reconcileCreditTerminal({ credited: true, dup: false }) === false, 'reconcile #14: a credited=true result is not classified terminal by this gate (the credited branch handles it upstream)');
+}
+
+// ---- audit #15: the /api/outreach/send EMAIL branch builds two full-table maps (the own-customers allowlist and the
+// email opt-out prescan). Both MUST be bounded or a large tenant OOMs the 128MB Worker. Source-guard the caps (the effect
+// only shows at >5000 rows, which a unit test can't create). Mirrors the SMS branch's existing LIMIT 5000. ----
+{
+  ok(/SELECT email FROM customers WHERE tenant_id=\?\s+ORDER BY created_at DESC LIMIT 5000/.test(_WORKER_SRC), 'outreach #15: the email-branch own-customers allowlist scan is bounded (LIMIT 5000) -- cannot OOM the Worker');
+  ok(/SELECT data FROM bookings WHERE tenant_id=\?\s+ORDER BY created_at DESC LIMIT 5000/.test(_WORKER_SRC), 'outreach #15: the email-branch opt-out prescan is bounded (LIMIT 5000)');
+  // there must be NO remaining UNBOUNDED tenant-wide scan of these two tables in the outreach path (belt-and-suspenders: catch a reintroduced bare query).
+  ok(!/SELECT email FROM customers WHERE tenant_id=\?'\)/.test(_WORKER_SRC), 'outreach #15: no bare (unbounded) customers-by-tenant scan remains');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
