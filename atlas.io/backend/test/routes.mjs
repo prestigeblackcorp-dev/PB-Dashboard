@@ -322,7 +322,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // 6) POST reset with the GENUINE token -> succeeds, hash changes, and every session for that user is revoked
   if (goodQ) {
     const qp = new URLSearchParams(goodQ);
-    let gpr = await worker.fetch(pReq('POST', '/api/auth/reset', { uid: qp.get('uid'), e: qp.get('e'), exp: qp.get('exp'), s: qp.get('s'), password: 'brandNewPassw0rd' }), pwEnv, ctx);
+    // audit #32: the reset LINK no longer carries the email (&e= removed -> no PII in the URL); production recovers it in
+    // the GET and renders it in the form's hidden remail field, and the browser POSTs THAT. Mirror it here: pull the email
+    // from the rendered form, not the (now email-less) link query. This also asserts the GET's uid->email recovery works.
+    const _formHtml = await (await worker.fetch(mkReq('GET', '/api/auth/reset' + goodQ), pwEnv, ctx)).text();
+    const _formEmail = (_formHtml.match(/id="remail" value="([^"]*)"/) || [])[1] || '';
+    ok(_formEmail === 'known@x.com', 'POST reset #32: the GET recovered the account email from the uid (no email in the URL) and rendered it in the form');
+    let gpr = await worker.fetch(pReq('POST', '/api/auth/reset', { uid: qp.get('uid'), e: _formEmail, exp: qp.get('exp'), s: qp.get('s'), password: 'brandNewPassw0rd' }), pwEnv, ctx);
     let gpj = await gpr.json();
     ok(gpr.status === 200 && gpj.ok === true, 'POST reset: genuine token + an 8+ char password -> ok:true');
     ok(users.get('known@x.com').pw_hash !== 'p2$old', 'POST reset: pw_hash actually changed');
@@ -333,7 +339,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     //    re-derives -- the link is dead the instant the password changes, with no token table.
     const hashAfterReset = users.get('known@x.com').pw_hash;
     const qr = new URLSearchParams(goodQ);
-    let rp = await worker.fetch(pReq('POST', '/api/auth/reset', { uid: qr.get('uid'), e: qr.get('e'), exp: qr.get('exp'), s: qr.get('s'), password: 'replayAttempt99' }), pwEnv, ctx);
+    let rp = await worker.fetch(pReq('POST', '/api/auth/reset', { uid: qr.get('uid'), e: _formEmail, exp: qr.get('exp'), s: qr.get('s'), password: 'replayAttempt99' }), pwEnv, ctx);
     ok(rp.status >= 400, 'POST reset: REPLAY of an already-used link is rejected (single-use via pw_salt binding)');
     ok(users.get('known@x.com').pw_hash === hashAfterReset, 'POST reset: the rejected replay left the (already-reset) password untouched');
   }
