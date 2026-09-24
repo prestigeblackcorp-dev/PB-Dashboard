@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -3607,6 +3607,91 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     j = await r.json();
     ok(r.status === 200 && j.ok === true, 'visits-geo drill: a VALID support-role staff token is allowed (read-only, not OWNER_ONLY) -- matches the base visits-geo gate (got ' + r.status + ')');
   }
+}
+
+// ==== 12o: SQUARE/PAYPAL CHARGEBACK -> capped revenue reversal (full-audit #1) ====
+// A Square dispute / PayPal customer dispute must debit the disputed amount back off the booking's recorded revenue --
+// the same capped, idempotent decrement the Stripe dispute path already does -- so a chargeback doesn't leave phantom
+// revenue on the books. A Square/PayPal dispute references the PAYMENT/CAPTURE id (not the order id kept in
+// pending_payments), so the booking is resolved via payment_index, which is now populated at credit time.
+{
+  // ---- source-guards: the wiring is in place and matched exactly ----
+  ok(/ALTER TABLE payment_index ADD COLUMN booking_id TEXT/.test(_WORKER_SRC), '#1: payment_index carries a booking_id column (added idempotently in ensurePlatformSchema)');
+  ok((_WORKER_SRC.match(/INSERT INTO payment_index \(pi, tenant_id, booking_id, at\) VALUES \(\?,\?,\?,\?\) ON CONFLICT\(pi\) DO UPDATE SET booking_id=excluded\.booking_id/g) || []).length === 2, '#1: BOTH the Square (paymentId) and PayPal (captureId) credit paths index the payment/capture id -> booking at credit time');
+  ok(/bind\(String\(paymentId \|\| ""\)\.slice\(0, 120\)/.test(_WORKER_SRC), '#1: the Square credit path indexes by paymentId');
+  ok(/bind\(String\(captureId \|\| ""\)\.slice\(0, 120\)/.test(_WORKER_SRC), '#1: the PayPal credit path indexes by captureId');
+  // helper: idempotent per dispute, capped for a booked security hold, decrement-only, sentinel cleaned on non-commit
+  ok(/kind: 'chargeback_rev'/.test(_WORKER_SRC) && /if \(!\(_dt && _dt\.new\)\) return;/.test(_WORKER_SRC), '#1: _extDisputeReverse is idempotent per dispute (recordTxn sentinel; a redelivery of the same dispute event never decrements twice)');
+  ok(/var _decAmt = _isSec \? \(_booked \? Math\.min\(Math\.round\(Number\(disputeCents\) \|\| 0\), _capAmt\) : 0\) : Math\.round\(Number\(disputeCents\) \|\| 0\)/.test(_WORKER_SRC), '#1: security-hold disputes are capped at the captured-into-revenue amount (and 0 if the hold was never booked to revenue); a plain payment dispute reverses in full');
+  ok(/return \{ rev: Math\.max\(0, \(Number\(_rr\.revenue_cents\) \|\| 0\) - _decAmt\) \};/.test(_WORKER_SRC), '#1: the reversal only ever DECREMENTS revenue (never below 0, never an increment) -- a won dispute does not auto-restore');
+  ok(/DELETE FROM platform_transactions WHERE stripe_id=\?/.test(_WORKER_SRC), '#1: a non-committed reversal deletes its sentinel so a webhook redelivery can retry (no silently-lost chargeback)');
+  // Square webhook wiring
+  ok(/_sqType === 'dispute\.created' \|\| _sqType === 'dispute\.state\.changed'/.test(_WORKER_SRC), '#1: the Square webhook detects dispute.created / dispute.state.changed');
+  ok((_WORKER_SRC.match(/SELECT booking_id, tenant_id FROM payment_index WHERE pi=\?/g) || []).length === 2, '#1: BOTH webhooks resolve the booking from payment_index by the disputed payment/capture id');
+  ok(/await _extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dCents, 'sqdisp:' \+ _dispId\)/.test(_WORKER_SRC), '#1: the Square webhook calls the capped reversal with a per-dispute sentinel');
+  // PayPal webhook wiring
+  ok(/_et === 'CUSTOMER\.DISPUTE\.CREATED' \|\| _et === 'CUSTOMER\.DISPUTE\.UPDATED'/.test(_WORKER_SRC), '#1: the PayPal webhook detects CUSTOMER.DISPUTE.CREATED / UPDATED');
+  ok(/_dTx && \(_dTx\.seller_transaction_id \|\| _dTx\.buyer_transaction_id\)/.test(_WORKER_SRC), '#1: the PayPal dispute resolves the CAPTURE id from disputed_transactions[].seller_transaction_id');
+  ok(/dispute_amount && _rsrc\.dispute_amount\.value\) \|\| 0\) \|\| 0\) \* 100/.test(_WORKER_SRC), '#1: PayPal dispute_amount.value (major units) is converted to cents');
+  ok(/await _extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dCents, 'ppdisp:' \+ _dispId\)/.test(_WORKER_SRC), '#1: the PayPal webhook calls the capped reversal with a per-dispute sentinel');
+
+  // ---- behavioral (mock D1): the reversal math + idempotency + redelivery-safety are exercised end-to-end ----
+  function _mkDisputeEnv(bk) {
+    let _data = bk ? JSON.stringify(bk.data || {}) : null;
+    let _rev = bk ? (Number(bk.revenue_cents) || 0) : 0;
+    let _upd = bk ? (bk.updated_at == null ? null : bk.updated_at) : null;
+    let _st = bk ? (bk.status || 'confirmed') : 'confirmed';
+    const _txns = new Set();
+    const env = { DB: { prepare: (sql) => { let a = []; const api = {
+      bind: (...x) => { a = x; return api; },
+      first: async () => {
+        if (/SELECT id,data,revenue_cents,status,updated_at,starts FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) {
+          if (bk && a[0] === bk.id && a[1] === bk.tenant_id) return { id: bk.id, tenant_id: bk.tenant_id, data: _data, revenue_cents: _rev, status: _st, updated_at: _upd, starts: 0 };
+          return null;
+        }
+        return null;
+      },
+      run: async () => {
+        if (/INSERT OR IGNORE INTO platform_transactions/.test(sql)) { const sid = a[8]; if (_txns.has(sid)) return { meta: { changes: 0 } }; _txns.add(sid); return { meta: { changes: 1 } }; }
+        if (/DELETE FROM platform_transactions WHERE stripe_id=\?/.test(sql)) { const sid = a[0]; const had = _txns.delete(sid); return { meta: { changes: had ? 1 : 0 } }; }
+        if (/UPDATE bookings SET data=\?, revenue_cents=\?, status=\?, updated_at=\? WHERE id=\? AND tenant_id=\? AND updated_at IS \?/.test(sql)) { _data = a[0]; _rev = a[1]; _st = a[2]; _upd = a[3]; return { meta: { changes: 1 } }; }
+        return { meta: { changes: 0 } };
+      },
+      all: async () => ({ results: [] }),
+    }; return api; } } };
+    const req = { headers: { get: () => '' } };
+    return { env, req, txns: _txns, get rev() { return _rev; }, get data() { try { return JSON.parse(_data); } catch (e) { return null; } } };
+  }
+
+  // (1) a plain (non-security) payment dispute reverses in FULL + marks the slot disputed
+  let m = _mkDisputeEnv({ id: 'BK1', tenant_id: 'T1', data: { paid: { payment: { square: 'PAY1', amountCents: 10000 } } }, revenue_cents: 10000 });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'BK1', 'PAY1', 4000, 'sqdisp:D1');
+  ok(m.rev === 6000, 'chargeback: a $40 dispute on a $100 payment booking drops recorded revenue 10000 -> 6000 (got ' + m.rev + ')');
+  ok(m.data && m.data.paid && m.data.paid.payment && m.data.paid.payment.disputed && m.data.paid.payment.disputed.amountCents === 4000, 'chargeback: the disputed slot is stamped with the dispute (amount + at)');
+  // (1b) replaying the SAME dispute event is idempotent -- no second decrement
+  await _extDisputeReverse(m.env, m.req, 'T1', 'BK1', 'PAY1', 4000, 'sqdisp:D1');
+  ok(m.rev === 6000, 'chargeback: replaying the same dispute (same sentinel) does NOT decrement again -- revenue stays 6000 (got ' + m.rev + ')');
+
+  // (2) a security-hold dispute is CAPPED at the amount that was captured into revenue
+  m = _mkDisputeEnv({ id: 'BK2', tenant_id: 'T1', data: { paid: { security: { square: 'SEC1', captured: { amountCents: 5000 } } }, capturedRev: ['cap:SEC1'] }, revenue_cents: 12000 });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'BK2', 'SEC1', 8000, 'sqdisp:D2');
+  ok(m.rev === 7000, 'chargeback: a $80 dispute on a security hold that only booked $50 into revenue reverses at most $50 (12000 -> 7000, got ' + m.rev + ')');
+
+  // (3) a security hold that was NEVER booked into revenue -> dispute reverses 0 (but still marks disputed)
+  m = _mkDisputeEnv({ id: 'BK3', tenant_id: 'T1', data: { paid: { security: { square: 'SEC2', captured: { amountCents: 5000 } } }, capturedRev: [] }, revenue_cents: 12000 });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'BK3', 'SEC2', 8000, 'sqdisp:D3');
+  ok(m.rev === 12000, 'chargeback: disputing a security hold that never hit revenue does NOT reduce revenue (stays 12000, got ' + m.rev + ')');
+  ok(m.data && m.data.paid && m.data.paid.security && m.data.paid.security.disputed, 'chargeback: the security slot is still stamped disputed even when revenue is untouched');
+
+  // (4) a PayPal capture id resolves via p.paypal + a full reversal to 0
+  m = _mkDisputeEnv({ id: 'BK4', tenant_id: 'T1', data: { paid: { balance: { paypal: 'CAPX', amountCents: 3000 } } }, revenue_cents: 3000 });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'BK4', 'CAPX', 3000, 'ppdisp:D4');
+  ok(m.rev === 0, 'chargeback: a PayPal capture dispute (matched via p.paypal) reverses the full $30 (3000 -> 0, got ' + m.rev + ')');
+
+  // (5) redelivery-safety: if the booking is missing (RMW cannot commit), the sentinel is DELETED so a retry re-runs
+  m = _mkDisputeEnv(null);
+  await _extDisputeReverse(m.env, m.req, 'T1', 'GONE', 'PAYZ', 5000, 'sqdisp:D5');
+  ok(m.txns.size === 0, 'chargeback: a reversal that could not commit (missing booking) leaves NO sentinel -> a webhook redelivery retries instead of silently swallowing the chargeback (txns=' + m.txns.size + ')');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
