@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1412,6 +1412,18 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   }
   // #12 source: _graftServerPay re-applies the erasure to a stale client push (so a device holding the pre-erasure blob cannot resurrect PII).
   ok(/if \(serverD\._erased === true && clientD\._erased !== true\) \{ _applyErasure\(clientD\); clientD\._erased = true; \}/.test(_WORKER_SRC), '#12: _graftServerPay re-applies erasure on a stale push (GDPR erasure is sync-durable)');
+
+  // ---- FULL-SYSTEM AUDIT batch 12k (build 12k): extension-signature forgery -> content-binding. ----
+  // #7 (pure): _extSigTermsStr canonicalizes an extension's material terms; a reused 'sx' sigId on a DIFFERENT extension hashes differently, so it no longer verifies.
+  ok(_extSigTermsStr('ex1', 1, 50, 1700000000000) === 'ex1|1|50|1700000000000', '#7 ext-terms: canonical id|periods|charge|newEnd');
+  ok(_extSigTermsStr('ex1', '1', '50', '1700000000000') === 'ex1|1|50|1700000000000', '#7 ext-terms: type-normalized (string inputs == number inputs -> store/verify hashes match)');
+  ok(_extSigTermsStr('ex2', 10, 900, 1700000000000) !== _extSigTermsStr('ex1', 1, 50, 1700000000000), '#7 ext-terms: a fabricated DIFFERENT extension yields a different terms string (a reused sigId will not verify)');
+  ok(_extSigTermsStr(null, null, null, null) === '|0|0|0', '#7 ext-terms: null-safe (never throws)');
+  // source: the sig row stores ext_terms_hash and _stripUnbackedSig verifies the CURRENT terms against it (legacy rows w/o a hash fall back to the existence-only check).
+  ok(/ALTER TABLE signatures ADD COLUMN ext_terms_hash TEXT/.test(_WORKER_SRC), '#7: signatures.ext_terms_hash column added');
+  ok(/signed_at,ext_terms_hash\) VALUES \(\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?\)/.test(_WORKER_SRC), '#7: /extsign stores the extension terms hash on the sx row');
+  ok(/if \(_curTH !== _row\.th\) _strip\(_x\)/.test(_WORKER_SRC), '#7: _stripUnbackedSig strips an extension whose current terms do not match its sig row (reused/forged sigId)');
+  ok(/if \(_row\.th\)/.test(_WORKER_SRC), '#7: a legacy sig row with no terms hash falls back to the existence-only check (no existing signature is stripped)');
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
