@@ -1479,6 +1479,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/LOWER\(status\) NOT IN \('cancelled','completed','voided','pending'\)/g) || []).length >= 4, "#6: the overlap gates + confirm guard all exclude 'pending' (a Pending booking never blocks a slot)");
   ok((_WORKER_SRC.match(/await _confirmSlotFull\(env, ctx\.tenant_id,/g) || []).length === 2, '#6: the confirm-time double-book guard runs on BOTH the POST (walk-in) and PUT (confirm) booking-write paths');
   ok(/async function _confirmSlotFull\(env, tenantId, bookingId, bd, startTs, endTs\)/.test(_WORKER_SRC), '#6: _confirmSlotFull helper present');
+
+  // ---- FULL-SYSTEM AUDIT batch 12n (build 12n): G5-clear-on-cancel (c7#6). ----
+  // A G5 cash-revenue ESTIMATE is cleared when a booking is set to a non-committed status via the generic edit path (POST+PUT),
+  // matched EXACTLY (revenue_cents == quote.total*100) so a real payment that changed revenue is never wiped.
+  ok((_WORKER_SRC.match(/UPDATE bookings SET revenue_cents=0 WHERE id=\? AND tenant_id=\? AND revenue_cents=\?/g) || []).length === 2, '#c7-6: the G5 estimate is cleared on cancel-via-edit on BOTH the POST + PUT paths, matched exactly (a real payment is never wiped)');
+  ok(/_g5xst === 'cancelled' \|\| _g5xst === 'pending' \|\| _g5xst === 'voided'/.test(_WORKER_SRC), '#c7-6: clears only when the booking is set to a NON-committed status');
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
