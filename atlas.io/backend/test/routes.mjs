@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1430,6 +1430,55 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/invite_token,invite_expires,invited_by,status,email_verified,created_at/.test(_WORKER_SRC), '#2: a new invite is minted WITH an expiry (7-day TTL)');
   ok(/if \(u\.invite_expires && Date\.now\(\) > Number\(u\.invite_expires\)\) return err\(410/.test(_WORKER_SRC), '#2: accept-invite rejects an expired token (legacy NULL never expires)');
   ok(/UPDATE users SET role=\?, caps=\?, invite_token=\?, invite_expires=\?, invited_by=\? WHERE id=\? AND status='invited'/.test(_WORKER_SRC), '#2: a pending invite is re-sendable (refresh token + TTL) instead of 409 -> avoids an expiry deadlock; an active account still 409s');
+}
+
+// ---- FULL-SYSTEM AUDIT batch 12m (build 12m): Pending-availability -- DOUBLE-BOOK behavioral tests (#6). ----
+// The overlap gate now excludes 'pending' (a Pending booking never holds a slot; only Confirmed+), and _confirmSlotFull is the
+// confirm-time guard that MOVES the double-book protection to the moment a booking is set to a blocking status.
+{
+  const D = 86400000, S = 1700000000000;
+  // mock D1: answers the tenant-settings, asset-qty, and overlapping-bookings queries _confirmSlotFull issues.
+  const mkDb = (bookings, assetQty, turnaroundMin) => ({ prepare: (sql) => ({ bind: (...a) => ({
+    first: async () => {
+      if (/FROM tenants WHERE id=/.test(sql)) return { settings: JSON.stringify({ turnaroundMin: turnaroundMin || 0 }), money: JSON.stringify({ rateModel: 'day' }) };
+      if (/FROM assets WHERE tenant_id=\? AND id=/.test(sql)) return { info: JSON.stringify({ qty: assetQty || 1 }) };
+      return null;
+    },
+    all: async () => {
+      if (/FROM bookings WHERE/.test(sql)) {
+        const excl = String(a[1]), hi = Number(a[2]), lo = Number(a[3]);   // a=[tenantId, excludeId, endTs+buf, startTs-buf-lookback]
+        const rows = bookings.filter(b => String(b.id) !== excl && ['cancelled','completed','voided','pending'].indexOf(String(b.status||'').toLowerCase()) < 0 && b.starts < hi && b.ends > lo)
+          .map(b => ({ starts: b.starts, ends: b.ends, data: JSON.stringify(b.data || { asset: b.asset, assetId: b.assetId }) }));
+        return { results: rows };
+      }
+      return { results: [] };
+    }
+  }) }) });
+  const A1 = { asset: 'Yacht', assetId: 'A1' };
+  const oneConfirmed = [{ id: 'b1', status: 'Confirmed', asset: 'Yacht', assetId: 'A1', starts: S, ends: S + D, data: A1 }];
+  const db1 = { DB: mkDb(oneConfirmed, 1, 0) };
+  ok(await _confirmSlotFull(db1, 'T', 'b2', A1, S + D / 2, S + D + D / 2) === true, '#6 double-book: qty=1, a confirmed booking overlaps -> slot FULL (confirm blocked)');
+  ok(await _confirmSlotFull(db1, 'T', 'b3', A1, S + 2 * D, S + 3 * D) === false, '#6: qty=1, non-overlapping time -> allowed');
+  ok(await _confirmSlotFull(db1, 'T', 'b4', { asset: 'Boat', assetId: 'A2' }, S, S + D) === false, '#6: a DIFFERENT asset in the same window -> allowed');
+  ok(await _confirmSlotFull(db1, 'T', 'b1', A1, S, S + D) === false, '#6: self-excluded -> re-writing/editing an already-confirmed booking is not blocked by itself');
+  const dbPending = { DB: mkDb([{ id: 'p1', status: 'Pending', asset: 'Yacht', assetId: 'A1', starts: S, ends: S + D, data: A1 }], 1, 0) };
+  ok(await _confirmSlotFull(dbPending, 'T', 'b5', A1, S, S + D) === false, '#6 CRUX: a PENDING overlapping booking does NOT block a confirm (pending never holds a slot)');
+  ok(await _confirmSlotFull({ DB: mkDb(oneConfirmed, 2, 0) }, 'T', 'b6', A1, S, S + D) === false, '#6: qty=2 asset with 1 confirmed -> still room');
+  const twoConfirmed = [{ id: 'b1', status: 'Confirmed', assetId: 'A1', starts: S, ends: S + D, data: { assetId: 'A1' } }, { id: 'b2', status: 'Confirmed', assetId: 'A1', starts: S, ends: S + D, data: { assetId: 'A1' } }];
+  ok(await _confirmSlotFull({ DB: mkDb(twoConfirmed, 2, 0) }, 'T', 'b7', { assetId: 'A1' }, S, S + D) === true, '#6: qty=2 asset with 2 confirmed overlapping -> slot FULL');
+  ok(await _confirmSlotFull(db1, 'T', 'b8', A1, 0, 0) === false, '#6: a dateless booking can never overlap -> allowed');
+  ok(await _confirmSlotFull({ DB: { prepare: () => { throw new Error('boom'); } } }, 'T', 'b9', A1, S, S + D) === false, '#6: fail-OPEN on a DB error (a transient hiccup never blocks a legit owner confirm)');
+  // turnaround buffer: a 120-min buffer makes an adjacent (touching) confirmed booking overlap
+  const adj = [{ id: 'b1', status: 'Confirmed', assetId: 'A1', starts: S + D, ends: S + 2 * D, data: { assetId: 'A1' } }];
+  ok(await _confirmSlotFull({ DB: mkDb(adj, 1, 0) }, 'T', 'b10', { assetId: 'A1' }, S, S + D) === false, '#6: no buffer -> a back-to-back booking (ends==next.starts) does not overlap');
+  ok(await _confirmSlotFull({ DB: mkDb(adj, 1, 120) }, 'T', 'b11', { assetId: 'A1' }, S, S + D) === true, '#6: a 120-min turnaround buffer makes the back-to-back booking conflict (slot full)');
+}
+
+// ---- source-guards for #6 (Part A: overlap gates exclude pending; Part B: confirm-time call sites). ----
+{
+  ok((_WORKER_SRC.match(/LOWER\(status\) NOT IN \('cancelled','completed','voided','pending'\)/g) || []).length >= 4, "#6: the overlap gates + confirm guard all exclude 'pending' (a Pending booking never blocks a slot)");
+  ok((_WORKER_SRC.match(/await _confirmSlotFull\(env, ctx\.tenant_id,/g) || []).length === 2, '#6: the confirm-time double-book guard runs on BOTH the POST (walk-in) and PUT (confirm) booking-write paths');
+  ok(/async function _confirmSlotFull\(env, tenantId, bookingId, bd, startTs, endTs\)/.test(_WORKER_SRC), '#6: _confirmSlotFull helper present');
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
