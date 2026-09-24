@@ -1383,6 +1383,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/_settled \+= Math\.max\(0, Math\.round\(Number\(_x\.amountCents\) \|\| 0\) - Math\.round\(Number\(_x\.refunded && _x\.refunded\.amountCents\) \|\| 0\)\)/.test(_WORKER_SRC), '#c7-9: review-eligibility nets out refunds (a fully-refunded booking cannot post a verified review)');
   // #14 /api/tenant/profile scrubs settings secrets before returning.
   ok(/_tprof\.settings = jparse\(_scrubSettingsSecrets\(JSON\.stringify\(_tprof\.settings\)\), \{\}\)/.test(_WORKER_SRC), '#14: /api/tenant/profile scrubs settings secrets before returning to any role');
+
+  // ---- FULL-SYSTEM AUDIT batch 12i (build 12i): money -- won-chargeback restore + booking date validation. ----
+  // #3: a WON Stripe dispute restores the revenue decremented at dispute-open (exactly disputed.decrementedCents), idempotent.
+  ok(/T === 'charge\.dispute\.closed' \|\| T === 'charge\.dispute\.funds_reinstated'/.test(_WORKER_SRC), '#3: the Stripe webhook handles dispute.closed/funds_reinstated (won-dispute revenue restore)');
+  ok(/charge\.dispute\.closed', 'charge\.dispute\.funds_reinstated'/.test(_WORKER_SRC), '#3: WH_RECOMMENDED includes the dispute-won events');
+  ok(/decrementedCents: _decD/.test(_WORKER_SRC), '#3: the dispute decrement is recorded on the slot so a WON dispute restores exactly that (not the raw disputed amount)');
+  ok(/_pp\.disputed\.reinstatedAt = Date\.now\(\)/.test(_WORKER_SRC), '#3: the won-restore stamps reinstatedAt to prevent a double-restore');
+  // c7#4: a present-but-invalid booking start/end is rejected (patchFields would otherwise silently store NULL dates invisible to the availability gate).
+  ok((_WORKER_SRC.match(/This booking has an invalid start or end date\/time/g) || []).length === 2, '#c7-4: both POST + PUT bookings writes reject a present-but-invalid date');
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
