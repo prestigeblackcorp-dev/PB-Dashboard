@@ -1424,6 +1424,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/signed_at,ext_terms_hash\) VALUES \(\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?\)/.test(_WORKER_SRC), '#7: /extsign stores the extension terms hash on the sx row');
   ok(/if \(_curTH !== _row\.th\) _strip\(_x\)/.test(_WORKER_SRC), '#7: _stripUnbackedSig strips an extension whose current terms do not match its sig row (reused/forged sigId)');
   ok(/if \(_row\.th\)/.test(_WORKER_SRC), '#7: a legacy sig row with no terms hash falls back to the existence-only check (no existing signature is stripped)');
+
+  // ---- FULL-SYSTEM AUDIT batch 12l (build 12l): invite-token expiry (#2). ----
+  ok(/ALTER TABLE users ADD COLUMN invite_expires INTEGER/.test(_WORKER_SRC), '#2: users.invite_expires column added');
+  ok(/invite_token,invite_expires,invited_by,status,email_verified,created_at/.test(_WORKER_SRC), '#2: a new invite is minted WITH an expiry (7-day TTL)');
+  ok(/if \(u\.invite_expires && Date\.now\(\) > Number\(u\.invite_expires\)\) return err\(410/.test(_WORKER_SRC), '#2: accept-invite rejects an expired token (legacy NULL never expires)');
+  ok(/UPDATE users SET role=\?, caps=\?, invite_token=\?, invite_expires=\?, invited_by=\? WHERE id=\? AND status='invited'/.test(_WORKER_SRC), '#2: a pending invite is re-sendable (refresh token + TTL) instead of 409 -> avoids an expiry deadlock; an active account still 409s');
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
