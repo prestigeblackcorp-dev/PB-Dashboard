@@ -1323,7 +1323,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(!_whUrlOk\(toFetch\[i\]\) \|\| await _ssrfResolvedBlocked\(/.test(_WORKER_SRC), '#cycle5-B: every crawled link (toFetch[i]) gets the SSRF host+resolve guard, not only startUrl');
   ok(/u\.charAt\(origin\.length\) === '\/'/.test(_WORKER_SRC), "#cycle5-B: the crawl same-origin filter uses an exact-origin boundary (compete.co.attacker.tld no longer passes as same-origin with compete.co)");
   // C: an extension signature is backed ONLY by an 'sx' row -- a base 'sg' row's id must not satisfy x.sigId (else a staffer who signed the base agreement forges an extension Signed).
-  ok(/if \(r && r\.id && String\(r\.id\)\.indexOf\('sx'\) === 0\) \{ _sids\[String\(r\.id\)\] = 1; _hasSx = true; \}/.test(_WORKER_SRC), "#cycle5-C: _stripUnbackedSig backs an extension sig only from 'sx' rows");
+  ok(/String\(r\.id\)\.indexOf\('sx'\) === 0\)[^\n]*_sids\[String\(r\.id\)\] = /.test(_WORKER_SRC), "#cycle5-C: _stripUnbackedSig populates _sids only from 'sx' rows (a base 'sg' row cannot back an extension); value shape updated to carry the terms hash in 12k");
   // E: the signed-agreement retrieval (portal download + owner record) excludes 'sx' extension rows so the BASE rental agreement is returned, not the latest addendum.
   ok((_WORKER_SRC.match(/FROM signatures WHERE tenant_id=\? AND booking_id=\? AND id NOT LIKE 'sx%' ORDER BY signed_at DESC LIMIT 1/g) || []).length >= 2, "#cycle5-E: both agreement-retrieval queries exclude 'sx' extension rows (base agreement, not the extension addendum)");
 
