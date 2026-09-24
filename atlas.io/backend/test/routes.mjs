@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _scrubSettingsSecrets, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _scrubSettingsSecrets, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1366,6 +1366,23 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/SELECT deleted_at FROM tenants WHERE id=\?'\)\.bind\(_[ps]brow\.tenant_id\)/g) || []).length === 2, '#c7-3: both /api/paypal/return and /api/square/return gate on tenants.deleted_at');
   // #10: GDPR/CCPA erasure also redacts the TCPA SMS-consent IP.
   ok(/if \(fd\.smsConsentIp != null\) fd\.smsConsentIp = '';/.test(_WORKER_SRC), '#10: customer erasure redacts the TCPA smsConsentIp');
+
+  // ---- FULL-SYSTEM AUDIT batch 12h (build 12h): compliance/disclosure + anti-abuse. ----
+  // #4 (pure): the anti-abuse ledger email is canonicalized so a trial/founder slot can't be farmed via gmail dots/plus or a universal +suffix.
+  ok(_ledgerEmail('Me.Too+promo@Gmail.com') === 'metoo@gmail.com', '#4 ledger: gmail dots + plus collapsed');
+  ok(_ledgerEmail('me+x@googlemail.com') === 'me@gmail.com', '#4 ledger: googlemail -> gmail, plus stripped');
+  ok(_ledgerEmail('First.Last+tag@fastmail.com') === 'first.last@fastmail.com', '#4 ledger: non-gmail keeps dots but strips +suffix');
+  ok(_ledgerEmail('  A@B.CO  ') === 'a@b.co', '#4 ledger: trims + lowercases');
+  ok(_ledgerEmail('nodomain') === 'nodomain', '#4 ledger: no @ -> passthrough (never throws)');
+  ok(/\.bind\(_ledgerEmail\(body\.email\)\)/.test(_WORKER_SRC) && /\.bind\(_ledgerEmail\(_email\)\)/.test(_WORKER_SRC), '#4: both the password + SSO signup_ledger keys use the canonicalized email');
+  // twin of #8: the downloadable receipt discloses a captured/kept deposit, not always "returned after return".
+  ok(/_rsCap > 0.*kept toward damages\/charges/.test(_WORKER_SRC), '#c7-8: the downloadable receipt shows a captured deposit as kept-for-damage');
+  // #11 the AI sensitive-question gate covers compliance/regulatory/privacy terms (never cached).
+  ok(/complian\|regulat\|gdpr\|ccpa\|hipaa\|privacy\|breach\|consent\|statute\|jurisdiction/.test(_WORKER_SRC), '#11: _aiQKind classifies compliance/GDPR questions as sensitive');
+  // twin of #9: the review-eligibility settled sum nets out refunds.
+  ok(/_settled \+= Math\.max\(0, Math\.round\(Number\(_x\.amountCents\) \|\| 0\) - Math\.round\(Number\(_x\.refunded && _x\.refunded\.amountCents\) \|\| 0\)\)/.test(_WORKER_SRC), '#c7-9: review-eligibility nets out refunds (a fully-refunded booking cannot post a verified review)');
+  // #14 /api/tenant/profile scrubs settings secrets before returning.
+  ok(/_tprof\.settings = jparse\(_scrubSettingsSecrets\(JSON\.stringify\(_tprof\.settings\)\), \{\}\)/.test(_WORKER_SRC), '#14: /api/tenant/profile scrubs settings secrets before returning to any role');
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
