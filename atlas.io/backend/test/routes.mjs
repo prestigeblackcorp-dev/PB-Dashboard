@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _scrubSettingsSecrets, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1392,6 +1392,26 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/_pp\.disputed\.reinstatedAt = Date\.now\(\)/.test(_WORKER_SRC), '#3: the won-restore stamps reinstatedAt to prevent a double-restore');
   // c7#4: a present-but-invalid booking start/end is rejected (patchFields would otherwise silently store NULL dates invisible to the availability gate).
   ok((_WORKER_SRC.match(/This booking has an invalid start or end date\/time/g) || []).length === 2, '#c7-4: both POST + PUT bookings writes reject a present-but-invalid date');
+
+  // ---- FULL-SYSTEM AUDIT batch 12j (build 12j): GDPR erasure cannot be reversed by a stale sync push. ----
+  // #12 (pure): _applyErasure redacts every PII field; used by BOTH the /erase endpoint and _graftServerPay (re-applied on a stale client push to an erased booking).
+  {
+    const _fd = { cust: 'Jane Doe', custEmail: 'j@x.com', custPhone: '555', custName: 'Jane', deliveryAddr: '1 Main', notes: 'vip', idName: 'Jane Q', idLast4: '1234', smsConsentIp: '1.2.3.4',
+      portal: { email: 'j@x.com', signerName: 'Jane', sig: 'data:...', signDevice: { ip: '1.2.3.4', ua: 'UA' }, uploads: [{ key: 'k1' }] },
+      sigTrail: { ip: '1.2.3.4', ua: 'UA', signer: 'Jane', signedAt: 111, docHash: 'h' },
+      extensions: [{ signerName: 'Jane', sigIp: '1.2.3.4', addedPeriods: 1 }] };
+    _applyErasure(_fd);
+    ok(_fd.custEmail === '' && _fd.custPhone === '' && _fd.cust === '[erased]', '#12 erase: top-level customer PII redacted');
+    ok(_fd.smsConsentIp === '' && _fd.idLast4 === '' && _fd.deliveryAddr === '', '#12 erase: consent IP + KYC + address redacted');
+    ok(_fd.portal.email === '' && _fd.portal.sig === '' && _fd.portal.signDevice.ip === '' && _fd.portal.uploads.length === 0, '#12 erase: portal PII + uploads cleared');
+    ok(_fd.sigTrail.ip === '' && _fd.sigTrail.signer === '[erased]' && _fd.sigTrail.signedAt === 111, '#12 erase: sigTrail PII redacted, non-PII audit fields kept');
+    ok(_fd.extensions[0].sigIp === '' && _fd.extensions[0].signerName === '[erased]' && _fd.extensions[0].addedPeriods === 1, '#12 erase: extension signer PII redacted, terms kept');
+    // idempotent + safe on junk
+    const _fd2 = JSON.parse(JSON.stringify(_fd)); _applyErasure(_fd2); ok(_fd2.custEmail === '', '#12 erase: idempotent');
+    _applyErasure(null); _applyErasure('x'); ok(true, '#12 erase: never throws on null/non-object');
+  }
+  // #12 source: _graftServerPay re-applies the erasure to a stale client push (so a device holding the pre-erasure blob cannot resurrect PII).
+  ok(/if \(serverD\._erased === true && clientD\._erased !== true\) \{ _applyErasure\(clientD\); clientD\._erased = true; \}/.test(_WORKER_SRC), '#12: _graftServerPay re-applies erasure on a stale push (GDPR erasure is sync-durable)');
 }
 
 // ---- audit #8 (anti-abuse): one free trial + one founder slot per EMAIL, ever. A self-delete + re-signup with the same
