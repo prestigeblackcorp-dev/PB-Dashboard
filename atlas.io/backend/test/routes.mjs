@@ -3694,5 +3694,93 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(m.txns.size === 0, 'chargeback: a reversal that could not commit (missing booking) leaves NO sentinel -> a webhook redelivery retries instead of silently swallowing the chargeback (txns=' + m.txns.size + ')');
 }
 
+// ==== 12p: CYCLE-8 chargeback-reversal hardening (F1/F2/F3-cap/F4/F5/F6/F8) ====
+// The cycle-8 audit found the new 12o Square/PayPal chargeback path holds only partially. These lock the fixes.
+{
+  // ---- source-guards ----
+  // F1: the dedup sentinel survives a THROWN _bkRMW (else a transient D1 error permanently drops the decrement)
+  ok(/\} catch \(e\) \{ _dec = null; \}/.test(_WORKER_SRC), 'cycle-8 F1: _extDisputeReverse runs _bkRMW in its own try so a throw is caught (not just a clean non-commit)');
+  ok((_WORKER_SRC.match(/if \(_sentinelSet\) \{ try \{ await env\.DB\.prepare\("DELETE FROM platform_transactions WHERE stripe_id=\?"\)/g) || []).length === 1, 'cycle-8 F1: the outer catch deletes the sentinel when it was set but no commit landed -> a redelivery retries');
+  // F2/F8: an archived security#<id> slot is still security (bare kind) + the cap reads the MATCHED slot
+  ok(/var _bareKind = _slotKind\.split\('#'\)\[0\];/.test(_WORKER_SRC) && /var _isSec = \(_bareKind === 'security'\);/.test(_WORKER_SRC), 'cycle-8 F2: an archived security#<id> slot classifies as security (bare kind), not decremented as ordinary revenue');
+  ok(/var _capAmt = _isSec \? \(Number\(_slotObj && _slotObj\.captured && _slotObj\.captured\.amountCents\) \|\| 0\) : 0;/.test(_WORKER_SRC), 'cycle-8 F8: the security cap reads captured.amountCents from the MATCHED slot, not the literal security key');
+  // F3: cap at the matched slot amount + no decrement for an unlocatable payment
+  ok(/var _decAmt = !_slotObj \? 0 : \(_isSec \? \(_booked \? Math\.min\(_want, _capAmt\) : 0\) : Math\.max\(0, Math\.min\(_want, _slotAmt\)\)\);/.test(_WORKER_SRC), 'cycle-8 F3: decrement is capped (security->captured amount, non-security->slot paid amount) and 0 when the payment is not on this booking');
+  // F4: the Stripe won-restore only touches Stripe (.pi) slots
+  ok(/_pp\.disputed && !_pp\.disputed\.reinstatedAt && String\(_pp\.pi \|\| ''\) !== '' && \(!_rPi \|\| String\(_pp\.pi \|\| ''\) === String\(_rPi\)\)/.test(_WORKER_SRC), 'cycle-8 F4: the Stripe won-restore requires a .pi -> never reinstates a Square/PayPal .disputed slot on an empty-payment_intent event');
+  // F5: settled (portal due + receipt) and review-eligibility both net the charged-back amount
+  ok((_WORKER_SRC.match(/disputed && \([a-z_]*\.disputed\.decrementedCents != null \? [a-z_]*\.disputed\.decrementedCents : [a-z_]*\.disputed\.amountCents\)/g) || []).length >= 2, 'cycle-8 F5: BOTH _portalDue settled and the review gate net the disputed decrement out (mirroring how refunds are netted)');
+  ok(/var _clawed = _hasDisp && _settled <= 0 && _giftC <= 0 && !d\.paidAt;/.test(_WORKER_SRC), 'cycle-8 F5: a fully charged-back booking cannot clear the review gate via stale portal *PaidAt markers');
+  // F6: manual money ops refuse an already-disputed slot
+  ok(/\(op === 'capture' \|\| op === 'release'\) && \(p\.captured \|\| p\.released \|\| p\.refunded \|\| p\.disputed\)/.test(_WORKER_SRC), 'cycle-8 F6: capture/release refuses an already charged-back slot');
+  ok(/op === 'refund' && \(p\.captured \|\| p\.released \|\| p\.disputed\)/.test(_WORKER_SRC), 'cycle-8 F6: refund refuses an already charged-back slot (no second decrement / provider double-refund)');
+
+  // ---- behavioral (mock D1); env can throw on the bookings UPDATE to exercise F1 ----
+  function _mkDE(bk, opts) {
+    opts = opts || {};
+    let _data = bk ? JSON.stringify(bk.data || {}) : null;
+    let _rev = bk ? (Number(bk.revenue_cents) || 0) : 0;
+    let _upd = bk ? (bk.updated_at == null ? null : bk.updated_at) : null;
+    let _st = bk ? (bk.status || 'confirmed') : 'confirmed';
+    const _txns = new Set();
+    const env = { DB: { prepare: (sql) => { let a = []; const api = {
+      bind: (...x) => { a = x; return api; },
+      first: async () => {
+        if (/SELECT id,data,revenue_cents,status,updated_at,starts FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) {
+          if (bk && a[0] === bk.id && a[1] === bk.tenant_id) return { id: bk.id, tenant_id: bk.tenant_id, data: _data, revenue_cents: _rev, status: _st, updated_at: _upd, starts: 0 };
+          return null;
+        }
+        return null;
+      },
+      run: async () => {
+        if (/INSERT OR IGNORE INTO platform_transactions/.test(sql)) { const sid = a[8]; if (_txns.has(sid)) return { meta: { changes: 0 } }; _txns.add(sid); return { meta: { changes: 1 } }; }
+        if (/DELETE FROM platform_transactions WHERE stripe_id=\?/.test(sql)) { const sid = a[0]; const had = _txns.delete(sid); return { meta: { changes: had ? 1 : 0 } }; }
+        if (/UPDATE bookings SET data=\?, revenue_cents=\?, status=\?, updated_at=\? WHERE id=\? AND tenant_id=\? AND updated_at IS \?/.test(sql)) { if (opts.throwOnUpdate) throw new Error('transient D1'); _data = a[0]; _rev = a[1]; _st = a[2]; _upd = a[3]; return { meta: { changes: 1 } }; }
+        return { meta: { changes: 0 } };
+      },
+      all: async () => ({ results: [] }),
+    }; return api; } } };
+    const req = { headers: { get: () => '' } };
+    return { env, req, txns: _txns, get rev() { return _rev; }, get data() { try { return JSON.parse(_data); } catch (e) { return null; } } };
+  }
+
+  // F1: a thrown _bkRMW leaves NO sentinel (redelivery can retry) and applies no partial decrement
+  let m = _mkDE({ id: 'B1', tenant_id: 'T1', data: { paid: { balance: { square: 'PB1', amountCents: 5000 } } }, revenue_cents: 5000 }, { throwOnUpdate: true });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'B1', 'PB1', 3000, 'sqdisp:F1');
+  ok(m.txns.size === 0 && m.rev === 5000, 'cycle-8 F1: a thrown _bkRMW deletes the sentinel (redelivery can retry) with no partial decrement (txns=' + m.txns.size + ', rev=' + m.rev + ')');
+  // ...and the retried delivery (no throw) then decrements exactly once
+  m = _mkDE({ id: 'B1', tenant_id: 'T1', data: { paid: { balance: { square: 'PB1', amountCents: 5000 } } }, revenue_cents: 5000 });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'B1', 'PB1', 3000, 'sqdisp:F1');
+  ok(m.rev === 2000, 'cycle-8 F1: the retried dispute then decrements (5000 -> 2000, got ' + m.rev + ')');
+
+  // F2: disputing an ARCHIVED security#<id> deposit (revenue-neutral, never captured) decrements 0, not the full amount
+  m = _mkDE({ id: 'B2', tenant_id: 'T1', data: { paid: { 'security#OLD1': { square: 'OLD1', amountCents: 20000 }, security: { square: 'NEW1', amountCents: 20000 } }, capturedRev: [] }, revenue_cents: 30000 });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'B2', 'OLD1', 20000, 'sqdisp:F2');
+  ok(m.rev === 30000, 'cycle-8 F2: disputing an archived security#<id> deposit decrements 0 (rev stays 30000, was wrongly 10000 pre-fix, got ' + m.rev + ')');
+
+  // F3: a forged/oversized dispute is capped at the slot's real paid amount (never negative, never > paid)
+  m = _mkDE({ id: 'B3', tenant_id: 'T1', data: { paid: { balance: { paypal: 'CAP3', amountCents: 4000 } } }, revenue_cents: 4000 });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'B3', 'CAP3', 999999, 'ppdisp:F3');
+  ok(m.rev === 0, 'cycle-8 F3: a forged $9,999 dispute on a $40 payment reverses at most $40 (4000 -> 0, got ' + m.rev + ')');
+  ok(m.data && m.data.paid && m.data.paid.balance && m.data.paid.balance.disputed && m.data.paid.balance.disputed.decrementedCents === 4000, 'cycle-8 F3/F5: the slot records decrementedCents = the capped amount (4000)');
+
+  // F3: a dispute for a payId NOT on this booking decrements nothing
+  m = _mkDE({ id: 'B3b', tenant_id: 'T1', data: { paid: { balance: { paypal: 'CAP3b', amountCents: 4000 } } }, revenue_cents: 4000 });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'B3b', 'NOT_HERE', 4000, 'ppdisp:F3b');
+  ok(m.rev === 4000, 'cycle-8 F3: a dispute whose payId is not in d.paid decrements 0 (rev stays 4000, got ' + m.rev + ')');
+
+  // F5: a charged-back balance slot is netted out of _portalDue.settledCents (so portal due + receipt stop calling it paid)
+  {
+    const _pdD = _portalDue({ quote: { total: 100 }, paid: { balance: { square: 'PB5', amountCents: 10000, disputed: { amountCents: 10000, decrementedCents: 10000 } } } }, { id: 'B5', starts: 0 });
+    ok(_pdD.settledCents === 0, 'cycle-8 F5: _portalDue nets a charged-back balance out of settledCents (0, was 10000, got ' + _pdD.settledCents + ')');
+    ok(_pdD.dueCents === 10000, 'cycle-8 F5: the customer-facing due reflects the chargeback (10000 due again, got ' + _pdD.dueCents + ')');
+  }
+  // a PARTIAL dispute nets only the decremented part
+  {
+    const _pdP = _portalDue({ quote: { total: 100 }, paid: { balance: { square: 'PB6', amountCents: 10000, disputed: { amountCents: 4000, decrementedCents: 4000 } } } }, { id: 'B6', starts: 0 });
+    ok(_pdP.settledCents === 6000, 'cycle-8 F5: a partial chargeback nets only the clawed-back part (settled 6000, got ' + _pdP.settledCents + ')');
+  }
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
