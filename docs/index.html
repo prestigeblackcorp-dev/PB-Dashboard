@@ -20068,7 +20068,9 @@ function saveBalanceModal(id){
       b.balancePaidAt=b.balancePaidAt||Date.now();
       b.remainingBalance=0;
     } else {
-      b.remainingBalance=_pRem;
+      var _pExtApplied=_applyPartialToExtensions(b, _pAmt, _pMethod);   // owed money is a re-billed extension -> draw it down (split), NOT the base ledger
+      if(_pExtApplied>0){ _pExt=_pExtApplied; }
+      else { b.remainingBalance=_pRem; }
     }
     var _pBase=Math.max(0,_pAmt-_pExt);
     if(_pBase>0) _recordBalancePayment(b, _pBase, _pMethod);
@@ -20080,12 +20082,15 @@ function saveBalanceModal(id){
     // owed, record it as a dated PARTIAL and keep the difference due -- do NOT mark the balance paid.
     if(!isNaN(amt) && amt>0 && amt < _owedNow-0.005){
       if(!confirm('You entered $'+amt.toFixed(2)+' but $'+_owedNow.toFixed(2)+' is owed.\n\nOK = record a PARTIAL payment ($'+(Math.round((_owedNow-amt)*100)/100).toFixed(2)+' stays due).\nCancel = go back.')) return;
-      b.remainingBalance=Math.max(0,Math.round((_owedNow-amt)*100)/100);
-      _recordBalancePayment(b, amt, _bmMethod);
+      var _extApplied=_applyPartialToExtensions(b, amt, _bmMethod);   // re-billed extension owed -> draw it down (split), NOT the base ledger
+      if(!(_extApplied>0)){
+        b.remainingBalance=Math.max(0,Math.round((_owedNow-amt)*100)/100);
+        _recordBalancePayment(b, amt, _bmMethod);
+      }
       b._t=Date.now(); save(); if(typeof flushCloudSave==='function') flushCloudSave();
       if(typeof renderOutstanding==='function') renderOutstanding(); if(typeof render==='function') render();
       var _ovp=$d('balanceModalOverlay'); if(_ovp) _ovp.remove();
-      toast(b.name+' \u2014 partial payment of $'+amt.toFixed(2)+' recorded \u00b7 $'+Number(b.remainingBalance).toFixed(2)+' still due');
+      toast(b.name+' \u2014 partial payment of $'+amt.toFixed(2)+' recorded \u00b7 $'+Number(getRemainingBalance(b)).toFixed(2)+' still due');
       return;
     }
     var _hasPartials=Array.isArray(b.balancePayments)&&b.balancePayments.length;
@@ -20168,9 +20173,10 @@ function _saveMarkBalancePaid(id){
     b.balancePaidAt=Date.now();
     b.remainingBalance=0;
   } else {
-    // PARTIAL payment: keep the unpaid remainder owed; do NOT mark fully paid or settle extensions.
-    // Anything less than the full balance is ALWAYS treated as a partial and just draws the balance down.
-    b.remainingBalance=_remainder;
+    // PARTIAL payment: keep the unpaid remainder owed; do NOT mark fully paid.
+    var _extApplied=_applyPartialToExtensions(b, num, _meth);   // re-billed extension owed -> draw it down (split), NOT the base ledger
+    if(_extApplied>0){ _extPaid=_extApplied; }
+    else { b.remainingBalance=_remainder; }   // owed is the base balance -> just draw the remainder down
   }
   // Log the BASE portion of this collection as a dated partial (extension money is dated on the extensions
   // themselves, so it never doubles). _recordBalancePayment accumulates b.balancePaidAmount = the running
@@ -20183,7 +20189,7 @@ function _saveMarkBalancePaid(id){
   renderOutstanding();
   render();
   var ov=$d('mbpModalOverlay'); if(ov) ov.remove();
-  toast(b.name+' \u2014 '+(_remainder>0?('partial payment of $'+num+' recorded \u00b7 $'+_remainder.toFixed(2)+' still due'):('balance of $'+num+' marked paid'))+' via '+method+'.');
+  toast(b.name+' \u2014 '+(_remainder>0?('partial payment of $'+num+' recorded \u00b7 $'+Number(getRemainingBalance(b)).toFixed(2)+' still due'):('balance of $'+num+' marked paid'))+' via '+method+'.');
 }
 function markDateLockPaid(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
@@ -23984,6 +23990,37 @@ function _settleOutstandingExtensions(b, method){
     sum += Number(e.additionalCharge)||0;
   });
   return sum;
+}
+// PARTIAL payment toward the re-billed extension balance (extensions added AFTER the base was paid -- the set
+// getRemainingBalance/_balanceWithCharges re-bill). Draws down oldest-first: fully settles an extension the
+// payment covers (via _markExtPaidInternal, so it stamps its own paidAt/method + voids its portal request),
+// and SPLITS the one it only partly covers into a still-owed remainder + a clean PAID portion. Preserves the
+// existing all-or-nothing extension model, so getRemainingBalance, extensionCharge (revenue) and the payments
+// ledger stay correct with NO read-path changes. Returns the amount applied to extensions; 0 means the
+// booking has no such extension balance, so the caller records the payment on the base ledger exactly as before.
+function _applyPartialToExtensions(b, amount, method){
+  amount=Math.round((Math.max(0,Number(amount)||0))*100)/100;
+  if(!b || !b.balancePaidAt || !(amount>0)) return 0;
+  var bpa=Number(b.balancePaidAt)||0;
+  var unpaid=_extLive(b).filter(function(e){ return e && !e.paid && !e._billedViaCharge && Number(e.createdAt||0)>bpa && (Number(e.additionalCharge)||0)>0; })
+                        .sort(function(a,c){ return (Number(a.createdAt)||0)-(Number(c.createdAt)||0); });
+  if(!unpaid.length) return 0;   // owed money is the base balance (not a re-billed extension) -> caller uses the base ledger
+  var applied=0;
+  for(var i=0;i<unpaid.length && amount>0.005;i++){
+    var e=unpaid[i], owed=Math.round((Number(e.additionalCharge)||0)*100)/100;
+    if(amount>=owed-0.005){
+      _markExtPaidInternal(b, e, method);                       // payment covers this whole extension
+      amount=Math.round((amount-owed)*100)/100; applied=Math.round((applied+owed)*100)/100;
+    } else {
+      var pay=amount;                                           // partial: split this extension
+      e.additionalCharge=Math.round((owed-pay)*100)/100;        // remainder stays unpaid on the original entry
+      var paidPart={ additionalCharge:pay, paid:true, paidAt:Date.now(), paymentMethod:method,
+                     createdAt:(e.createdAt||Date.now()), days:(e.days||0), _partialSplit:true };  // clean SETTLED portion: no broker/portal baggage -> no double-count
+      if(Array.isArray(b.extensions)) b.extensions.push(paidPart);
+      applied=Math.round((applied+pay)*100)/100; amount=0;
+    }
+  }
+  return applied;
 }
 // "Mark the re-billed balance paid" for the Balances table / detail when the only thing owed is one or more
 // extensions added AFTER the base balance was already settled. Preserves the last base payment record and
