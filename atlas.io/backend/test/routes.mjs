@@ -1338,7 +1338,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // #8: the portal discloses a KEPT (captured) security deposit as kept-for-damage, not "released"/"returned".
   ok(/was kept by '\+esc\(j\.business\)\+' toward damages or charges/.test(_WORKER_SRC), '#cycle6-8: the portal shows a captured/kept deposit as kept-for-damage, not released/returned');
   // #9: _portalDue nets out refunded amounts from settled so the customer balance matches the server ledger.
-  ok(/settled \+= Math\.max\(0, Math\.round\(Number\(x\.amountCents\) \|\| 0\) - Math\.round\(Number\(x\.refunded && x\.refunded\.amountCents\) \|\| 0\)\)/.test(_WORKER_SRC), '#cycle6-9: _portalDue subtracts x.refunded from settled (refunded money no longer counts as paid)');
+  ok(/settled \+= Math\.max\(0, Math\.round\(Number\(x\.amountCents\) \|\| 0\) - Math\.round\(Number\(x\.refunded && x\.refunded\.amountCents\) \|\| 0\)/.test(_WORKER_SRC), '#cycle6-9: _portalDue subtracts x.refunded from settled (refunded money no longer counts as paid) [cycle-8 F5 appended a disputed-netting term to the same line]');
 
   // ---- CYCLE-6 part 2 (build 12f): the intricate money/security twin fixes. ----
   // #4: a security-deposit DISPUTE decrements revenue ONLY when the deposit was CAPTURED (booked via #17), capped at the captured amount; an uncaptured hold decrements 0.
@@ -1380,7 +1380,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // #11 the AI sensitive-question gate covers compliance/regulatory/privacy terms (never cached).
   ok(/complian\|regulat\|gdpr\|ccpa\|hipaa\|privacy\|breach\|consent\|statute\|jurisdiction/.test(_WORKER_SRC), '#11: _aiQKind classifies compliance/GDPR questions as sensitive');
   // twin of #9: the review-eligibility settled sum nets out refunds.
-  ok(/_settled \+= Math\.max\(0, Math\.round\(Number\(_x\.amountCents\) \|\| 0\) - Math\.round\(Number\(_x\.refunded && _x\.refunded\.amountCents\) \|\| 0\)\)/.test(_WORKER_SRC), '#c7-9: review-eligibility nets out refunds (a fully-refunded booking cannot post a verified review)');
+  ok(/_settled \+= Math\.max\(0, Math\.round\(Number\(_x\.amountCents\) \|\| 0\) - Math\.round\(Number\(_x\.refunded && _x\.refunded\.amountCents\) \|\| 0\)/.test(_WORKER_SRC), '#c7-9: review-eligibility nets out refunds (a fully-refunded booking cannot post a verified review) [cycle-8 F5 appended a disputed-netting term to the same line]');
   // #14 /api/tenant/profile scrubs settings secrets before returning.
   ok(/_tprof\.settings = jparse\(_scrubSettingsSecrets\(JSON\.stringify\(_tprof\.settings\)\), \{\}\)/.test(_WORKER_SRC), '#14: /api/tenant/profile scrubs settings secrets before returning to any role');
 
@@ -3622,7 +3622,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/bind\(String\(captureId \|\| ""\)\.slice\(0, 120\)/.test(_WORKER_SRC), '#1: the PayPal credit path indexes by captureId');
   // helper: idempotent per dispute, capped for a booked security hold, decrement-only, sentinel cleaned on non-commit
   ok(/kind: 'chargeback_rev'/.test(_WORKER_SRC) && /if \(!\(_dt && _dt\.new\)\) return;/.test(_WORKER_SRC), '#1: _extDisputeReverse is idempotent per dispute (recordTxn sentinel; a redelivery of the same dispute event never decrements twice)');
-  ok(/var _decAmt = _isSec \? \(_booked \? Math\.min\(Math\.round\(Number\(disputeCents\) \|\| 0\), _capAmt\) : 0\) : Math\.round\(Number\(disputeCents\) \|\| 0\)/.test(_WORKER_SRC), '#1: security-hold disputes are capped at the captured-into-revenue amount (and 0 if the hold was never booked to revenue); a plain payment dispute reverses in full');
+  ok(/var _decAmt = !_slotObj \? 0 : \(_isSec \? \(_booked \? Math\.min\(_want, _capAmt\) : 0\) : Math\.max\(0, Math\.min\(_want, _slotAmt\)\)\)/.test(_WORKER_SRC), '#1: security-hold disputes are capped at the captured-into-revenue amount (0 if never booked); cycle-8 F3: a plain payment dispute is now capped at the slot paid amount (not "reverses in full"); an unlocatable payId decrements 0');
   ok(/return \{ rev: Math\.max\(0, \(Number\(_rr\.revenue_cents\) \|\| 0\) - _decAmt\) \};/.test(_WORKER_SRC), '#1: the reversal only ever DECREMENTS revenue (never below 0, never an increment) -- a won dispute does not auto-restore');
   ok(/DELETE FROM platform_transactions WHERE stripe_id=\?/.test(_WORKER_SRC), '#1: a non-committed reversal deletes its sentinel so a webhook redelivery can retry (no silently-lost chargeback)');
   // Square webhook wiring
