@@ -4282,13 +4282,31 @@ function _getSignToken(bid){
 
 // Owner alert banners: portal enhancement payments + new web bookings. Dismiss deletes server-side
 // (via /owner-alerts/dismiss) so X-ing once on ANY device clears it everywhere.
+// A NEW owner alert (a client just signed the contract/waiver, an ID verified, or a fresh booking) means the
+// cloud holds data this device may not have pulled yet -- and the 15s savedAt gate can MASK it right after a
+// local autosave (the owner's own save advances _lastSavedAt past the signature's savedAt bump, so it never
+// pulls). So on a genuinely NEW alert id, force one immediate full pull: the signature/verification shows up
+// right when the notification arrives instead of being "super delayed" (and no more needless contract re-sends).
+// Low-egress -- only fires on a real new event, never on a dismissal or the first load.
+var _seenAlertIds = null;
+function _alertsMaybePull(alerts){
+  try{
+    var ids=(alerts||[]).map(function(a){ return String((a&&a.id)||''); }).filter(Boolean);
+    if(_seenAlertIds===null){ _seenAlertIds={}; ids.forEach(function(x){ _seenAlertIds[x]=1; }); return; }  // first load: record only (initial hydration already pulls)
+    var isNew=false;
+    ids.forEach(function(x){ if(!_seenAlertIds[x]){ isNew=true; _seenAlertIds[x]=1; } });
+    if(isNew && typeof cloudLoad==='function'){
+      cloudLoad(function(ok){ if(ok && typeof afterCloudLoad==='function') afterCloudLoad(ok); });  // new event -> pull fresh booking data now (bypasses the savedAt masked-race)
+    }
+  }catch(e){}
+}
 function _loadOwnerAlerts(){
   try{
     if(document.hidden) return;
     if(typeof WORKER_URL==='undefined' || !WORKER_URL) return;
     fetch(WORKER_URL+'/owner-alerts?_='+Date.now(),{headers:_authHeader(),cache:'no-store'})
       .then(function(r){ return r.ok?r.json():null; })
-      .then(function(d){ if(d && Array.isArray(d.alerts)) _renderOwnerAlerts(d.alerts); })
+      .then(function(d){ if(d && Array.isArray(d.alerts)){ _renderOwnerAlerts(d.alerts); _alertsMaybePull(d.alerts); } })
       .catch(function(){});
   }catch(e){}
 }
