@@ -14716,22 +14716,29 @@ function _mileageOverage(b, odomOutArg){
   // NOT sold as double-miles. New bookings use "double miles" (b.doubleMiles) -> capped at the DOUBLED
   // allowance stamped into includedMiles, so they take the standard overage path below (never uncapped).
   var origUnlim = Number(b.unlimited) > 0 && !b.doubleMiles;
-  var origPerDay = (Number(b.includedMiles)>0 && origDays>0) ? (Number(b.includedMiles)/origDays) : (Number(vm.miles)||0);
-  var origMiles = origUnlim ? 0 : (Number(b.includedMiles)>0 ? Number(b.includedMiles) : origPerDay*origDays);
+  // The catalog (VEHICLE_MILEAGE) is the SOURCE OF TRUTH for a vehicle's current per-day allowance, so a stale
+  // value baked into an older booking never mis-charges at checkout. Stored includedMiles still wins for
+  // DOUBLE-MILES bookings (their allowance is intentionally doubled) and for vehicles not in the catalog.
+  var _catPerDay = Number(vm.miles)||0;
+  var _catStd = _catPerDay>0 && !origUnlim && !b.doubleMiles;
+  var origPerDay = _catStd ? _catPerDay : ((Number(b.includedMiles)>0 && origDays>0) ? (Number(b.includedMiles)/origDays) : _catPerDay);
+  var origMiles = origUnlim ? 0 : (_catStd ? origPerDay*origDays : (Number(b.includedMiles)>0 ? Number(b.includedMiles) : origPerDay*origDays));
   var segs = [{ label:'Original', days:origDays, unlimited:origUnlim, perDay:origPerDay, miles:origMiles, startOdom:0 }];
   _extLive(b).forEach(function(e,i){
     if(!e) return;
     var eu = !!e.unlimited;
     var ed = Number(e.extensionDays)||0;
-    var ep = (Number(e.milesPerDay)>0) ? Number(e.milesPerDay)
+    var _eCatStd = Number(vm.miles)>0 && !eu && !e.doubleMiles;   // catalog is authoritative for a STANDARD extension too
+    var ep = _eCatStd ? Number(vm.miles)
+           : (Number(e.milesPerDay)>0) ? Number(e.milesPerDay)
            : (Number(e.includedMiles)>0 && ed>0) ? (Number(e.includedMiles)/ed)
            : (Number(vm.miles)||0);
-    var em = eu ? 0 : (Number(e.includedMiles)>0 ? Number(e.includedMiles) : ep*ed);
+    var em = eu ? 0 : (_eCatStd ? ep*ed : (Number(e.includedMiles)>0 ? Number(e.includedMiles) : ep*ed));
     segs.push({ label:'Ext '+(i+1), days:ed, unlimited:eu, perDay:ep, miles:em, startOdom:Number(e.startOdom)||0 });
   });
   var anyStd   = segs.some(function(s){ return !s.unlimited; });
   var anyUnlim = segs.some(function(s){ return s.unlimited; });
-  var rateBase = Number(b.overageRate) || (Number(vm.overage)||0);
+  var rateBase = (Number(vm.overage)>0) ? Number(vm.overage) : (Number(b.overageRate)||0);   // catalog rate is authoritative (a stale per-booking rate never mis-charges); stored only fills in for vehicles not in the catalog
   var prule = (typeof getActivePricingRule==='function') ? getActivePricingRule(b.pickupDate||b.date, b.dropoffDate||b.pickupDate||b.date) : null;
   var rate = prule ? (rateBase*(prule.mileageMultiplier||1)) : rateBase;
   // ALL unlimited -> no cap anywhere, never an overage.
