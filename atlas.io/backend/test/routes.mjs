@@ -4292,8 +4292,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // ---- #3: the detach frees the slot (status -> completed, terminal, non-blocking) while preserving the record ----
   ok(/fd\.status = 'Completed'; \}\); await env\.DB\.prepare\("UPDATE bookings SET status='completed' WHERE id=\? AND tenant_id=\? AND LOWER\(status\) NOT IN \('cancelled','completed','voided'\)"\)/.test(_WORKER_SRC), '#3: a detached mirror is moved to completed (frees inventory, keeps revenue) instead of holding the slot forever');
 
-  // ---- #6: the pb-sync INSERT path honors the delete-resurrection tombstone (stale-only) ----
-  ok(/SELECT deleted_at FROM sync_tombstones WHERE tenant_id=\? AND coll=\? AND id=\?'\)\.bind\(tenantId, 'bookings', row\.id\)[\s\S]*?Number\(\(row\.data && row\.data\._t\) \|\| 0\) <= Number\(_tb\.deleted_at \|\| 0\)\) return 'tombstoned'/.test(_WORKER_SRC), '#6: _pbSyncWrite skips re-inserting a booking the owner deleted in Atlas (stale-only: unless PB modified it after the deletion)');
+  // ---- #6: REVERTED in 13g/cycle-4 #1 (the PB-vs-Atlas clock comparison degenerated into an always-block) -- see the 13g block, which
+  //          asserts the tombstone-on-INSERT is gone. The generic native-booking resurrection guard (13b #10) remains.
 }
 
 // ==== 13e: cycle-3 KYC manual-verify (#4) + idExpiry clamp for passports (#5) + scheduler white-label (#9) ====
@@ -4321,8 +4321,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     await _carryVerify(c1.env, 'T1', { idVerified: true, idVerifyMethod: 'manual', custEmail: 'x@y.com', cust: 'X' });
     ok(c1.inserted === false, '#4: a MANUAL verify is NOT indexed into verified_customers (no systemic auto-skip-KYC)');
     let c2 = _mkCarryEnv();
-    await _carryVerify(c2.env, 'T1', { idVerified: true, custEmail: 'x@y.com', cust: 'X' });
-    ok(c2.inserted === true, '#4: a real (non-manual) verify IS carried, unchanged');
+    await _carryVerify(c2.env, 'T1', { idVerified: true, custEmail: 'x@y.com', cust: 'X' }, { trusted: true });   // 13g/cycle-4 #3: a real verify now CREATES only via the TRUSTED /idvstatus path
+    ok(c2.inserted === true, '#4: a real (non-manual) TRUSTED verify (/idvstatus) IS carried');
   }
   ok(/if \(data\.idVerifyMethod === 'manual'\) return;   \/\/ cycle-3 #4: a bookEdit owner's MANUAL/.test(_WORKER_SRC), '#4: the strip honors idVerifyMethod===manual');
   ok(/if \(data\.idVerifyMethod === 'manual'\) return;   \/\/ cycle-3 #4: a MANUAL owner verification marks/.test(_WORKER_SRC), '#4: _carryVerify skips idVerifyMethod===manual');
@@ -4348,6 +4348,36 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // #3: the sync toast surfaces the detached count so the owner is not left in the dark
   ok(/dt=\(j\.atlas&&j\.atlas\.detached\)\|\|0/.test(_ATLAS_SRC13f) && /'\+dt\+' kept as your own/.test(_ATLAS_SRC13f), '#3: pbSyncNow surfaces the detached count');
   ok(_ATLAS_SRC13f === _INDEX_SRC13f, '#3/#4/#7/#8: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13g: cycle-4 -- fix 3 regressions from cycle-3 (#1 tombstone over-block, #2 detach race, #3 manual-verify laundering) ====
+{
+  // ---- #1 (HIGH): the pb-sync INSERT no longer tombstone-blocks (that compared PB's _t to Atlas delete-time -> always-block for mirrors) ----
+  ok((_WORKER_SRC.match(/return 'tombstoned'/g) || []).length === 0, '#1: the pb-sync INSERT tombstone-block is removed (a mirror re-reflects PB; no more permanent revenue loss on an owner delete)');
+  ok(/cycle-4 #1 \(revert of cycle-3 #6\)/.test(_WORKER_SRC), '#1: the revert is documented in _pbSyncWrite');
+  // the generic NATIVE-booking resurrection guard (13b #10) is UNaffected -- still present
+  ok(/coll \+ '\.resurrect_blocked'/.test(_WORKER_SRC), '#1: the generic native-booking tombstone guard is untouched');
+
+  // ---- #2 (MED): the detach only moves status->Completed when it is NOT already terminal (never stomp a concurrent Cancel in the blob) ----
+  ok(/var _fs = String\(fd\.status \|\| ''\)\.toLowerCase\(\); if \(_fs !== 'cancelled' && _fs !== 'voided' && _fs !== 'completed'\) fd\.status = 'Completed';/.test(_WORKER_SRC), '#2: the detach patch guards against overwriting a concurrent terminal status in the data blob');
+
+  // ---- #3 (CRITICAL): only a TRUSTED (/idvstatus) carry may CREATE a verified_customers entry; an untrusted generic write can only REFRESH ----
+  function _mkCarryEnv2(existsRow) {
+    let _inserted = false;
+    const env = { DB: { prepare: (sql) => { const api = { bind: () => api, run: async () => { if (/INSERT INTO verified_customers/.test(sql)) _inserted = true; return { meta: { changes: 1 } }; }, first: async () => { if (/SELECT email FROM verified_customers/.test(sql)) return existsRow; return null; } }; return api; } } };
+    return { env, get inserted() { return _inserted; } };
+  }
+  { // the laundering sequence: a booking manual-verified once, then re-written with the method dropped + idVerified:true -> must NOT create an entry
+    let u1 = _mkCarryEnv2(null);
+    await _carryVerify(u1.env, 'T1', { idVerified: true, custEmail: 'launder@x.com', cust: 'X' });   // untrusted, method dropped, email not yet verified
+    ok(u1.inserted === false, '#3: an untrusted carry does NOT create a verified_customers entry for a not-yet-verified email (laundering closed)');
+    let u2 = _mkCarryEnv2({ email: 'known@x.com' });
+    await _carryVerify(u2.env, 'T1', { idVerified: true, custEmail: 'known@x.com', cust: 'X' });   // untrusted, but the email is ALREADY verified -> may refresh
+    ok(u2.inserted === true, '#3: an untrusted carry MAY refresh an ALREADY-verified customer');
+    let t1 = _mkCarryEnv2(null);
+    await _carryVerify(t1.env, 'T1', { idVerified: true, custEmail: 'new@x.com', cust: 'X' }, { trusted: true });   // /idvstatus real verification
+    ok(t1.inserted === true, '#3: a TRUSTED (/idvstatus) carry creates the entry, as before');
+  }
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
