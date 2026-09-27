@@ -4261,5 +4261,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/INSERT OR REPLACE INTO sync_tombstones \(tenant_id, coll, id, deleted_at\)/.test(_WORKER_SRC), '#10: a DELETE writes a tombstone (so the guard has something to check)');
 }
 
+// ==== 13c: cycle-2 client money-reporting -- #7 receipt "Amount paid" = real charged amount (tips incl), #8 KPI drilldowns foot to earned revenue ====
+{
+  const _ATLAS_SRC13c = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13c = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // #7: _portalMoney sources rentalPaid from the actual captured b.paid amount (via _paidAmt), not the quote-derived billable/reserve
+  ok(/rentalPaid = _hasSlot \? _r2\(_paidAmt\(b,\['deposit','reserve'\],reservePaid\?reserve:0\)\+_paidAmt\(b,\['balance'\]/.test(_ATLAS_SRC13c), '#7: _portalMoney "Amount paid" comes from b.paid[kind].amountCents (tips + passed-through fees included), not the quote');
+  ok(/else if\(reservePaid\)\{ rentalPaid = _paidAmt\(b,\['deposit','reserve'\],reserve\); \}/.test(_ATLAS_SRC13c), '#7: a reserve-only receipt also sources the real captured reserve amount');
+  // #8: both the count and avg KPI drilldowns pass {earned:true} so their footer foots to earned (refund/gift/dispute-netted) revenue, matching the Revenue KPI
+  ok(/which==='count'\)\{[\s\S]*?_bkList\(function\(b\)\{return nc\(b\)&&_inOvRange\(b\);\},\{earned:true\}\)/.test(_ATLAS_SRC13c), '#8: the Total-Bookings drilldown foots to earned revenue');
+  ok(/which==='avg'\)\{[\s\S]*?_bkList\(function\(b\)\{return nc\(b\)&&_inOvRange\(b\);\},\{earned:true\}\)/.test(_ATLAS_SRC13c), '#8: the Average-Booking drilldown foots to earned revenue');
+  ok((_ATLAS_SRC13c.match(/_bkList\(function\(b\)\{return nc\(b\)&&_inOvRange\(b\);\}\)/g) || []).length === 0, '#8: no count/avg drilldown still uses the raw (no-opts) _bkList');
+  ok(_ATLAS_SRC13c === _INDEX_SRC13c, '#7/#8: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
