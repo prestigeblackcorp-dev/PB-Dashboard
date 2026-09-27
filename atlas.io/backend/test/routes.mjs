@@ -3628,12 +3628,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // Square webhook wiring
   ok(/_sqType === 'dispute\.created' \|\| _sqType === 'dispute\.state\.changed'/.test(_WORKER_SRC), '#1: the Square webhook detects dispute.created / dispute.state.changed');
   ok((_WORKER_SRC.match(/SELECT booking_id, tenant_id FROM payment_index WHERE pi=\?/g) || []).length === 2, '#1: BOTH webhooks resolve the booking from payment_index by the disputed payment/capture id');
-  ok(/await _extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dCents, 'sqdisp:' \+ _dispId\)/.test(_WORKER_SRC), '#1: the Square webhook calls the capped reversal with a per-dispute sentinel');
+  ok(/await _extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dv\.amountCents, 'sqdisp:' \+ _dispId\)/.test(_WORKER_SRC), '#1: the Square webhook calls the capped reversal with a per-dispute sentinel [12q: with the PROVIDER-verified amount _dv.amountCents]');
   // PayPal webhook wiring
   ok(/_et === 'CUSTOMER\.DISPUTE\.CREATED' \|\| _et === 'CUSTOMER\.DISPUTE\.UPDATED'/.test(_WORKER_SRC), '#1: the PayPal webhook detects CUSTOMER.DISPUTE.CREATED / UPDATED');
   ok(/_dTx && \(_dTx\.seller_transaction_id \|\| _dTx\.buyer_transaction_id\)/.test(_WORKER_SRC), '#1: the PayPal dispute resolves the CAPTURE id from disputed_transactions[].seller_transaction_id');
-  ok(/dispute_amount && _rsrc\.dispute_amount\.value\) \|\| 0\) \|\| 0\) \* 100/.test(_WORKER_SRC), '#1: PayPal dispute_amount.value (major units) is converted to cents');
-  ok(/await _extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dCents, 'ppdisp:' \+ _dispId\)/.test(_WORKER_SRC), '#1: the PayPal webhook calls the capped reversal with a per-dispute sentinel');
+  ok(/parseFloat\(String\(\(j\.dispute_amount && j\.dispute_amount\.value\) \|\| '0'\)\) \* 100/.test(_WORKER_SRC), '#1: PayPal dispute_amount.value (major units) is converted to cents [12q: now inside _paypalGetDispute, from the PROVIDER response]');
+  ok(/await _extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dv\.amountCents, 'ppdisp:' \+ _dispId\)/.test(_WORKER_SRC), '#1: the PayPal webhook calls the capped reversal with a per-dispute sentinel [12q: with the PROVIDER-verified amount _dv.amountCents]');
 
   // ---- behavioral (mock D1): the reversal math + idempotency + redelivery-safety are exercised end-to-end ----
   function _mkDisputeEnv(bk) {
