@@ -4167,7 +4167,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
   const _INDEX_SRC = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
   ok(/function _paidAmt\(b,keys,est\)\{[\s\S]*typeof s\.amountCents==='number'\) return _r2\(s\.amountCents\/100\)/.test(_ATLAS_SRC), '#2: _paidAmt prefers the real captured b.paid[kind].amountCents (tips/fees included), falling back to the quote estimate');
-  ok((_ATLAS_SRC.match(/_paidAmt\(b,\['deposit','reserve'\]/g) || []).length === 3 && (_ATLAS_SRC.match(/_paidAmt\(b,\['balance'\]/g) || []).length === 3 && (_ATLAS_SRC.match(/_paidAmt\(b,\['security'\]/g) || []).length === 3, '#2: both report rows + the Total-received sum use _paidAmt for reserve/balance/security (2 reports x 3 sites)');
+  ok((_ATLAS_SRC.match(/_paidAmt\(b,\['deposit','reserve'\]/g) || []).length >= 3 && (_ATLAS_SRC.match(/_paidAmt\(b,\['balance'\]/g) || []).length >= 3 && (_ATLAS_SRC.match(/_paidAmt\(b,\['security'\]/g) || []).length >= 3, '#2: both report rows + the Total-received sum use _paidAmt for reserve/balance/security (>=3 sites each; 13c _portalMoney adds more)');
   ok(_ATLAS_SRC === _INDEX_SRC, '#2: atlas.html and index.html remain byte-identical after the fix');
 }
 
