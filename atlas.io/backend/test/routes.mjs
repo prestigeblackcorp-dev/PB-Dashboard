@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4006,6 +4006,23 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     const _cx = (_pdCB.postCharges || []).find(function (c) { return c.id === 'X'; });
     ok(_cx && _cx.paid === false, 'cycle-11 #3: a CHARGED-BACK post-charge reads paid=false (portal shows it due again, not permanently settled)');
   }
+}
+
+// ==== 12v: cycle-12 fixes -- G5 estimate-replace nets disputes (BUG A) + payment-start re-collectable after clawback (BUG B) ====
+{
+  // ---- BUG A: all 4 _priorReal estimate-replace reducers net a slot's disputed decrement ----
+  ok((_WORKER_SRC.match(/return s2 \+ Math\.max\(0, \(Number\(pp\.amountCents\) \|\| 0\) - Math\.round\(Number\(pp\.disputed && \(pp\.disputed\.decrementedCents != null \? pp\.disputed\.decrementedCents : pp\.disputed\.amountCents\)\) \|\| 0\)\);/g) || []).length === 4, 'cycle-12 A: all 4 G5 _priorReal reducers net a disputed slot (else a charged-back slot resurrects revenue at estimate-replace time)');
+  // still exclude a refunded slot (unchanged) + still 4 reducers total
+  ok((_WORKER_SRC.match(/_priorReal = Object\.keys\(d\.paid/g) || []).length === 4, 'cycle-12 A: still exactly 4 _priorReal reducers (Stripe webhook + off-session + Square + PayPal)');
+
+  // ---- BUG B: payment-start guards allow re-collection once a slot is FULLY clawed back ----
+  ok((_WORKER_SRC.match(/&& !_slotFullyClawed\(/g) || []).length === 6, 'cycle-12 B: all 6 payment-start guards (charge + non-charge x /pay,/paypal,/square) check _slotFullyClawed');
+  // behavioral: _slotFullyClawed is a pure predicate
+  ok(_slotFullyClawed({ amountCents: 5000, disputed: { decrementedCents: 5000 } }) === true, 'cycle-12 B: a fully charged-back slot is fully clawed');
+  ok(_slotFullyClawed({ amountCents: 5000, disputed: { decrementedCents: 3000 } }) === false, 'cycle-12 B: a PARTIALLY charged-back slot is NOT fully clawed (still net-paid -> guard still refuses a 2nd payment)');
+  ok(_slotFullyClawed({ amountCents: 5000, refunded: { amountCents: 2000 }, disputed: { decrementedCents: 3000 } }) === true, 'cycle-12 B: refund + dispute together reaching the full amount is fully clawed');
+  ok(_slotFullyClawed({ amountCents: 5000 }) === false, 'cycle-12 B: a normally-paid slot is not clawed (guard refuses a 2nd payment)');
+  ok(_slotFullyClawed(null) === false && _slotFullyClawed({ amountCents: 0 }) === false, 'cycle-12 B: null / zero-amount slot -> not clawed (never allow a bogus re-pay)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
