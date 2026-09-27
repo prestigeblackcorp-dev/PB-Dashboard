@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _stripUnbackedIdVerify, _ownerLoginBanBypass, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _ownerLoginBanBypass, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4100,8 +4100,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 {
   // ---- #1 (money HIGH): a PB re-sync must NEVER erase Atlas-collected payments/signatures. _pbMirrorMerge overlays PB-owned fields onto the CURRENT server blob ----
   ok(/function _pbMirrorMerge\(mirrorData, serverData\)/.test(_WORKER_SRC), '#1: _pbMirrorMerge exists');
-  ok(/row\.data = _pbMirrorMerge\(row\.data, _sd\)/.test(_WORKER_SRC), '#1: _pbSyncWrite merges the fresh mirror onto the current server blob before writing');
-  ok(/if \(_pbDropData\) \{ const _di = cols\.indexOf\('data'\); if \(_di >= 0\) \{ cols\.splice\(_di, 1\); vals\.splice\(_di, 1\); \} \}/.test(_WORKER_SRC), '#1: on a merge-read error the data write is DROPPED (fail-safe -- never overwrite the blob with an unmerged mirror)');
+  ok(/_pbMirrorMerge\(_pbFresh, _sd\)/.test(_WORKER_SRC), '#1: _pbSyncWrite overlays the fresh PB mirror onto the current server blob before writing (now inside the cycle-2 CAS loop)');   // 12z: moved into the CAS read-merge-write loop (see the 12z block)
   {
     const _srv = { source: 'pb-mirror', status: 'Confirmed', quote: { total: 400 }, paid: { balance: { amountCents: 45000, at: 5 } }, portal: { signedAt: 111, signerName: 'Jo' }, giftRedemptions: [{ id: 'g1', amt: 20 }], disputes: [{ id: 'dp1' }], charges: [{ id: 'pbc', source: 'pb', amount: 100 }, { id: 'cof', source: 'card_on_file', amount: 30, paidAt: 9 }] };
     const _mir = { source: 'pb-mirror', readOnly: true, status: 'Voided', quote: { total: 500 }, charges: [{ id: 'pbc2', source: 'pb', amount: 120 }], mirror: { source: 'pb' }, _t: 7 };
@@ -4170,6 +4169,37 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/function _paidAmt\(b,keys,est\)\{[\s\S]*typeof s\.amountCents==='number'\) return _r2\(s\.amountCents\/100\)/.test(_ATLAS_SRC), '#2: _paidAmt prefers the real captured b.paid[kind].amountCents (tips/fees included), falling back to the quote estimate');
   ok((_ATLAS_SRC.match(/_paidAmt\(b,\['deposit','reserve'\]/g) || []).length === 3 && (_ATLAS_SRC.match(/_paidAmt\(b,\['balance'\]/g) || []).length === 3 && (_ATLAS_SRC.match(/_paidAmt\(b,\['security'\]/g) || []).length === 3, '#2: both report rows + the Total-received sum use _paidAmt for reserve/balance/security (2 reports x 3 sites)');
   ok(_ATLAS_SRC === _INDEX_SRC, '#2: atlas.html and index.html remain byte-identical after the fix');
+}
+
+// ==== 12z: cycle-2 PB-sync hardening -- #1 CAS merge-write (no TOCTOU clobber), #2 prune detaches (never destroys Atlas state), #3 no status/revenue split ====
+{
+  // ---- #1/#3: _pbSyncWrite's existing-booking path is a CAS read-merge-write (re-overlay + updated_at guard + retry), not a blind UPDATE ----
+  ok(/const _pbFresh = row\.data;/.test(_WORKER_SRC) && /_v\[_dI\] = JSON\.stringify\(\(_sd && typeof _sd === 'object'\) \? _pbMirrorMerge\(_pbFresh, _sd\) : _pbFresh\)/.test(_WORKER_SRC), '#1: the PB booking update re-overlays the FRESH PB blob onto the re-read server blob on every attempt');
+  ok(/UPDATE bookings SET ' \+ uCols\.map\(function \(c\) \{ return c \+ '=\?'; \}\)\.join\(','\) \+ ' WHERE id=\? AND tenant_id=\? AND updated_at IS \?'/.test(_WORKER_SRC), '#1: the PB booking UPDATE is CAS-guarded on updated_at (a concurrent portal/webhook write is not clobbered)');
+  ok(/return 'contended';   \/\/ extreme contention/.test(_WORKER_SRC), '#1/#3: on read-error/6x contention the whole booking update is SKIPPED (never a blind or partial write)');
+  ok(!/let _pbDropData = false;/.test(_WORKER_SRC), '#3: the old partial fail-safe (_pbDropData splicing only the data column while status/revenue still advanced) is gone');
+  // _pbMirrorMerge must NOT mutate its mirror (PB) argument -- the CAS loop re-overlays the same _pbFresh each attempt
+  {
+    const _fresh = { source: 'pb-mirror', status: 'Voided', quote: { total: 500 }, charges: [{ id: 'pbc', source: 'pb' }], mirror: { source: 'pb' } };
+    const _snap = JSON.stringify(_fresh);
+    const _r1 = _pbMirrorMerge(_fresh, { paid: { balance: { amountCents: 100 } }, status: 'Confirmed' });
+    const _r2 = _pbMirrorMerge(_fresh, { portal: { signedAt: 9 }, status: 'Confirmed' });
+    ok(JSON.stringify(_fresh) === _snap, '#1: _pbMirrorMerge never mutates the PB (mirror) arg, so re-overlay across CAS retries is safe');
+    ok(_r1.paid && _r1.paid.balance.amountCents === 100 && _r1.status === 'Voided', '#1: attempt A overlays PB status onto server A (payment preserved)');
+    ok(_r2.portal && _r2.portal.signedAt === 9 && _r2.status === 'Voided', '#1: attempt B (fresh re-read) preserves the signature that landed mid-sync');
+  }
+
+  // ---- #2: the stale-mirror prune DETACHES a booking with Atlas-native state instead of hard-deleting it ----
+  ok(/if \(_pbmHasNativeState\(_md\)\) \{[\s\S]*_bkPatch\(env, _mr\.id, tenantId[\s\S]*fd\.source = 'pb-detached'; fd\.readOnly = false;[\s\S]*\} else \{[\s\S]*DELETE FROM bookings WHERE id=\? AND tenant_id=\?/.test(_WORKER_SRC), '#2: prune detaches (CAS _bkPatch -> pb-detached) a mirror carrying Atlas state; only a pure mirror is DELETEd');
+  ok(_pbmHasNativeState({ paid: { balance: { amountCents: 45000 } } }) === true, '#2: an online payment (d.paid) counts as Atlas-native state');
+  ok(_pbmHasNativeState({ portal: { signedAt: 111 } }) === true, '#2: a customer signature counts');
+  ok(_pbmHasNativeState({ giftRedemptions: [{ id: 'g1' }] }) === true, '#2: a gift redemption counts');
+  ok(_pbmHasNativeState({ idVerified: true }) === true, '#2: an ID verification counts');
+  ok(_pbmHasNativeState({ disputes: [{ id: 'd1' }] }) === true, '#2: a dispute record counts');
+  ok(_pbmHasNativeState({ charges: [{ id: 'c', paidAt: 9, source: 'card_on_file' }] }) === true, '#2: a paid Atlas-native card charge counts');
+  ok(_pbmHasNativeState({ review: { stars: 5 } }) === true, '#2: a customer review counts');
+  ok(_pbmHasNativeState({ source: 'pb-mirror', committedOffline: true, paidOfflineCents: 5000, quote: { total: 100 }, charges: [{ id: 'pbc', source: 'pb', status: 'paid' }] }) === false, '#2: a PURE PB mirror (no Atlas actions) has no native state -> safe to prune');
+  ok(_pbmHasNativeState(null) === false && _pbmHasNativeState({}) === false, '#2: empty/blank blob -> no native state');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
