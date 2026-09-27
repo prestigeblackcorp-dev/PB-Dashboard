@@ -4275,5 +4275,26 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13c === _INDEX_SRC13c, '#7/#8: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13d: cycle-3 PB-sync -- #1/#2 detach gate now preserves ALL Atlas-native state, #3 detach frees the slot, #6 pb-sync honors tombstones ====
+{
+  // ---- #1 (CRITICAL) + #2: _pbmHasNativeState must recognize EVERY Atlas-native field so the prune never hard-deletes a real record ----
+  ok(_pbmHasNativeState({ extensions: [{ id: 'x', signedAt: 5 }] }) === true, '#1: a customer-SIGNED extension addendum is native state (was missed -> hard-deleted)');
+  ok(_pbmHasNativeState({ extensions: [{ id: 'x' }] }) === true, '#1: any owner-added extension counts');
+  ok(_pbmHasNativeState({ commsPref: { smsConsentAt: 9, smsConsentIp: '1.2.3.4' } }) === true, '#2: TCPA SMS-consent proof is native state (was missed)');
+  ok(_pbmHasNativeState({ portal: { reservePaidAt: 5 } }) === true, '#1/#2: ANY portal-side action (a paid-stamp) counts');
+  ok(_pbmHasNativeState({ portal: { idv: { done: true } } }) === true, '#1/#2: a portal ID-verification session counts');
+  ok(_pbmHasNativeState({ idVerifyMethod: 'manual' }) === true, '#1/#2: a manual ID verification counts');
+  ok(_pbmHasNativeState({ refundIds: ['re_1'] }) === true, '#1/#2: a recorded refund counts');
+  ok(_pbmHasNativeState({ sigTrail: { ip: '1.2.3.4' } }) === true, '#1/#2: a signature audit trail counts');
+  // CRUX: a realistic PURE PB mirror (only PB-owned keys, PB charges) still has NO native state -> real pruning still works
+  ok(_pbmHasNativeState({ source: 'pb-mirror', readOnly: true, status: 'Confirmed', periods: 1, rate: 100, cust: 'X', custEmail: 'x@y.com', custPhone: '', asset: 'Boat', assetId: 'a1', quote: { total: 100 }, hold: { amount: 50 }, committedOffline: true, paidOfflineCents: 5000, charges: [{ label: 'Balance payment', source: 'pb', status: 'paid' }], docs: {}, _t: 5, mirror: { source: 'pb', pbId: 'p1' }, _effEndTs: 9 }) === false, '#1/#2 CRUX: a pure PB mirror (all PB keys, PB-only charges) is still safe to prune');
+
+  // ---- #3: the detach frees the slot (status -> completed, terminal, non-blocking) while preserving the record ----
+  ok(/fd\.status = 'Completed'; \}\); await env\.DB\.prepare\("UPDATE bookings SET status='completed' WHERE id=\? AND tenant_id=\? AND LOWER\(status\) NOT IN \('cancelled','completed','voided'\)"\)/.test(_WORKER_SRC), '#3: a detached mirror is moved to completed (frees inventory, keeps revenue) instead of holding the slot forever');
+
+  // ---- #6: the pb-sync INSERT path honors the delete-resurrection tombstone (stale-only) ----
+  ok(/SELECT deleted_at FROM sync_tombstones WHERE tenant_id=\? AND coll=\? AND id=\?'\)\.bind\(tenantId, 'bookings', row\.id\)[\s\S]*?Number\(\(row\.data && row\.data\._t\) \|\| 0\) <= Number\(_tb\.deleted_at \|\| 0\)\) return 'tombstoned'/.test(_WORKER_SRC), '#6: _pbSyncWrite skips re-inserting a booking the owner deleted in Atlas (stale-only: unless PB modified it after the deletion)');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
