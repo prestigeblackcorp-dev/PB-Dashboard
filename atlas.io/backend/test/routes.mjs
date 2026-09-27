@@ -3622,7 +3622,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/bind\(String\(captureId \|\| ""\)\.slice\(0, 120\)/.test(_WORKER_SRC), '#1: the PayPal credit path indexes by captureId');
   // helper: idempotent per dispute, capped for a booked security hold, decrement-only, sentinel cleaned on non-commit
   ok(/kind: 'chargeback_rev'/.test(_WORKER_SRC) && /if \(!\(_dt && _dt\.new\)\) return;/.test(_WORKER_SRC), '#1: _extDisputeReverse is idempotent per dispute (recordTxn sentinel; a redelivery of the same dispute event never decrements twice)');
-  ok(/var _decAmt = !_slotObj \? 0 : \(_isSec \? \(_booked \? Math\.min\(_want, _capAmt\) : 0\) : Math\.max\(0, Math\.min\(_want, _slotAmt\)\)\)/.test(_WORKER_SRC), '#1: security-hold disputes are capped at the captured-into-revenue amount (0 if never booked); cycle-8 F3: a plain payment dispute is now capped at the slot paid amount (not "reverses in full"); an unlocatable payId decrements 0');
+  ok(/var _decAmt = !_slotObj \? 0 : \(_isSec \? \(_booked \? Math\.min\(_want, _room\) : 0\) : Math\.min\(_want, _room\)\)/.test(_WORKER_SRC), '#1: security-hold disputes are capped at the captured-into-revenue amount (0 if never booked); cycle-8/9: a plain payment dispute is capped at the slot paid amount NET of prior refund/dispute (_room); an unlocatable payId decrements 0');
   ok(/return \{ rev: Math\.max\(0, \(Number\(_rr\.revenue_cents\) \|\| 0\) - _decAmt\) \};/.test(_WORKER_SRC), '#1: the reversal only ever DECREMENTS revenue (never below 0, never an increment) -- a won dispute does not auto-restore');
   ok(/DELETE FROM platform_transactions WHERE stripe_id=\?/.test(_WORKER_SRC), '#1: a non-committed reversal deletes its sentinel so a webhook redelivery can retry (no silently-lost chargeback)');
   // Square webhook wiring
@@ -3705,7 +3705,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/var _bareKind = _slotKind\.split\('#'\)\[0\];/.test(_WORKER_SRC) && /var _isSec = \(_bareKind === 'security'\);/.test(_WORKER_SRC), 'cycle-8 F2: an archived security#<id> slot classifies as security (bare kind), not decremented as ordinary revenue');
   ok(/var _capAmt = _isSec \? \(Number\(_slotObj && _slotObj\.captured && _slotObj\.captured\.amountCents\) \|\| 0\) : 0;/.test(_WORKER_SRC), 'cycle-8 F8: the security cap reads captured.amountCents from the MATCHED slot, not the literal security key');
   // F3: cap at the matched slot amount + no decrement for an unlocatable payment
-  ok(/var _decAmt = !_slotObj \? 0 : \(_isSec \? \(_booked \? Math\.min\(_want, _capAmt\) : 0\) : Math\.max\(0, Math\.min\(_want, _slotAmt\)\)\);/.test(_WORKER_SRC), 'cycle-8 F3: decrement is capped (security->captured amount, non-security->slot paid amount) and 0 when the payment is not on this booking');
+  ok(/var _decAmt = !_slotObj \? 0 : \(_isSec \? \(_booked \? Math\.min\(_want, _room\) : 0\) : Math\.min\(_want, _room\)\);/.test(_WORKER_SRC), 'cycle-8/9 F3: decrement is capped at _room (slot amount NET of prior refund + prior dispute; security->captured amount) and 0 when the payment is not on this booking');
   // F4: the Stripe won-restore only touches Stripe (.pi) slots
   ok(/_pp\.disputed && !_pp\.disputed\.reinstatedAt && String\(_pp\.pi \|\| ''\) !== '' && \(!_rPi \|\| String\(_pp\.pi \|\| ''\) === String\(_rPi\)\)/.test(_WORKER_SRC), 'cycle-8 F4: the Stripe won-restore requires a .pi -> never reinstates a Square/PayPal .disputed slot on an empty-payment_intent event');
   // F5: settled (portal due + receipt) and review-eligibility both net the charged-back amount
@@ -3796,7 +3796,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // ---- source-guards: the webhooks re-verify + use the PROVIDER amount, never the webhook body amount ----
   ok(/const _dv = await _squareGetDispute\(env, _pi\.tenant_id, _dispId\);/.test(_WORKER_SRC) && /if \(_dv && _dv\.ok && String\(_dv\.paymentId\) === String\(_dPay\) && _dv\.amountCents > 0\) await _extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dv\.amountCents, 'sqdisp:' \+ _dispId\)/.test(_WORKER_SRC), '12q: the Square webhook decrements the PROVIDER-verified amount ONLY when the provider confirms the dispute is for this payment id');
   ok(/const _dv = await _paypalGetDispute\(env, _pi\.tenant_id, _dispId\);/.test(_WORKER_SRC) && /if \(_dv && _dv\.ok && String\(_dv\.captureId\) === String\(_dPay\) && _dv\.amountCents > 0\) await _extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dv\.amountCents, 'ppdisp:' \+ _dispId\)/.test(_WORKER_SRC), '12q: the PayPal webhook decrements the PROVIDER-verified amount ONLY when the provider confirms the dispute is for this capture id');
-  ok(/rateLimit\(env, 'sqdispay:' \+ _dPay, 8, 86400000\)/.test(_WORKER_SRC) && /rateLimit\(env, 'ppdispay:' \+ _dPay, 8, 86400000\)/.test(_WORKER_SRC), '12q: a per-payId cap bounds provider re-verify fan-out even when a forger rotates the dispute id');
+  ok(/rateLimit\(env, 'sqdispay:' \+ _dPay, 20, 86400000\)/.test(_WORKER_SRC) && /rateLimit\(env, 'ppdispay:' \+ _dPay, 20, 86400000\)/.test(_WORKER_SRC), '12q/cycle-9: a per-payId cap (now 20/day) bounds provider re-verify fan-out even when a forger rotates the dispute id');
   ok(!/_extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dCents,/.test(_WORKER_SRC), '12q: the webhook no longer passes its OWN (spoofable) _dCents amount to the reversal');
 
   // ---- behavioral: the helpers fail CLOSED with no connected creds (no fetch even attempted) ----
@@ -3830,6 +3830,68 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     ok(_fr && _fr.status === 200, 'cycle-8 F3 (12q): the square webhook always ACKs 200 (got ' + (_fr && _fr.status) + ')');
     ok(_cbInserts === 0, 'cycle-8 F3 (12q): a FORGED square dispute (real payId, tenant not re-verifiable) writes NO chargeback_rev sentinel -> decrements nothing (fail-CLOSED end-to-end) (got ' + _cbInserts + ')');
   }
+}
+
+// ==== 12r: CYCLE-9 -- _extDisputeReverse must NET the decrement against money already removed from the slot ====
+// The 12p cap used the slot's GROSS amountCents, so a refund-then-dispute, or a SECOND distinct dispute id on the same
+// payment (the sentinel only dedups the SAME dispute id), clawed back the full amount AGAIN -> revenue reversed beyond
+// what the payment was worth (double-count). 12r caps each decrement at what the slot STILL holds (gross - priorRefund -
+// priorDispute) and ACCUMULATES the .disputed record so F5's settled/review netting sees the true total.
+{
+  // ---- source-guards ----
+  ok(/var _priorRef = Math\.max\(0, Math\.round\(Number\(_slotObj && _slotObj\.refunded && _slotObj\.refunded\.amountCents\) \|\| 0\)\);/.test(_WORKER_SRC), 'cycle-9: the dispute decrement reads any prior refund on the matched slot');
+  ok(/var _priorDisp = Math\.max\(0, Math\.round\(Number\(_slotObj && _slotObj\.disputed && _slotObj\.disputed\.decrementedCents\) \|\| 0\)\);/.test(_WORKER_SRC), 'cycle-9: the dispute decrement reads any prior dispute decrement on the matched slot');
+  ok(/var _room = _isSec \? Math\.max\(0, _capAmt - _priorDisp\) : Math\.max\(0, _slotAmt - _priorRef - _priorDisp\);/.test(_WORKER_SRC), 'cycle-9: the cap is NET of what was already reversed on the slot (refund + prior dispute)');
+  ok(/decrementedCents: \(_priorDisp \+ _decAmt\)/.test(_WORKER_SRC), 'cycle-9: the .disputed record ACCUMULATES decrementedCents (does not overwrite) so F5 netting sees the total clawed back');
+  ok((_WORKER_SRC.match(/rateLimit\(env, 'sqdisp:' \+ _dispId, 20, 86400000\)/g) || []).length === 1 && (_WORKER_SRC.match(/rateLimit\(env, 'ppdisp:' \+ _dispId, 20, 86400000\)/g) || []).length === 1, 'cycle-9 F3: per-dispute-id cap raised 4->20 so a legit dispute lifecycle + transient-failure retries do not starve the retry path');
+  ok((_WORKER_SRC.match(/rateLimit\(env, 'sqdispay:' \+ _dPay, 20, 86400000\)/g) || []).length === 1 && (_WORKER_SRC.match(/rateLimit\(env, 'ppdispay:' \+ _dPay, 20, 86400000\)/g) || []).length === 1, 'cycle-9 F3: per-payId cap raised 8->20 (still a hard per-payment/day bound on provider re-verify fan-out)');
+
+  // ---- behavioral (mock D1) ----
+  function _mkDE9(bk) {
+    let _data = bk ? JSON.stringify(bk.data || {}) : null;
+    let _rev = bk ? (Number(bk.revenue_cents) || 0) : 0;
+    let _upd = bk ? (bk.updated_at == null ? null : bk.updated_at) : null;
+    let _st = bk ? (bk.status || 'confirmed') : 'confirmed';
+    const _txns = new Set();
+    const env = { DB: { prepare: (sql) => { let a = []; const api = {
+      bind: (...x) => { a = x; return api; },
+      first: async () => {
+        if (/SELECT id,data,revenue_cents,status,updated_at,starts FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) {
+          if (bk && a[0] === bk.id && a[1] === bk.tenant_id) return { id: bk.id, tenant_id: bk.tenant_id, data: _data, revenue_cents: _rev, status: _st, updated_at: _upd, starts: 0 };
+          return null;
+        }
+        return null;
+      },
+      run: async () => {
+        if (/INSERT OR IGNORE INTO platform_transactions/.test(sql)) { const sid = a[8]; if (_txns.has(sid)) return { meta: { changes: 0 } }; _txns.add(sid); return { meta: { changes: 1 } }; }
+        if (/DELETE FROM platform_transactions WHERE stripe_id=\?/.test(sql)) { const sid = a[0]; const had = _txns.delete(sid); return { meta: { changes: had ? 1 : 0 } }; }
+        if (/UPDATE bookings SET data=\?, revenue_cents=\?, status=\?, updated_at=\? WHERE id=\? AND tenant_id=\? AND updated_at IS \?/.test(sql)) { _data = a[0]; _rev = a[1]; _st = a[2]; _upd = a[3]; return { meta: { changes: 1 } }; }
+        return { meta: { changes: 0 } };
+      },
+      all: async () => ({ results: [] }),
+    }; return api; } } };
+    return { env, req: { headers: { get: () => '' } }, get rev() { return _rev; }, get data() { try { return JSON.parse(_data); } catch (e) { return null; } } };
+  }
+
+  // (1) refund-then-dispute: a $50 payment already partially refunded $20 -> a $50 dispute reverses only the $30 still held (not $50)
+  let m = _mkDE9({ id: 'R1', tenant_id: 'T1', data: { paid: { balance: { square: 'PBR', amountCents: 5000, refunded: { amountCents: 2000 } } } }, revenue_cents: 10000 });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'R1', 'PBR', 5000, 'sqdisp:R1');
+  ok(m.rev === 7000, 'cycle-9: a $50 dispute on a payment already refunded $20 reverses only the remaining $30 (10000 -> 7000, was wrongly 5000 pre-fix, got ' + m.rev + ')');
+  ok(m.data.paid.balance.disputed.decrementedCents === 3000, 'cycle-9: decrementedCents records the netted $30 (got ' + m.data.paid.balance.disputed.decrementedCents + ')');
+
+  // (2) two DISTINCT dispute ids on one payment cannot together reverse more than the payment
+  m = _mkDE9({ id: 'R2', tenant_id: 'T1', data: { paid: { balance: { square: 'PB2', amountCents: 5000 } } }, revenue_cents: 10000 });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'R2', 'PB2', 3000, 'sqdisp:D1');
+  ok(m.rev === 7000, 'cycle-9: first dispute ($30) reverses $30 (10000 -> 7000, got ' + m.rev + ')');
+  await _extDisputeReverse(m.env, m.req, 'T1', 'R2', 'PB2', 4000, 'sqdisp:D2');
+  ok(m.rev === 5000, 'cycle-9: a SECOND distinct dispute ($40) on the same $50 payment reverses only the remaining $20 (7000 -> 5000 total $50, was wrongly 3000 = $70 pre-fix, got ' + m.rev + ')');
+  ok(m.data.paid.balance.disputed.decrementedCents === 5000, 'cycle-9: decrementedCents ACCUMULATES to the full $50 (3000+2000, got ' + m.data.paid.balance.disputed.decrementedCents + ')');
+  ok(m.data.paid.balance.disputed.amountCents === 7000, 'cycle-9: amountCents accumulates the disputed totals (3000+4000, got ' + m.data.paid.balance.disputed.amountCents + ')');
+
+  // (3) a clean FIRST dispute is unchanged (no prior removal -> full slot cap applies exactly as 12p)
+  m = _mkDE9({ id: 'R3', tenant_id: 'T1', data: { paid: { balance: { paypal: 'CAP3', amountCents: 4000 } } }, revenue_cents: 4000 });
+  await _extDisputeReverse(m.env, m.req, 'T1', 'R3', 'CAP3', 4000, 'ppdisp:R3');
+  ok(m.rev === 0 && m.data.paid.balance.disputed.decrementedCents === 4000, 'cycle-9: a clean first dispute still reverses the full paid amount (4000 -> 0, decremented 4000)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
