@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -3779,6 +3779,56 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   {
     const _pdP = _portalDue({ quote: { total: 100 }, paid: { balance: { square: 'PB6', amountCents: 10000, disputed: { amountCents: 4000, decrementedCents: 4000 } } } }, { id: 'B6', starts: 0 });
     ok(_pdP.settledCents === 6000, 'cycle-8 F5: a partial chargeback nets only the clawed-back part (settled 6000, got ' + _pdP.settledCents + ')');
+  }
+}
+
+// ==== 12q: CYCLE-8 F3 -- authenticate the Square/PayPal DISPUTE webhook by re-verifying with the provider (fail-CLOSED) ====
+// The 12o dispute branch acted on the UNSIGNED webhook's own amount. 12q makes the webhook only a trigger: the dispute is
+// re-fetched from the provider (as the resolved tenant) and the PROVIDER's amount is used, only when the provider confirms the
+// dispute is for THIS payment id -- mirroring the credit path's re-verify-before-acting invariant. Anything unverifiable no-ops.
+{
+  // ---- source-guards: the helpers exist, read the right provider field-paths, and fail CLOSED ----
+  ok(/async function _squareGetDispute\(env, tenantId, disputeId\)/.test(_WORKER_SRC) && /async function _paypalGetDispute\(env, tenantId, disputeId\)/.test(_WORKER_SRC), 'cycle-8 F3 (12q): _squareGetDispute + _paypalGetDispute provider re-verify helpers exist');
+  ok((_WORKER_SRC.match(/if \(!creds \|\| !disputeId\) return \{ ok: false/g) || []).length === 2, '12q: BOTH dispute helpers fail CLOSED when the tenant has no connected creds (or no dispute id) -- so a tenant we cannot re-verify with never decrements');
+  ok(/dp\.amount_money && dp\.amount_money\.amount/.test(_WORKER_SRC) && /dp\.disputed_payment && dp\.disputed_payment\.payment_id/.test(_WORKER_SRC), '12q: the Square helper reads the authoritative amount + disputed payment id from the /v2/disputes response');
+  ok(/j\.dispute_amount && j\.dispute_amount\.value/.test(_WORKER_SRC) && /_tx\.seller_transaction_id \|\| _tx\.buyer_transaction_id/.test(_WORKER_SRC), '12q: the PayPal helper reads dispute_amount.value + disputed_transactions[].seller_transaction_id from /v1/customer/disputes');
+  ok(/\/v2\/disputes\/' \+ encodeURIComponent/.test(_WORKER_SRC) && /\/v1\/customer\/disputes\/' \+ encodeURIComponent/.test(_WORKER_SRC), '12q: the helpers call the real provider dispute endpoints');
+  // ---- source-guards: the webhooks re-verify + use the PROVIDER amount, never the webhook body amount ----
+  ok(/const _dv = await _squareGetDispute\(env, _pi\.tenant_id, _dispId\);/.test(_WORKER_SRC) && /if \(_dv && _dv\.ok && String\(_dv\.paymentId\) === String\(_dPay\) && _dv\.amountCents > 0\) await _extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dv\.amountCents, 'sqdisp:' \+ _dispId\)/.test(_WORKER_SRC), '12q: the Square webhook decrements the PROVIDER-verified amount ONLY when the provider confirms the dispute is for this payment id');
+  ok(/const _dv = await _paypalGetDispute\(env, _pi\.tenant_id, _dispId\);/.test(_WORKER_SRC) && /if \(_dv && _dv\.ok && String\(_dv\.captureId\) === String\(_dPay\) && _dv\.amountCents > 0\) await _extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dv\.amountCents, 'ppdisp:' \+ _dispId\)/.test(_WORKER_SRC), '12q: the PayPal webhook decrements the PROVIDER-verified amount ONLY when the provider confirms the dispute is for this capture id');
+  ok(/rateLimit\(env, 'sqdispay:' \+ _dPay, 8, 86400000\)/.test(_WORKER_SRC) && /rateLimit\(env, 'ppdispay:' \+ _dPay, 8, 86400000\)/.test(_WORKER_SRC), '12q: a per-payId cap bounds provider re-verify fan-out even when a forger rotates the dispute id');
+  ok(!/_extDisputeReverse\(env, req, _pi\.tenant_id, _pi\.booking_id, _dPay, _dCents,/.test(_WORKER_SRC), '12q: the webhook no longer passes its OWN (spoofable) _dCents amount to the reversal');
+
+  // ---- behavioral: the helpers fail CLOSED with no connected creds (no fetch even attempted) ----
+  const _nullDB = { DB: { prepare: () => ({ bind: () => ({ first: async () => null, all: async () => ({ results: [] }), run: async () => ({ meta: { changes: 0 } }) }) }) }, ENC_KEY: 'e' };
+  const _sqd = await _squareGetDispute(_nullDB, 'T1', 'DISP1');
+  ok(_sqd && _sqd.ok === false, 'cycle-8 F3 (12q): _squareGetDispute with no connected Square creds -> {ok:false} (fail-CLOSED, no decrement) (got ' + JSON.stringify(_sqd) + ')');
+  const _ppd = await _paypalGetDispute(_nullDB, 'T1', 'DISP1');
+  ok(_ppd && _ppd.ok === false, 'cycle-8 F3 (12q): _paypalGetDispute with no connected PayPal creds -> {ok:false} (fail-CLOSED) (got ' + JSON.stringify(_ppd) + ')');
+  const _sqEmpty = await _squareGetDispute(_nullDB, 'T1', '');
+  ok(_sqEmpty && _sqEmpty.ok === false, 'cycle-8 F3 (12q): _squareGetDispute with an empty dispute id -> {ok:false}');
+
+  // ---- route-level: a FORGED Square dispute (real payId, but the tenant has no re-verifiable creds) decrements NOTHING ----
+  {
+    let _cbInserts = 0;
+    const fcEnv = { SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', DB: { prepare: (sql) => { let a = []; const api = {
+      bind: (...x) => { a = x; return api; },
+      first: async () => {
+        if (/FROM sqlite_master/.test(sql)) return { n: 25 };
+        if (/FROM platform_config/.test(sql)) return null;
+        if (/rate_limits/.test(sql)) return null;                                   // rateLimit fails OPEN -> allow
+        if (/SELECT booking_id, tenant_id FROM payment_index WHERE pi=\?/.test(sql)) return { booking_id: 'BKX', tenant_id: 'TNX' };
+        if (/FROM integrations WHERE tenant_id=\? AND provider=\?/.test(sql)) return null;   // NO creds -> _squareGetDispute fails CLOSED (returns before any fetch)
+        return null;
+      },
+      run: async () => { if (/INSERT OR IGNORE INTO platform_transactions/.test(sql) && a.indexOf('chargeback_rev') >= 0) _cbInserts++; return { success: true, meta: { changes: 1 } }; },
+      all: async () => ({ results: [] }),
+    }; return api; } } };
+    const fcReq = (body) => ({ method: 'POST', url: 'https://atlasrental.io/api/square/webhook', headers: { get: (k) => { const h = { 'cf-connecting-ip': '9.9.9.9', 'content-type': 'application/json' }; const v = h[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => body, text: async () => JSON.stringify(body) });
+    const _forged = { type: 'dispute.created', data: { object: { dispute: { dispute_id: 'DSQ_FORGED', amount_money: { amount: 9999999 }, disputed_payment: { payment_id: 'PAYX' } } } } };
+    const _fr = await worker.fetch(fcReq(_forged), fcEnv, ctx);
+    ok(_fr && _fr.status === 200, 'cycle-8 F3 (12q): the square webhook always ACKs 200 (got ' + (_fr && _fr.status) + ')');
+    ok(_cbInserts === 0, 'cycle-8 F3 (12q): a FORGED square dispute (real payId, tenant not re-verifiable) writes NO chargeback_rev sentinel -> decrements nothing (fail-CLOSED end-to-end) (got ' + _cbInserts + ')');
   }
 }
 
