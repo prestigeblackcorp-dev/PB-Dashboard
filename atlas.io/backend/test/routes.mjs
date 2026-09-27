@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _ownerLoginBanBypass, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4237,7 +4237,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(!_gcE \|\| _gcE === _gsE\) \{/.test(_WORKER_SRC), '#4: _graftServerPay idVerified graft is bound to the email');
 
   // ---- #5 (legal HIGH): _carryVerify clamps a client-supplied idExpiry so the MAX-merge can't make a far-future expiry permanent ----
-  ok(/const _expCeil = Date\.now\(\) \+ 252288000000; if \(dlExp > _expCeil\) dlExp = _expCeil;/.test(_WORKER_SRC), '#5: _carryVerify clamps dl_expiry to <= ~8 years (defeats the far-future-expiry KYC bypass)');
+  ok(/const _expCeil = Date\.now\(\) \+ 346896000000; if \(dlExp > _expCeil\) dlExp = _expCeil;/.test(_WORKER_SRC), '#5: _carryVerify clamps dl_expiry to <= ~11 years (defeats the far-future-expiry KYC bypass; 13e raised 8y->11y for passports)');
 
   // ---- #6 (security HIGH): all FOUR pre-session cookie-issuing routes carry the login-CSRF / session-fixation Origin guard ----
   ok((_WORKER_SRC.match(/if \(_crossSiteBlocked\(req\)\) return err\(403, 'Cross-origin request blocked\.'\);/g) || []).length === 4, '#6: login + signup + mfa/verify + accept-invite all guard against a cross-site cookie-issuing POST');
@@ -4294,6 +4294,44 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 
   // ---- #6: the pb-sync INSERT path honors the delete-resurrection tombstone (stale-only) ----
   ok(/SELECT deleted_at FROM sync_tombstones WHERE tenant_id=\? AND coll=\? AND id=\?'\)\.bind\(tenantId, 'bookings', row\.id\)[\s\S]*?Number\(\(row\.data && row\.data\._t\) \|\| 0\) <= Number\(_tb\.deleted_at \|\| 0\)\) return 'tombstoned'/.test(_WORKER_SRC), '#6: _pbSyncWrite skips re-inserting a booking the owner deleted in Atlas (stale-only: unless PB modified it after the deletion)');
+}
+
+// ==== 13e: cycle-3 KYC manual-verify (#4) + idExpiry clamp for passports (#5) + scheduler white-label (#9) ====
+{
+  function _mkIdvEnvE(vc, bookingData) {
+    return { DB: { prepare: (sql) => { let a = []; const api = { bind: (...x) => { a = x; return api; }, first: async () => {
+      if (/FROM verified_customers WHERE tenant_id=\? AND email=\?/.test(sql)) return vc;
+      if (/SELECT data FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) return bookingData != null ? { data: bookingData } : null;
+      return null; }, run: async () => ({ meta: { changes: 1 } }) }; return api; } } };
+  }
+  function _mkCarryEnv() {
+    let _inserted = false;
+    const env = { DB: { prepare: (sql) => { const api = { bind: () => api, run: async () => { if (/INSERT INTO verified_customers/.test(sql)) _inserted = true; return { meta: { changes: 1 } }; }, first: async () => null }; return api; } } };
+    return { env, get inserted() { return _inserted; } };
+  }
+  // ---- #4 (HIGH): a bookEdit owner's MANUAL "Verify ID" is honored on the booking but never laundered into verified_customers ----
+  {
+    let dm = { idVerified: true, idVerifyMethod: 'manual', custEmail: 'x@y.com' };
+    await _stripUnbackedIdVerify(_mkIdvEnvE(null, null), 'T1', 'BM1', dm);
+    ok(dm.idVerified === true, '#4: a MANUAL owner verify survives the strip even with no Stripe/verified_customers backing (feature restored)');
+    let dn = { idVerified: true, custEmail: 'x@y.com' };
+    await _stripUnbackedIdVerify(_mkIdvEnvE(null, null), 'T1', 'BM2', dn);
+    ok(dn.idVerified === false, '#4: a non-manual unbacked idVerified is STILL stripped (forgery defense intact)');
+    let c1 = _mkCarryEnv();
+    await _carryVerify(c1.env, 'T1', { idVerified: true, idVerifyMethod: 'manual', custEmail: 'x@y.com', cust: 'X' });
+    ok(c1.inserted === false, '#4: a MANUAL verify is NOT indexed into verified_customers (no systemic auto-skip-KYC)');
+    let c2 = _mkCarryEnv();
+    await _carryVerify(c2.env, 'T1', { idVerified: true, custEmail: 'x@y.com', cust: 'X' });
+    ok(c2.inserted === true, '#4: a real (non-manual) verify IS carried, unchanged');
+  }
+  ok(/if \(data\.idVerifyMethod === 'manual'\) return;   \/\/ cycle-3 #4: a bookEdit owner's MANUAL/.test(_WORKER_SRC), '#4: the strip honors idVerifyMethod===manual');
+  ok(/if \(data\.idVerifyMethod === 'manual'\) return;   \/\/ cycle-3 #4: a MANUAL owner verification marks/.test(_WORKER_SRC), '#4: _carryVerify skips idVerifyMethod===manual');
+
+  // ---- #5 (LOW): the idExpiry clamp is raised to ~11 years so a legit 10-year passport's Stripe-verified expiration is not truncated ----
+  ok(/const _expCeil = Date\.now\(\) \+ 346896000000;/.test(_WORKER_SRC), '#5: the dl_expiry clamp ceiling is ~11 years (covers a 10-year passport)');
+
+  // ---- #9 (LOW privacy): the scheduler de-identifies openShifts[].reason (white-label) ----
+  ok(/parsed\.openShifts\.forEach\(function \(s\) \{ if \(s && typeof s\.reason === 'string'\) s\.reason = _deIdentifyAI\(s\.reason\)/.test(_WORKER_SRC), '#9: /api/schedule runs openShifts[].reason through the white-label de-identify filter');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
