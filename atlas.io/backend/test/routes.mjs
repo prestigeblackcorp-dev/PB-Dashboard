@@ -4132,10 +4132,10 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     let d2 = { idVerified: true, custEmail: 'x@y.com' };
     await _stripUnbackedIdVerify(_mkIdvEnv({ name: 'N', verified_at: 1, dl_expiry: 4102444800000 }, null), 'T1', 'B2', d2);
     ok(d2.idVerified === true, '#4: idVerified is HONORED when the customer is already in verified_customers');
-    // (3) backed by the CURRENT server row already recording this booking verified -> honored
+    // (3) backed by the CURRENT server row already recording this booking verified UNDER THE SAME EMAIL -> honored (13a: the server row carries custEmail, as every real verified booking does)
     let d3 = { idVerified: true, custEmail: 'x@y.com' };
-    await _stripUnbackedIdVerify(_mkIdvEnv(null, '{"idVerified":true}'), 'T1', 'B3', d3);
-    ok(d3.idVerified === true, '#4: idVerified is HONORED when the server row already recorded a prior real verification');
+    await _stripUnbackedIdVerify(_mkIdvEnv(null, '{"idVerified":true,"custEmail":"x@y.com"}'), 'T1', 'B3', d3);
+    ok(d3.idVerified === true, '#4: idVerified is HONORED when the server row already recorded a prior real verification (same email)');
     // (4) the portal boolean variant is also stripped when unbacked (both feed _carryVerify)
     let d4 = { portal: { idVerified: true }, custEmail: 'x@y.com' };
     await _stripUnbackedIdVerify(_mkIdvEnv(null, null), 'T1', 'B4', d4);
