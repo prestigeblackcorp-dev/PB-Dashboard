@@ -4202,5 +4202,48 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_pbmHasNativeState(null) === false && _pbmHasNativeState({}) === false, '#2: empty/blank blob -> no native state');
 }
 
+// ==== 13a: cycle-2 KYC identity-binding (#4/#5) + auth session-fixation guard (#6) ====
+{
+  function _mkIdv2(vc, bookingData) {
+    return { DB: { prepare: (sql) => { let a = []; const api = { bind: (...x) => { a = x; return api; }, first: async () => {
+      if (/FROM verified_customers WHERE tenant_id=\? AND email=\?/.test(sql)) return vc;
+      if (/SELECT data FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) return bookingData != null ? { data: bookingData } : null;
+      return null; } }; return api; } } };
+  }
+  // ---- #4 (security HIGH): the "already verified" backing must be BOUND to the customer email -- a custEmail swap must not launder a new identity ----
+  {
+    // swap: the server row is verified under alice, incoming blob swaps custEmail to target -> STRIP (not backed for the new email)
+    let _dSwap = { idVerified: true, custEmail: 'target@y.com' };
+    await _stripUnbackedIdVerify(_mkIdv2(null, '{"idVerified":true,"custEmail":"alice@x.com"}'), 'T1', 'BS1', _dSwap);
+    ok(_dSwap.idVerified === false, '#4: idVerified is STRIPPED when custEmail was swapped away from the verified booking\'s email');
+    // unchanged email -> honored
+    let _dSame = { idVerified: true, custEmail: 'alice@x.com' };
+    await _stripUnbackedIdVerify(_mkIdv2(null, '{"idVerified":true,"custEmail":"alice@x.com"}'), 'T1', 'BS2', _dSame);
+    ok(_dSame.idVerified === true, '#4: idVerified is HONORED when the booking email is unchanged');
+  }
+  // _graftServerPay must not re-graft a verification onto a swapped-email blob (the omit-idVerified vector)
+  {
+    let _cSwap = { custEmail: 'target@y.com' };
+    _graftServerPay(_cSwap, { idVerified: true, idExpiry: 123, custEmail: 'alice@x.com' });
+    ok(_cSwap.idVerified == null, '#4: _graftServerPay does NOT carry a verification onto a blob whose custEmail was swapped');
+    let _cSame = { custEmail: 'alice@x.com' };
+    _graftServerPay(_cSame, { idVerified: true, idExpiry: 123, custEmail: 'alice@x.com' });
+    ok(_cSame.idVerified === true, '#4: _graftServerPay carries the verification when the email is unchanged');
+    let _cAbsent = {};
+    _graftServerPay(_cAbsent, { idVerified: true, custEmail: 'alice@x.com' });
+    ok(_cAbsent.idVerified === true, '#4: _graftServerPay carries the verification when the client omits the email (nothing to launder)');
+  }
+  ok(/_srvEmail && _srvEmail === email\) _backed = true/.test(_WORKER_SRC), '#4: strip check (b) is bound to the email');
+  ok(/if \(!_gcE \|\| _gcE === _gsE\) \{/.test(_WORKER_SRC), '#4: _graftServerPay idVerified graft is bound to the email');
+
+  // ---- #5 (legal HIGH): _carryVerify clamps a client-supplied idExpiry so the MAX-merge can't make a far-future expiry permanent ----
+  ok(/const _expCeil = Date\.now\(\) \+ 252288000000; if \(dlExp > _expCeil\) dlExp = _expCeil;/.test(_WORKER_SRC), '#5: _carryVerify clamps dl_expiry to <= ~8 years (defeats the far-future-expiry KYC bypass)');
+
+  // ---- #6 (security HIGH): all FOUR pre-session cookie-issuing routes carry the login-CSRF / session-fixation Origin guard ----
+  ok((_WORKER_SRC.match(/if \(_crossSiteBlocked\(req\)\) return err\(403, 'Cross-origin request blocked\.'\);/g) || []).length === 4, '#6: login + signup + mfa/verify + accept-invite all guard against a cross-site cookie-issuing POST');
+  ok(/if \(path === '\/api\/auth\/mfa\/verify' && method === 'POST'\) \{\s*\n\s*if \(_crossSiteBlocked\(req\)\)/.test(_WORKER_SRC), '#6: /api/auth/mfa/verify has the guard as its FIRST check');
+  ok(/if \(path === '\/api\/auth\/accept-invite' && method === 'POST'\) \{\s*\n\s*if \(_crossSiteBlocked\(req\)\)/.test(_WORKER_SRC), '#6: /api/auth/accept-invite has the guard as its FIRST check');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
