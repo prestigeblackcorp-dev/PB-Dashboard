@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -3995,7 +3995,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   }
 
   // ---- #3: a charged-back post-trip charge: slot shows DUE again in _portalDue (was permanently "paid") ----
-  ok(/var isPaid = !!\(c\.paidAt \|\| _cslot\) && _cClawed < cents;/.test(_WORKER_SRC), 'cycle-11 #3: a charge isPaid accounts for a refunded/charged-back charge: slot');
+  ok(/var _cOwed = _chargeOwedCents\(d, c\.id, cents, !!c\.paidAt\);/.test(_WORKER_SRC) && /var isPaid = _cOwed <= 0;/.test(_WORKER_SRC), 'cycle-11 #3 + cycle-12 BUG C: a charge isPaid derives from the RESIDUAL owed (_chargeOwedCents nets refunds/chargebacks), so a partial chargeback bills only the shortfall');
   {
     // a normally-paid post-charge still shows paid
     const _pdPaid = _portalDue({ quote: { total: 100 }, charges: [{ id: 'Y', label: 'Cleaning', amount: 50, at: 5000 }], paid: { 'charge:Y': { pi: 'pi_y', amountCents: 5000 } } }, { id: 'BK2', starts: 1000 });
@@ -4023,6 +4023,34 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_slotFullyClawed({ amountCents: 5000, refunded: { amountCents: 2000 }, disputed: { decrementedCents: 3000 } }) === true, 'cycle-12 B: refund + dispute together reaching the full amount is fully clawed');
   ok(_slotFullyClawed({ amountCents: 5000 }) === false, 'cycle-12 B: a normally-paid slot is not clawed (guard refuses a 2nd payment)');
   ok(_slotFullyClawed(null) === false && _slotFullyClawed({ amountCents: 0 }) === false, 'cycle-12 B: null / zero-amount slot -> not clawed (never allow a bogus re-pay)');
+}
+
+// ==== 12w: fix-all -- GMV refund P&L gate + BUG C partial-charge residual ====
+{
+  // ---- GMV-fee P&L: a GMV/Connect booking refund records a 0-amount 'refund_gmv' sentinel, not a full -amount 'refund' ----
+  ok(/var _isGmvRef = String\(md\.gmv \|\| ''\) === '1';/.test(_WORKER_SRC), 'GMV: the charge.refunded handler detects a GMV/Connect booking refund');
+  ok(/kind: \(_isGmvRef \? 'refund_gmv' : 'refund'\), amount_cents: \(_isGmvRef \? 0 : -Math\.abs\(amt\)\)/.test(_WORKER_SRC), 'GMV: a GMV refund writes a 0-amount refund_gmv sentinel (keeps the booking revenue decrement, never drags Atlas SaaS P&L negative by pass-through money)');
+
+  // ---- BUG C: _chargeOwedCents residual (used by _portalDue + all 3 payment paths) ----
+  ok((_WORKER_SRC.match(/_chargeOwedCents\(d, _chg\.id, Math\.round\(\(Number\(_chg\.amount\) \|\| 0\) \* 100\), !!_chg\.paidAt\)/g) || []).length === 3, 'BUG C: all 3 payment paths charge the RESIDUAL owed (never the full charge again after a partial chargeback)');
+  // never paid online -> full owed; paid offline -> 0
+  ok(_chargeOwedCents({ paid: {} }, 'X', 5000, false) === 5000, 'BUG C: a never-paid charge owes the full amount');
+  ok(_chargeOwedCents({ paid: {} }, 'X', 5000, true) === 0, 'BUG C: an owner-marked-paid (offline) charge owes 0');
+  // paid online, untouched -> 0
+  ok(_chargeOwedCents({ paid: { 'charge:X': { amountCents: 5000 } } }, 'X', 5000, false) === 0, 'BUG C: a normally-paid online charge owes 0');
+  // fully charged back -> full owed again
+  ok(_chargeOwedCents({ paid: { 'charge:X': { amountCents: 5000, disputed: { decrementedCents: 5000 } } } }, 'X', 5000, false) === 5000, 'BUG C: a fully charged-back charge owes the full amount again');
+  // PARTIAL chargeback ($30 of $100) -> only the $30 shortfall owed (the actual bug)
+  ok(_chargeOwedCents({ paid: { 'charge:X': { amountCents: 10000, disputed: { decrementedCents: 3000 } } } }, 'X', 10000, false) === 3000, 'BUG C: a PARTIAL $30 chargeback on a $100 charge owes only the $30 shortfall (was $0 = invisible pre-fix)');
+  // partial refund + partial dispute stack toward the residual
+  ok(_chargeOwedCents({ paid: { 'charge:X': { amountCents: 10000, refunded: { amountCents: 2000 }, disputed: { decrementedCents: 3000 } } } }, 'X', 10000, false) === 5000, 'BUG C: a $20 refund + $30 chargeback owes the $50 residual');
+  // _portalDue folds the residual into dueCents for a partial pre-charge dispute
+  {
+    const _pdPartial = _portalDue({ quote: { total: 0 }, charges: [{ id: 'P', label: 'Cleaning', amount: 100, at: 500 }], paid: { 'charge:P': { square: 'x', amountCents: 10000, disputed: { amountCents: 3000, decrementedCents: 3000 } } } }, { id: 'BK', starts: 1000 });
+    ok(_pdPartial.dueCents === 3000, 'BUG C: _portalDue bills the $30 residual of a partially-charged-back pre-charge (dueCents=3000, got ' + _pdPartial.dueCents + ')');
+    const _pp = (_pdPartial.preCharges || []).find(function (c) { return c.id === 'P'; });
+    ok(_pp && _pp.owedCents === 3000 && _pp.paid === false, 'BUG C: the pre-charge row carries owedCents=3000 + paid=false');
+  }
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
