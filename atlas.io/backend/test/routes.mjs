@@ -1342,7 +1342,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 
   // ---- CYCLE-6 part 2 (build 12f): the intricate money/security twin fixes. ----
   // #4: a security-deposit DISPUTE decrements revenue ONLY when the deposit was CAPTURED (booked via #17), capped at the captured amount; an uncaptured hold decrements 0.
-  ok(/var _decD = _slotD \? _disputeApplyToSlot\(_slotD, obj\.id, _dAmt, \{ isSecurity: _isSecD, capturedAmt: _capAmtD, booked: _secBookedD, reason: obj\.reason \}\) : \(_isSecD \? \(_secBookedD \? Math\.min\(_dAmt, _capAmtD\) : 0\) : _dAmt\)/.test(_WORKER_SRC), '#cycle6-4: a security dispute decrements only a CAPTURED deposit, capped at the captured amount (uncaptured hold = 0)');
+  ok(/var _decD = _slotD \? _disputeApplyToSlot\(_slotD, obj\.id, _dAmt, \{ isSecurity: _isSecD, capturedAmt: _capAmtD, booked: _secBookedD, reason: obj\.reason \}\) : \(_isSecD \? \(_secBookedLitD \? Math\.min\(_dAmt, _capLitD\) : 0\) : _dAmt\)/.test(_WORKER_SRC), '#cycle6-4: a security dispute decrements only a CAPTURED deposit, capped at the captured amount (uncaptured hold = 0); cycle-11: the no-slot fallback caps from the LITERAL security key (_capLitD) so a captured deposit whose slot lacks a .pi match still decrements');
   // #2: the GPS tracker host guard resolves DNS + blocks a private/metadata IP (parity with webhook delivery + the crawler), not just a literal-string match, and EVERY call site awaits it.
   ok(/async function _trkSafeHost\(raw\)/.test(_WORKER_SRC), '#cycle6-2: _trkSafeHost is async');
   ok(/if \(await _ssrfResolvedBlocked\(hn\)\) return \{ ok: false, reason: 'blocked_host' \};   \/\/ cycle-6 #2/.test(_WORKER_SRC), '#cycle6-2: _trkSafeHost applies the resolved-IP SSRF guard');
@@ -3976,6 +3976,36 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   let su = { amountCents: 100000, disputed: { amountCents: 30000, decrementedCents: 30000 } };   // no reinstatedAt -> the $300 is still outstanding
   let du = _disputeApplyToSlot(su, 'D_live', 80000, {});
   ok(du === 70000, 'cycle-10 #1: a still-OUTSTANDING prior legacy dispute correctly caps the new one at the remaining $700 (got ' + du + ')');
+}
+
+// ==== 12u: cycle-11 fixes -- no-slot security fallback + direct-Stripe-refund .refunded stamp + charge: chargeback visibility ====
+{
+  // ---- #1: the Stripe no-slot security fallback caps from the LITERAL security key again (12t regression) ----
+  ok(/var _capLitD = _isSecD \? \(Number\(_bd\.paid && _bd\.paid\.security && _bd\.paid\.security\.captured && _bd\.paid\.security\.captured\.amountCents\) \|\| 0\) : 0;/.test(_WORKER_SRC), 'cycle-11 #1: the Stripe no-slot security fallback reads the literal security captured amount (_capLitD)');
+  ok(/_secBookedLitD \? Math\.min\(_dAmt, _capLitD\) : 0/.test(_WORKER_SRC), 'cycle-11 #1: the no-slot fallback decrements min(dispute, literal-captured) for a booked deposit (not dead 0)');
+
+  // ---- #2: a direct-in-Stripe refund stamps .refunded on the matched slot so a later dispute nets it ----
+  ok(/if \(!_seen && _rfPi && _bd\.paid && typeof _bd\.paid === 'object'\) \{ for \(var _rk in _bd\.paid\)/.test(_WORKER_SRC), 'cycle-11 #2: the charge.refunded direct-Stripe branch scans for the matched paid slot by PI');
+  ok(/_rp\.refunded = \{ at: Date\.now\(\), amountCents: _rpPrior \+ Math\.abs\(Math\.round\(Number\(amt\) \|\| 0\)\) \}/.test(_WORKER_SRC), 'cycle-11 #2: it accumulates .refunded on that slot (so _disputeApplyToSlot _priorRef accounts for ALL refund channels, not just in-app)');
+  // behavioral: prove the net-cap works once .refunded is present (via the shared helper) -- a $30 direct refund then a $50 dispute reverses only $20
+  {
+    let s = { pi: 'pi_dr', amountCents: 5000, refunded: { amountCents: 3000 } };
+    let d = _disputeApplyToSlot(s, 'D_after_refund', 5000, {});
+    ok(d === 2000, 'cycle-11 #2: with .refunded now stamped, a dispute after a $30 direct-Stripe refund reverses only the remaining $20 (got ' + d + ')');
+  }
+
+  // ---- #3: a charged-back post-trip charge: slot shows DUE again in _portalDue (was permanently "paid") ----
+  ok(/var isPaid = !!\(c\.paidAt \|\| _cslot\) && _cClawed < cents;/.test(_WORKER_SRC), 'cycle-11 #3: a charge isPaid accounts for a refunded/charged-back charge: slot');
+  {
+    // a normally-paid post-charge still shows paid
+    const _pdPaid = _portalDue({ quote: { total: 100 }, charges: [{ id: 'Y', label: 'Cleaning', amount: 50, at: 5000 }], paid: { 'charge:Y': { pi: 'pi_y', amountCents: 5000 } } }, { id: 'BK2', starts: 1000 });
+    const _cy = (_pdPaid.postCharges || []).find(function (c) { return c.id === 'Y'; });
+    ok(_cy && _cy.paid === true, 'cycle-11 #3: a normally-paid post-charge still reads paid=true');
+    // a charged-back post-charge now shows due again
+    const _pdCB = _portalDue({ quote: { total: 100 }, charges: [{ id: 'X', label: 'Cleaning', amount: 50, at: 5000 }], paid: { 'charge:X': { pi: 'pi_x', amountCents: 5000, disputed: { amountCents: 5000, decrementedCents: 5000 } } } }, { id: 'BK', starts: 1000 });
+    const _cx = (_pdCB.postCharges || []).find(function (c) { return c.id === 'X'; });
+    ok(_cx && _cx.paid === false, 'cycle-11 #3: a CHARGED-BACK post-charge reads paid=false (portal shows it due again, not permanently settled)');
+  }
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
