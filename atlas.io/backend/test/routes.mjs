@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1342,7 +1342,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 
   // ---- CYCLE-6 part 2 (build 12f): the intricate money/security twin fixes. ----
   // #4: a security-deposit DISPUTE decrements revenue ONLY when the deposit was CAPTURED (booked via #17), capped at the captured amount; an uncaptured hold decrements 0.
-  ok(/var _decD = _isSecD \? \(_secBookedD \? Math\.min\(_dAmt, _capAmtD\) : 0\) : _dAmt;/.test(_WORKER_SRC), '#cycle6-4: a security dispute decrements only a CAPTURED deposit, capped at the captured amount (uncaptured hold = 0)');
+  ok(/var _decD = _slotD \? _disputeApplyToSlot\(_slotD, obj\.id, _dAmt, \{ isSecurity: _isSecD, capturedAmt: _capAmtD, booked: _secBookedD, reason: obj\.reason \}\) : \(_isSecD \? \(_secBookedD \? Math\.min\(_dAmt, _capAmtD\) : 0\) : _dAmt\)/.test(_WORKER_SRC), '#cycle6-4: a security dispute decrements only a CAPTURED deposit, capped at the captured amount (uncaptured hold = 0)');
   // #2: the GPS tracker host guard resolves DNS + blocks a private/metadata IP (parity with webhook delivery + the crawler), not just a literal-string match, and EVERY call site awaits it.
   ok(/async function _trkSafeHost\(raw\)/.test(_WORKER_SRC), '#cycle6-2: _trkSafeHost is async');
   ok(/if \(await _ssrfResolvedBlocked\(hn\)\) return \{ ok: false, reason: 'blocked_host' \};   \/\/ cycle-6 #2/.test(_WORKER_SRC), '#cycle6-2: _trkSafeHost applies the resolved-IP SSRF guard');
@@ -1388,8 +1388,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // #3: a WON Stripe dispute restores the revenue decremented at dispute-open (exactly disputed.decrementedCents), idempotent.
   ok(/T === 'charge\.dispute\.closed' \|\| T === 'charge\.dispute\.funds_reinstated'/.test(_WORKER_SRC), '#3: the Stripe webhook handles dispute.closed/funds_reinstated (won-dispute revenue restore)');
   ok(/charge\.dispute\.closed', 'charge\.dispute\.funds_reinstated'/.test(_WORKER_SRC), '#3: WH_RECOMMENDED includes the dispute-won events');
-  ok(/decrementedCents: _decD/.test(_WORKER_SRC), '#3: the dispute decrement is recorded on the slot so a WON dispute restores exactly that (not the raw disputed amount)');
-  ok(/_pp\.disputed\.reinstatedAt = Date\.now\(\)/.test(_WORKER_SRC), '#3: the won-restore stamps reinstatedAt to prevent a double-restore');
+  ok(/_byId\[_did\] = \{ amountCents: _want, decrementedCents: _decAmt, at: Date\.now\(\) \}/.test(_WORKER_SRC), '#3: the dispute decrement is recorded on the slot so a WON dispute restores exactly that (not the raw disputed amount)');
+  ok(/_e\.reinstatedAt = Date\.now\(\)/.test(_WORKER_SRC), '#3: the won-restore stamps reinstatedAt to prevent a double-restore');
   // c7#4: a present-but-invalid booking start/end is rejected (patchFields would otherwise silently store NULL dates invisible to the availability gate).
   ok((_WORKER_SRC.match(/This booking has an invalid start or end date\/time/g) || []).length === 2, '#c7-4: both POST + PUT bookings writes reject a present-but-invalid date');
 
@@ -3622,7 +3622,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/bind\(String\(captureId \|\| ""\)\.slice\(0, 120\)/.test(_WORKER_SRC), '#1: the PayPal credit path indexes by captureId');
   // helper: idempotent per dispute, capped for a booked security hold, decrement-only, sentinel cleaned on non-commit
   ok(/kind: 'chargeback_rev'/.test(_WORKER_SRC) && /if \(!\(_dt && _dt\.new\)\) return;/.test(_WORKER_SRC), '#1: _extDisputeReverse is idempotent per dispute (recordTxn sentinel; a redelivery of the same dispute event never decrements twice)');
-  ok(/var _decAmt = !_slotObj \? 0 : \(_isSec \? \(_booked \? Math\.min\(_want, _room\) : 0\) : Math\.min\(_want, _room\)\)/.test(_WORKER_SRC), '#1: security-hold disputes are capped at the captured-into-revenue amount (0 if never booked); cycle-8/9: a plain payment dispute is capped at the slot paid amount NET of prior refund/dispute (_room); an unlocatable payId decrements 0');
+  ok(/var _decAmt = _slotObj \? _disputeApplyToSlot\(_slotObj, sentinelKey, disputeCents, \{ isSecurity: _isSec, capturedAmt: _capAmt, booked: _booked \}\) : 0/.test(_WORKER_SRC), '#1: security-hold disputes are capped at the captured-into-revenue amount (0 if never booked); cycle-8/9: a plain payment dispute is capped at the slot paid amount NET of prior refund/dispute (_room); an unlocatable payId decrements 0');
   ok(/return \{ rev: Math\.max\(0, \(Number\(_rr\.revenue_cents\) \|\| 0\) - _decAmt\) \};/.test(_WORKER_SRC), '#1: the reversal only ever DECREMENTS revenue (never below 0, never an increment) -- a won dispute does not auto-restore');
   ok(/DELETE FROM platform_transactions WHERE stripe_id=\?/.test(_WORKER_SRC), '#1: a non-committed reversal deletes its sentinel so a webhook redelivery can retry (no silently-lost chargeback)');
   // Square webhook wiring
@@ -3705,9 +3705,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/var _bareKind = _slotKind\.split\('#'\)\[0\];/.test(_WORKER_SRC) && /var _isSec = \(_bareKind === 'security'\);/.test(_WORKER_SRC), 'cycle-8 F2: an archived security#<id> slot classifies as security (bare kind), not decremented as ordinary revenue');
   ok(/var _capAmt = _isSec \? \(Number\(_slotObj && _slotObj\.captured && _slotObj\.captured\.amountCents\) \|\| 0\) : 0;/.test(_WORKER_SRC), 'cycle-8 F8: the security cap reads captured.amountCents from the MATCHED slot, not the literal security key');
   // F3: cap at the matched slot amount + no decrement for an unlocatable payment
-  ok(/var _decAmt = !_slotObj \? 0 : \(_isSec \? \(_booked \? Math\.min\(_want, _room\) : 0\) : Math\.min\(_want, _room\)\);/.test(_WORKER_SRC), 'cycle-8/9 F3: decrement is capped at _room (slot amount NET of prior refund + prior dispute; security->captured amount) and 0 when the payment is not on this booking');
+  ok(/var _decAmt = _slotObj \? _disputeApplyToSlot\(_slotObj, sentinelKey, disputeCents, \{ isSecurity: _isSec, capturedAmt: _capAmt, booked: _booked \}\) : 0;/.test(_WORKER_SRC), 'cycle-8/9 F3: decrement is capped at _room (slot amount NET of prior refund + prior dispute; security->captured amount) and 0 when the payment is not on this booking');
   // F4: the Stripe won-restore only touches Stripe (.pi) slots
-  ok(/_pp\.disputed && !_pp\.disputed\.reinstatedAt && String\(_pp\.pi \|\| ''\) !== '' && \(!_rPi \|\| String\(_pp\.pi \|\| ''\) === String\(_rPi\)\)/.test(_WORKER_SRC), 'cycle-8 F4: the Stripe won-restore requires a .pi -> never reinstates a Square/PayPal .disputed slot on an empty-payment_intent event');
+  ok(/_pp\.disputed && String\(_pp\.pi \|\| ''\) !== '' && \(!_rPi \|\| String\(_pp\.pi \|\| ''\) === String\(_rPi\)\)\) _add \+= _disputeRestoreSlot\(_pp, obj\.id\)/.test(_WORKER_SRC), 'cycle-8 F4: the Stripe won-restore requires a .pi -> never reinstates a Square/PayPal .disputed slot on an empty-payment_intent event');
   // F5: settled (portal due + receipt) and review-eligibility both net the charged-back amount
   ok((_WORKER_SRC.match(/disputed && \([a-z_]*\.disputed\.decrementedCents != null \? [a-z_]*\.disputed\.decrementedCents : [a-z_]*\.disputed\.amountCents\)/g) || []).length >= 2, 'cycle-8 F5: BOTH _portalDue settled and the review gate net the disputed decrement out (mirroring how refunds are netted)');
   ok(/var _clawed = _hasDisp && _settled <= 0 && _giftC <= 0 && !d\.paidAt;/.test(_WORKER_SRC), 'cycle-8 F5: a fully charged-back booking cannot clear the review gate via stale portal *PaidAt markers');
@@ -3839,8 +3839,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // priorDispute) and ACCUMULATES the .disputed record so F5's settled/review netting sees the true total.
 {
   // ---- source-guards ----
-  ok(/var _priorRef = Math\.max\(0, Math\.round\(Number\(_slotObj && _slotObj\.refunded && _slotObj\.refunded\.amountCents\) \|\| 0\)\);/.test(_WORKER_SRC), 'cycle-9: the dispute decrement reads any prior refund on the matched slot');
-  ok(/var _priorDisp = Math\.max\(0, Math\.round\(Number\(_slotObj && _slotObj\.disputed && _slotObj\.disputed\.decrementedCents\) \|\| 0\)\);/.test(_WORKER_SRC), 'cycle-9: the dispute decrement reads any prior dispute decrement on the matched slot');
+  ok(/var _priorRef = Math\.max\(0, Math\.round\(Number\(slotObj\.refunded && slotObj\.refunded\.amountCents\) \|\| 0\)\);/.test(_WORKER_SRC), 'cycle-9: the dispute decrement reads any prior refund on the matched slot');
+  ok(/var _priorDisp = Math\.max\(0, Math\.round\(Number\(_pd && _pd\.decrementedCents\) \|\| 0\)\);/.test(_WORKER_SRC), 'cycle-9: the dispute decrement reads any prior dispute decrement on the matched slot');
   ok(/var _room = _isSec \? Math\.max\(0, _capAmt - _priorDisp\) : Math\.max\(0, _slotAmt - _priorRef - _priorDisp\);/.test(_WORKER_SRC), 'cycle-9: the cap is NET of what was already reversed on the slot (refund + prior dispute)');
   ok(/decrementedCents: \(_priorDisp \+ _decAmt\)/.test(_WORKER_SRC), 'cycle-9: the .disputed record ACCUMULATES decrementedCents (does not overwrite) so F5 netting sees the total clawed back');
   ok((_WORKER_SRC.match(/rateLimit\(env, 'sqdisp:' \+ _dispId, 20, 86400000\)/g) || []).length === 1 && (_WORKER_SRC.match(/rateLimit\(env, 'ppdisp:' \+ _dispId, 20, 86400000\)/g) || []).length === 1, 'cycle-9 F3: per-dispute-id cap raised 4->20 so a legit dispute lifecycle + transient-failure retries do not starve the retry path');
@@ -3892,6 +3892,59 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   m = _mkDE9({ id: 'R3', tenant_id: 'T1', data: { paid: { balance: { paypal: 'CAP3', amountCents: 4000 } } }, revenue_cents: 4000 });
   await _extDisputeReverse(m.env, m.req, 'T1', 'R3', 'CAP3', 4000, 'ppdisp:R3');
   ok(m.rev === 0 && m.data.paid.balance.disputed.decrementedCents === 4000, 'cycle-9: a clean first dispute still reverses the full paid amount (4000 -> 0, decremented 4000)');
+}
+
+// ==== 12s: cycle-10 -- the Stripe dispute twin now shares the ONE net-cap + per-dispute-ledger helper ====
+// The cycle-9 over-decrement fix was applied to Square/PayPal (_extDisputeReverse) but the Stripe charge.dispute path had the
+// same gross-cap/overwrite bug. 12s extracts the shared math into pure _disputeApplyToSlot / _disputeRestoreSlot (used by BOTH
+// twins) so they can't diverge, and -- because Stripe DOES restore a won dispute -- keeps a per-dispute ledger so a won dispute
+// restores EXACTLY its own decrement, never the accumulated total.
+{
+  // ---- source-guards: both twins + the Stripe won-restore route through the shared helpers ----
+  ok(/function _disputeApplyToSlot\(slotObj, disputeId, wantCents, opts\)/.test(_WORKER_SRC) && /function _disputeRestoreSlot\(slotObj, wonDisputeId\)/.test(_WORKER_SRC), 'cycle-10: the shared dispute-slot helpers exist');
+  ok(/_disputeApplyToSlot\(_slotObj, sentinelKey, disputeCents,/.test(_WORKER_SRC), 'cycle-10: _extDisputeReverse (Square/PayPal) applies via the shared helper');
+  ok(/_disputeApplyToSlot\(_slotD, obj\.id, _dAmt,/.test(_WORKER_SRC), 'cycle-10: the Stripe charge.dispute decrement applies via the shared helper (net cap + ledger)');
+  ok(/_add \+= _disputeRestoreSlot\(_pp, obj\.id\)/.test(_WORKER_SRC), 'cycle-10: the Stripe WON-restore restores exactly the won dispute id via the shared ledger helper');
+  ok(!/var _decD = _isSecD \? \(_secBookedD \? Math\.min\(_dAmt, _capAmtD\) : 0\) : _dAmt;/.test(_WORKER_SRC), 'cycle-10: the old gross-cap Stripe _decD (no netting) is gone');
+
+  // ---- behavioral: pure-helper unit tests (no webhook mock needed) ----
+  // apply: clean first non-security dispute
+  let s = { amountCents: 5000 };
+  let d = _disputeApplyToSlot(s, 'D1', 3000, {});
+  ok(d === 3000 && s.disputed.decrementedCents === 3000 && s.disputed.amountCents === 3000 && s.disputed.byId.D1.decrementedCents === 3000, 'cycle-10 apply: a clean $30 dispute on a $50 slot decrements $30 + records the ledger (got ' + d + ')');
+  // apply: a SECOND distinct dispute on the same slot caps at the remaining balance + accumulates
+  let d2 = _disputeApplyToSlot(s, 'D2', 4000, {});
+  ok(d2 === 2000 && s.disputed.decrementedCents === 5000 && s.disputed.amountCents === 7000 && s.disputed.byId.D2.decrementedCents === 2000, 'cycle-10 apply: a second $40 dispute reverses only the remaining $20 (total capped at the $50 paid), decremented accumulates to $50 (got ' + d2 + ')');
+  // apply: idempotent -- re-applying the SAME dispute id adds nothing
+  let d1again = _disputeApplyToSlot(s, 'D1', 3000, {});
+  ok(d1again === 0 && s.disputed.decrementedCents === 5000, 'cycle-10 apply: re-applying the same dispute id is a no-op (idempotent; still $50, got ' + d1again + ')');
+  // apply: refund-then-dispute nets the prior refund
+  let sr = { amountCents: 5000, refunded: { amountCents: 2000 } };
+  let dr = _disputeApplyToSlot(sr, 'DR', 5000, {});
+  ok(dr === 3000, 'cycle-10 apply: a $50 dispute on a payment already refunded $20 reverses only the remaining $30 (got ' + dr + ')');
+  // apply: security capped at captured (booked) / 0 (not booked)
+  let ss = { captured: { amountCents: 5000 } };
+  let ds = _disputeApplyToSlot(ss, 'S1', 8000, { isSecurity: true, capturedAmt: 5000, booked: true });
+  ok(ds === 5000, 'cycle-10 apply: a security dispute caps at the captured-into-revenue amount ($50, got ' + ds + ')');
+  let ss2 = { captured: { amountCents: 5000 } };
+  let ds2 = _disputeApplyToSlot(ss2, 'S2', 8000, { isSecurity: true, capturedAmt: 5000, booked: false });
+  ok(ds2 === 0, 'cycle-10 apply: an UN-booked security deposit dispute decrements 0 (got ' + ds2 + ')');
+
+  // restore: a WON dispute restores EXACTLY its own decrement (not the accumulated total), idempotently
+  // s currently has D1(3000)+D2(2000), decrementedCents=5000
+  let r1 = _disputeRestoreSlot(s, 'D1');
+  ok(r1 === 3000 && s.disputed.decrementedCents === 2000 && s.disputed.byId.D1.reinstatedAt, 'cycle-10 restore: winning D1 restores only its $30 (net decrement now $20, not the $50 total, got ' + r1 + ')');
+  let r1again = _disputeRestoreSlot(s, 'D1');
+  ok(r1again === 0 && s.disputed.decrementedCents === 2000, 'cycle-10 restore: re-winning D1 restores nothing (idempotent per dispute id, got ' + r1again + ')');
+  let r2 = _disputeRestoreSlot(s, 'D2');
+  ok(r2 === 2000 && s.disputed.decrementedCents === 0, 'cycle-10 restore: winning D2 restores its $20 (net decrement now $0, got ' + r2 + ')');
+  let rUnknown = _disputeRestoreSlot(s, 'NOPE');
+  ok(rUnknown === 0, 'cycle-10 restore: an unknown dispute id restores nothing (got ' + rUnknown + ')');
+  // restore: a LEGACY slot (disputed before the ledger existed, no byId) restores its whole decrement once
+  let sl = { pi: 'pi_x', disputed: { at: 1, amountCents: 4000, decrementedCents: 4000 } };
+  let rl = _disputeRestoreSlot(sl, 'anything');
+  ok(rl === 4000 && sl.disputed.reinstatedAt, 'cycle-10 restore: a legacy (pre-ledger) disputed slot restores its whole decrement once (got ' + rl + ')');
+  ok(_disputeRestoreSlot(sl, 'anything') === 0, 'cycle-10 restore: a legacy slot is idempotent after restore (got 0)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
