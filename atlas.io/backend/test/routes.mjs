@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4051,6 +4051,49 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     const _pp = (_pdPartial.preCharges || []).find(function (c) { return c.id === 'P'; });
     ok(_pp && _pp.owedCents === 3000 && _pp.paid === false, 'BUG C: the pre-charge row carries owedCents=3000 + paid=false');
   }
+}
+
+// ==== 12x: F7 -- confirm-time double-book self-heal (post-write re-check + revert) ====
+{
+  // ---- source-guards: the heal is wired into all 3 confirm write paths + fail-safe ----
+  ok(/async function _confirmSlotHeal\(env, tenantId, bookingId, bd, startTs, endTs\)/.test(_WORKER_SRC), 'F7: _confirmSlotHeal exists');
+  ok((_WORKER_SRC.match(/await _confirmSlotHeal\(env, ctx\.tenant_id, (rid|id), body\.data, _hs[UPN], _he[UPN]\)\) return err\(409,/g) || []).length === 3, 'F7: the heal runs after the write on ALL 3 confirm paths (PUT + POST-as-update + fresh INSERT) and answers 409 when it reverted');
+  ok(/if \(!await _confirmSlotFull\(env, tenantId, bookingId, bd, startTs, endTs\)\) return false;/.test(_WORKER_SRC), 'F7: the heal only reverts when a re-check confirms an overbook (fail-safe: no overbook -> keep the confirm)');
+
+  // ---- behavioral (mock D1): the heal reverts an overbooking confirm, keeps a clean one ----
+  function _mkHealEnv(overlapRows, booking) {
+    let _data = booking ? JSON.stringify(booking.data || {}) : null;
+    let _status = booking ? (booking.status || 'confirmed') : 'confirmed';
+    let _upd = booking ? (booking.updated_at == null ? null : booking.updated_at) : null;
+    let _reverted = false;
+    const env = { DB: { prepare: (sql) => { let a = []; const api = {
+      bind: (...x) => { a = x; return api; },
+      first: async () => {
+        if (/SELECT settings, money FROM tenants WHERE id=\?/.test(sql)) return { settings: '{}', money: '{}' };
+        if (/SELECT info FROM assets WHERE tenant_id=\? AND id=\?/.test(sql)) return null;
+        if (/SELECT id,data,revenue_cents,status,updated_at,starts FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) return booking ? { id: booking.id, tenant_id: booking.tenant_id, data: _data, revenue_cents: 0, status: _status, updated_at: _upd, starts: 0 } : null;
+        return null;
+      },
+      all: async () => { if (/SELECT starts, ends, data FROM bookings WHERE tenant_id=\?/.test(sql)) return { results: overlapRows || [] }; return { results: [] }; },
+      run: async () => { if (/UPDATE bookings SET data=\?, revenue_cents=\?, status=\?, updated_at=\? WHERE/.test(sql)) { _data = a[0]; _status = a[2]; _upd = a[3]; _reverted = String(_status || '').toLowerCase() === 'pending'; return { meta: { changes: 1 } }; } return { meta: { changes: 0 } }; },
+    }; return api; } } };
+    return { env, get reverted() { return _reverted; }, get status() { return _status; } };
+  }
+
+  // (1) this confirm raced another into an already-occupied qty=1 slot -> reverted to pending
+  let m = _mkHealEnv([{ starts: 1500, ends: 2500, data: '{"asset":"Boat A"}' }], { id: 'B1', tenant_id: 'T1', data: { asset: 'Boat A', status: 'Confirmed' }, status: 'confirmed' });
+  let r = await _confirmSlotHeal(m.env, 'T1', 'B1', { asset: 'Boat A' }, 1000, 2000);
+  ok(r === true && m.reverted === true && m.status === 'pending', 'F7: a confirm that overbooked an occupied slot is self-reverted to pending (heal=true, no double-book)');
+
+  // (2) a confirm into a FREE slot is kept (heal is a no-op)
+  let m2 = _mkHealEnv([], { id: 'B2', tenant_id: 'T1', data: { asset: 'Boat B', status: 'Confirmed' }, status: 'confirmed' });
+  let r2 = await _confirmSlotHeal(m2.env, 'T1', 'B2', { asset: 'Boat B' }, 1000, 2000);
+  ok(r2 === false && m2.reverted === false && m2.status === 'confirmed', 'F7: a confirm into a free slot is kept (heal=false, no spurious revert)');
+
+  // (3) a DIFFERENT asset overlapping in time does NOT count -> kept
+  let m3 = _mkHealEnv([{ starts: 1500, ends: 2500, data: '{"asset":"Boat C"}' }], { id: 'B3', tenant_id: 'T1', data: { asset: 'Boat A', status: 'Confirmed' }, status: 'confirmed' });
+  let r3 = await _confirmSlotHeal(m3.env, 'T1', 'B3', { asset: 'Boat A' }, 1000, 2000);
+  ok(r3 === false && m3.status === 'confirmed', 'F7: an overlapping booking for a DIFFERENT asset does not trigger a revert');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
