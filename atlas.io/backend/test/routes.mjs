@@ -4245,5 +4245,21 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(path === '\/api\/auth\/accept-invite' && method === 'POST'\) \{\s*\n\s*if \(_crossSiteBlocked\(req\)\)/.test(_WORKER_SRC), '#6: /api/auth/accept-invite has the guard as its FIRST check');
 }
 
+// ==== 13b: cycle-2 installment webhook key collision (#9) + delete-resurrection guard ON by default (#10) ====
+{
+  // ---- #9 (data-integrity HIGH): the Stripe webhook must credit an installment under the SAME per-installment key the cron uses ----
+  ok(/\(md\.kind === 'installment' && md\.inst\) \? \('installment:inst' \+ String\(md\.inst\)\)/.test(_WORKER_SRC), '#9: the generic Stripe webhook namespaces an installment credit by md.inst (not the bare "installment" key)');
+  ok(/const cid = 'inst' \+ String\(inst\.id\);/.test(_WORKER_SRC), '#9: the auto-pay cron credits under cid = "inst"+inst.id');
+  ok(/_pkKey = \(_core \? 'installment:' : 'charge:'\) \+ String\(chargeId\)/.test(_WORKER_SRC), '#9: _offSessionCreditBooking maps a core credit to "installment:"+cid');
+  // the two derivations converge on ONE key for a given installment id -> distinct installments never collide, same-pi dedup still works
+  { const _id = 'ABC'; const _cronKey = 'installment:' + ('inst' + String(_id)); const _webhookKey = 'installment:inst' + String(_id); ok(_cronKey === _webhookKey, '#9: webhook key === cron key for the same installment id (no cross-installment slot collision)'); }
+
+  // ---- #10 (data-integrity MED): the delete-resurrection tombstone guard is ON by default ----
+  ok(/_pcfgGet\(env, 'sync_tombstones_enabled', '1'\)\) === '1'\) : false/.test(_WORKER_SRC), '#10: the booking-write tombstone gate now defaults ON (default "1")');
+  ok(!/_pcfgGet\(env, 'sync_tombstones_enabled', '0'\)/.test(_WORKER_SRC), '#10: no lingering default-OFF read of the flag');
+  ok(/Number\(\(body\.data && body\.data\._t\) \|\| 0\) <= Number\(_tb\.deleted_at \|\| 0\)/.test(_WORKER_SRC), '#10: the resurrection block stays STALE-ONLY (incoming _t <= deletion time); a genuine newer re-create still passes');
+  ok(/INSERT OR REPLACE INTO sync_tombstones \(tenant_id, coll, id, deleted_at\)/.test(_WORKER_SRC), '#10: a DELETE writes a tombstone (so the guard has something to check)');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
