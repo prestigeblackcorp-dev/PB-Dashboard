@@ -6171,6 +6171,13 @@ const Atlas = (function(){
     try{ renderOverview(); renderBookings(); renderCustomers(); _refreshNavBadges(); }catch(e){}
     toast('Restored from voided.'); }
   function bkVoidReport(id){ _voidLegalReport(id); }
+  // Chargeback/void-report money integrity (readiness HIGH): the ACTUAL amount Stripe/PayPal/Square charged -- which
+  // already includes any tip and any passed-through processor fee -- is recorded server-side as b.paid[kind].amountCents
+  // (reserve->'deposit', balance->'balance', security->'security'). The quote-derived estimate (q.total-q.dueNow etc.)
+  // silently ignores tips/folded fees/gift credit, so a dispute-evidence or legal-void document built from the quote would
+  // NOT match the card network's own transaction record. Prefer the real charged amount; fall back to the quote estimate
+  // ONLY when no captured slot exists (a legacy pre-webhook booking). Returns dollars.
+  function _paidAmt(b,keys,est){ try{ var P=(b&&b.paid)||{}; for(var i=0;i<keys.length;i++){ var s=P[keys[i]]; if(s&&!s.hold&&typeof s.amountCents==='number') return _r2(s.amountCents/100); } }catch(e){} return _r2(Number(est)||0); }
   function _voidLegalReport(id){ var b=_getBooking(id); if(!b){ toast('Booking not found.'); return; }
     var E=function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
     var mny=function(n){ return _moneyBase(_r2(Number(n)||0)); };
@@ -6179,9 +6186,9 @@ const Atlas = (function(){
     var p=_portal(b)||{}, tr=b.sigTrail||{};
     var q=b.quote||{};   // Wave3 MED: the proof-of-payment table must include the core reserve/balance/deposit portal payments, not only charges[] (mirrors the evidence report)
     var payRows='';
-    if(p.reservePaidAt) payRows+='<tr><td>'+when(p.reservePaidAt)+'</td><td>Reserve / down payment</td><td class="r">'+mny(q.dueNow!=null?q.dueNow:(q.deposit||0))+'</td></tr>';
-    if(p.balancePaidAt) payRows+='<tr><td>'+when(p.balancePaidAt)+'</td><td>Balance paid</td><td class="r">'+mny(_r2((Number(q.total)||0)-(q.dueNow!=null?Number(q.dueNow)||0:0)))+'</td></tr>';
-    if(p.depositPaidAt) payRows+='<tr><td>'+when(p.depositPaidAt)+'</td><td>Security deposit</td><td class="r">'+mny((b.hold&&b.hold.amount)||0)+'</td></tr>';
+    if(p.reservePaidAt) payRows+='<tr><td>'+when(p.reservePaidAt)+'</td><td>Reserve / down payment</td><td class="r">'+mny(_paidAmt(b,['deposit','reserve'],q.dueNow!=null?q.dueNow:(q.deposit||0)))+'</td></tr>';
+    if(p.balancePaidAt) payRows+='<tr><td>'+when(p.balancePaidAt)+'</td><td>Balance paid</td><td class="r">'+mny(_paidAmt(b,['balance'],_r2((Number(q.total)||0)-(q.dueNow!=null?Number(q.dueNow)||0:0))))+'</td></tr>';
+    if(p.depositPaidAt) payRows+='<tr><td>'+when(p.depositPaidAt)+'</td><td>Security deposit</td><td class="r">'+mny(_paidAmt(b,['security'],(b.hold&&b.hold.amount)||0))+'</td></tr>';
     payRows+=_charges(b).filter(function(c){ return c&&c.paidAt; }).map(function(c){ return '<tr><td>'+when(c.paidAt)+'</td><td>'+E(c.label||'Charge')+'</td><td class="r">'+mny(c.amount)+'</td></tr>'; }).join('');
     if(!payRows) payRows='<tr><td colspan="3" class="muted">No payments on file.</td></tr>';
     var earned=_bkEarned(b);
@@ -6230,13 +6237,13 @@ const Atlas = (function(){
     var sigIp=tr.ip||dev.ip||'';
     var chById={}; var allCh=_charges(b); allCh.forEach(function(c){ if(c&&c.id) chById[c.id]=c; });
     var payRows='';
-    if(p.reservePaidAt) payRows+='<tr><td>'+when(p.reservePaidAt)+'</td><td>Reserve / down payment</td><td>Card</td><td class="r">'+mny(q.dueNow!=null?q.dueNow:(q.deposit||0))+'</td></tr>';
-    if(p.balancePaidAt) payRows+='<tr><td>'+when(p.balancePaidAt)+'</td><td>Balance paid</td><td>Card</td><td class="r">'+mny(_r2((Number(q.total)||0)-(q.dueNow!=null?Number(q.dueNow)||0:0)))+'</td></tr>';
-    if(p.depositPaidAt) payRows+='<tr><td>'+when(p.depositPaidAt)+'</td><td>Security deposit</td><td>Card</td><td class="r">'+mny((b.hold&&b.hold.amount)||0)+'</td></tr>';
+    if(p.reservePaidAt) payRows+='<tr><td>'+when(p.reservePaidAt)+'</td><td>Reserve / down payment</td><td>Card</td><td class="r">'+mny(_paidAmt(b,['deposit','reserve'],q.dueNow!=null?q.dueNow:(q.deposit||0)))+'</td></tr>';
+    if(p.balancePaidAt) payRows+='<tr><td>'+when(p.balancePaidAt)+'</td><td>Balance paid</td><td>Card</td><td class="r">'+mny(_paidAmt(b,['balance'],_r2((Number(q.total)||0)-(q.dueNow!=null?Number(q.dueNow)||0:0))))+'</td></tr>';
+    if(p.depositPaidAt) payRows+='<tr><td>'+when(p.depositPaidAt)+'</td><td>Security deposit</td><td>Card</td><td class="r">'+mny(_paidAmt(b,['security'],(b.hold&&b.hold.amount)||0))+'</td></tr>';
     var paidCh=allCh.filter(function(c){ return c&&c.paidAt; });
     payRows+=paidCh.map(function(c){ return '<tr><td>'+when(c.paidAt)+'</td><td>'+E(c.label||(c.kind||'Charge'))+'</td><td>'+(c.paidOnline?'Card':'Manual')+'</td><td class="r">'+mny(c.amount)+'</td></tr>'; }).join('');
     if(!payRows) payRows='<tr><td colspan="4" class="muted">No payment records on file.</td></tr>';
-    var _paidSum=0; if(p.reservePaidAt) _paidSum+=_r2(q.dueNow!=null?q.dueNow:(q.deposit||0)); if(p.balancePaidAt) _paidSum+=_r2((Number(q.total)||0)-(q.dueNow!=null?Number(q.dueNow)||0:0)); if(p.depositPaidAt) _paidSum+=_r2((b.hold&&b.hold.amount)||0); paidCh.forEach(function(c){ _paidSum+=_r2(Number(c.amount)||0); }); _paidSum=_r2(_paidSum);   // Wave3 HIGH: Total received MUST be the sum of payments actually collected (itemized above), never b.revCents -- the server sets revCents to the accrual estimate (=full quote total) for a committed-but-never-paid booking, a false 'money received' claim on a card-network dispute doc
+    var _paidSum=0; if(p.reservePaidAt) _paidSum+=_paidAmt(b,['deposit','reserve'],q.dueNow!=null?q.dueNow:(q.deposit||0)); if(p.balancePaidAt) _paidSum+=_paidAmt(b,['balance'],_r2((Number(q.total)||0)-(q.dueNow!=null?Number(q.dueNow)||0:0))); if(p.depositPaidAt) _paidSum+=_paidAmt(b,['security'],(b.hold&&b.hold.amount)||0); paidCh.forEach(function(c){ _paidSum+=_r2(Number(c.amount)||0); }); _paidSum=_r2(_paidSum);   // Wave3 HIGH: Total received MUST be the sum of payments actually collected (itemized above), never b.revCents -- the server sets revCents to the accrual estimate (=full quote total) for a committed-but-never-paid booking, a false 'money received' claim on a card-network dispute doc
     var totalStr=mny(_paidSum)+((b.revCents!=null && Math.abs(_paidSum-_r2((Number(b.revCents)||0)/100))<0.01)?' <span class="muted">(reconciled)</span>':'');   // assert a processor tie-out only when the collected sum equals the server-reconciled revenue
     var exts=_bkActiveExt(b)||[];
     var extRows=exts.length?exts.map(function(x,i){

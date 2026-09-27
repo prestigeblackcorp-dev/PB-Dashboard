@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _stripUnbackedIdVerify, _ownerLoginBanBypass, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4094,6 +4094,82 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   let m3 = _mkHealEnv([{ starts: 1500, ends: 2500, data: '{"asset":"Boat C"}' }], { id: 'B3', tenant_id: 'T1', data: { asset: 'Boat A', status: 'Confirmed' }, status: 'confirmed' });
   let r3 = await _confirmSlotHeal(m3.env, 'T1', 'B3', { asset: 'Boat A' }, 1000, 2000);
   ok(r3 === false && m3.status === 'confirmed', 'F7: an overlapping booking for a DIFFERENT asset does not trigger a revert');
+}
+
+// ==== 12y: full-system readiness audit fixes -- #1 PB-mirror preserve, #2 chargeback amounts, #3 off-session unconfirmed, #4 unbacked idVerified, #5 owner IP-ban recovery ====
+{
+  // ---- #1 (money HIGH): a PB re-sync must NEVER erase Atlas-collected payments/signatures. _pbMirrorMerge overlays PB-owned fields onto the CURRENT server blob ----
+  ok(/function _pbMirrorMerge\(mirrorData, serverData\)/.test(_WORKER_SRC), '#1: _pbMirrorMerge exists');
+  ok(/row\.data = _pbMirrorMerge\(row\.data, _sd\)/.test(_WORKER_SRC), '#1: _pbSyncWrite merges the fresh mirror onto the current server blob before writing');
+  ok(/if \(_pbDropData\) \{ const _di = cols\.indexOf\('data'\); if \(_di >= 0\) \{ cols\.splice\(_di, 1\); vals\.splice\(_di, 1\); \} \}/.test(_WORKER_SRC), '#1: on a merge-read error the data write is DROPPED (fail-safe -- never overwrite the blob with an unmerged mirror)');
+  {
+    const _srv = { source: 'pb-mirror', status: 'Confirmed', quote: { total: 400 }, paid: { balance: { amountCents: 45000, at: 5 } }, portal: { signedAt: 111, signerName: 'Jo' }, giftRedemptions: [{ id: 'g1', amt: 20 }], disputes: [{ id: 'dp1' }], charges: [{ id: 'pbc', source: 'pb', amount: 100 }, { id: 'cof', source: 'card_on_file', amount: 30, paidAt: 9 }] };
+    const _mir = { source: 'pb-mirror', readOnly: true, status: 'Voided', quote: { total: 500 }, charges: [{ id: 'pbc2', source: 'pb', amount: 120 }], mirror: { source: 'pb' }, _t: 7 };
+    const _m = _pbMirrorMerge(_mir, _srv);
+    ok(_m.paid && _m.paid.balance && _m.paid.balance.amountCents === 45000, '#1: the online balance payment (d.paid) survives the re-sync');
+    ok(_m.portal && _m.portal.signedAt === 111, '#1: the customer signature (portal.signedAt) survives the re-sync');
+    ok(Array.isArray(_m.giftRedemptions) && _m.giftRedemptions.length === 1 && Array.isArray(_m.disputes), '#1: gift redemptions + dispute ledger survive the re-sync');
+    ok(_m.quote && _m.quote.total === 500 && String(_m.status) === 'Voided', '#1: PB-owned fields (quote/status) ARE still refreshed from PB');
+    const _cofKept = (_m.charges || []).some(function (c) { return c.id === 'cof'; }), _pbOld = (_m.charges || []).some(function (c) { return c.id === 'pbc'; }), _pbNew = (_m.charges || []).some(function (c) { return c.id === 'pbc2'; });
+    ok(_cofKept && _pbNew && !_pbOld, '#1: Atlas-native (card_on_file) charge kept; PB balance-payment charges rebuilt fresh (stale pb charge replaced)');
+    const _pure = _pbMirrorMerge({ a: 1 }, null);
+    ok(_pure && _pure.a === 1, '#1: no prior server blob -> pure mirror (first sync)');
+  }
+
+  // ---- #4 (security MED): an unbacked client-asserted idVerified is stripped before _carryVerify can index it into verified_customers ----
+  ok((_WORKER_SRC.match(/await _stripUnbackedIdVerify\(env, (tenantId|ctx\.tenant_id), (id|body\.id), (clientData|body\.data)\)/g) || []).length === 2, '#4: _stripUnbackedIdVerify wired at BOTH sig-strip sites (mirror-write CAS + POST create)');
+  function _mkIdvEnv(vc, bookingData) {
+    return { DB: { prepare: (sql) => { let a = []; const api = { bind: (...x) => { a = x; return api; }, first: async () => {
+      if (/FROM verified_customers WHERE tenant_id=\? AND email=\?/.test(sql)) return vc;
+      if (/SELECT data FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) return bookingData != null ? { data: bookingData } : null;
+      return null; } }; return api; } } };
+  }
+  {
+    // (1) unbacked (no verified_customers row, no prior server verification) -> stripped
+    let d1 = { idVerified: true, custEmail: 'x@y.com' };
+    await _stripUnbackedIdVerify(_mkIdvEnv(null, null), 'T1', 'B1', d1);
+    ok(d1.idVerified === false, '#4: an unbacked client idVerified:true is stripped to false');
+    // (2) backed by a real verified_customers row (returning verified customer) -> honored
+    let d2 = { idVerified: true, custEmail: 'x@y.com' };
+    await _stripUnbackedIdVerify(_mkIdvEnv({ name: 'N', verified_at: 1, dl_expiry: 4102444800000 }, null), 'T1', 'B2', d2);
+    ok(d2.idVerified === true, '#4: idVerified is HONORED when the customer is already in verified_customers');
+    // (3) backed by the CURRENT server row already recording this booking verified -> honored
+    let d3 = { idVerified: true, custEmail: 'x@y.com' };
+    await _stripUnbackedIdVerify(_mkIdvEnv(null, '{"idVerified":true}'), 'T1', 'B3', d3);
+    ok(d3.idVerified === true, '#4: idVerified is HONORED when the server row already recorded a prior real verification');
+    // (4) the portal boolean variant is also stripped when unbacked (both feed _carryVerify)
+    let d4 = { portal: { idVerified: true }, custEmail: 'x@y.com' };
+    await _stripUnbackedIdVerify(_mkIdvEnv(null, null), 'T1', 'B4', d4);
+    ok(d4.portal.idVerified === false, '#4: an unbacked portal.idVerified:true is stripped too');
+    // (5) no claim -> untouched no-op (never spuriously clears)
+    let d5 = { idVerified: false, custEmail: 'x@y.com' };
+    await _stripUnbackedIdVerify(_mkIdvEnv(null, null), 'T1', 'B5', d5);
+    ok(d5.idVerified === false, '#4: a booking with no verification claim is a no-op');
+  }
+
+  // ---- #5 (security LOW): a LOGGED-OUT owner can complete their own login (password+MFA) from a mistakenly-banned IP; non-owners stay banned ----
+  ok(/async function _ownerLoginBanBypass\(env, req, path\)/.test(_WORKER_SRC), '#5: _ownerLoginBanBypass exists');
+  ok(/_ownerExempt = await _ownerLoginBanBypass\(env, req, path\)/.test(_WORKER_SRC), '#5: the ban gate consults the owner-login bypass (OR-ed with the live-owner-session exemption)');
+  function _mkBypassEnv(userEmail) { return { OWNER_EMAIL: 'o@x.com', DB: { prepare: (sql) => { let a = []; const api = { bind: (...x) => { a = x; return api; }, first: async () => { if (/SELECT email FROM users WHERE id=\?/.test(sql)) return userEmail != null ? { email: userEmail } : null; return null; } }; return api; } } }; }
+  function _mkReqBody(body) { return { clone: () => ({ json: async () => body }) }; }
+  ok((await _ownerLoginBanBypass(_mkBypassEnv(null), _mkReqBody({ email: 'o@x.com' }), '/api/auth/login')) === true, '#5: an OWNER-email login request is let through the ban');
+  ok((await _ownerLoginBanBypass(_mkBypassEnv(null), _mkReqBody({ email: 'staff@x.com' }), '/api/auth/login')) === false, '#5: a NON-owner login stays banned (brute-force route still protected)');
+  ok((await _ownerLoginBanBypass(_mkBypassEnv('o@x.com'), _mkReqBody({ challenge: 'U.123.s' }), '/api/auth/mfa/verify')) === true, '#5: an MFA challenge whose uid is an owner is let through');
+  ok((await _ownerLoginBanBypass(_mkBypassEnv('staff@x.com'), _mkReqBody({ challenge: 'U.123.s' }), '/api/auth/mfa/verify')) === false, '#5: an MFA challenge for a NON-owner uid stays banned');
+  ok((await _ownerLoginBanBypass(_mkBypassEnv(null), _mkReqBody({ email: 'o@x.com' }), '/api/data/bookings')) === false, '#5: the bypass NEVER broadens beyond the login/mfa recovery paths');
+
+  // ---- #3 (money HIGH): an off-session card-on-file charge treats a Stripe network timeout as UNCONFIRMED (keeps the line), not a decline (which deletes it and invites a double-charge) ----
+  ok(/var _unconfirmed = \(Number\(_res\.status\) === 0\) \|\| String\(_res\.reason \|\| ''\) === 'http_0';/.test(_WORKER_SRC), '#3: a stripeApi status-0 (timeout/blip) is classified UNCONFIRMED, distinct from a real decline');
+  ok(/reason: 'unconfirmed', status: 0, unconfirmed: true[\s\S]*Could not confirm the charge/.test(_WORKER_SRC), '#3: on unconfirmed the handler KEEPS the charge line + claimed fee and tells the owner to verify in Stripe (same amount+note replays)');
+  ok(/if \(_unconfirmed\) \{[\s\S]*return json\(\{ ok: false, reason: 'unconfirmed'[\s\S]*\}[\s\S]*filter\(function \(c\) \{ return !\(c && String\(c\.id\) === _cid && !c\.paidAt\); \}\)/.test(_WORKER_SRC), '#3: the line-DELETE (decline path) runs ONLY after the unconfirmed early-return, so a timeout never deletes the line');
+  ok(/const _cid = 'oc' \+ \(await _sha256Hex\(_brow\.id \+ ':' \+ _amt \+ ':' \+ _note/.test(_WORKER_SRC), '#3: the charge id is DETERMINISTIC (booking:amt:note) so a same-input retry replays the original PaymentIntent, never a 2nd charge');
+
+  // ---- #2 (money HIGH, client): the chargeback-evidence + void-legal reports source paid amounts from the REAL charged amountCents, not the quote estimate ----
+  const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/function _paidAmt\(b,keys,est\)\{[\s\S]*typeof s\.amountCents==='number'\) return _r2\(s\.amountCents\/100\)/.test(_ATLAS_SRC), '#2: _paidAmt prefers the real captured b.paid[kind].amountCents (tips/fees included), falling back to the quote estimate');
+  ok((_ATLAS_SRC.match(/_paidAmt\(b,\['deposit','reserve'\]/g) || []).length === 3 && (_ATLAS_SRC.match(/_paidAmt\(b,\['balance'\]/g) || []).length === 3 && (_ATLAS_SRC.match(/_paidAmt\(b,\['security'\]/g) || []).length === 3, '#2: both report rows + the Total-received sum use _paidAmt for reserve/balance/security (2 reports x 3 sites)');
+  ok(_ATLAS_SRC === _INDEX_SRC, '#2: atlas.html and index.html remain byte-identical after the fix');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
