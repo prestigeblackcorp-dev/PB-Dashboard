@@ -4166,7 +4166,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // ---- #2 (money HIGH, client): the chargeback-evidence + void-legal reports source paid amounts from the REAL charged amountCents, not the quote estimate ----
   const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
   const _INDEX_SRC = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-  ok(/function _paidAmt\(b,keys,est\)\{[\s\S]*typeof s\.amountCents==='number'\) return _r2\(s\.amountCents\/100\)/.test(_ATLAS_SRC), '#2: _paidAmt prefers the real captured b.paid[kind].amountCents (tips/fees included), falling back to the quote estimate');
+  ok(/function _paidAmt\(b,keys,est\)\{[\s\S]*typeof s\.amountCents==='number'\)\{[\s\S]*return _r2\(Math\.max\(0,\(Number\(s\.amountCents\)\|\|0\)-_ref-_disp\)\/100\)/.test(_ATLAS_SRC), '#2/#7: _paidAmt prefers the real captured b.paid[kind].amountCents (tips/fees included) NET of refund+chargeback, falling back to the quote estimate');   // 13f: body now nets refunded+disputed (see the 13f block)
   ok((_ATLAS_SRC.match(/_paidAmt\(b,\['deposit','reserve'\]/g) || []).length >= 3 && (_ATLAS_SRC.match(/_paidAmt\(b,\['balance'\]/g) || []).length >= 3 && (_ATLAS_SRC.match(/_paidAmt\(b,\['security'\]/g) || []).length >= 3, '#2: both report rows + the Total-received sum use _paidAmt for reserve/balance/security (>=3 sites each; 13c _portalMoney adds more)');
   ok(_ATLAS_SRC === _INDEX_SRC, '#2: atlas.html and index.html remain byte-identical after the fix');
 }
@@ -4332,6 +4332,22 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 
   // ---- #9 (LOW privacy): the scheduler de-identifies openShifts[].reason (white-label) ----
   ok(/parsed\.openShifts\.forEach\(function \(s\) \{ if \(s && typeof s\.reason === 'string'\) s\.reason = _deIdentifyAI\(s\.reason\)/.test(_WORKER_SRC), '#9: /api/schedule runs openShifts[].reason through the white-label de-identify filter');
+}
+
+// ==== 13f: cycle-3 client -- #4 manual-verify method, #7 receipt nets refunds/disputes, #8 balance-owed nets gift credit, #3 detach toast ====
+{
+  const _ATLAS_SRC13f = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13f = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // #4: the manual "Verify ID" button tags the verification so the server honors it (paired with 13e)
+  ok(/b\.idVerified=true; b\.idVerifiedAt=Date\.now\(\); b\.idVerifyMethod='manual'/.test(_ATLAS_SRC13f), '#4: bkToggleVerify tags a manual verification (idVerifyMethod=manual) so the server keeps it');
+  // #7: _paidAmt nets a refund + chargeback on the slot (matches the worker's settledCents)
+  ok(/var _ref=\(s\.refunded&&Number\(s\.refunded\.amountCents\)\)\|\|0; var _disp=\(s\.disputed&&Number\(s\.disputed\.decrementedCents/.test(_ATLAS_SRC13f), '#7: _paidAmt subtracts refunded + disputed so a refunded balance shows $0 collected on the receipt/evidence reports');
+  // #8: the balance-owed KPI and its drilldown both net gift-card credit
+  ok((_ATLAS_SRC13f.match(/_bkTotal\(b\)-_bkEarned\(b\)-_giftApplied\(b\)/g) || []).length === 2, '#8: _remainingBalance AND drillUnpaid both subtract gift credit (no phantom balance on a gift-settled booking)');
+  ok(!/Math\.max\(0,_r2\(_bkTotal\(b\)-_bkEarned\(b\)\)\)/.test(_ATLAS_SRC13f), '#8: no balance-owed path still ignores gift credit');
+  // #3: the sync toast surfaces the detached count so the owner is not left in the dark
+  ok(/dt=\(j\.atlas&&j\.atlas\.detached\)\|\|0/.test(_ATLAS_SRC13f) && /'\+dt\+' kept as your own/.test(_ATLAS_SRC13f), '#3: pbSyncNow surfaces the detached count');
+  ok(_ATLAS_SRC13f === _INDEX_SRC13f, '#3/#4/#7/#8: atlas.html and index.html remain byte-identical');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }

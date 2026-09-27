@@ -4525,7 +4525,7 @@ const Atlas = (function(){
   function _bkAddons(b){ var ex=(b&&b.extras)||[]; if(!ex.length)return 0; var per=Math.max(1,Number(b.periods)||1); var rm=(S.money&&S.money.rateModel)||'day'; var _bkMs=per*_periodMsOf(rm);
     return ex.reduce(function(s,x){ var each=(Number(x.price)||0)*(Number(x.qty)||1), amt; if(x.per==='unit') amt=each*per; else if(x.per==='hour'||x.per==='pday'||x.per==='week'||x.per==='pmonth') amt=each*Math.max(1,Math.ceil(_bkMs/_periodMsOf(x.per))); else amt=each; return s+amt; },0); }   // per-booking add-on $ -- mirrors calcQuote exLines
   function _addonRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkAddons(b);},0); }
-  function _remainingBalance(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ if(b.status==='Voided') return s; return s+Math.max(0,_r2(_bkTotal(b)-_bkEarned(b))); },0); }   // total not yet collected (Voided=cancelled-kept-DL: trip never happened, nothing owed)
+  function _remainingBalance(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ if(b.status==='Voided') return s; return s+Math.max(0,_r2(_bkTotal(b)-_bkEarned(b)-_giftApplied(b))); },0); }   // total not yet collected (Voided=cancelled-kept-DL: trip never happened, nothing owed). cycle-3 #8: subtract gift-card credit -- revenue_cents only reflects card captures, so a gift-settled balance is NOT still owed (server _portalDue nets it; the KPI must match or it chases an already-paid customer)
   function _cancelLoss(){ return (DATA.bookings||[]).filter(function(b){return b&&b.status==='Cancelled';}).reduce(function(s,b){ return s+Math.max(0,_r2(_bkTotal(b)-_collectedCharges(b))); },0); }   // lost revenue on cancelled, net of kept fee   // take-home subtracts partner payouts AND remitted sales tax (a pass-through liability, not income)
   // Generic drill-down modal: lists the line items behind any number, each optionally clickable.
   function _drill(title, sub, rows, opts){ opts=opts||{};
@@ -4921,7 +4921,7 @@ const Atlas = (function(){
     else { title='Deposits held'; note='Refundable security deposits currently authorized (held, not captured) - released at $0 fee when the '+esc(_fterm('book'))+' closes clean.'; pred=function(b){return b.hold&&b.hold.status==='authorized'&&(Number(b.hold.amount)||0)>0;}; amt=function(b){return Number(b.hold.amount)||0;}; }
     var rows=(DATA.bookings||[]).filter(pred).map(function(b){return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:amt(b),onClick:"Atlas.openBooking('"+b.id+"')"};});
     _drill(title,note,rows,{empty:'Nothing here right now.'}); }
-  function drillUnpaid(){ var rows=(DATA.bookings||[]).filter(_isCommitted).map(function(b){ var o=Math.max(0,_r2(_bkTotal(b)-_bkEarned(b))); return o>0.005?{label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:o,onClick:"Atlas.openBooking('"+b.id+"')"}:null; }).filter(Boolean);
+  function drillUnpaid(){ var rows=(DATA.bookings||[]).filter(_isCommitted).map(function(b){ var o=Math.max(0,_r2(_bkTotal(b)-_bkEarned(b)-_giftApplied(b))); return o>0.005?{label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:o,onClick:"Atlas.openBooking('"+b.id+"')"}:null; }).filter(Boolean);   /* cycle-3 #8: net gift-card credit (match _remainingBalance + the server) so a fully gift-settled booking is not listed as still owing */
     _drill('Balance owed','Outstanding balance across your committed '+esc(_fterm('books'))+' - value not yet collected.',rows,{empty:'Everything is paid up.'}); }
   function drillCancelLoss(){ var rows=(DATA.bookings||[]).filter(function(b){return b&&b.status==='Cancelled';}).map(function(b){ var l=Math.max(0,_r2(_bkTotal(b)-_collectedCharges(b))); return l>0.005?{label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:l,onClick:"Atlas.openBooking('"+b.id+"')"}:null; }).filter(Boolean);
     _drill('Cancellation losses','Revenue lost to cancelled '+esc(_fterm('books'))+', net of any kept fee.',rows,{empty:'No cancellation losses.'}); }
@@ -6177,7 +6177,7 @@ const Atlas = (function(){
   // silently ignores tips/folded fees/gift credit, so a dispute-evidence or legal-void document built from the quote would
   // NOT match the card network's own transaction record. Prefer the real charged amount; fall back to the quote estimate
   // ONLY when no captured slot exists (a legacy pre-webhook booking). Returns dollars.
-  function _paidAmt(b,keys,est){ try{ var P=(b&&b.paid)||{}; for(var i=0;i<keys.length;i++){ var s=P[keys[i]]; if(s&&!s.hold&&typeof s.amountCents==='number') return _r2(s.amountCents/100); } }catch(e){} return _r2(Number(est)||0); }
+  function _paidAmt(b,keys,est){ try{ var P=(b&&b.paid)||{}; for(var i=0;i<keys.length;i++){ var s=P[keys[i]]; if(s&&!s.hold&&typeof s.amountCents==='number'){ var _ref=(s.refunded&&Number(s.refunded.amountCents))||0; var _disp=(s.disputed&&Number(s.disputed.decrementedCents!=null?s.disputed.decrementedCents:s.disputed.amountCents))||0; return _r2(Math.max(0,(Number(s.amountCents)||0)-_ref-_disp)/100); } } }catch(e){} return _r2(Number(est)||0); }   /* cycle-3 #7: net out a refund / chargeback on the slot (mirrors the worker's _portalDue.settledCents) so a fully-refunded balance shows $0 collected, not the pre-refund amount, on the receipt + evidence reports */
   function _voidLegalReport(id){ var b=_getBooking(id); if(!b){ toast('Booking not found.'); return; }
     var E=function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
     var mny=function(n){ return _moneyBase(_r2(Number(n)||0)); };
@@ -6354,7 +6354,7 @@ const Atlas = (function(){
     _logEvent('booking','Created '+made+' recurring bookings from '+b.id+(skipped?(' ('+skipped+' skipped -- dates unavailable)'):''),{booking:b.id}); save(); closeModal(); renderOverview(); renderBookings();
     var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled'&&x.status!=='Voided';}).length; toast(made+' recurring bookings created'+(skipped?(' \u2014 '+skipped+' skipped (dates unavailable)'):'')); }
   // ---- Booking-level ID verification ----
-  function bkToggleVerify(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; b.idVerified=true; b.idVerifiedAt=Date.now(); b.idRejected=false; delete b.idRejectedAt;
+  function bkToggleVerify(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; b.idVerified=true; b.idVerifiedAt=Date.now(); b.idVerifyMethod='manual'; b.idRejected=false; delete b.idRejectedAt;   /* cycle-3 #4: tag this as a MANUAL owner verification so the server honors it (does not strip it as a forged Stripe claim) yet never auto-carries it into verified_customers */
     _upsertBooking(b); _logEvent('booking','ID verified for '+b.id,{booking:b.id}); save(); openBooking(id); toast('ID marked verified'); }
   function bkRejectVerify(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; b.idVerified=false; delete b.idVerifiedAt; b.idRejected=true; b.idRejectedAt=Date.now();
     _upsertBooking(b); _logEvent('booking','ID rejected for '+b.id,{booking:b.id}); save(); openBooking(id); toast('ID marked rejected -- renter can re-submit'); }
@@ -10481,8 +10481,8 @@ const Atlas = (function(){
       if(btn){ btn.disabled=false; btn.textContent='Sync from Prestige Black now'; }
       if(!out) return; out.style.display='block';
       if(j.ok){ out.style.borderColor='var(--brand)'; out.style.color='var(--ink)';
-        var n=(j.atlas&&j.atlas.mirrored)||0, e=(j.atlas&&j.atlas.errors)||0;
-        out.innerHTML='<b>Synced.</b> '+n+' booking'+(n===1?'':'s')+' mirrored'+(e?(' &middot; '+e+' skipped'):'')+(j.brandApplied?' &middot; branding applied':'')+'. Refreshing your data...';
+        var n=(j.atlas&&j.atlas.mirrored)||0, e=(j.atlas&&j.atlas.errors)||0, dt=(j.atlas&&j.atlas.detached)||0;
+        out.innerHTML='<b>Synced.</b> '+n+' booking'+(n===1?'':'s')+' mirrored'+(dt?(' &middot; '+dt+' kept as your own (removed on PB but had payments/signatures &mdash; review them)'):'')+(e?(' &middot; '+e+' skipped'):'')+(j.brandApplied?' &middot; branding applied':'')+'. Refreshing your data...';   /* cycle-3 #3: surface the detached count so the owner knows a PB-removed booking that carried Atlas state was kept (not silently) and can review it */
         setTimeout(function(){ try{ var sess=(typeof store!=='undefined'&&store.session)?store.session():null; if(sess&&sess.tenantId){ _srvHydrate(sess.tenantId).then(function(){ try{ DATA.bookings=_bookings(); }catch(_e){} try{ DATA.assets=store.assets(); }catch(_e){} try{ buildApp(); }catch(_e){} try{ renderFleet(); }catch(_e){} try{ renderOverview(); }catch(_e){} }); } }catch(_e){} }, 700);
       } else { out.style.borderColor='var(--danger)'; out.style.color='var(--danger)';
         out.textContent=(j.error==='not_configured')?'Not set up yet: add PB_BRIDGE_URL and PB_BRIDGE_SECRET to the Atlas worker environment, then try again.':('Could not sync: '+(j.message||j.error||'unknown error')); }
