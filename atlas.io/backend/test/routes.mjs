@@ -3947,5 +3947,36 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_disputeRestoreSlot(sl, 'anything') === 0, 'cycle-10 restore: a legacy slot is idempotent after restore (got 0)');
 }
 
+// ==== 12t: cycle-10 fixes -- legacy-restore poisoning + the Stripe security-cap twin (F8) ====
+{
+  // ---- source-guards ----
+  ok(/if \(_pd && _pd\.reinstatedAt && !_pd\.byId\) _priorDisp = 0;/.test(_WORKER_SRC), 'cycle-10 #1: a NEW dispute ignores a legacy already-restored slot\'s stale decrementedCents (priorDisp guard)');
+  ok(/_pd\.decrementedCents = 0;   \/\/ cycle-10 fix/.test(_WORKER_SRC), 'cycle-10 #1: the legacy restore zeroes the summary decrementedCents (so F5 netting + a later dispute see 0 still-clawed-back)');
+  ok(/var _capAmtD = _isSecD \? \(Number\(_slotD && _slotD\.captured && _slotD\.captured\.amountCents\) \|\| 0\) : 0;/.test(_WORKER_SRC), 'cycle-10 #2/#3: the Stripe security cap reads the MATCHED slot _slotD (F8 twin), not the literal security key');
+  ok(!/var _capAmtD = _isSecD \? \(Number\(_bd\.paid && _bd\.paid\.security && _bd\.paid\.security\.captured/.test(_WORKER_SRC), 'cycle-10 #2/#3: the old literal-security Stripe cap is gone');
+  // _slotD must be computed BEFORE _capAmtD on the Stripe path
+  ok(_WORKER_SRC.indexOf('if (_pp && _dPi && String(_pp.pi || \'\') === String(_dPi)) _slotD = _pp;') < _WORKER_SRC.indexOf('var _capAmtD = _isSecD ? (Number(_slotD && _slotD.captured'), 'cycle-10 #2/#3: the Stripe _slotD match is computed before _capAmtD reads from it');
+
+  // ---- behavioral: legacy-restore poisoning is closed (pure helpers) ----
+  // (a) restoring a LEGACY (pre-ledger, no byId) won dispute zeroes the summary + returns its amount
+  let sl = { amountCents: 100000, pi: 'pi_A', disputed: { at: 1, amountCents: 30000, decrementedCents: 30000 } };
+  let lr = _disputeRestoreSlot(sl, 'D_old');
+  ok(lr === 30000 && sl.disputed.decrementedCents === 0 && sl.disputed.reinstatedAt, 'cycle-10 #1: a legacy won dispute restores its $300 AND zeroes the slot summary (got ' + lr + ', dec=' + sl.disputed.decrementedCents + ')');
+  // (b) a NEW dispute on that legacy-restored slot decrements the FULL remaining amount (not poisoned by the stale $300)
+  let dn = _disputeApplyToSlot(sl, 'D_new', 80000, {});
+  ok(dn === 80000, 'cycle-10 #1: a later $800 dispute on the legacy-restored slot reverses the full $800 (was wrongly capped at $700 pre-fix, got ' + dn + ')');
+
+  // (c) an ALREADY-stale record (restored before the zeroing fix shipped: reinstatedAt set, decrementedCents non-zero, no byId)
+  //     -- the priorDisp guard still corrects it so a new dispute is not poisoned
+  let ss = { amountCents: 100000, disputed: { amountCents: 30000, decrementedCents: 30000, reinstatedAt: 123 } };
+  let ds = _disputeApplyToSlot(ss, 'D_new2', 80000, {});
+  ok(ds === 80000, 'cycle-10 #1: an already-stale legacy-restored record does not poison a new dispute (guard forces priorDisp 0; got ' + ds + ')');
+
+  // (d) sanity: the guard does NOT fire for a live (unrestored) legacy dispute -> a second dispute still nets correctly
+  let su = { amountCents: 100000, disputed: { amountCents: 30000, decrementedCents: 30000 } };   // no reinstatedAt -> the $300 is still outstanding
+  let du = _disputeApplyToSlot(su, 'D_live', 80000, {});
+  ok(du === 70000, 'cycle-10 #1: a still-OUTSTANDING prior legacy dispute correctly caps the new one at the remaining $700 (got ' + du + ')');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
