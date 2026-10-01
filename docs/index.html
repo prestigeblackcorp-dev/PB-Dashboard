@@ -5667,6 +5667,7 @@ function cloudLoad(callback) {
             // genuine figure -- the old (100,115]->100 clamp corrupted real values like Claire's $105.
           });
           // ------------------------------------------------------------------
+          try{ if(typeof _reconcileExtWindows==='function' && _reconcileExtWindows()) needsPush=true; }catch(_e){}   // heal any extended booking whose base dropoff/days got reverted behind its committed extensions
           try { localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); } catch(e) {}
           _rehydrateSigs(bookings, function(_n){ if(_n>0){ try{ localStorage.setItem('pb_dash_v2', JSON.stringify(bookings)); }catch(e){} try{ if(typeof render==='function') render(); }catch(e){} } });   // PHASE 2: fetch+graft any sig-stripped bookings from /sigs; no-op (no re-render) when flag OFF
         }
@@ -12506,6 +12507,41 @@ function tripEndDate(b){
     });
   }catch(_e){}
   return _end;
+}
+
+// Self-heal: a synced-in stale copy (or any save that missed an applied extension) can leave an ACTIVE
+// booking's base dropoffDate/days behind its own committed day-extensions -> the trip shows as overdue,
+// the vehicle looks free for the extended days (double-booking), and brokerRateDays/mileage go wrong.
+// After every cloud merge we grow (never shrink) the window to the latest committed extension. Completed
+// trips keep their real (possibly-early) return; voided/cancelled are left alone.
+function _reconcileExtWindows(){
+  var changed=false;
+  (bookings||[]).forEach(function(b){
+    if(!b||b._deleted) return;
+    if(b.status==='completed'||b.status==='cancelled'||b.status==='voided') return;
+    var ex=(typeof _extLive==='function')?_extLive(b):((b.extensions||[]).filter(function(e){return e&&!e._deleted;}));
+    var de=ex.filter(function(e){ return e && e.extensionUnit!=='hours' && (e.paid===true || e._windowApplied!==false); });
+    if(!de.length) return;
+    var et='', sumExt=0;
+    de.forEach(function(e){
+      var t=e.toDate?(normDateStr(e.toDate)||''):'';
+      if(!t && e.fromDate){ var _f=parseLocalDate(e.fromDate), _n=Math.max(0,Number(e.extensionDays)||0); if(_f&&!isNaN(_f.getTime())&&_n>0) t=dateStr(addDays(_f,_n)); }
+      if(t && (!et || t>et)) et=t;
+      sumExt+=Math.max(0,Number(e.extensionDays)||0);
+    });
+    if(!et) return;
+    var cur=normDateStr(b.dropoffDate||'')||'';
+    if(et>cur){
+      var pk=normDateStr(b.pickupDate||b.date)||'';
+      var ff=(de[0]&&de[0].fromDate)?(normDateStr(de[0].fromDate)||''):'';
+      var baseDays=(ff&&pk)?Math.max(1,Math.round((parseLocalDate(ff)-parseLocalDate(pk))/86400000)):(Number(b.days)||1);
+      b.dropoffDate=et;
+      b.days=Math.max(Number(b.days)||1, baseDays+sumExt);
+      b._t=Date.now();
+      changed=true;
+    }
+  });
+  return changed;
 }
 
 function sortByTime(a,b){
