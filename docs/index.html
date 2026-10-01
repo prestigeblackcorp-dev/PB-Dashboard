@@ -5695,6 +5695,16 @@ function cloudLoad(callback) {
           try { localStorage.setItem('pb_incomes', JSON.stringify(incomes)); } catch(e) {}
         }
         if (Array.isArray(data.custom_vehicles)) {
+          // Merge-safe blockedRanges: keep whichever copy (local vs cloud) stamped its blocks most recently,
+          // so a stale device's vehicle blob can't silently wipe a maintenance/date block (booking-integrity).
+          try {
+            var _lcv=JSON.parse(localStorage.getItem('pb_custom_vehicles')||'[]'), _lby={};
+            _lcv.forEach(function(x){ if(x&&x.name) _lby[x.name]=x; });
+            data.custom_vehicles.forEach(function(cv){
+              if(!cv||!cv.name) return; var lv=_lby[cv.name];
+              if(lv && (Number(lv._blkT)||0) > (Number(cv._blkT)||0)){ cv.blockedRanges=lv.blockedRanges||[]; cv._blkT=lv._blkT; }
+            });
+          } catch(e){}
           try { localStorage.setItem('pb_custom_vehicles', JSON.stringify(data.custom_vehicles)); } catch(e) {}
           loadCustomVehicles();
         }
@@ -5980,7 +5990,7 @@ function loadCustomVehicles(){
     customs.forEach(function(v){
       if(!VEHICLE_COSTS[v.name]){
         if(!_isRetiredVehicle(v.name)){   // retired -> never enters the active registry; VEHICLE_INFO VIN below is still restored for past contracts
-        VEHICLE_COSTS[v.name] = { rate:v.rate||0, deposit:v.deposit||0, weekly:v.weekly||0, image:v.image||VEHICLE_IMAGES[v.name]||'', blockedRanges:v.blockedRanges||[], serviceIntervalMiles:v.serviceIntervalMiles||0 };
+        VEHICLE_COSTS[v.name] = { rate:v.rate||0, deposit:v.deposit||0, weekly:v.weekly||0, image:v.image||VEHICLE_IMAGES[v.name]||'', blockedRanges:v.blockedRanges||[], _blkT:Number(v._blkT)||0, serviceIntervalMiles:v.serviceIntervalMiles||0 };
         ALL_VEHICLES.push(v.name);
         if(v.chauffeur) CHAUFFEUR_VEHICLES.push(v.name);
         }
@@ -5992,6 +6002,7 @@ function loadCustomVehicles(){
         if(v.image) VEHICLE_COSTS[v.name].image = v.image;                                                  // a real saved photo wins
         else if(!VEHICLE_COSTS[v.name].image) VEHICLE_COSTS[v.name].image = VEHICLE_IMAGES[v.name] || '';    // a BLANK saved value must NOT wipe the built-in storefront photo (bug: only cars with an uploaded photo showed one)
         if(v.blockedRanges     !== undefined) VEHICLE_COSTS[v.name].blockedRanges     = v.blockedRanges;
+        if(v._blkT             !== undefined) VEHICLE_COSTS[v.name]._blkT             = v._blkT;
         if(v.serviceIntervalMiles !== undefined) VEHICLE_COSTS[v.name].serviceIntervalMiles = v.serviceIntervalMiles;
       }
       // Restore registration details into VEHICLE_INFO (what the contract/waiver reads). Guard on
@@ -6029,7 +6040,7 @@ function saveCustomVehicles(){
     return { name:v, chauffeur: CHAUFFEUR_VEHICLES.indexOf(v)!==-1,
              rate:vc.rate||0, deposit:vc.deposit||0, weekly:vc.weekly||0, image:vc.image||'',
              serviceIntervalMiles:vc.serviceIntervalMiles||0,
-             blockedRanges:vc.blockedRanges||[],
+             blockedRanges:vc.blockedRanges||[], _blkT:Number(vc._blkT)||0,
              year:vi.year||'', make:vi.make||'', model:vi.model||'', color:vi.color||'', vin:vi.vin||'',
              miles:vm.miles||0, overage:vm.overage||0 };
   });
@@ -20685,10 +20696,12 @@ function removeBdBlock(idx){
 function saveBdBlocks(v){
   // C1: must use pb_custom_vehicles \u2014 same key loadCustomVehicles() reads from
   try {
+    var _bt=Date.now();
+    if(VEHICLE_COSTS[v]) VEHICLE_COSTS[v]._blkT=_bt;   // stamp block-change time so cross-device sync keeps the newest blocks
     var stored=JSON.parse(localStorage.getItem('pb_custom_vehicles')||'[]');
     var vi=stored.findIndex(function(x){ return x.name===v; });
-    if(vi!==-1){ stored[vi].blockedRanges=VEHICLE_COSTS[v].blockedRanges; }
-    else { stored.push({ name:v, blockedRanges:VEHICLE_COSTS[v].blockedRanges }); }
+    if(vi!==-1){ stored[vi].blockedRanges=VEHICLE_COSTS[v].blockedRanges; stored[vi]._blkT=_bt; }
+    else { stored.push({ name:v, blockedRanges:VEHICLE_COSTS[v].blockedRanges, _blkT:_bt }); }
     localStorage.setItem('pb_custom_vehicles', JSON.stringify(stored));
   } catch(e){}
   // Push to Firebase so booking worker can enforce blocked dates
