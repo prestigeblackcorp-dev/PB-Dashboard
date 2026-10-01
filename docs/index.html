@@ -7428,6 +7428,10 @@ function deleteWaitlistEntry(id){
 // Called after a booking is cancelled \u2014 auto-books first match, notifies the rest
 function checkWaitlistOnCancel(booking){
   if(!booking) return;
+  // Never treat an owner maintenance/date block or hold as a customer slot-opening -- these were
+  // blasting the whole waitlist when a block was removed. A real customer cancellation still notifies.
+  var _bk=((booking.type||'')+' '+(booking.status||'')+' '+(booking.source||'')+' '+(booking.notes||'')).toLowerCase();
+  if(booking.isBlock||booking.isHold||booking._block||booking.block||booking.maintenance||/\b(block|blocked|maintenance|hold)\b/.test(_bk)) return;
   var veh=booking.vehicle;
   var start=booking.pickupDate||booking.date;
   var end=booking.dropoffDate||start;
@@ -7438,7 +7442,9 @@ function checkWaitlistOnCancel(booking){
     return wS<=end && wE>=start;
   });
   if(!matches.length) return;
-  matches.forEach(function(w,i){
+  // First + up to 2 backups only -- never mass-blast the whole list (was emailing every matching entry,
+  // e.g. 175+). #1 is auto-booked (gets the $100 Stripe date-lock email); #2-#3 get a heads-up only.
+  matches.slice(0,3).forEach(function(w,i){
     if(i===0){
       // -- Auto-create a pending booking for the first person on list --
       var newB={
