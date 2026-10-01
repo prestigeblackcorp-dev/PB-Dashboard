@@ -12483,11 +12483,29 @@ function tripIsOverdue(b){
 function tripEndDate(b){
   var start=normDateStr(b.pickupDate||b.date);
   if(!start) return '';
-  if(b.dropoffDate) return normDateStr(b.dropoffDate)||start;
-  if(b.type==='hourly'||b.type==='chauffeur') return start;
-  // days=1 means the rental ends on its start date (not start+1); days=3 ends on start+2
-  var sd=parseLocalDate(start);
-  return dateStr(addDays(sd, Math.max(0, (Number(b.days)||1) - 1)));
+  var _end;
+  if(b.dropoffDate) _end=normDateStr(b.dropoffDate)||start;
+  else if(b.type==='hourly'||b.type==='chauffeur') _end=start;
+  else {
+    // days=1 means the rental ends on its start date (not start+1); days=3 ends on start+2
+    var sd=parseLocalDate(start);
+    _end=dateStr(addDays(sd, Math.max(0, (Number(b.days)||1) - 1)));
+  }
+  // Honor day-extensions even if the base dropoffDate field was never moved (a deferred/cash window-move or a
+  // stale-device overwrite leaves dropoffDate behind): effective return = latest COMMITTED extension's end date.
+  // Never shrinks the trip. Keeps Current/Upcoming status + availability correct and blocks double-booking.
+  try{
+    var _ex=(typeof _extLive==='function')?_extLive(b):((b.extensions||[]).filter(function(e){return e&&!e._deleted;}));
+    (_ex||[]).forEach(function(e){
+      if(!e||e.extensionUnit==='hours') return;                 // hour exts move dropoffTime, not the date
+      if(!(e.paid===true || e._windowApplied!==false)) return;  // unpaid deferred self-add: not yet in effect
+      var et=e.toDate||'';
+      if(!et){ var _f=e.fromDate?parseLocalDate(e.fromDate):null, _n=Math.max(0,Number(e.extensionDays)||0); if(_f&&!isNaN(_f.getTime())&&_n>0) et=dateStr(addDays(_f,_n)); }
+      et=et?(normDateStr(et)||''):'';
+      if(et && et>_end) _end=et;                                // YYYY-MM-DD lexical compare
+    });
+  }catch(_e){}
+  return _end;
 }
 
 function sortByTime(a,b){
