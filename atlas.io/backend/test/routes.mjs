@@ -4380,5 +4380,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   }
 }
 
+// ==== 13h: cycle-4 open findings -- #8 reconcile stamps dunning, #10 tombstone extended to assets+customers ====
+{
+  // ---- #8 (money MED): _reconcileActiveSubs now stamps dunning fields when it flips a tenant past_due (so retry actually fires) ----
+  ok(/UPDATE tenants SET plan='past_due', delinquent_since=COALESCE\(delinquent_since,\?\), dunning_invoice=\?, dunning_next=\?, dunning_attempts=0, dunning_last=NULL, updated_at=\? WHERE id=\? AND plan='active'/.test(_WORKER_SRC), '#8: the active-sub reconcile stamps dunning_invoice/dunning_next (mirrors the webhook) so _runDunning + Retry-Now work');
+  ok(/\(s\.j\.latest_invoice \|\| null\)/.test(_WORKER_SRC), '#8: the failed renewal invoice (latest_invoice) is recorded to chase');
+
+  // ---- #10 (data-integrity HIGH): the delete-resurrection tombstone guard covers assets + customers, not just bookings ----
+  ok(/const _tombOn = \(coll === 'bookings' \|\| coll === 'assets' \|\| coll === 'customers'\) \? \(\(await _pcfgGet\(env, 'sync_tombstones_enabled', '1'\)\) === '1'\) : false;/.test(_WORKER_SRC), '#10: _tombOn now covers assets + customers (deleted asset/customer cannot be resurrected by a lagging device)');
+  ok(/INSERT OR REPLACE INTO sync_tombstones \(tenant_id, coll, id, deleted_at\)/.test(_WORKER_SRC), '#10: the DELETE tombstone write is generic over coll (so assets/customers get tombstoned too)');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
