@@ -4612,5 +4612,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/_stLcN === 'returned' \|\| _stLcN === 'completed' \|\| _stLcN === 'cancelled' \|\| _stLcN === 'voided'/.test(_WORKER_SRC), 'NOTIFY: a returned/completed/cancelled/voided booking is excluded from trip reminders');
 }
 
+// ==== 13x: NOTIFY Phase 1b -- the trip reminders appear in the Notifications settings + ship with sensible defaults ====
+{
+  const _ATLAS_SRC13x = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13x = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/\['balanceDue','Balance-due reminder'/.test(_ATLAS_SRC13x) && /\['returnDue', 'Return reminder'/.test(_ATLAS_SRC13x) && /\['overdue',   'Overdue notice'/.test(_ATLAS_SRC13x), 'NOTIFY: all three trip reminders are in AUTO_META so they render (toggle + timing + template) in the Notifications settings');
+  ok(/balanceDue:\{ on:true, days:2,/.test(_ATLAS_SRC13x) && /returnDue:\{ on:true, days:1,/.test(_ATLAS_SRC13x), 'NOTIFY: balance-due + return-due default ON (keep renters up to speed), with the owner body rendered by the worker send()');
+  ok(/overdue:\{ on:false,/.test(_ATLAS_SRC13x), 'NOTIFY: overdue defaults OFF (opt-in) to avoid a false nag when an owner is slow to mark a return');
+  ok(_ATLAS_SRC13x === _INDEX_SRC13x, 'NOTIFY 1b: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
