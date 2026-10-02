@@ -4592,5 +4592,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13u === _INDEX_SRC13u, 'G35: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13v: PB-parity G18 -- void + chargeback-evidence reports include the comms/event timeline ====
+{
+  const _ATLAS_SRC13v = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13v = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/function _bkTimelineRows\(b, E, when\)\{/.test(_ATLAS_SRC13v), 'G18: a shared report timeline builder exists');
+  ok(/if\(e&&e\.meta&&String\(e\.meta\.booking\)===String\(b\.id\)\)/.test(_ATLAS_SRC13v), 'G18: the timeline pulls this booking\'s logged events (who/when/role/IP) from the event log');
+  ok((_ATLAS_SRC13v.match(/Communications &amp; event timeline<\/h2>/g) || []).length === 2, 'G18: BOTH the void legal report AND the chargeback-evidence report include the timeline section');
+  ok(_ATLAS_SRC13v === _INDEX_SRC13v, 'G18: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
