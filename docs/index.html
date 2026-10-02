@@ -4548,9 +4548,10 @@ function _bookingCommLog(b){
   var out=[], seen={};
   function add(c){
     if(!c) return;
-    var k=Math.floor(Number(c.at)||0)+'|'+(c.type||'')+'|'+(c.to||'')+'|'+(c.label||'');
+    var _l=_extCommRenum(b, c.at, c.label);   // unify "Extension #N" to the card/group number before dedup (display only)
+    var k=Math.floor(Number(c.at)||0)+'|'+(c.type||'')+'|'+(c.to||'')+'|'+_l;
     if(seen[k]) return; seen[k]=true;
-    out.push({at:Number(c.at)||0,type:c.type||'',label:c.label||'',to:c.to||''});
+    out.push({at:Number(c.at)||0,type:c.type||'',label:_l,to:c.to||''});
   }
   (b._commLog||[]).forEach(add);
   (_notifLog||[]).forEach(function(n){ if(n&&n.bookingId===b.id) add(n); });
@@ -8523,6 +8524,29 @@ function _extGroups(b){
   });
   return { groups:groups, byId:byId, count:groups.length };
 }
+
+// Rewrite a comms-log line's "Extension #N" to the UNIFIED week (group) number the cards use, so the timeline
+// agrees with the Extension Agreements card instead of the old running array-count stamped at action time.
+// DISPLAY ONLY -- the stored label is never changed. Maps a "created" line by its "new return <date>" (== an
+// extension's toDate) and a payment line by its "$amount" + the paidAt nearest the entry time; a line it cannot
+// map confidently (e.g. a deleted extension, or a signing-link line) is returned unchanged.
+function _extCommRenum(b, at, label){
+  label=String(label||'');
+  if(!b || label.indexOf('Extension #')<0) return label;
+  var g=_extGroups(b), ext=null, m;
+  if((m=label.match(/new return (\d{4}-\d{2}-\d{2})/))){
+    var _w=m[1];
+    ext=_extLive(b).filter(function(x){ return x && (normDateStr(x.toDate||'')||'')===_w; })[0];
+  }
+  if(!ext && /paid|PAID/.test(label) && (m=label.match(/\$([0-9][0-9,]*(?:\.[0-9]{2})?)/))){
+    var _amt=parseFloat(m[1].replace(/,/g,'')), _a=Number(at)||0;
+    var _c=_extLive(b).filter(function(x){ return x && x.paid && Math.abs((Number(x.additionalCharge)||0)-_amt)<0.005; });
+    _c.sort(function(p,q){ return Math.abs((Number(p.paidAt)||0)-_a)-Math.abs((Number(q.paidAt)||0)-_a); });
+    ext=_c[0];
+  }
+  if(ext && g.byId[ext.id]) return label.replace(/Extension #\d+/, 'Extension #'+g.byId[ext.id].num);
+  return label;
+}
 function _paymentsReceived(b){
   if(!b) return [];
   function _ts(x){ var t=new Date(x).getTime(); return isNaN(t)?0:t; }
@@ -8785,7 +8809,7 @@ function _reconcilePaidExtensionCharges(){
         if(_ext && !_ext.paid){
           _markExtPaidInternal(b, _ext, c.paidMethod||(c._extPayment?'stripe':'card'));
           b._t=Date.now(); changed=true;
-          var _en=_extLive(b).findIndex(function(e){ return e&&e.id===c._extId; })+1;
+          var _en=((_extGroups(b).byId[c._extId]||{}).num)||(_extLive(b).findIndex(function(e){ return e&&e.id===c._extId; })+1);
           logNotif('payment','Extension #'+_en+' paid (portal) \u2014 $'+(Number(_ext.additionalCharge)||0).toFixed(2)+' via '+(c.paidMethod||'card'),(b.name||''),b.id);
         }
         // BACKFILL (past bookings): a portal extension folded BEFORE the promo-carry fix has no
@@ -8811,7 +8835,7 @@ function _reconcilePaidExtensionCharges(){
         _m._extId=ext.id;
         _markExtPaidInternal(b, ext, _m.paidMethod||'card');
         b._t=Date.now(); changed=true;
-        var _en2=_extLive(b).indexOf(ext)+1;
+        var _en2=((_extGroups(b).byId[ext.id]||{}).num)||(_extLive(b).indexOf(ext)+1);
         logNotif('payment','Extension #'+_en2+' marked paid \u2014 matched $'+_amt.toFixed(2)+' portal payment',(b.name||''),b.id);
       }
     });
@@ -16194,9 +16218,10 @@ function renderNotifLog(){
     var dateStr=dt.toLocaleDateString('en-US',{month:'short',day:'numeric'});
     var timeStr=dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
     var icon=typeIcons[n.type]||'\uD83D\uDCE8';
-    var clientName='';
+    var clientName='', _lbl=n.label;
     if(n.bookingId){
       var _nb=bookings.find(function(b){ return b.id===n.bookingId; });
+      if(_nb) _lbl=_extCommRenum(_nb, n.at, n.label);
       if(_nb&&_nb.name) clientName=' \u00B7 '+esc(_nb.name);
     }
     var ref=n.bookingId?'<span style="color:var(--muted);font-size:10px">PBR-'+n.bookingId.slice(-6).toUpperCase()+clientName+'</span>':'';
@@ -16205,7 +16230,7 @@ function renderNotifLog(){
       '<span style="font-size:14px;line-height:1.4">'+icon+'</span>'+
       '<div style="flex:1;min-width:0">'+
         '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'+
-          '<span style="font-weight:600;color:rgba(255,255,255,.85)">'+esc(n.label)+'</span>'+
+          '<span style="font-weight:600;color:rgba(255,255,255,.85)">'+esc(_lbl)+'</span>'+
           ref+
         '</div>'+
         '<div style="margin-top:2px;color:var(--muted)">'+to+'</div>'+
@@ -23885,9 +23910,10 @@ function _extSignCommEntries(b){
     return Number(fallback)||0;
   };
   var drivers=(b.extraDrivers||[]);
+  var _egSC=_extGroups(b);
   _extListSC.forEach(function(ext,i){
     if(!ext) return;
-    var n=i+1, times=[];
+    var n=((_egSC.byId[ext.id]||{}).num)||(i+1), times=[];
     if(ext.signed && _isImg(ext.sig)){
       var pt=Number(ext.sigAt)||_ts(ext.sigDate, ext.sentAt); times.push(pt); // exact time when captured
       out.push({at:pt, type:'extsigned', label:'Extension #'+n+' signed by '+(b.name||'client'), to:(b.name||'')});
@@ -24055,7 +24081,7 @@ function confirmAddExtension(){
   if(newExt && _extBrokerMode==='perday'){ newExt.brokerMode='perday'; newExt.brokerPerDay=_extBrokerInput; }
   if(newExt && _extPromoDisc>0){ newExt.promoCode=b.promoCode; newExt.promoDiscount=_extPromoDisc; newExt.promoBaseCharge=_extBaseCharge; }
   bookings[idx]._t = Date.now();
-  var _extNum = _extLive(bookings[idx]).length;
+  var _extNum = _extGroups(bookings[idx]).count;   // unified week number (matches the Extension Agreements card), not the raw array count
   save(); if(typeof flushCloudSave==='function') flushCloudSave();
   logNotif('extension','Extension #'+_extNum+' created \u2014 +'+extDays+' day'+(extDays!==1?'s':'')+', new return '+newEndDate+(addlCharge?(' \u00B7 $'+addlCharge.toFixed(2)):'')+(payMethod?(' \u00B7 '+payMethod):''),(b.name||''),bookings[idx].id);
   syncToGCal(bookings[idx]);
@@ -24200,7 +24226,7 @@ function markExtensionPaid(bookingId, extId, method){
   var b=bookings[idx];
   var ext=_extLive(b).find(function(e){ return e&&e.id===extId; });
   if(!ext) return;
-  var extNum=_extLive(b).findIndex(function(e){ return e&&e.id===extId; })+1;
+  var extNum=((_extGroups(b).byId[extId]||{}).num)||(_extLive(b).findIndex(function(e){ return e&&e.id===extId; })+1);
   if(ext.paid){ toast('Extension #'+extNum+' is already paid'); return; }
   var _m = method || prompt('Payment method received for Extension #'+extNum+' (Zelle, Cash App, Venmo, Cash, Card, Other):', (ext.paymentMethod && ext.paymentMethod!=='stripe') ? ext.paymentMethod : 'Zelle');
   if(_m===null) return;
