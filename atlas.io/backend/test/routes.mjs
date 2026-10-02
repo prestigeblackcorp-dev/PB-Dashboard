@@ -4700,5 +4700,24 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/fetch\('\/api\/portal\/'\+T\+'\/push'/.test(_WORKER_SRC), 'WEBPUSH: the portal posts the subscription to its own token-bound /push endpoint (renter audience, booking-scoped)');
 }
 
+// ==== 13E: G6 -- partial / installment payments (owner opt-in; renter pays the balance in parts, never marked paid until covered) ====
+{
+  const _ATLAS_SRC13E = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13E = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // BEHAVIORAL: two 'partial:<nonce>' slots sum into settledCents exactly like any payment -> the balance reduces but is NOT zeroed/closed.
+  const _pdPart = _portalDue({ quote: { total: 100 }, paid: { 'partial:a': { pi: 'pi_a', amountCents: 3000 }, 'partial:b': { pi: 'pi_b', amountCents: 2000 } } }, { id: 'BP', starts: 0 });
+  ok(_pdPart.settledCents === 5000, 'G6: two partial installments (3000 + 2000) sum into settledCents (got ' + _pdPart.settledCents + ')');
+  ok(_pdPart.dueCents === 5000, 'G6: after two partials the balance is total(10000) - settled(5000) = 5000 still OWED (got ' + _pdPart.dueCents + ') -- a partial NEVER zeroes the balance');
+  // WORKER: /pay partial is owner-gated, capped at the remaining balance, and uses a UNIQUE accumulating slot (never the single 'balance' slot).
+  ok(/else if \(kind === 'partial'\) \{/.test(_WORKER_SRC) && /if \(!_allowPartial\) return json\(\{ ok: false, reason: 'not_enabled'/.test(_WORKER_SRC), 'G6: /pay refuses a partial unless the owner enabled allowPartial (default OFF -> byte-identical to today)');
+  ok(/amt = Math\.min\(_preq, _due\.dueCents\);/.test(_WORKER_SRC), 'G6: a partial is capped at the remaining balance -- a renter can never pay MORE than owed');
+  ok(/kind = 'partial:' \+ Date\.now\(\)\.toString\(36\)/.test(_WORKER_SRC), 'G6: each partial gets a UNIQUE accumulating slot key (summed in settled, never overwrites the balance slot, never sets balancePaidAt)');
+  ok(/allowPartial: !!\(pr\.settings && pr\.settings\.money && pr\.settings\.money\.allowPartial\)/.test(_WORKER_SRC), 'G6: the portal /data exposes the allowPartial gate flag');
+  ok(/function payPartial\(\)\{/.test(_WORKER_SRC) && /onclick="payPartial\(\)"/.test(_WORKER_SRC), 'G6: the portal renders a "pay a different amount" installment control (shown only for Stripe + allowPartial)');
+  // CLIENT: the owner Settings>Money toggle, default OFF.
+  ok(/Atlas\.setMoney\('allowPartial',this\.checked\)/.test(_ATLAS_SRC13E) && /else if\(k==='allowPartial'\) m\.allowPartial=!!v;/.test(_ATLAS_SRC13E), 'G6: owner Settings>Money has the allowPartial toggle (default OFF -> installments are opt-in)');
+  ok(_ATLAS_SRC13E === _INDEX_SRC13E, 'G6: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
