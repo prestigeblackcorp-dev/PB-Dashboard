@@ -8514,10 +8514,10 @@ function _paymentsReceived(b){
     var _exact=!!(c._fromDeletedExt||c._paidExternally||c._reconciled);
     out.push({label:(c.description?String(c.description):'Portal Charge'), amount:Number(c.amount)||0, method:_m(c.paidMethod), ts:_ts(c.paidAt), card:_exact?false:_cardOnline(c.paidMethod)});
   });
-  _extLive(b).forEach(function(e){
+  _extLive(b).forEach(function(e,_ei){
     if(!e||!e.paidAt||!(Number(e.additionalCharge)>0)) return;
     if(e._paidExternally) return;   // paid by an EXISTING card transaction already shown via stripePayments -> no duplicate payment line
-    out.push({label:'Extension', amount:Number(e.additionalCharge)||0, method:_m(e.paymentMethod), ts:_ts(e.paidAt), card:_cardOnline(e.paymentMethod)});
+    out.push({label:'Extension #'+(_ei+1), amount:Number(e.additionalCharge)||0, method:_m(e.paymentMethod), ts:_ts(e.paidAt), card:_cardOnline(e.paymentMethod)});
   });
   (Array.isArray(b.extraDrivers)?b.extraDrivers:[]).forEach(function(d){
     if(!d||!d.paid||!d.paidAt||!(Number(d.payAmount)>0)) return;
@@ -24113,7 +24113,13 @@ function _applyPartialToExtensions(b, amount, method){
     } else {
       var pay=amount;                                           // partial: split this extension
       e.additionalCharge=Math.round((owed-pay)*100)/100;        // remainder stays unpaid on the original entry
-      var paidPart={ additionalCharge:pay, paid:true, paidAt:Date.now(), paymentMethod:method,
+      // The split-paid portion is pushed into b.extensions, so it MUST be a well-formed extension: a bare
+      // {charge,paid} entry (no id / no window) became a phantom "undefined" extension -- it still counted in
+      // gross + showed as a junk payment line, broke date logic, and tripped availability. Carry the parent's
+      // window with extensionDays:0 (money only, adds no days) + a unique id so it is identifiable + reversible.
+      var paidPart={ id:(e.id||('ext_'+Date.now()))+'-p'+Date.now().toString(36).slice(-4), _splitOf:(e.id||''),
+                     fromDate:e.fromDate||'', toDate:e.toDate||'', extensionDays:0, extensionUnit:(e.extensionUnit||'days'),
+                     additionalCharge:pay, paid:true, paidAt:Date.now(), paymentMethod:method,
                      createdAt:(e.createdAt||Date.now()), days:(e.days||0), _partialSplit:true };  // clean SETTLED portion: no broker/portal baggage -> no double-count
       if(Array.isArray(b.extensions)) b.extensions.push(paidPart);
       applied=Math.round((applied+pay)*100)/100; amount=0;
