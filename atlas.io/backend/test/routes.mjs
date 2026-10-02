@@ -4562,5 +4562,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13r === _INDEX_SRC13r, 'G15: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13s: PB-parity G30 + G34 -- per-booking dispute/refund visibility in the owner's booking view ====
+{
+  const _ATLAS_SRC13s = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13s = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/'Payment adjustments &middot; '\+_ps\.join\(' &middot; '\)/.test(_ATLAS_SRC13s), 'G30/G34: openBooking shows a per-booking refund/chargeback banner (disputes were invisible after the one email)');
+  ok(/if\(s\.disputed\.reinstatedAt\) dispWon\+=_da; else if\(s\.disputed\.lostAt\) dispLost\+=_da; else dispOpen\+=_da;/.test(_ATLAS_SRC13s), 'G30/G34: the banner classifies each chargeback as won (reinstated) / lost / open and shows the amount (G34 line-items)');
+  ok(_ATLAS_SRC13s === _INDEX_SRC13s, 'G30/G34: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
