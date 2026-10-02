@@ -4551,5 +4551,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/row\.processor === 'stripe' \? 'Stripe' : 'PayPal'/.test(_WORKER_SRC), 'G1-C: the reconcile receipt names Stripe correctly');
 }
 
+// ==== 13r: PB-parity G15 -- cancel ledger reflects the server's AUTHORITATIVE kept amount (a failed-refund shortfall no longer falls out of the books) ====
+{
+  ok(/_keptRentalCents = Math\.min\(keepCents, _rentalRev\) \+ _refundShortfall;/.test(_WORKER_SRC), 'G15: the cancel CAS captures the authoritative kept-rental (fee clamped to collected + failed-refund shortfall, excl. a kept damage deposit)');
+  ok(/return json\(\{ ok: true, refundedCents: refundedCents, released: released, keptCents: _keptRentalCents \}\)/.test(_WORKER_SRC), 'G15: /cancel returns keptCents so the client ledger reconciles to what Stripe really retained');
+  const _ATLAS_SRC13r = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13r = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/var _rk=_r2\(\(res\.json\.keptCents!=null\?res\.json\.keptCents:Math\.round\(fee\*100\)\)\/100\);/.test(_ATLAS_SRC13r), 'G15: doCancel reads the server authoritative keptCents');
+  ok(/if\(_rk!==fee\)\{[\s\S]*?label==='Cancellation fee'[\s\S]*?_bk\.cancelFee=_rk; _upsertBooking\(_bk\); save\(\);/.test(_ATLAS_SRC13r), 'G15: doCancel reconciles the Cancellation-fee ledger entry to the server kept amount (add/update/remove) + re-saves so the P&L reflects reality');
+  ok(_ATLAS_SRC13r === _INDEX_SRC13r, 'G15: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
