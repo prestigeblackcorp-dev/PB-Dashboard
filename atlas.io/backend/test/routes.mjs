@@ -4582,5 +4582,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13t === _INDEX_SRC13t, 'G9: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13u: PB-parity G35 -- owner-initiated force re-signature (was: only an automatic terms-drift re-prompt) ====
+{
+  const _ATLAS_SRC13u = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13u = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/function bkRequireResign\(id\)\{/.test(_ATLAS_SRC13u), 'G35: an owner force-resign handler exists');
+  ok(/b\.portal\.signedAt=0; delete b\.portal\.signerName; delete b\.sigTrail;/.test(_ATLAS_SRC13u), 'G35: it clears the booking signed-state (server keeps the immutable signature row as history; clearing signedAt is allowed by _stripUnbackedSig and never re-grafted)');
+  ok(/onclick="Atlas\.bkRequireResign\(/.test(_ATLAS_SRC13u) && /bkClearVerify,bkRequireResign,/.test(_ATLAS_SRC13u), 'G35: the Require-re-sign button is wired (only on a signed booking) + the handler is exported');
+  ok(_ATLAS_SRC13u === _INDEX_SRC13u, 'G35: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
