@@ -4571,5 +4571,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13s === _INDEX_SRC13s, 'G30/G34: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13t: PB-parity G9 -- quote day/week/month length honors the owner's grace window (no full-period overcharge for minutes past a boundary) ====
+{
+  const _ATLAS_SRC13t = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13t = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/var _full=Math\.floor\(ms\/_pms\), _rem=ms-_full\*_pms, _graceMs=_lateGrace\(\)\*3600000;/.test(_ATLAS_SRC13t), 'G9: _derivePeriods computes completed periods + remainder + the owner grace window');
+  ok(/return Math\.max\(1, \(_rem<=_graceMs\) \? _full : _full\+1\); \}/.test(_ATLAS_SRC13t), 'G9: within grace -> completed period count; beyond grace -> round up (grace=0 reproduces the old ceil exactly)');
+  ok(!/return Math\.max\(1, Math\.ceil\(ms\/86400000\)\); \}/.test(_ATLAS_SRC13t), 'G9: the bare day-ceil (full-day overcharge for a minute over) is gone');
+  ok(/if\(rm==='hour'\) return Math\.max\(1, Math\.ceil\(ms\/3600000\)\);/.test(_ATLAS_SRC13t), 'G9: the HOUR model keeps straight ceil (a 1h grace on hourly billing would be nonsensical)');
+  ok(_ATLAS_SRC13t === _INDEX_SRC13t, 'G9: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

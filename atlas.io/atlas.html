@@ -6764,10 +6764,14 @@ const Atlas = (function(){
   function _bkUsesEnd(){ return _bookingCfg().durationMode==='end'; }
   // Derive how many periods (days/hours/weeks) a start->end span covers, per the pricing model. Always >= 1.
   function _derivePeriods(startTs, endTs){ var ms=Math.max(0,(endTs||0)-(startTs||0)); var rm=S.money.rateModel;
-    if(rm==='hour') return Math.max(1, Math.ceil(ms/3600000));
-    if(rm==='week') return Math.max(1, Math.ceil(ms/(7*86400000)));
-    if(rm==='month') return Math.max(1, Math.ceil(ms/(30*86400000)));
-    return Math.max(1, Math.ceil(ms/86400000)); }
+    if(rm==='hour') return Math.max(1, Math.ceil(ms/3600000));   // hourly billing has no grace concept -- each hour is a period
+    // G9 (PB-parity): day/week/month quote length honors the owner's late-return GRACE window, so a return a few MINUTES past a
+    // period boundary is not billed a whole extra day/week/month (a bare ceil did exactly that -- charging a full day for being 1
+    // minute over). Within grace -> the completed period count; beyond it -> round up as before. graceMs is the SAME owner-set
+    // lateGraceHrs used for late fees (default 1h); an owner who wants strict round-up just sets the grace to 0 -> identical to ceil.
+    var _pms=(rm==='week')?(7*86400000):((rm==='month')?(30*86400000):86400000);
+    var _full=Math.floor(ms/_pms), _rem=ms-_full*_pms, _graceMs=_lateGrace()*3600000;
+    return Math.max(1, (_rem<=_graceMs) ? _full : _full+1); }
   // ms in one period, for computing an end from a length (used to seed the End field / show a span).
   function _periodMs(){ var rm=S.money.rateModel; return rm==='hour'?3600000:(rm==='week'?7*86400000:(rm==='month'?30*86400000:86400000)); }
   function _periodMsOf(u){ return u==='hour'?3600000:(u==='week'?604800000:((u==='month'||u==='pmonth')?2592000000:((u==='pday'||u==='day')?86400000:86400000))); }   // ms for an EXPLICIT period unit (used so protection/extras can bill per hour/day/week/month independent of the business rate model)
