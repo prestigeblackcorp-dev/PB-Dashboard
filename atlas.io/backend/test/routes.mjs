@@ -4661,5 +4661,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(!\(_lRes && _lRes\.committed\)\) \{ _whErr = _whErr \|\| new Error\('dispute-lost trace did not commit \(CAS\)'\); try \{ await env\.DB\.prepare\("DELETE FROM platform_transactions WHERE stripe_id=\?"\)\.bind\(_lsKey\)\.run\(\);/.test(_WORKER_SRC), 'audit-fix F5: the lost-dispute branch is retry-safe -- a non-committed CAS (or throw) deletes the sentinel AND flags _whErr so Stripe redelivers, instead of orphaning the trace with the sentinel set; the audit + owner alert fire ONLY on the committed attempt (single-fire)');
 }
 
+// ==== 13B: NOTIFY -- owner in-app notification center surfaces operational events (overdue / returns-due / disputes / reviews) ====
+{
+  const _ATLAS_SRC13B = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13B = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/function _bkDispOpen\(b\)\{/.test(_ATLAS_SRC13B), 'NOTIFY: an open-chargeback helper (per-byId classification, mirrors the F4 banner) feeds the owner notification center');
+  ok(/' overdue for return'/.test(_ATLAS_SRC13B), 'NOTIFY: the owner bell surfaces OVERDUE returns (still out past the extension-aware return)');
+  ok(/' due back within 2 days'/.test(_ATLAS_SRC13B), 'NOTIFY: the owner bell surfaces rentals DUE BACK within 2 days (turnaround heads-up)');
+  ok(/bookings have a chargeback under review/.test(_ATLAS_SRC13B), 'NOTIFY: the owner bell surfaces OPEN chargebacks/disputes (risk & money category)');
+  ok(/new reviews to reply to/.test(_ATLAS_SRC13B), 'NOTIFY: the owner bell surfaces NEW customer reviews awaiting a public reply (new-activity category)');
+  ok(_ATLAS_SRC13B === _INDEX_SRC13B, 'NOTIFY 13B: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

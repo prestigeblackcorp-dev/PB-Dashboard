@@ -10389,7 +10389,7 @@ const Atlas = (function(){
       +`<br><br>These come from common patterns in ${one} rental plus your own numbers &mdash; I refresh them as I learn. Want me to turn one into an action?`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.aioAsk('Fill my idle ${esc(S.fleet.nouns)}')">Fill my idle ${esc(S.fleet.nouns)}</button>`;
   }
-  function _notifIcon(ic){ return ({cal:'\u{1F4C5}',trend:'\u{1F4C8}',card:'\u{1F4B3}',clock:'\u{23F1}\u{FE0F}',plus:'\u{2795}',spark:'\u{1F50D}'})[ic]||'\u{2728}'; }
+  function _notifIcon(ic){ return ({cal:'\u{1F4C5}',trend:'\u{1F4C8}',card:'\u{1F4B3}',clock:'\u{23F1}\u{FE0F}',plus:'\u{2795}',spark:'\u{1F50D}',star:'\u{2B50}',back:'\u{1F501}'})[ic]||'\u{2728}'; }
   // Real, state-derived notifications (no fake feed): pending bookings, idle assets, missing payments, trial, empty fleet.
   // Where Atlas reaches the OWNER. Stored on S.notify, so _srvMirrorProfile carries it to the tenant profile the worker reads.
   // Email defaults ON (they gave one at signup); SMS defaults OFF -- no number, no consent, so it is never assumed.
@@ -10402,6 +10402,7 @@ const Atlas = (function(){
     save(); _logEvent('owner','Alert preference '+k+' set to '+(k==='phone'?'(number)':(v?'on':'off')),{}); renderSet();
     toast(k==='phone'?'Alert number saved':('Text alerts '+(v?'on':'off')).replace('Text',k==='email'?'Email':'Text')); }
   function _bkHasReq(b){ try{ return ((b&&b.portal&&b.portal.requests)||[]).some(function(r){ return r&&(!r.status||r.status==='requested'); }); }catch(e){ return false; } }
+  function _bkDispOpen(b){ try{ var P=(b&&b.paid)||{}, open=0; for(var k in P){ var s=P[k]; if(!s||typeof s!=='object'||!s.disputed) continue; var pd=s.disputed; if(pd.byId&&typeof pd.byId==='object'){ for(var id in pd.byId){ var e=pd.byId[id]||{}; if(!e.reinstatedAt && !e.lostAt && !(pd.lostAt&&String(id)===String(pd.lostDisputeId))) open+=Number(e.amountCents)||0; } } else if(!pd.reinstatedAt && !pd.lostAt){ open+=Number(pd.amountCents)||0; } } return open; }catch(e){ return 0; } }   // open (unresolved) chargeback cents on a booking, mirroring the openBooking banner's per-byId classification (audit fix F4)
   function _notifPing(){ try{ var pg=document.querySelector('#notifBtn .ping'); if(pg) pg.style.display=_notifItems().length?'':'none'; }catch(e){} }   // the dot means something now: shown only when there is actually something waiting
   function _notifItems(){
     var out=[]; try{
@@ -10415,6 +10416,17 @@ const Atlas = (function(){
         out.push({ic:'spark',ai:0,t:_cq.length===1?('Request from '+((_q0.b.cust||'a customer').split(' ')[0])+': '+_w0.slice(0,60)):(_cq.length+' customer requests waiting'),
           s:_cq.length===1?('On '+_q0.b.id+' \u{2014} confirm the change and price, or turn it into a charge.'):'Open each to confirm the change and price.',
           book:(_cq.length===1?_q0.b.id:''), nav:(_cq.length===1?'':'bookings')}); }
+      // Returns & schedule + risk & money + new activity: real operational alerts derived from current bookings (no fake feed, no new state).
+      var _now=Date.now(), _DAY=86400000;
+      var _onRent=books.filter(function(b){ return b && b.status==='On rent'; });
+      var _od=_onRent.filter(function(b){ return _bkEffectiveEndTs(b) < _now; });   // OVERDUE: still out, past the (extension-aware) return
+      if(_od.length) out.push({ic:'clock',t:_od.length+' '+_fterm(_od.length===1?'book':'books')+' overdue for return',s:'Past the return date and not marked returned \u{2014} follow up or close '+(_od.length===1?'it':'them')+' out.',book:(_od.length===1?_od[0].id:''),nav:(_od.length===1?'':'bookings')});
+      var _dueBack=_onRent.filter(function(b){ var e=_bkEffectiveEndTs(b); return e>=_now && e<=_now+2*_DAY; });   // DUE SOON: returning within ~2 days
+      if(_dueBack.length) out.push({ic:'cal',t:_dueBack.length+' due back within 2 days',s:'Line up turnaround and the next '+_fterm('book')+'.',book:(_dueBack.length===1?_dueBack[0].id:''),nav:(_dueBack.length===1?'':'bookings')});
+      var _disp=books.filter(function(b){ return _bkDispOpen(b)>0; });   // RISK: an open chargeback (revenue already clawed back pending the outcome)
+      if(_disp.length) out.push({ic:'card',t:(_disp.length===1?('Chargeback under review on '+_disp[0].id):(_disp.length+' bookings have a chargeback under review')),s:'Respond with evidence in Stripe \u{2014} the disputed amount is held until it resolves.',book:(_disp.length===1?_disp[0].id:''),nav:(_disp.length===1?'':'bookings')});
+      var _nr=books.filter(function(b){ return b && b.review && b.review.rating && !b.review.reply && !b.review.hidden; });   // NEW ACTIVITY: a customer review awaiting the owner's public reply
+      if(_nr.length) out.push({ic:'star',t:(_nr.length===1?('New '+_nr[0].review.rating+'-star review from '+String((_nr[0].cust||'a customer')).split(' ')[0]):(_nr.length+' new reviews to reply to')),s:'A public reply builds trust with future renters.',nav:'analytics'});
       var pend=books.filter(function(b){return b&&(b.status==='pending'||b.status==='request');});
       if(pend.length) out.push({ic:'cal',t:pend.length+' '+_fterm(pend.length===1?'book':'books')+' awaiting confirmation',s:'Confirm to put '+(pend.length===1?'it':'them')+' on the calendar.',nav:'bookings'});
       var idle=assets.filter(function(a){return a&&Number(a.util||0)<50;});
