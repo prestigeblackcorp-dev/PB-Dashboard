@@ -4628,5 +4628,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/await sendSms\(env, b\.tenant_id, \{ to: \(d\.phone \|\| d\.custPhone\), transactional: true, body: _smsBody \}\);/.test(_WORKER_SRC), 'NOTIFY: the SMS is awaited (completes within the cron tick) and sendSms re-checks STOP/consent');
 }
 
+// ==== 13z: PB-parity G13 -- owner-controllable non-refundable-reserve default on cancel ====
+{
+  const _ATLAS_SRC13z = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13z = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/else if\(k==='reserveNonRefundable'\) m\.reserveNonRefundable=!!v;/.test(_ATLAS_SRC13z), 'G13: setMoney stores the reserveNonRefundable toggle as a boolean (not number-coerced)');
+  ok(/var _rnr=!!\(S\.money&&S\.money\.reserveNonRefundable\)&&dep>0;/.test(_ATLAS_SRC13z), 'G13: the cancel modal reads the non-refundable policy');
+  ok(/\+rr\('0','No fee &mdash; full refund',!late&&!_rnr\)/.test(_ATLAS_SRC13z) && /late\|\|_rnr/.test(_ATLAS_SRC13z), 'G13: when the policy is set, the cancel modal defaults to KEEP the deposit (full-refund no longer pre-checked), but the owner can still pick a full refund');
+  ok(/onchange="Atlas\.setMoney\('reserveNonRefundable',this\.checked\)"/.test(_ATLAS_SRC13z), 'G13: a money-settings toggle exists (default OFF -> no change to any tenant\'s current full-refund-default behavior until they opt in)');
+  ok(_ATLAS_SRC13z === _INDEX_SRC13z, 'G13: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

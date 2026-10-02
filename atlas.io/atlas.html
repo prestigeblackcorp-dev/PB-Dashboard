@@ -3806,6 +3806,7 @@ const Atlas = (function(){
     else if(k==='payout.kind') m.payout.kind=v;
     else if(k==='payout.base') m.payout.base=v;
     else if(k==='payout.value') m.payout.value=parseFloat(v)||0;
+    else if(k==='reserveNonRefundable') m.reserveNonRefundable=!!v;   // G13: owner policy -- default a cancellation to KEEPING the reserve/deposit (non-refundable) instead of a full refund
     else m[k]=parseFloat(v)||0;
     save(); _updMoneyPrev();
   }
@@ -6334,12 +6335,13 @@ const Atlas = (function(){
     var q=b.quote||calcQuote(S.money,{periods:b.periods,addons:b.addons,extras:b.extras,discount:b.discount});
     var dep=_r2(q.dueNow||0), half=_r2((q.total||0)*0.5), win=_cxWindow();
     var hrs=b.startTs?Math.round((Number(b.startTs)-Date.now())/3600000):null, late=(hrs!=null&&hrs<win);
-    var note=late?('This is within '+win+'h of the '+esc(_fterm('book'))+' &mdash; your policy suggests keeping a fee.'):('Plenty of notice &mdash; a full refund is typical.');
+    var _rnr=!!(S.money&&S.money.reserveNonRefundable)&&dep>0;   // G13: owner set the reserve non-refundable -> default to KEEP the deposit (owner can still pick a full refund for this one)
+    var note=_rnr?('Your policy keeps the '+money(dep)+' deposit on a cancellation &mdash; choose a full refund below if you are waiving it this time.'):(late?('This is within '+win+'h of the '+esc(_fterm('book'))+' &mdash; your policy suggests keeping a fee.'):('Plenty of notice &mdash; a full refund is typical.'));
     var rr=function(v,lbl,ck){ return '<label style="display:flex;align-items:center;gap:9px;padding:9px 0;font-size:13.5px;color:var(--ink);border-top:1px solid var(--line-2)"><input type="radio" name="cxfee" value="'+v+'"'+(ck?' checked':'')+'> '+lbl+'</label>'; };
     openModal('<div class="modal__head"><h3>Cancel '+b.id+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="bk-lenhint" style="margin:0 0 12px">'+note+'</div>'
-      +rr('0','No fee &mdash; full refund',!late)
-      +(dep>0?rr(dep,'Keep the deposit ('+money(dep)+')',late):'')
+      +rr('0','No fee &mdash; full refund',!late&&!_rnr)
+      +(dep>0?rr(dep,'Keep the deposit ('+money(dep)+')',late||_rnr):'')
       +rr(half,'Keep 50% ('+money(half)+')',false)
       +rr('custom','Custom amount',false)
       +'<div class="rule-input" id="cxCustomWrap" style="display:none;margin:6px 0 0;padding:0 12px"><span>$</span><input class="tnum" id="cxCustom" inputmode="decimal" style="width:auto;flex:1;text-align:left" placeholder="0"></div>'
@@ -8519,6 +8521,7 @@ const Atlas = (function(){
       <div class="set-block"><h3>Tips</h3><label class="cfg-check"><input type="checkbox" ${(S.tipping&&S.tipping.on)?'checked':''} onchange="Atlas.setTipping(this.checked)"> Let customers add a tip at checkout</label><div class="desc">Your booking portal shows quick tip buttons (${((S.tipping&&S.tipping.presets)||[15,18,20]).join('%, ')}%) on the balance payment &mdash; ideal for chauffeur &amp; service rentals. Adds to the Stripe charge; you keep 100%.</div></div>
       <div class="set-block"><h3>Cancellation policy</h3><div class="desc">Shown to customers on your booking page <b>before they pay</b> and merged into your rental agreement &mdash; so what they agree to and what the contract says are the same. A non-refundable amount is only enforceable if it was disclosed here first.</div>
         <div class="field"><label>Free-cancellation window</label><div class="rule-input" style="padding:0 12px"><input class="tnum" style="width:auto;flex:1;text-align:left" value="${_cxWindow()}" oninput="Atlas.setMoney('cancelWindowHrs',this.value)"><span>hours before start</span></div></div>
+        <label class="cfg-check" style="margin-top:10px;display:flex;align-items:center;gap:8px"><input type="checkbox" ${(S.money&&S.money.reserveNonRefundable)?'checked':''} onchange="Atlas.setMoney('reserveNonRefundable',this.checked)">Keep the reserve / deposit on cancellation by default (non-refundable) &mdash; owner can still choose a full refund per booking</label>
         <div class="field" style="margin-bottom:0"><label>Policy the customer sees &amp; signs</label><textarea class="input" rows="3" placeholder="e.g. Free cancellation up to 48 hours before pickup. Within 48 hours the deposit is non-refundable. No-shows are charged in full." oninput="Atlas.setCancelPolicy(this.value)">${esc((S.legal&&S.legal.cancelPolicy)||'')}</textarea><div class="bk-lenhint" style="margin:8px 0 0">Publish your booking site after editing so customers see the current policy.</div></div>
       </div>
       <div class="set-block"><h3>Business mailing address</h3><div class="desc">Your business's physical postal address. It appears in the footer of the <b>marketing emails</b> you send from Outreach, as US CAN-SPAM law requires. Leave blank if you never send marketing email.</div>
