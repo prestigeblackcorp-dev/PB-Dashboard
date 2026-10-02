@@ -4692,5 +4692,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13C === _INDEX_SRC13C, 'WEBPUSH: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13D: WEB PUSH -- renter PORTAL subscribe UI (completes the renter push vertical; backend shipped in 13C) ====
+{
+  ok(/pushEnabled: _vapidCfg\(env\)\.enabled/.test(_WORKER_SRC), 'WEBPUSH: the portal /data response carries the pushEnabled gate flag (false -> the opt-in stays hidden until VAPID keys are set)');
+  ok(/function enablePush\(\)\{/.test(_WORKER_SRC), 'WEBPUSH: the portal has an enablePush() flow (fetch VAPID key -> permission -> register SW -> pushManager.subscribe)');
+  ok(/j\.pushEnabled&&\('PushManager' in window\)/.test(_WORKER_SRC), 'WEBPUSH: the portal push opt-in renders ONLY when the worker reports enabled AND the browser supports push');
+  ok(/fetch\('\/api\/portal\/'\+T\+'\/push'/.test(_WORKER_SRC), 'WEBPUSH: the portal posts the subscription to its own token-bound /push endpoint (renter audience, booking-scoped)');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
