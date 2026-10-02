@@ -8491,6 +8491,38 @@ function _balanceWithCharges(b){
 // EXACT amount a CARD/Stripe payment processes to -- replicating the worker's line-item rounding:
 // base + 5% processing fee + 8.25% TX tax on (base+fee). Matches to the cent what Stripe actually charged.
 function _stripeGross(base){ base=Math.round((Number(base)||0)*100)/100; var fee=Math.round(base*0.05*100)/100; var tax=Math.round((base+fee)*0.0825*100)/100; return Math.round((base+fee+tax)*100)/100; }
+// DISPLAY grouping of extensions: a partial payment splits ONE extension (one rental week) into the original
+// remainder + one or more settled "-p" portions (same window, extensionDays:0, money only). For the owner-facing
+// Extension Agreements card AND the Payments Received numbering we fold each such split-pair back into ONE logical
+// extension ("the week") so a week paid in installments is a single numbered card listing each dated installment --
+// never two cards with two different numbers. DISPLAY ONLY: the underlying entries, their paidAt dates and the
+// per-installment ledger lines are all preserved. A booking with no split yields one group per extension, numbered
+// 1..N exactly as before, so every other booking renders unchanged.
+function _extGroups(b){
+  var live=(typeof _extLive==='function')?_extLive(b):((b&&b.extensions||[]).filter(function(e){return e&&!e._deleted;}));
+  var map={}, order=[];
+  (live||[]).forEach(function(e,idx){
+    if(!e) return;
+    var base=e._splitOf?String(e._splitOf):String(e.id==null?'':e.id).replace(/-p[0-9a-z]*$/,'');
+    if(!base) base='__i'+idx;
+    if(!map[base]){ map[base]={parts:[]}; order.push(base); }
+    map[base].parts.push(e);
+  });
+  var byId={}, groups=[];
+  order.forEach(function(k,gi){
+    var parts=map[k].parts;
+    var primary=parts.filter(function(e){return !e._partialSplit && String(e.id==null?'':e.id)===k;})[0]
+              || parts.filter(function(e){return (Number(e.extensionDays)||0)>0;})[0]
+              || parts[0];
+    var g={ num:gi+1, parts:parts, primaryId:String(primary.id==null?'':primary.id),
+            charge:Math.round(parts.reduce(function(s,e){return s+(Number(e.additionalCharge)||0);},0)*100)/100,
+            allPaid:parts.every(function(e){return !!e.paid;}),
+            anyPaid:parts.some(function(e){return !!e.paid;}) };
+    groups.push(g);
+    parts.forEach(function(e){ if(e.id!=null) byId[String(e.id)]=g; });
+  });
+  return { groups:groups, byId:byId, count:groups.length };
+}
 function _paymentsReceived(b){
   if(!b) return [];
   function _ts(x){ var t=new Date(x).getTime(); return isNaN(t)?0:t; }
@@ -8514,10 +8546,12 @@ function _paymentsReceived(b){
     var _exact=!!(c._fromDeletedExt||c._paidExternally||c._reconciled);
     out.push({label:(c.description?String(c.description):'Portal Charge'), amount:Number(c.amount)||0, method:_m(c.paidMethod), ts:_ts(c.paidAt), card:_exact?false:_cardOnline(c.paidMethod)});
   });
+  var _eg=_extGroups(b);
   _extLive(b).forEach(function(e,_ei){
     if(!e||!e.paidAt||!(Number(e.additionalCharge)>0)) return;
     if(e._paidExternally) return;   // paid by an EXISTING card transaction already shown via stripePayments -> no duplicate payment line
-    out.push({label:'Extension #'+(_ei+1), amount:Number(e.additionalCharge)||0, method:_m(e.paymentMethod), ts:_ts(e.paidAt), card:_cardOnline(e.paymentMethod)});
+    var _gn=(e.id!=null&&_eg.byId[String(e.id)])?_eg.byId[String(e.id)].num:(_ei+1);   // split installments share ONE grouped number so the ledger agrees with the extension card
+    out.push({label:'Extension #'+_gn, amount:Number(e.additionalCharge)||0, method:_m(e.paymentMethod), ts:_ts(e.paidAt), card:_cardOnline(e.paymentMethod)});
   });
   (Array.isArray(b.extraDrivers)?b.extraDrivers:[]).forEach(function(d){
     if(!d||!d.paid||!d.paidAt||!(Number(d.payAmount)>0)) return;
@@ -12778,7 +12812,7 @@ function openBookingDetail(id){
     addonsHtml+
     (b.addlIncome&&b.addlIncome.amount?'<div class="detail-row"><span class="detail-label">Addl Income</span><span class="detail-val" style="color:var(--green)">'+$$(b.addlIncome.amount)+(b.addlIncome.desc?' \u2014 '+esc(b.addlIncome.desc):'')+'</span></div>':'')+
     (Number(b.lateReturnFee)?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">\uD83D\uDD52 Late Return Fee</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.lateReturnFee)+'</span></div>':'')+
-    (extensionCharge(b)>0?'<div class="detail-row"><span class="detail-label" style="color:#a78bfa">\uD83D\uDCC5 Extension Charges</span><span class="detail-val" style="color:#a78bfa;font-weight:700">+'+$$(extensionCharge(b))+'<span style="font-size:10px;font-weight:400;color:var(--muted)"> across '+_extLive(b).filter(function(e){return e.additionalCharge>0;}).length+' extension'+((_extLive(b).filter(function(e){return e.additionalCharge>0;}).length!==1)?'s':'')+'</span></span></div>':'')+
+    (extensionCharge(b)>0?'<div class="detail-row"><span class="detail-label" style="color:#a78bfa">\uD83D\uDCC5 Extension Charges</span><span class="detail-val" style="color:#a78bfa;font-weight:700">+'+$$(extensionCharge(b))+'<span style="font-size:10px;font-weight:400;color:var(--muted)"> across '+_extGroups(b).groups.filter(function(g){return g.charge>0;}).length+' extension'+((_extGroups(b).groups.filter(function(g){return g.charge>0;}).length!==1)?'s':'')+'</span></span></div>':'')+
     ((b.portalCharges||[]).length>0 ?
       '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0;display:flex;align-items:center;justify-content:space-between">\uD83D\uDCB8 Portal Charges<button class="btn btn-sm" onclick="deleteAllPortalCharges(\''+esc(b.id)+'\')" title="Delete ALL portal charges on this booking \u2014 totals revert" style="background:rgba(239,68,68,.1);color:var(--red);border:1px solid rgba(239,68,68,.3);padding:1px 7px;font-size:9px;border-radius:6px;cursor:pointer;font-weight:700">\uD83D\uDDD1 Delete all</button></div>'+
       (b.portalCharges||[]).map(function(c){
@@ -12806,13 +12840,29 @@ function openBookingDetail(id){
 
     // Extension Contracts
     (_extLive(b).length?
-      '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">\uD83D\uDCC5 Extension Agreements ('+(_extLive(b).length)+')</div>'+
+      '<div class="fsec" style="font-size:9px;padding-top:8px;margin-top:0">\uD83D\uDCC5 Extension Agreements ('+_extGroups(b).count+')</div>'+
       _extLive(b).map(function(ext,i){
+        var _grp=_extGroups(b).byId[ext.id];
+        if(_grp && String(ext.id)!==_grp.primaryId) return '';   // a '-p' settled split portion -> folded into its week's primary row
+        var _num=_grp?_grp.num:(i+1);
         var signed=!!(ext.signed&&ext.sig);
-        return '<div class="detail-row"><span class="detail-label" style="color:'+(signed?'#22c55e':'#fb923c')+'">Ext #'+(i+1)+' '+(signed?'\u2705':'\u23F3')+'</span>'+
+        var _chargeCell;
+        if(_grp && _grp.parts.length>1){
+          // One rental week paid in installments (a partial split it): combined total + each dated installment, folded into this single card.
+          var _inst=_grp.parts.slice().sort(function(a,c){ return (a.paid?(Number(a.paidAt)||0):9e15)-(c.paid?(Number(c.paidAt)||0):9e15); }).map(function(p){
+            var _a='$'+Number(p.additionalCharge||0).toFixed(2);
+            return p.paid
+              ? ' <span style="color:var(--muted);font-size:10px">&#183;</span> <span style="color:#22c55e;font-size:10px;font-weight:700">'+_a+' \u2705'+(p.paymentMethod?' '+esc(p.paymentMethod==='stripe'?'card':p.paymentMethod):'')+(p.paidAt?' <span style="color:var(--muted);font-weight:400">'+new Date(p.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span>':'')+'</span>'
+              : ' <span style="color:var(--muted);font-size:10px">&#183;</span> <span style="color:#fb923c;font-size:10px;font-weight:700">'+_a+' \u23F3 pending</span>';
+          }).join('');
+          _chargeCell=' <span style="color:var(--gold);font-size:10px;font-weight:700">$'+Number(_grp.charge||0).toFixed(2)+'</span>'+(_grp.allPaid?' <span style="color:#22c55e;font-size:10px;font-weight:700">\u2705 Paid</span>':' <span style="color:#fb923c;font-size:10px;font-weight:700">\u23F3 Partial</span>')+_inst;
+        } else {
+          _chargeCell=(ext.additionalCharge?' <span style="color:var(--gold);font-size:10px;font-weight:700">$'+Number(ext.additionalCharge).toFixed(2)+'</span>'+(ext.paid?' <span style="color:#22c55e;font-size:10px;font-weight:700">\u2705 Paid'+(ext.paymentMethod?' via '+esc(ext.paymentMethod==='stripe'?'card':ext.paymentMethod):'')+(ext.paidAt?' <span style="color:var(--muted);font-weight:400">'+new Date(ext.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span>':'')+'</span>':' <span style="color:#fb923c;font-size:10px;font-weight:700">\u23F3 Payment pending</span>'):'');
+        }
+        return '<div class="detail-row"><span class="detail-label" style="color:'+(signed?'#22c55e':'#fb923c')+'">Ext #'+_num+' '+(signed?'\u2705':'\u23F3')+'</span>'+
           '<span class="detail-val">'+fmtDateFull(ext.fromDate)+' &rarr; <strong>'+fmtDateFull(ext.toDate)+'</strong>'+
           ' <span style="color:var(--muted);font-size:10px">+'+ext.extensionDays+' day'+(ext.extensionDays!==1?'s':'')+'</span>'+
-          (ext.additionalCharge?' <span style="color:var(--gold);font-size:10px;font-weight:700">$'+Number(ext.additionalCharge).toFixed(2)+'</span>'+(ext.paid?' <span style="color:#22c55e;font-size:10px;font-weight:700">\u2705 Paid'+(ext.paymentMethod?' via '+esc(ext.paymentMethod==='stripe'?'card':ext.paymentMethod):'')+(ext.paidAt?' <span style="color:var(--muted);font-weight:400">'+new Date(ext.paidAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'</span>':'')+'</span>':' <span style="color:#fb923c;font-size:10px;font-weight:700">\u23F3 Payment pending</span>'):'')+
+          _chargeCell+
           ((ext.unlimited||Number(ext.milesPerDay)>0)?' <span style="color:#7cc4ff;font-size:10px;font-weight:700">'+(ext.unlimited?'\u221E Unltd mi':((ext.doubleMiles?'2× ':'')+Number(ext.milesPerDay).toLocaleString()+' mi/day'+(Number(ext.startOdom)>0?(' \u00B7 odo '+Number(ext.startOdom).toLocaleString()):'')))+'</span>':'')+
           (signed?' <span style="color:var(--muted);font-size:10px">Signed '+esc(ext.sigDate||'')+'</span>':' <span style="color:#fb923c;font-size:10px">Pending signature</span>')+
           ' <button class="btn btn-sm" onclick="closeBookingDetail();openContract(\''+b.id+'\');setTimeout(function(){_contractShowTab('+i+');_updateExtensionTabs();},200)" style="padding:2px 8px;font-size:10px;margin-left:4px">View</button>'+
