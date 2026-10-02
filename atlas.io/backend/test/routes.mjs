@@ -4485,5 +4485,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(wCols === cols\) \{ wCols = cols\.slice\(\); wVals = vals\.slice\(\); \}/.test(_WORKER_SRC), 'G22: copy-on-write so the caller cols/vals are never mutated');
 }
 
+// ==== 13n: PB-parity G17 -- a terminal (cancelled/voided) booking can no longer be e-signed ====
+{
+  // the pay path already blocks a terminal booking (~6441); the two SIGN paths (base agreement + extension addendum) did NOT until now
+  ok((_WORKER_SRC.match(/if \(_isTerminalNoRevive\(brow\.status, d\.status\)\) return json\(\{ ok: false, error: 'This booking has been cancelled or ended/g) || []).length === 2, 'G17: BOTH the portal /sign and /extsign paths reject a NEW signature on a terminal booking (fail-closed)');
+  ok(/and can no longer be signed\. Please contact the owner/.test(_WORKER_SRC), 'G17: the base-agreement sign path has the terminal block');
+  ok(/the extension can no longer be signed/.test(_WORKER_SRC), 'G17: the extension-addendum sign path has the terminal block');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
