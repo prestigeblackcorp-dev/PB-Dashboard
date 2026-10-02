@@ -4673,5 +4673,24 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13B === _INDEX_SRC13B, 'NOTIFY 13B: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13C: WEB PUSH (RFC 8291 + VAPID) -- browser push for owner (new booking) + renter (operational reminders), gated inert ====
+{
+  const _ATLAS_SRC13C = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13C = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/function _vapidCfg\(env\) \{/.test(_WORKER_SRC) && /enabled: !!\(pub && priv\)/.test(_WORKER_SRC), 'WEBPUSH: VAPID config is GATED INERT -- no public+private key => disabled, so _pushFanout/_webPushSend do zero sends');
+  ok(/Content-Encoding: aes128gcm/.test(_WORKER_SRC) && /WebPush: info/.test(_WORKER_SRC), 'WEBPUSH: RFC 8291 aes128gcm payload encryption (HKDF key-info + aes128gcm/nonce content-encoding)');
+  ok(/CREATE TABLE IF NOT EXISTS push_subscriptions/.test(_WORKER_SRC), 'WEBPUSH: push_subscriptions table (endpoint UNIQUE so a re-subscribe upserts)');
+  ok(/path === '\/api\/push\/vapid' && method === 'GET'/.test(_WORKER_SRC) && /publicKey: _vp\.enabled \? _vp\.pub : ''/.test(_WORKER_SRC), 'WEBPUSH: /api/push/vapid exposes ONLY the public key -- the private key never leaves the worker');
+  ok(/path === '\/api\/push\/subscribe' && method === 'POST'/.test(_WORKER_SRC), 'WEBPUSH: owner subscribe endpoint is session-authed (tenant from the session, not client-supplied)');
+  ok(/psub === 'push' && method === 'POST'/.test(_WORKER_SRC), 'WEBPUSH: renter portal subscribe is token-bound to THIS booking + tenant');
+  ok(/DELETE FROM push_subscriptions WHERE id=\?/.test(_WORKER_SRC), 'WEBPUSH: a gone (404/410) subscription is pruned so a dead endpoint is not retried forever');
+  ok(/_pushFanout\(env, prof\.id, 'owner'/.test(_WORKER_SRC), 'WEBPUSH: a new booking fans out an OWNER push (waitUntil, inert until keys)');
+  ok(/await _pushFanout\(env, b\.tenant_id, 'renter', b\.id/.test(_WORKER_SRC), 'WEBPUSH: operational RENTER reminders also push (transactional only, mirrors the SMS twin)');
+  ok(/id="pushRow"/.test(_ATLAS_SRC13C) && /Atlas\.togglePush\(this\.checked\)/.test(_ATLAS_SRC13C), 'WEBPUSH: owner Settings has a per-device push toggle (row hidden until the worker reports VAPID enabled)');
+  ok(/function togglePush\(on\)\{/.test(_ATLAS_SRC13C) && /applicationServerKey:_urlB64ToU8/.test(_ATLAS_SRC13C), 'WEBPUSH: the toggle subscribes with the VAPID public key and POSTs the subscription');
+  ok(/_api\('\/api\/push\/vapid'/.test(_ATLAS_SRC13C), 'WEBPUSH: the client fetches the public key from the worker at runtime (never hardcoded)');
+  ok(_ATLAS_SRC13C === _INDEX_SRC13C, 'WEBPUSH: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

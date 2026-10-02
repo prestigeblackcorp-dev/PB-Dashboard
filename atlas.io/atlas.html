@@ -8429,7 +8429,7 @@ const Atlas = (function(){
           return '<div class="set-block"><h3>How Atlas reaches you</h3><div class="desc">When a customer asks for a change from their portal, we tell you here. It always lands in your dashboard &mdash; these add email and text.</div>'
           +'<div class="auto-row"><label class="switch"><input type="checkbox" '+(n.email!==false?'checked':'')+' onchange="Atlas.setNotify(\'email\',this.checked)"><span class="switch__t"></span></label><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">Email me</b><div style="font-size:12.5px;color:var(--muted)">'+esc(_sessEmail()||S.owner||'your account email')+'</div></div></div>'
           +'<div class="auto-row"><label class="switch"><input type="checkbox" '+(n.sms?'checked':'')+' onchange="Atlas.setNotify(\'sms\',this.checked)"><span class="switch__t"></span></label><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">Text me</b><div style="font-size:12.5px;color:var(--muted)">Needs a mobile number below'+(n.sms&&!_notifyPhone()?' &mdash; <span style="color:var(--danger)">add one or texts cannot send</span>':'')+'</div></div></div>'
-          +'<div class="field" style="margin-top:6px"><label>Mobile number for alerts</label><input class="input" id="ntfPhone" value="'+esc(n.phone||'')+'" placeholder="+1 555 123 4567" onchange="Atlas.setNotify(\'phone\',this.value)"><div class="bk-lenhint" style="margin:5px 0 0">Standard rates apply. Reply STOP to any text from '+esc((S.brand&&S.brand.name)||'this business')+' to stop them &mdash; we honor it immediately.</div></div></div>'; })()
+          +'<div class="field" style="margin-top:6px"><label>Mobile number for alerts</label><input class="input" id="ntfPhone" value="'+esc(n.phone||'')+'" placeholder="+1 555 123 4567" onchange="Atlas.setNotify(\'phone\',this.value)"><div class="bk-lenhint" style="margin:5px 0 0">Standard rates apply. Reply STOP to any text from '+esc((S.brand&&S.brand.name)||'this business')+' to stop them &mdash; we honor it immediately.</div></div>'+'<div class="auto-row" id="pushRow" style="display:none"><label class="switch"><input type="checkbox" id="pushToggle" onchange="Atlas.togglePush(this.checked)"><span class="switch__t"></span></label><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">Push on this device</b><div style="font-size:12.5px;color:var(--muted)" id="pushHint">Instant browser alerts &mdash; a new booking reaches you even when the dashboard is closed.</div></div></div>'+'</div>'; })()
         +'<div class="set-block"><h3>Developer &amp; upgrades</h3><div class="desc">Version '+APP_VERSION+'. Flip upgrades on live &mdash; no reinstall, no downtime.</div>'
           +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn btn--ghost btn--sm" onclick="Atlas.checkUpdates()">Check for updates</button><button class="btn btn--ghost btn--sm" onclick="Atlas.viewChangelog()">Changelog</button><button class="btn btn--ghost btn--sm" onclick="Atlas.installApp()">Install app</button></div>'
           +OWNER_FLAGS.map(function(f){ return '<div class="auto-row"><label class="switch"><input type="checkbox" '+(_flags()[f[0]]?'checked':'')+' onchange="Atlas.toggleFlag(\''+f[0]+'\',this.checked)"><span class="switch__t"></span></label><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">'+f[1]+'</b><div style="font-size:12.5px;color:var(--muted)">Beta &middot; toggles instantly</div></div></div>'; }).join('')
@@ -8441,6 +8441,7 @@ const Atlas = (function(){
           +'<div id="compList" style="margin-top:14px">'+_compListHtml()+'</div>'
         +'</div>'
         +_ownerDomainsHtml();
+      _pushInit();
     }
     else if(setCur==='branding') b.innerHTML=`
       <div class="set-block"><h3>Brand identity</h3><div class="desc">This runs across your dashboard, portal, contracts and emails.</div>
@@ -10401,6 +10402,31 @@ const Atlas = (function(){
     if(k==='sms'&&v&&!_notifyPhone()) toast('Add your mobile number below so texts can send');
     save(); _logEvent('owner','Alert preference '+k+' set to '+(k==='phone'?'(number)':(v?'on':'off')),{}); renderSet();
     toast(k==='phone'?'Alert number saved':('Text alerts '+(v?'on':'off')).replace('Text',k==='email'?'Email':'Text')); }
+  // ---- Web push (this device): subscribe the owner's browser so a new booking reaches them even with the dashboard closed.
+  // INERT until the worker has VAPID keys set (the toggle row stays hidden). Browser/device-specific, not a synced S.notify pref.
+  var _pushVapid=null;   // cached {enabled, publicKey} from /api/push/vapid
+  function _pushSupported(){ try{ return ('serviceWorker' in navigator) && ('PushManager' in window) && ('Notification' in window); }catch(e){ return false; } }
+  function _urlB64ToU8(s){ var pad='='.repeat((4-s.length%4)%4); var b=(s+pad).replace(/-/g,'+').replace(/_/g,'/'); var raw=atob(b); var u=new Uint8Array(raw.length); for(var i=0;i<raw.length;i++)u[i]=raw.charCodeAt(i); return u; }
+  function _pushInit(){ try{
+      var row=document.getElementById('pushRow'); if(!row) return;
+      if(!_pushSupported()||typeof ATLAS_BACKEND==='undefined'||!ATLAS_BACKEND||typeof _api!=='function') return;   // unsupported / no backend -> leave the row hidden
+      var apply=function(){ if(!_pushVapid||!_pushVapid.enabled){ row.style.display='none'; return; } row.style.display='';
+        try{ navigator.serviceWorker.ready.then(function(reg){ return reg.pushManager.getSubscription(); }).then(function(sub){ var t=document.getElementById('pushToggle'); if(t) t.checked=!!sub; }).catch(function(){}); }catch(e){} };
+      if(_pushVapid){ apply(); return; }
+      _api('/api/push/vapid',{method:'GET'}).then(function(res){ var j=res&&res.json; _pushVapid={enabled:!!(j&&j.enabled),publicKey:(j&&j.publicKey)||''}; apply(); }).catch(function(){});
+    }catch(e){} }
+  function togglePush(on){ try{
+      if(!_pushSupported()){ toast('This browser does not support push notifications'); return; }
+      if(!_pushVapid||!_pushVapid.enabled||!_pushVapid.publicKey){ toast('Push is not enabled on this account yet'); return; }
+      if(on){
+        if(typeof Notification!=='undefined' && Notification.permission==='denied'){ var td=document.getElementById('pushToggle'); if(td)td.checked=false; toast('Allow notifications for this site in your browser settings first'); return; }
+        Notification.requestPermission().then(function(perm){ if(perm!=='granted'){ var t1=document.getElementById('pushToggle'); if(t1)t1.checked=false; toast('Notifications were not allowed'); return; }
+          navigator.serviceWorker.ready.then(function(reg){ return reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:_urlB64ToU8(_pushVapid.publicKey)}); }).then(function(sub){ return _api('/api/push/subscribe',{method:'POST',body:{subscription:sub.toJSON()}}); }).then(function(){ toast('Push notifications on for this device'); }).catch(function(){ var t2=document.getElementById('pushToggle'); if(t2)t2.checked=false; toast('Could not enable push'); });
+        }).catch(function(){ var t3=document.getElementById('pushToggle'); if(t3)t3.checked=false; });
+      } else {
+        navigator.serviceWorker.ready.then(function(reg){ return reg.pushManager.getSubscription(); }).then(function(sub){ if(!sub) return null; var ep=sub.endpoint; return sub.unsubscribe().then(function(){ return _api('/api/push/unsubscribe',{method:'POST',body:{endpoint:ep}}); }); }).then(function(){ toast('Push notifications off for this device'); }).catch(function(){});
+      }
+    }catch(e){} }
   function _bkHasReq(b){ try{ return ((b&&b.portal&&b.portal.requests)||[]).some(function(r){ return r&&(!r.status||r.status==='requested'); }); }catch(e){ return false; } }
   function _bkDispOpen(b){ try{ var P=(b&&b.paid)||{}, open=0; for(var k in P){ var s=P[k]; if(!s||typeof s!=='object'||!s.disputed) continue; var pd=s.disputed; if(pd.byId&&typeof pd.byId==='object'){ for(var id in pd.byId){ var e=pd.byId[id]||{}; if(!e.reinstatedAt && !e.lostAt && !(pd.lostAt&&String(id)===String(pd.lostDisputeId))) open+=Number(e.amountCents)||0; } } else if(!pd.reinstatedAt && !pd.lostAt){ open+=Number(pd.amountCents)||0; } } return open; }catch(e){ return 0; } }   // open (unresolved) chargeback cents on a booking, mirroring the openBooking banner's per-byId classification (audit fix F4)
   function _notifPing(){ try{ var pg=document.querySelector('#notifBtn .ping'); if(pg) pg.style.display=_notifItems().length?'':'none'; }catch(e){} }   // the dot means something now: shown only when there is actually something waiting
@@ -13568,7 +13594,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,setTypeRate,setCancelPolicy,setSenderAddress,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,syncTax,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,togglePush,setTypeRate,setCancelPolicy,setSenderAddress,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,syncTax,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
