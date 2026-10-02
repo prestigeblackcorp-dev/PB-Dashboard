@@ -4460,5 +4460,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/for \(var _asK in serverD\.autoSent\) \{ if \(clientD\.autoSent\[_asK\] == null\) clientD\.autoSent\[_asK\] = serverD\.autoSent\[_asK\]; \}/.test(_WORKER_SRC), 'G23: union-graft fills only missing keys (keeps client-only markers; can only suppress a re-send, never send a wrong email)');
 }
 
+// ==== 13l: PB-parity G33 -- a LOST payment dispute now leaves a trace (was: only WON disputes recorded) ====
+{
+  // the Stripe charge.dispute.closed branch already restored revenue on a WIN; G33 adds the LOSS outcome -- recorded, NOT re-charged
+  ok(/else if \(_rBk && _rTn && !_won && String\(obj\.status \|\| ''\)\.toLowerCase\(\) === 'lost'\) \{/.test(_WORKER_SRC), 'G33: an explicit LOST (not won) dispute close is handled');
+  ok(/kind: 'chargeback_lost', amount_cents: 0/.test(_WORKER_SRC), 'G33: idempotent via a 0-amount sentinel txn -- it records the outcome, it does NOT move money');
+  ok(/booking\.dispute_lost/.test(_WORKER_SRC), 'G33: an audit row records the lost dispute (forensics parity with booking.dispute_won)');
+  ok(/title: 'Chargeback LOST on a booking'/.test(_WORKER_SRC), 'G33: the owner is alerted the dispute was lost + that the amount stays clawed back');
+  // money invariant: the lost-dispute write stamps the slot + booking marker and returns {} (NO rev change -- the open-decrement correctly stands)
+  ok(/_pp\.disputed\.lostAt = Date\.now\(\);[\s\S]*?_bd\.disputeLostAt = Date\.now\(\); _bd\._t = Date\.now\(\); return \{\}; \}\);/.test(_WORKER_SRC), 'G33: the lost-dispute booking write makes NO revenue change (mutate returns {}) -- the dispute-open decrement is what stands');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
