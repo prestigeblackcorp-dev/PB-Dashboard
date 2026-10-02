@@ -4605,11 +4605,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // ==== 13w: NOTIFY Phase 1a -- renter trip-timeline reminders (balance-due / return-due / overdue) in the lifecycle cron ====
 {
   ok(/const _ending = \(\(await env\.DB\.prepare\('SELECT id,tenant_id,data,starts,ends,portal_token FROM bookings WHERE starts < \? AND ends BETWEEN \? AND \?/.test(_WORKER_SRC), 'NOTIFY: a bounded fetch of active rentals ending within ~3d feeds the return-due reminder');
-  ok(/const _effEnd = _bkEffEndServer\(b\.ends, d, _pmsN\);/.test(_WORKER_SRC), 'NOTIFY: reminders gate on the EFFECTIVE end (incl. signed extensions), so an extended rental is not reminded early/overdue wrongly');
+  ok(/var _effEnd = Number\(d\.endTs\) \|\| Number\(b\.ends\) \|\| 0;/.test(_WORKER_SRC), 'NOTIFY (audit fix): the reminder effective-end base is d.endTs (the authoritative base, never bumped by extensions), falling back to the column then the period math for legacy rows');
+  ok(/if \(e && !e\._deleted && e\.signedAt && \(Number\(e\.addedPeriods\) \|\| 0\) > 0 && \(Number\(e\.newEndTs\) \|\| 0\) > _effEnd\) _effEnd = Number\(e\.newEndTs\);/.test(_WORKER_SRC), 'NOTIFY (audit fix): ONLY signed extensions move the reminder due date -- an unsigned/unconfirmed extension must not push out (and so suppress) the overdue nudge for the original due date (_bkEffEndServer counts unsigned extensions, which is right for availability but wrong for a return reminder)');
   ok(/if \(autos\.balanceDue && autos\.balanceDue\.on && b\.starts && !sent\.balanceDue && !_closedN/.test(_WORKER_SRC), 'NOTIFY: balance-due reminder (opt-in, only when a balance is actually owed, never on a finished/terminated booking)');
   ok(/if \(autos\.returnDue && autos\.returnDue\.on && _effEnd > now && !_closedN && !sent\.returnDue/.test(_WORKER_SRC), 'NOTIFY: return-due reminder (opt-in, before the effective end, never on a closed booking)');
   ok(/if \(autos\.overdue && autos\.overdue\.on && _effEnd < now && !_closedN && !sent\.overdue/.test(_WORKER_SRC), 'NOTIFY: overdue reminder (opt-in, after the effective end, only while still out, bounded to 7d)');
-  ok(/_stLcN === 'returned' \|\| _stLcN === 'completed' \|\| _stLcN === 'cancelled' \|\| _stLcN === 'voided'/.test(_WORKER_SRC), 'NOTIFY: a returned/completed/cancelled/voided booking is excluded from trip reminders');
+  ok(/_stLcN === 'returned' \|\| _stLcN === 'completed' \|\| _stLcN === 'cancelled' \|\| _stLcN === 'voided' \|\| _stLcN === 'pending'/.test(_WORKER_SRC), 'NOTIFY (audit fix): a returned/completed/cancelled/voided OR still-pending (never-confirmed / abandoned) booking is excluded from trip reminders -- pending is handled by the opt-in abandoned-booking nudge, not these operational reminders');
 }
 
 // ==== 13x: NOTIFY Phase 1b -- the trip reminders appear in the Notifications settings + ship with sensible defaults ====
@@ -4637,6 +4638,27 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/\+rr\('0','No fee &mdash; full refund',!late&&!_rnr\)/.test(_ATLAS_SRC13z) && /late\|\|_rnr/.test(_ATLAS_SRC13z), 'G13: when the policy is set, the cancel modal defaults to KEEP the deposit (full-refund no longer pre-checked), but the owner can still pick a full refund');
   ok(/onchange="Atlas\.setMoney\('reserveNonRefundable',this\.checked\)"/.test(_ATLAS_SRC13z), 'G13: a money-settings toggle exists (default OFF -> no change to any tenant\'s current full-refund-default behavior until they opt in)');
   ok(_ATLAS_SRC13z === _INDEX_SRC13z, 'G13: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13A: multi-agent audit remediation -- 5 confirmed findings in this session's own changes ====
+{
+  const _ATLAS_SRC13A = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13A = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // Finding 1 (MED money-stripe): _stripeCreditBooking archived a double-checkout silently -> BYO-Stripe tenants (credited via confirm-on-return/sweep, not the webhook) were never alerted.
+  ok(/_dupArch = \{ oldPi: _oldRef, newPi: String\(pi\)\.slice\(0, 40\), kind: _pkKey, amt: amt \};/.test(_WORKER_SRC), 'audit-fix F1: _stripeCreditBooking captures the dual-checkout archive (both payment refs + amount) for the caller to alert on');
+  ok(/dupArchive: \(_committed \? _dupArch : null\)/.test(_WORKER_SRC), 'audit-fix F1: _stripeCreditBooking returns ONLY the committed iteration\'s archive (null otherwise) so the alert fires once');
+  ok((_WORKER_SRC.match(/if \(_crC && _crC\.dupArchive\) \{/g) || []).length === 1, 'audit-fix F1: the confirm-on-return path fires the owner double-charge alert off the returned dupArchive');
+  ok((_WORKER_SRC.match(/if \(_res && _res\.dupArchive\) \{/g) || []).length === 1, 'audit-fix F1: the reconcile-sweep path fires the owner double-charge alert off the returned dupArchive');
+  ok((_WORKER_SRC.match(/stripe\.paid\.duplicate_checkout/g) || []).length === 3, 'audit-fix F1: the duplicate-checkout audit now fires from ALL THREE credit paths (webhook + confirm-on-return + sweep), not just the webhook');
+  ok((_WORKER_SRC.match(/Possible double charge on a booking/g) || []).length === 3, 'audit-fix F1: a durable owner alert fires from all three credit paths');
+  // Finding 2 (MED notifications): pending must be excluded from the operational reminders (handled by guard 13w above, now asserting pending).
+  // Finding 3 (HIGH notifications): signed-only effective end (handled by guard 13w above).
+  // Finding 4 (HIGH legal-display): the per-booking dispute banner must classify a WON chargeback (restored via the byId ledger) as won, not under review.
+  ok(/if\(_e\.reinstatedAt\) _w\+=_ea; else if\(_e\.lostAt\|\|\(_pd\.lostAt&&String\(_ids\[_ii\]\)===String\(_pd\.lostDisputeId\)\)\) _l\+=_ea; else _o\+=_ea;/.test(_ATLAS_SRC13A), 'audit-fix F4: the dispute banner classifies each ledger (byId) dispute by its OWN reinstatedAt -> a won chargeback restored via the modern byId ledger shows as won, not "under review" (the old code only read top-level reinstatedAt, which the byId path never sets)');
+  ok(/_pp\.disputed\.byId\[String\(obj\.id\)\]\.lostAt = Date\.now\(\);/.test(_WORKER_SRC), 'audit-fix F4: the lost path also stamps the per-dispute ledger entry (byId[id].lostAt) so a won-and-lost mixed slot classifies precisely on the owner dashboard');
+  ok(_ATLAS_SRC13A === _INDEX_SRC13A, 'audit-fix F4: atlas.html and index.html remain byte-identical');
+  // Finding 5 (MED money): the G33 lost-dispute branch must be retry-safe like its won-restore sibling.
+  ok(/if \(!\(_lRes && _lRes\.committed\)\) \{ _whErr = _whErr \|\| new Error\('dispute-lost trace did not commit \(CAS\)'\); try \{ await env\.DB\.prepare\("DELETE FROM platform_transactions WHERE stripe_id=\?"\)\.bind\(_lsKey\)\.run\(\);/.test(_WORKER_SRC), 'audit-fix F5: the lost-dispute branch is retry-safe -- a non-committed CAS (or throw) deletes the sentinel AND flags _whErr so Stripe redelivers, instead of orphaning the trace with the sentinel set; the audit + owner alert fire ONLY on the committed attempt (single-fire)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
