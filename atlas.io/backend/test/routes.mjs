@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4250,7 +4250,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // ---- #9 (data-integrity HIGH): the Stripe webhook must credit an installment under the SAME per-installment key the cron uses ----
   ok(/\(md\.kind === 'installment' && md\.inst\) \? \('installment:inst' \+ String\(md\.inst\)\)/.test(_WORKER_SRC), '#9: the generic Stripe webhook namespaces an installment credit by md.inst (not the bare "installment" key)');
   ok(/const cid = 'inst' \+ String\(inst\.id\);/.test(_WORKER_SRC), '#9: the auto-pay cron credits under cid = "inst"+inst.id');
-  ok(/_pkKey = \(_core \? 'installment:' : 'charge:'\) \+ String\(chargeId\)/.test(_WORKER_SRC), '#9: _offSessionCreditBooking maps a core credit to "installment:"+cid');
+  ok(/_pkKey = \(opts\.manual \? 'manual:' : \(_core \? 'installment:' : 'charge:'\)\) \+ String\(chargeId\)/.test(_WORKER_SRC), '#9: _offSessionCreditBooking maps a core credit to "installment:"+cid (G3: + a manual: slot for offline payments)');
   // the two derivations converge on ONE key for a given installment id -> distinct installments never collide, same-pi dedup still works
   { const _id = 'ABC'; const _cronKey = 'installment:' + ('inst' + String(_id)); const _webhookKey = 'installment:inst' + String(_id); ok(_cronKey === _webhookKey, '#9: webhook key === cron key for the same installment id (no cross-installment slot collision)'); }
 
@@ -4404,6 +4404,44 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/var rev=_bkEarnedRev\(b\)\|\|0;/.test(_ATLAS_SRC13i), '#6: cohort LTV uses gift-netted _bkEarnedRev');
   ok(/rev\[weeks-1-wi\]\+=_bkEarnedRev\(b\);/.test(_ATLAS_SRC13i), '#6: the revenue trend/forecast uses gift-netted _bkEarnedRev');
   ok(_ATLAS_SRC13i === _INDEX_SRC13i, '#4/#5/#6: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13j: PB-parity G3 -- record an OFFLINE payment (cash/check/Zelle/Venmo), a feature Atlas entirely lacked ====
+{
+  // ---- behavioral: a manual payment credits the REAL amount (G5 estimate-replace), writes its own offline ledger slot, dedups ----
+  function _mkCreditEnv(bk) {
+    let _data = JSON.stringify(bk.data || {}), _rev = bk.revenue_cents || 0, _upd = (bk.updated_at == null ? null : bk.updated_at);
+    const env = { DB: { prepare: (sql) => { let a = []; const api = { bind: (...x) => { a = x; return api; }, first: async () => {
+      if (/SELECT id,data,revenue_cents,status,updated_at,starts FROM bookings/.test(sql)) return { id: bk.id, data: _data, revenue_cents: _rev, status: bk.status || 'confirmed', updated_at: _upd, starts: 0 };
+      return null; }, run: async () => { if (/UPDATE bookings SET data=\?, revenue_cents=\?/.test(sql)) { _data = a[0]; _rev = a[1]; _upd = a[2]; return { meta: { changes: 1 } }; } return { meta: { changes: 0 } }; } }; return api; } } };
+    return { env, get data() { return JSON.parse(_data); }, get rev() { return _rev; } };
+  }
+  {
+    // a committed booking carries a $500 CASH ESTIMATE in revenue_cents; a $200 offline payment must set revenue to the REAL $200, not add
+    let m = _mkCreditEnv({ id: 'B1', data: { paid: {}, quote: { total: 500 } }, revenue_cents: 50000, status: 'confirmed', updated_at: 100 });
+    let r = await _offSessionCreditBooking(m.env, 'T1', 'B1', 'manX', 'manX', 20000, { core: true, manual: { method: 'cash', by: 'o@x.com', note: 'check 1' } });
+    ok(r.credited === true && m.rev === 20000, 'G3: a $200 offline payment on a $500-estimate booking sets revenue to the REAL $200 (G5 estimate-replace), never the full estimate');
+    let slot = m.data.paid['manual:manX'];
+    ok(slot && slot.amountCents === 20000 && slot.method === 'cash' && slot.offline === true && !slot.pi, 'G3: the offline payment is its own ledger slot (method/by/note, offline, no card pi)');
+    // a 2nd DISTINCT offline payment (different id) is additive, and does NOT mark fully paid on underpayment (revenue=sum collected, _portalDue recomputes due)
+    let m2 = _mkCreditEnv({ id: 'B1', data: { paid: { 'manual:manX': { at: 1, amountCents: 20000, manualId: 'manX', method: 'cash', offline: true } }, quote: { total: 500 } }, revenue_cents: 20000, status: 'confirmed', updated_at: 100 });
+    let r2 = await _offSessionCreditBooking(m2.env, 'T1', 'B1', 'manY', 'manY', 10000, { core: true, manual: { method: 'check', by: 'o@x.com', note: '' } });
+    ok(r2.credited === true && m2.rev === 30000, 'G3: a second distinct offline payment is additive ($200+$100=$300 collected, still under the $500 total)');
+    // replaying the SAME id is idempotent (no double-credit)
+    let m3 = _mkCreditEnv({ id: 'B1', data: { paid: { 'manual:manX': { at: 1, amountCents: 20000, manualId: 'manX', method: 'cash', offline: true } } }, revenue_cents: 20000, status: 'confirmed', updated_at: 100 });
+    let r3 = await _offSessionCreditBooking(m3.env, 'T1', 'B1', 'manX', 'manX', 20000, { core: true, manual: { method: 'cash', by: 'o@x.com', note: 'check 1' } });
+    ok(r3.dup === true && m3.rev === 20000, 'G3: replaying the same manual id is idempotent (no double-credit)');
+  }
+  // ---- source-guards: the owner endpoint + the never-over-credit guarantee ----
+  ok(/path === '\/api\/booking\/record-payment' && method === 'POST'/.test(_WORKER_SRC), 'G3: the /api/booking/record-payment owner endpoint exists');
+  ok(/if \(!_can\(_mctx, 'billing'\)\) return err\(403, 'You do not have permission to record a payment\.'\)/.test(_WORKER_SRC), 'G3: the endpoint is RBAC-gated on the billing capability');
+  ok(/_offSessionCreditBooking\(env, _mctx\.tenant_id, _bid, _mid, _mid, _amt, \{ core: true, manual:/.test(_WORKER_SRC), 'G3: it credits EXACTLY the amount entered (never the full dueCents) through the shared credit engine');
+  // ---- client-guards: the Record-a-payment UI ----
+  {
+    const _ATLAS_G3 = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+    ok(/function bkRecordPayment\(id\)\{ if\(!_guard\('billing'/.test(_ATLAS_G3) && /_api\('\/api\/booking\/record-payment'/.test(_ATLAS_G3), 'G3: the dashboard has a Record-a-payment action calling the endpoint');
+    ok(/onclick="Atlas\.bkRecordPayment/.test(_ATLAS_G3) && /bkRecordPayment,setTipping/.test(_ATLAS_G3), 'G3: the button is wired + the handler exported');
+  }
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
