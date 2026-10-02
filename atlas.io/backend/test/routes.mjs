@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -3617,7 +3617,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 {
   // ---- source-guards: the wiring is in place and matched exactly ----
   ok(/ALTER TABLE payment_index ADD COLUMN booking_id TEXT/.test(_WORKER_SRC), '#1: payment_index carries a booking_id column (added idempotently in ensurePlatformSchema)');
-  ok((_WORKER_SRC.match(/INSERT INTO payment_index \(pi, tenant_id, booking_id, at\) VALUES \(\?,\?,\?,\?\) ON CONFLICT\(pi\) DO UPDATE SET booking_id=excluded\.booking_id/g) || []).length === 2, '#1: BOTH the Square (paymentId) and PayPal (captureId) credit paths index the payment/capture id -> booking at credit time');
+  ok((_WORKER_SRC.match(/INSERT INTO payment_index \(pi, tenant_id, booking_id, at\) VALUES \(\?,\?,\?,\?\) ON CONFLICT\(pi\) DO UPDATE SET booking_id=excluded\.booking_id/g) || []).length === 3, '#1: the Square (paymentId), PayPal (captureId) AND Stripe-credit-fn (pi) credit paths index the payment id -> booking at credit time (G1-A added the Stripe twin)');
   ok(/bind\(String\(paymentId \|\| ""\)\.slice\(0, 120\)/.test(_WORKER_SRC), '#1: the Square credit path indexes by paymentId');
   ok(/bind\(String\(captureId \|\| ""\)\.slice\(0, 120\)/.test(_WORKER_SRC), '#1: the PayPal credit path indexes by captureId');
   // helper: idempotent per dispute, capped for a booked security hold, decrement-only, sentinel cleaned on non-commit
@@ -4011,9 +4011,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // ==== 12v: cycle-12 fixes -- G5 estimate-replace nets disputes (BUG A) + payment-start re-collectable after clawback (BUG B) ====
 {
   // ---- BUG A: all 4 _priorReal estimate-replace reducers net a slot's disputed decrement ----
-  ok((_WORKER_SRC.match(/return s2 \+ Math\.max\(0, \(Number\(pp\.amountCents\) \|\| 0\) - Math\.round\(Number\(pp\.disputed && \(pp\.disputed\.decrementedCents != null \? pp\.disputed\.decrementedCents : pp\.disputed\.amountCents\)\) \|\| 0\)\);/g) || []).length === 4, 'cycle-12 A: all 4 G5 _priorReal reducers net a disputed slot (else a charged-back slot resurrects revenue at estimate-replace time)');
+  ok((_WORKER_SRC.match(/return s2 \+ Math\.max\(0, \(Number\(pp\.amountCents\) \|\| 0\) - Math\.round\(Number\(pp\.disputed && \(pp\.disputed\.decrementedCents != null \? pp\.disputed\.decrementedCents : pp\.disputed\.amountCents\)\) \|\| 0\)\);/g) || []).length === 5, 'cycle-12 A: all 5 G5 _priorReal reducers net a disputed slot (else a charged-back slot resurrects revenue at estimate-replace time) -- G1-A added the Stripe-credit-fn twin');
   // still exclude a refunded slot (unchanged) + still 4 reducers total
-  ok((_WORKER_SRC.match(/_priorReal = Object\.keys\(d\.paid/g) || []).length === 4, 'cycle-12 A: still exactly 4 _priorReal reducers (Stripe webhook + off-session + Square + PayPal)');
+  ok((_WORKER_SRC.match(/_priorReal = Object\.keys\(d\.paid/g) || []).length === 5, 'cycle-12 A: exactly 5 _priorReal reducers (Stripe webhook + off-session + Square + PayPal + Stripe-credit-fn) -- G1-A');
 
   // ---- BUG B: payment-start guards allow re-collection once a slot is FULLY clawed back ----
   ok((_WORKER_SRC.match(/&& !_slotFullyClawed\(/g) || []).length === 6, 'cycle-12 B: all 6 payment-start guards (charge + non-charge x /pay,/paypal,/square) check _slotFullyClawed');
@@ -4491,6 +4491,44 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/if \(_isTerminalNoRevive\(brow\.status, d\.status\)\) return json\(\{ ok: false, error: 'This booking has been cancelled or ended/g) || []).length === 2, 'G17: BOTH the portal /sign and /extsign paths reject a NEW signature on a terminal booking (fail-closed)');
   ok(/and can no longer be signed\. Please contact the owner/.test(_WORKER_SRC), 'G17: the base-agreement sign path has the terminal block');
   ok(/the extension can no longer be signed/.test(_WORKER_SRC), 'G17: the extension-addendum sign path has the terminal block');
+}
+
+// ==== 13o: PB-parity G1-A -- reusable _stripeCreditBooking (twin of _squareCreditBooking) so a BYO-Stripe payment can be reconciled ====
+{
+  function _mkStripeEnv(bk) {
+    let _data = JSON.stringify(bk.data || {}), _rev = bk.revenue_cents || 0, _status = bk.status || 'confirmed', _upd = (bk.updated_at == null ? 100 : bk.updated_at);
+    const env = { DB: { prepare: (sql) => { let a = []; const api = { bind: (...x) => { a = x; return api; }, first: async () => {
+      if (/SELECT id,data,revenue_cents,status,updated_at,starts FROM bookings/.test(sql)) return { id: bk.id, data: _data, revenue_cents: _rev, status: _status, updated_at: _upd, starts: 0 };
+      return null; }, run: async () => {
+        if (/UPDATE bookings SET data=\?, revenue_cents=\?, status=\?, updated_at=\?/.test(sql)) { _data = a[0]; _rev = a[1]; _status = a[2]; _upd = a[3]; return { meta: { changes: 1 } }; }
+        if (/INSERT INTO payment_index/.test(sql)) return { meta: { changes: 1 } };
+        return { meta: { changes: 0 } }; } }; return api; } } };
+    return { env, get data() { return JSON.parse(_data); }, get rev() { return _rev; }, get status() { return _status; } };
+  }
+  // (1) a committed booking carries a $500 CASH ESTIMATE; a first $200 online BALANCE must REPLACE it (G5), not stack -> revenue $200
+  { let m = _mkStripeEnv({ id: 'S1', data: { paid: {}, quote: { total: 500 } }, revenue_cents: 50000, status: 'confirmed' });
+    let r = await _stripeCreditBooking(m.env, 'T', 'S1', 'balance', 'pi_A', 'cs_A', 20000, {});
+    ok(r.credited === true && m.rev === 20000, 'G1-A: a first online balance REPLACES the G5 cash estimate (rev 500->200), never stacks');
+    ok(m.data.paid.balance && m.data.paid.balance.pi === 'pi_A' && m.data.portal.balancePaidAt > 0, 'G1-A: the balance slot carries the pi + portal.balancePaidAt is stamped (owner dashboard reflects it)'); }
+  // (2) IDEMPOTENT on the pi: the SAME pi a second time is a dup no-op -> this is what makes it safe to run ALONGSIDE the webhook
+  { let m = _mkStripeEnv({ id: 'S2', data: { paid: {}, quote: { total: 200 } }, revenue_cents: 0, status: 'confirmed' });
+    await _stripeCreditBooking(m.env, 'T', 'S2', 'balance', 'pi_X', 'cs_X', 20000, {});
+    let r2 = await _stripeCreditBooking(m.env, 'T', 'S2', 'balance', 'pi_X', 'cs_X', 20000, {});
+    ok(r2.credited === false && r2.dup === true && m.rev === 20000, 'G1-A: re-crediting the SAME pi is an idempotent no-op (no double revenue) -- webhook + confirm-on-return + sweep cannot double-count'); }
+  // (3) a captured refundable SECURITY deposit records the slot but adds NO revenue
+  { let m = _mkStripeEnv({ id: 'S3', data: { paid: {}, quote: { total: 100, securityCents: 30000 } }, revenue_cents: 10000, status: 'confirmed' });
+    let r = await _stripeCreditBooking(m.env, 'T', 'S3', 'security', 'pi_S', 'cs_S', 30000, {});
+    ok(r.credited === true && m.rev === 10000 && m.data.paid.security.pi === 'pi_S', 'G1-A: a captured security deposit records the slot but adds NO revenue'); }
+  // (4) a security HOLD: slot carries hold:true, no revenue, and NO portal paid-stamp
+  { let m = _mkStripeEnv({ id: 'S4', data: { paid: {}, quote: { total: 100, securityCents: 30000 } }, revenue_cents: 10000, status: 'confirmed' });
+    let r = await _stripeCreditBooking(m.env, 'T', 'S4', 'security', 'pi_H', 'cs_H', 30000, { hold: true });
+    ok(r.credited === true && m.rev === 10000 && m.data.paid.security.hold === true && !m.data.portal, 'G1-A: a security HOLD records hold:true, adds no revenue, stamps no paid date'); }
+  // (5) a CANCELLED booking is recorded for reconciliation but NEVER revived and gains NO revenue
+  { let m = _mkStripeEnv({ id: 'S5', data: { paid: {}, status: 'Cancelled' }, revenue_cents: 0, status: 'cancelled' });
+    let r = await _stripeCreditBooking(m.env, 'T', 'S5', 'balance', 'pi_C', 'cs_C', 20000, {});
+    ok(r.cancelled === true && m.rev === 0 && m.status === 'cancelled' && m.data.paid.balance.pi === 'pi_C', 'G1-A: a payment on a CANCELLED booking is recorded (slot) but adds NO revenue and never un-cancels'); }
+  // (6) source: it is the additive twin of _squareCreditBooking (the live webhook block stays UNTOUCHED -> zero risk to the proven path)
+  ok(/async function _stripeCreditBooking\(env, tenantId, bookingId, kind, pi, stripeId, amountCents, opts\)/.test(_WORKER_SRC), 'G1-A: _stripeCreditBooking exists as the reusable twin of _squareCreditBooking/_paypalCreditBooking');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
