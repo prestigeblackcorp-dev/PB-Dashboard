@@ -4343,7 +4343,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // #7: _paidAmt nets a refund + chargeback on the slot (matches the worker's settledCents)
   ok(/var _ref=\(s\.refunded&&Number\(s\.refunded\.amountCents\)\)\|\|0; var _disp=\(s\.disputed&&Number\(s\.disputed\.decrementedCents/.test(_ATLAS_SRC13f), '#7: _paidAmt subtracts refunded + disputed so a refunded balance shows $0 collected on the receipt/evidence reports');
   // #8: the balance-owed KPI and its drilldown both net gift-card credit
-  ok((_ATLAS_SRC13f.match(/_bkTotal\(b\)-_bkEarned\(b\)-_giftApplied\(b\)/g) || []).length === 2, '#8: _remainingBalance AND drillUnpaid both subtract gift credit (no phantom balance on a gift-settled booking)');
+  ok((_ATLAS_SRC13f.match(/_bkTotal\(b\)-_bkEarned\(b\)-_giftApplied\(b\)/g) || []).length >= 2, '#8: _remainingBalance + drillUnpaid (and 13j record-payment due) subtract gift credit -- no balance-owed path ignores it (>=2)');
   ok(!/Math\.max\(0,_r2\(_bkTotal\(b\)-_bkEarned\(b\)\)\)/.test(_ATLAS_SRC13f), '#8: no balance-owed path still ignores gift credit');
   // #3: the sync toast surfaces the detached count so the owner is not left in the dark
   ok(/dt=\(j\.atlas&&j\.atlas\.detached\)\|\|0/.test(_ATLAS_SRC13f) && /'\+dt\+' kept as your own/.test(_ATLAS_SRC13f), '#3: pbSyncNow surfaces the detached count');
