@@ -4471,5 +4471,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/_pp\.disputed\.lostAt = Date\.now\(\);[\s\S]*?_bd\.disputeLostAt = Date\.now\(\); _bd\._t = Date\.now\(\); return \{\}; \}\);/.test(_WORKER_SRC), 'G33: the lost-dispute booking write makes NO revenue change (mutate returns {}) -- the dispute-open decrement is what stands');
 }
 
+// ==== 13m: PB-parity G22 (safe subset) -- a stale blob cannot un-cancel/un-void a TERMINAL booking ====
+{
+  // ---- part 1 (behavioral): _graftServerPay keeps a server-terminal status over a stale ACTIVE client status; terminal->terminal + active->active untouched ----
+  { const c = { status: 'Confirmed' }; _graftServerPay(c, { status: 'Cancelled', cancelledAt: 123, cancelFee: 50 }); ok(c.status === 'Cancelled' && c.cancelledAt === 123 && c.cancelFee === 50, 'G22: a stale active client blob is forced back to the server CANCELLED status (+ close-out fields)'); }
+  { const c = { status: 'On rent' }; _graftServerPay(c, { status: 'Confirmed' }); ok(c.status === 'On rent', 'G22: a non-terminal server status never overrides the client (ordinary confirmed<->on-rent edits untouched)'); }
+  { const c = { status: 'Voided' }; _graftServerPay(c, { status: 'Cancelled' }); ok(c.status === 'Voided', 'G22: a terminal->terminal change (cancel->void) is allowed -- only terminal-over-active is forced'); }
+  { const c = { status: 'Pending' }; _graftServerPay(c, { status: 'Confirmed' }); ok(c.status === 'Pending', 'G22: active-over-active is NOT touched by the terminal guard (an active confirm still flows through the normal path)'); }
+  { const c = { status: 'Confirmed', paid: { reserve: { pi: 'pi_1' } } }; _graftServerPay(c, { status: 'Confirmed' }); ok(c.status === 'Confirmed' && c.paid.reserve.pi === 'pi_1', 'G22: the guard is inert for a non-terminal server booking (no spurious status rewrite)'); }
+  // ---- part 2 (source): _bookingMirrorWrite drops a stale ACTIVE status column when the server booking is terminal (protects the availability-gate column) ----
+  ok(/SELECT data, revenue_cents, updated_at, status FROM bookings WHERE id=\? AND tenant_id=\?/.test(_WORKER_SRC), 'G22: the booking mirror reads the server status column to detect a terminal booking');
+  ok(/if \(_isTerminalNoRevive\(row\.status, _srvD\.status\)\) \{ var _stI = wCols\.indexOf\('status'\);[\s\S]*?wCols\.splice\(_stI, 1\); wVals\.splice\(_stI, 1\); \} \}/.test(_WORKER_SRC), 'G22: a stale ACTIVE status column is dropped from the mirror write when the server booking is terminal');
+  ok(/if \(wCols === cols\) \{ wCols = cols\.slice\(\); wVals = vals\.slice\(\); \}/.test(_WORKER_SRC), 'G22: copy-on-write so the caller cols/vals are never mutated');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
