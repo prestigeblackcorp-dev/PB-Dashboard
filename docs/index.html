@@ -4586,6 +4586,23 @@ function _bookingCommLog(b){
   }
   // Extension signatures (primary + each authorized driver) + fully-signed milestone
   _extSignCommEntries(b).forEach(add);
+  // Fill a "created" line for any week (group) whose creation was never logged (extended on another device or
+  // via the portal) so the timeline reads a complete 1..N like the cards -- reconstructed from the extension's
+  // own data, numbered by its group. Skipped when a "created" line for that week's return date already exists,
+  // so it never duplicates a real entry. Mirrors the derived entries above; display only.
+  _extGroups(b).groups.forEach(function(g){
+    var ext=null, pid=g.primaryId;
+    (g.parts||[]).forEach(function(p){ if(!ext && String(p.id==null?'':p.id)===pid) ext=p; });
+    if(!ext) ext=(g.parts||[])[0];
+    if(!ext || ext.extensionUnit==='hours') return;
+    var td=normDateStr(ext.toDate||''); if(!td) return;
+    if(out.some(function(e){ return /created/.test(e.label||'') && (e.label||'').indexOf('new return '+td)!==-1; })) return;
+    var when=Number(ext.createdAt)||0;
+    if(!when){ var _mi=String(ext.id||'').match(/(\d{13})/); if(_mi) when=Number(_mi[1]); }
+    if(!when && ext.fromDate){ var _fd=new Date(ext.fromDate+' 12:00:00'); if(!isNaN(_fd.getTime())) when=_fd.getTime(); }
+    var _dys=Math.max(0,Number(ext.extensionDays)||0);
+    add({ at:when||0, type:'extension', label:'Extension #'+g.num+' created \u2014 +'+_dys+' day'+(_dys!==1?'s':'')+', new return '+td+(g.charge?(' \u00B7 $'+Number(g.charge).toFixed(2)):'')+(ext.paymentMethod?(' \u00B7 '+ext.paymentMethod):''), to:(b.name||'') });
+  });
   out.sort(function(x,y){ return x.at-y.at; });
   return out;
 }
