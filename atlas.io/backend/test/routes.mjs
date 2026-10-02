@@ -872,7 +872,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
         if (/FROM users WHERE id/.test(sql)) return { id: UID, email: 'owner@stale.com', tenant_id: TEN, role: 'owner', caps: null };
         if (/FROM comp_grants WHERE email/.test(sql)) return null;
         if (/FROM platform_config WHERE k=\?/.test(sql)) return null;                                   // every flag OFF (feature gate, sync_tombstones_enabled, ...)
-        if (/SELECT data, revenue_cents, updated_at FROM bookings/.test(sql)) return { data: JSON.stringify({ _t: serverT, cust: 'Server' }), revenue_cents: 0, updated_at: 5000 };   // _bookingMirrorWrite CAS read
+        if (/SELECT data, revenue_cents, updated_at, status FROM bookings/.test(sql)) return { data: JSON.stringify({ _t: serverT, cust: 'Server' }), revenue_cents: 0, updated_at: 5000, status: 'confirmed' };   // _bookingMirrorWrite CAS read (G22: status now selected for the terminal-revert guard; 'confirmed' keeps it inert so the normal newer-blob save path is what these tests assert)
         if (/SELECT data FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) return { data: JSON.stringify({ _t: serverT, cust: 'Server' }) };   // the stale-push guard read
         if (/SELECT id FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql)) return { id: a[0] };       // the PUT `owns` check -> not 404
         if (/FROM tenants WHERE id/.test(sql)) return { id: TEN, tier: 'pro', plan: 'active', settings: '{}' };
