@@ -1370,6 +1370,7 @@ body.fleet-fs #fleetMapFsExit{display:flex!important;align-items:center;justify-
           <div class="hbg-divider"></div>
           <button class="hbg-item" onclick="importCSV();closeHamburger()">&#11014; Import CSV</button>
           <button class="hbg-item" onclick="exportCSV();closeHamburger()">&#11015; Export CSV</button>
+          <button class="hbg-item" onclick="exportGoogleAdsConversions();closeHamburger()">&#11015; Google Ads conversions</button>
           <div class="hbg-divider"></div>
           <button class="hbg-item hbg-item-gold" onclick="openContractTemplate();closeHamburger()">&#128221; Contract Template</button>
           <button class="hbg-item" onclick="openContractTemplate('waiver');closeHamburger()">&#127949; Slingshot Waiver</button>
@@ -19411,6 +19412,35 @@ function dismissToast(){
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  CSV
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+// --- Offline conversion export: turns WON bookings that carry a captured Google Ads click id (gclid) into the
+// CSV Google Ads imports at Tools > Conversions > Uploads. Each row reports a booking's REAL revenue against its
+// originating ad click, so Smart Bidding can optimize to actual bookings instead of page views. Phone-only bookings
+// (no web touch) carry no gclid and are measured by call tracking instead. CONV_NAME must match the "Offline Booking"
+// conversion action created in Google Ads (goal source: Import). Google dedupes re-uploads by click+name+time.
+function exportGoogleAdsConversions(){
+  var CONV_NAME='Offline Booking';
+  var rows=[], skipped=0;
+  (bookings||[]).forEach(function(b){
+    if(!b || b._deleted) return;
+    var gid=String(b.gclid||'').trim();
+    if(!gid) return;                                   // only ad-driven web bookings have a click id
+    var wonAt=Number(b.balancePaidAt)||Number(b.dateLockPaidAt)||0;   // money committed = a won conversion
+    if(!wonAt && (b.status==='confirmed'||b.status==='completed')) wonAt=Number(b.confirmedAt)||Number(b._t)||Number(b.createdAt)||0;
+    if(!wonAt) return;                                 // not won yet -> not a conversion
+    if((b.clickIdType||'gclid')!=='gclid'){ skipped++; return; }   // gbraid/wbraid use separate columns -> own upload
+    rows.push({gclid:gid, time:wonAt, value:Math.round((Number(b.revenue)||0)*100)/100});
+  });
+  if(!rows.length){ toast('No won bookings with a Google Ads click yet. Conversions appear here as ad-driven web bookings get paid.'); return; }
+  function fmt(ts){ var d=new Date(ts); function p(n){return (n<10?'0':'')+n;} var o=-d.getTimezoneOffset(), s=(o>=0?'+':'-'); o=Math.abs(o);
+    return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds())+s+p(Math.floor(o/60))+':'+p(o%60); }
+  var lines=['Google Click ID,Conversion Name,Conversion Time,Conversion Value,Conversion Currency'];
+  rows.forEach(function(r){ lines.push([r.gclid, CONV_NAME, '"'+fmt(r.time)+'"', r.value, 'USD'].join(',')); });
+  var blob=new Blob([lines.join('\r\n')],{type:'text/csv'});
+  var a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='pb-google-ads-conversions-'+dateStr(new Date())+'.csv';
+  document.body.appendChild(a); a.click(); setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(a.href); },100);
+  toast('Exported '+rows.length+' conversion'+(rows.length!==1?'s':'')+' for Google Ads'+(skipped?(' ('+skipped+' gbraid/wbraid need a separate upload)'):'')+'. Upload at Tools > Conversions > Uploads.');
+}
 function exportCSV(){
   // Feature 12: record export date
   try{ localStorage.setItem('pb_last_export',todayStr()); }catch(e){}
