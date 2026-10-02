@@ -4541,5 +4541,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/fetch\('\/api\/portal\/'\+T\+'\/confirm-pay'/.test(_WORKER_SRC), 'G1-B: the portal page calls confirm-pay on return (when ?cs= is present) BEFORE loading, so the credited state renders');
 }
 
+// ==== 13q: PB-parity G1-C -- reconcile sweep settles a BYO-Stripe payment whose renter paid but never returned ====
+{
+  ok((_WORKER_SRC.match(/INSERT OR IGNORE INTO pending_payments \(order_id,tenant_id,booking_id,kind,amt_cents,processor,created_at\)/g) || []).length === 4, 'G1-C: BOTH Stripe checkout sites (initial deposit + portal /pay) track the session in pending_payments (was 2 = Square+PayPal, now 4)');
+  ok(/else if \(row\.processor === 'stripe'\) \{/.test(_WORKER_SRC), 'G1-C: _settleOnePending has a Stripe branch (reuses the proven Square/PayPal sweep)');
+  ok(/_res = await _stripeCreditBooking\(env, row\.tenant_id, row\.booking_id, _kind, _piS, String\(_ssS\.id\), _amt/.test(_WORKER_SRC), 'G1-C: the sweep credits via the idempotent _stripeCreditBooking (same pi -> dup no-op with confirm-on-return + webhook)');
+  ok(/stripe\.reconcile_shortpay/.test(_WORKER_SRC) && /stripe\.reconcile_mismatch/.test(_WORKER_SRC), 'G1-C: the sweep refuses a short-pay and a booking-mismatch (mirror the Square/PayPal guards) before crediting');
+  ok(/if \(_amt < \(Number\(row\.amt_cents\) \|\| 0\)\) \{ await _pendSettle\(env, _oid\);[\s\S]*?stripe\.reconcile_shortpay/.test(_WORKER_SRC), 'G1-C: short-pay is settled-and-dropped, never credited');
+  ok(/row\.processor === 'stripe' \? 'Stripe' : 'PayPal'/.test(_WORKER_SRC), 'G1-C: the reconcile receipt names Stripe correctly');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
