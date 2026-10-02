@@ -2745,7 +2745,7 @@ const Atlas = (function(){
     (DATA.bookings||[]).forEach(function(b){ if(!b||!b.cust)return; var nm=b.cust;
       var ts=Number(b.startTs)||Number(b.createdAt)||0; if(ts>(last[nm]||0)) last[nm]=ts;
       if(b.idVerified) ver[nm]=1;
-      if(_isCommitted(b)){ val[nm]=(val[nm]||0)+(_bkEarned(b)||0); cnt[nm]=(cnt[nm]||0)+1; } });
+      if(_isCommitted(b)){ val[nm]=(val[nm]||0)+(_bkEarnedRev(b)||0); cnt[nm]=(cnt[nm]||0)+1; } });   /* cycle-4 #6: gift-netted revenue (match the P&L) so a gift-funded booking is not double-counted in this rollup */
     var vals=Object.keys(val).map(function(k){return val[k];}).filter(function(v){return v>0;}).sort(function(a,b){return b-a;});
     var vipCut=vals.length?vals[Math.max(0,Math.ceil(vals.length*0.2)-1)]:Infinity;   // top ~20% by lifetime value (min 1 customer)
     _segCacheV={val:val,cnt:cnt,last:last,ver:ver,vipCut:vipCut,now:now}; _segCacheT=now; return _segCacheV; }
@@ -5454,7 +5454,7 @@ const Atlas = (function(){
       var s=Number(b.startTs)||Number(b.createdAt)||0; if(!s) return;
       if(s>now) return;   // #7: future-dated bookings are not realized revenue -- keep them out of the trailing series instead of clamping into week 0 (which inflated recent momentum)
       var wi=Math.floor((now-s)/wk); if(wi<0)wi=0; if(wi>=weeks) return;
-      rev[weeks-1-wi]+=_bkEarned(b); cnt[weeks-1-wi]+=1;
+      rev[weeks-1-wi]+=_bkEarnedRev(b); cnt[weeks-1-wi]+=1;   /* cycle-4 #6: revenue trend/forecast gift-netted (match the P&L) */
     });
     return {rev:rev,cnt:cnt};
   }
@@ -5528,7 +5528,7 @@ const Atlas = (function(){
     return (DATA.bookings||[]).filter(function(b){ if(!_isCommitted(b)) return false; var t=Number(b.startTs)||Number(b.createdAt)||0; return t>=from && t<=now; }); }
   function _revOptWeekendShare(list){ if(!list.length) return {share:0,n:0,rev:0};
     var wk=list.filter(function(b){ var t=Number(b.startTs)||Number(b.createdAt)||0; var dow=new Date(t).getUTCDay(); return dow===5||dow===6; });   // Fri/Sat, UTC day-of-week -- same basis _dayFactor uses for the real weekend multiplier, so this stays consistent with what smartPricing would actually charge
-    return {share:wk.length/list.length, n:wk.length, rev:wk.reduce(function(s,b){ return s+_bkEarned(b); },0)}; }
+    return {share:wk.length/list.length, n:wk.length, rev:wk.reduce(function(s,b){ return s+_bkEarnedRev(b); },0)}; }   /* cycle-4 #6: gift-netted */
   // Pure data -- returns {headline, utilAvg, assetsCount, bookingsCount, suggestions:[{id,kind,assetId,title,text,why,impact}], notice}.
   // Every string field is PLAIN TEXT (escaped once, by the renderer below) -- never pre-escaped here. notice is a
   // plain honest sentence shown INSTEAD of the list when there truly isn't enough on file to say something useful.
@@ -5556,7 +5556,7 @@ const Atlas = (function(){
     // ---- Rule 2: high-demand assets (util >= 75%) -> raise the rate ~10% ----
     var hot=assets.filter(function(a){ return (Number(a.util)||0)>=REVOPT_HIGH_UTIL; }).sort(function(x,y){ return (Number(y.util)||0)-(Number(x.util)||0); });
     hot.slice(0,3).forEach(function(a){
-      var winRev=win.filter(function(b){ return b.asset===a.name; }).reduce(function(s,b){ return s+_bkEarned(b); },0);
+      var winRev=win.filter(function(b){ return b.asset===a.name; }).reduce(function(s,b){ return s+_bkEarnedRev(b); },0);   /* cycle-4 #6: gift-netted */
       var monthlyRev = winRev>0 ? (winRev/REVOPT_WINDOW_DAYS*30) : ((Number(a.rate)||0)*upm*(Number(a.util)||0)/100);   // fallback: occupancy-implied revenue when no booking row in the trailing window matches this asset by name (e.g. an older booking still overlapping the 30-day util window)
       out.suggestions.push({ id:'raise:'+a.id, kind:'raise', assetId:a.id,
         title:'Raise the '+a.name+' rate',
@@ -5789,7 +5789,7 @@ const Atlas = (function(){
   // Revenue-by-source breakdown from real bookings, for the donut.
   function _srcBreakdown(){
     var map={}, total=0, lab={website:'Website',portal:'Portal',direct:'Direct',manual:'Direct',partners:'Partners',partner:'Partners'};
-    (_bookings()||[]).forEach(function(b){ if(!_isCommitted(b))return; var k=(b.source||'direct').toLowerCase(); var amt=_bkEarned(b); map[k]=(map[k]||0)+amt; total+=amt; });
+    (_bookings()||[]).forEach(function(b){ if(!_isCommitted(b))return; var k=(b.source||'direct').toLowerCase(); var amt=_bkEarnedRev(b); map[k]=(map[k]||0)+amt; total+=amt; });   /* cycle-4 #6: source-mix revenue gift-netted (match the P&L) */
     var segs=Object.keys(map).map(function(k){ return [lab[k]||(k.charAt(0).toUpperCase()+k.slice(1)), total>0?Math.round(map[k]/total*100):0, map[k]]; }).sort(function(x,y){return y[2]-x[2];});
     return {segs:segs,total:total};
   }
@@ -6191,10 +6191,10 @@ const Atlas = (function(){
     if(p.depositPaidAt) payRows+='<tr><td>'+when(p.depositPaidAt)+'</td><td>Security deposit</td><td class="r">'+mny(_paidAmt(b,['security'],(b.hold&&b.hold.amount)||0))+'</td></tr>';
     payRows+=_charges(b).filter(function(c){ return c&&c.paidAt; }).map(function(c){ return '<tr><td>'+when(c.paidAt)+'</td><td>'+E(c.label||'Charge')+'</td><td class="r">'+mny(c.amount)+'</td></tr>'; }).join('');
     if(!payRows) payRows='<tr><td colspan="3" class="muted">No payments on file.</td></tr>';
-    var earned=_bkEarned(b);
+    var earned=0; if(p.reservePaidAt) earned+=_paidAmt(b,['deposit','reserve'],q.dueNow!=null?q.dueNow:(q.deposit||0)); if(p.balancePaidAt) earned+=_paidAmt(b,['balance'],_r2((Number(q.total)||0)-(q.dueNow!=null?Number(q.dueNow)||0:0))); _charges(b).filter(function(c){ return c&&c.paidAt; }).forEach(function(c){ earned+=_r2(Number(c.amount)||0); }); earned=_r2(earned);   /* cycle-4 #5: "retained as revenue (non-refundable)" must be what was ACTUALLY collected (reserve+balance+paid charges, net of refunds via _paidAmt), NOT _bkEarned/revCents -- which can be the G5 full-quote ESTIMATE on a committed-but-never-paid booking, making a $0-collected void falsely declare the full rental price retained on a LEGAL termination document. The refundable security hold is excluded (it is not retained revenue). */
     var holdInfo=b.hold?(b.hold.status==='captured'?('Captured '+mny(b.hold.captured||b.hold.amount)):b.hold.status==='authorized'?('On hold '+mny(b.hold.amount)+' (not yet captured)'):b.hold.status==='released'?('Released '+mny(b.hold.amount)):'&mdash;'):'&mdash;';
     var sigHtml=(p&&p.sig)?(p.sig.type==='draw'?('<img src="'+E(p.sig.data)+'" alt="signature"/>'):('<b>'+E(p.sig.data)+'</b>')):(p&&p.signerName?('<b>'+E(p.signerName)+'</b>'):'<span class="muted">No signature on file</span>');
-    var verify=b.idVerified?('Verified '+when(b.idVerifiedAt)):(b.idRejected?'Rejected':'<span class="muted">Not verified</span>');
+    var verify=b.idVerified?('Verified '+when(b.idVerifiedAt)+(String(b.idVerifyMethod||'').toLowerCase()==='manual'?' &middot; staff-attested (manual, no document check)':' &middot; Stripe Identity')):(b.idRejected?'Rejected':'<span class="muted">Not verified</span>');   /* cycle-4 #4: disclose the verification METHOD on legal/chargeback documents -- a bookEdit "Mark verified" click is NOT a real identity check, and a chargeback-evidence doc must not present it as one (fraud/misrepresentation risk) */
     var brand=(S.brand&&S.brand.name)||'Rental';
     var ref=b.id||'';
     var H='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Void Legal Record '+E(ref)+'</title><style>'
@@ -6255,7 +6255,7 @@ const Atlas = (function(){
     }).join(''):'<tr><td colspan="6" class="muted">No extensions on this booking.</td></tr>';
     var media=_condMedia(b)||[], pu=0, rt=0; media.forEach(function(m){ if(m&&m.phase==='return')rt++; else pu++; });
     var sigHtml=(p&&p.sig)?(p.sig.type==='draw'?('<img src="'+E(p.sig.data)+'" alt="signature"/>'):('<b>'+E(p.sig.data)+'</b>')):(p&&p.signerName?('<b>'+E(p.signerName)+'</b>'):'<span class="muted">No signature on file</span>');
-    var verify=b.idVerified?('Verified '+when(b.idVerifiedAt)):(b.idRejected?'Rejected':'<span class="muted">Not verified</span>');
+    var verify=b.idVerified?('Verified '+when(b.idVerifiedAt)+(String(b.idVerifyMethod||'').toLowerCase()==='manual'?' &middot; staff-attested (manual, no document check)':' &middot; Stripe Identity')):(b.idRejected?'Rejected':'<span class="muted">Not verified</span>');   /* cycle-4 #4: disclose the verification METHOD on legal/chargeback documents -- a bookEdit "Mark verified" click is NOT a real identity check, and a chargeback-evidence doc must not present it as one (fraud/misrepresentation risk) */
     var authorized=!!(p&&p.signedAt);
     var brand=(S.brand&&S.brand.name)||'Rental';
     var ref=b.id||'';
@@ -7309,7 +7309,7 @@ const Atlas = (function(){
     var nc=(DATA.bookings||[]).filter(_isCommitted);
     var key=function(b){ var e=(b.custEmail&&String(b.custEmail).toLowerCase())||''; if(e&&e.indexOf('@')>0)return e; var n=String(b.cust||'').toLowerCase().trim(); return n?('n:'+n):''; };
     var by={};
-    nc.forEach(function(b){ var k=key(b); if(!k)return; var ts=Number(b.startTs)||Number(b.createdAt)||0; var rev=_bkEarned(b)||0;
+    nc.forEach(function(b){ var k=key(b); if(!k)return; var ts=Number(b.startTs)||Number(b.createdAt)||0; var rev=_bkEarnedRev(b)||0;   /* cycle-4 #6: cohort LTV + retention gift-netted (match the P&L, else a gift-funded booking double-counts) */
       var c=by[k]||(by[k]={first:(ts||Infinity),rev:0,n:0,name:(b.cust||b.custEmail||''),bk:[]}); c.rev+=rev; c.n++; if(ts){ c.bk.push({ts:ts,rev:rev}); if(ts<c.first)c.first=ts; } });
     var custs=Object.keys(by).map(function(k){return by[k];});
     if(custs.length<1) return '<div class="bk-lenhint" style="margin:0">No customer history yet. Once a few '+esc(_fterm('books'))+' come in, this shows who comes back, what a customer is worth, and how each month\u2019s new customers retain over time.</div>';
@@ -10302,8 +10302,8 @@ const Atlas = (function(){
   // --- Real, specific handlers for the money/ops questions owners actually ask (were falling through to a generic menu) ---
   function _aioMoneyReply(s){ var now=new Date(), mStart=new Date(now.getFullYear(),now.getMonth(),1).getTime();
     var bks=(_bookings()||[]).filter(_isCommitted);
-    var mtd=bks.filter(function(b){ var t=Number(b.startTs)||Number(b.createdAt)||0; return t>=mStart; }).reduce(function(a,b){return a+_bkEarned(b);},0);
-    var all=bks.reduce(function(a,b){return a+_bkEarned(b);},0);
+    var mtd=bks.filter(function(b){ var t=Number(b.startTs)||Number(b.createdAt)||0; return t>=mStart; }).reduce(function(a,b){return a+_bkEarnedRev(b);},0);
+    var all=bks.reduce(function(a,b){return a+_bkEarnedRev(b);},0);   /* cycle-4 #6: gift-netted revenue (match the P&L) */
     return `This month you have earned <b>${money(mtd)}</b> so far${all>mtd?` (<b>${money(all)}</b> booked all-time)`:''}, across ${bks.length} ${_fterm(bks.length===1?'book':'books')}. Want the full breakdown by ${esc(S.fleet.noun)} and source?`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('analytics')">Open Analytics</button>`; }
   function _aioDepositReply(s){ var m=S.money, dm=m.deposit&&m.deposit.mode, cur=dm==='full'?'guests pay in full to reserve':dm==='percent'?('guests pay '+(m.deposit.pct||0)+'% upfront'):'guests pay nothing upfront';

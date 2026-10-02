@@ -4391,5 +4391,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/INSERT OR REPLACE INTO sync_tombstones \(tenant_id, coll, id, deleted_at\)/.test(_WORKER_SRC), '#10: the DELETE tombstone write is generic over coll (so assets/customers get tombstoned too)');
 }
 
+// ==== 13i: cycle-4 open findings (client) -- #4 ID-method disclosure, #5 void "retained"=collected, #6 analytics gift-netting ====
+{
+  const _ATLAS_SRC13i = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13i = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // #4: both legal/chargeback reports disclose the verification METHOD (manual staff-attest vs Stripe Identity)
+  ok((_ATLAS_SRC13i.match(/staff-attested \(manual, no document check\)[\s\S]*?Stripe Identity/g) || []).length === 2, '#4: both reports disclose the ID-verification method (manual vs Stripe Identity)');
+  // #5: the void report "retained" is the ACTUAL collected (reserve+balance+paid charges via _paidAmt), not _bkEarned/revCents estimate
+  ok(/var earned=0; if\(p\.reservePaidAt\) earned\+=_paidAmt\(b,\['deposit','reserve'\][\s\S]*?if\(p\.balancePaidAt\) earned\+=_paidAmt\(b,\['balance'\]/.test(_ATLAS_SRC13i), '#5: the void report "retained as revenue" is computed from actually-collected payments, not the G5 quote estimate');
+  ok(!/var earned=_bkEarned\(b\);\n    var holdInfo/.test(_ATLAS_SRC13i), '#5: the void report no longer uses the raw _bkEarned estimate for retained');
+  // #6: the cohort LTV + revenue trend use the gift-netted _bkEarnedRev (match the P&L)
+  ok(/var rev=_bkEarnedRev\(b\)\|\|0;/.test(_ATLAS_SRC13i), '#6: cohort LTV uses gift-netted _bkEarnedRev');
+  ok(/rev\[weeks-1-wi\]\+=_bkEarnedRev\(b\);/.test(_ATLAS_SRC13i), '#6: the revenue trend/forecast uses gift-netted _bkEarnedRev');
+  ok(_ATLAS_SRC13i === _INDEX_SRC13i, '#4/#5/#6: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
