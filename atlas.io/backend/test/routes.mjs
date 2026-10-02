@@ -4602,5 +4602,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13v === _INDEX_SRC13v, 'G18: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13w: NOTIFY Phase 1a -- renter trip-timeline reminders (balance-due / return-due / overdue) in the lifecycle cron ====
+{
+  ok(/const _ending = \(\(await env\.DB\.prepare\('SELECT id,tenant_id,data,starts,ends,portal_token FROM bookings WHERE starts < \? AND ends BETWEEN \? AND \?/.test(_WORKER_SRC), 'NOTIFY: a bounded fetch of active rentals ending within ~3d feeds the return-due reminder');
+  ok(/const _effEnd = _bkEffEndServer\(b\.ends, d, _pmsN\);/.test(_WORKER_SRC), 'NOTIFY: reminders gate on the EFFECTIVE end (incl. signed extensions), so an extended rental is not reminded early/overdue wrongly');
+  ok(/if \(autos\.balanceDue && autos\.balanceDue\.on && b\.starts && !sent\.balanceDue && !_closedN/.test(_WORKER_SRC), 'NOTIFY: balance-due reminder (opt-in, only when a balance is actually owed, never on a finished/terminated booking)');
+  ok(/if \(autos\.returnDue && autos\.returnDue\.on && _effEnd > now && !_closedN && !sent\.returnDue/.test(_WORKER_SRC), 'NOTIFY: return-due reminder (opt-in, before the effective end, never on a closed booking)');
+  ok(/if \(autos\.overdue && autos\.overdue\.on && _effEnd < now && !_closedN && !sent\.overdue/.test(_WORKER_SRC), 'NOTIFY: overdue reminder (opt-in, after the effective end, only while still out, bounded to 7d)');
+  ok(/_stLcN === 'returned' \|\| _stLcN === 'completed' \|\| _stLcN === 'cancelled' \|\| _stLcN === 'voided'/.test(_WORKER_SRC), 'NOTIFY: a returned/completed/cancelled/voided booking is excluded from trip reminders');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
