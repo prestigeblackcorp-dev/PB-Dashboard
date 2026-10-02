@@ -4622,5 +4622,11 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13x === _INDEX_SRC13x, 'NOTIFY 1b: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13y: NOTIFY Phase 1c -- SMS twin for operational lifecycle reminders (consent-gated) ====
+{
+  ok(/const send = async function \(a, subjD, inner, transactional\) \{ try \{ if \(transactional && comms\.sms && comms\.sms\.enabled && comms\.sms\.fromNumber && d\.commsPref && d\.commsPref\.sms && \(d\.phone \|\| d\.custPhone\)\)/.test(_WORKER_SRC), 'NOTIFY: lifecycle send() also texts a short version for OPERATIONAL (transactional) events only, gated on tenant SMS connected + renter SMS consent (marketing stays email-only)');
+  ok(/await sendSms\(env, b\.tenant_id, \{ to: \(d\.phone \|\| d\.custPhone\), transactional: true, body: _smsBody \}\);/.test(_WORKER_SRC), 'NOTIFY: the SMS is awaited (completes within the cron tick) and sendSms re-checks STOP/consent');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
