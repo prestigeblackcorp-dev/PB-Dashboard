@@ -4567,7 +4567,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const _ATLAS_SRC13s = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
   const _INDEX_SRC13s = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
   ok(/'Payment adjustments &middot; '\+_ps\.join\(' &middot; '\)/.test(_ATLAS_SRC13s), 'G30/G34: openBooking shows a per-booking refund/chargeback banner (disputes were invisible after the one email)');
-  ok(/if\(s\.disputed\.reinstatedAt\) dispWon\+=_da; else if\(s\.disputed\.lostAt\) dispLost\+=_da; else dispOpen\+=_da;/.test(_ATLAS_SRC13s), 'G30/G34: the banner classifies each chargeback as won (reinstated) / lost / open and shows the amount (G34 line-items)');
+  ok(/dispWon\+=_w; dispLost\+=_l; dispOpen\+=_o;/.test(_ATLAS_SRC13s), 'G30/G34: the banner classifies each chargeback into won (reinstated) / lost / open buckets and shows the amount (G34 line-items) -- per-byId-entry classification asserted in block 13A (audit fix F4)');
   ok(_ATLAS_SRC13s === _INDEX_SRC13s, 'G30/G34: atlas.html and index.html remain byte-identical');
 }
 
