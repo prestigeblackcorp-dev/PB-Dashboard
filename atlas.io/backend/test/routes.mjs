@@ -4444,5 +4444,21 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   }
 }
 
+// ==== 13k: PB-parity G2 (double-charge owner alert) + G23 (autoSent graft -> no duplicate lifecycle emails) ====
+{
+  // ---- G2 (money/observability HIGH): a detected dual-checkout is archived revenue-safe AND now surfaces an owner alert + audit ----
+  ok(/let d = null, _committed = false, _wasNew = false, _wasCancelled = false, _dupArchive = null;/.test(_WORKER_SRC), 'G2: the webhook credit loop declares _dupArchive to carry a detected double-checkout out to the post-commit alert');
+  ok(/_dupArchive = null;   \/\/ G2: reset each iteration/.test(_WORKER_SRC), 'G2: _dupArchive is reset each CAS iteration so a dedup-break retry cannot fire a stale/duplicate alert');
+  ok(/_dupArchive = \{ oldPi: String\(d\.paid\[_pkKey\]\.pi\)\.slice\(0, 40\), newPi: String\(pi\)\.slice\(0, 40\), kind: _pkKey, amt: amt \};/.test(_WORKER_SRC), 'G2: the #345 archive branch captures both PaymentIntents + amount for the owner alert');
+  ok(/if \(_committed && _dupArchive\) \{/.test(_WORKER_SRC), 'G2: the alert fires only on a COMMITTED archive (once)');
+  ok(/stripe\.paid\.duplicate_checkout/.test(_WORKER_SRC), 'G2: an audit row records the duplicate checkout for forensics');
+  ok(/_alert\(env, _ectx, \{ category: 'security', severity: 'alert', title: 'Possible double charge on a booking'/.test(_WORKER_SRC), 'G2: a durable owner alert fires (fire-and-forget via _ectx, so it never blocks the webhook 200)');
+  ok(/revenue was NOT inflated/.test(_WORKER_SRC), 'G2: the alert body states revenue was counted once (no double-count) and both PIs are refundable');
+
+  // ---- G23 (data/comms MED): d.autoSent lifecycle-email dedup marker is grafted server->client so a stale mirror push cannot drop it ----
+  ok(/if \(serverD\.autoSent && typeof serverD\.autoSent === 'object'\) \{/.test(_WORKER_SRC), 'G23: _graftServerPay grafts the server autoSent dedup marker');
+  ok(/for \(var _asK in serverD\.autoSent\) \{ if \(clientD\.autoSent\[_asK\] == null\) clientD\.autoSent\[_asK\] = serverD\.autoSent\[_asK\]; \}/.test(_WORKER_SRC), 'G23: union-graft fills only missing keys (keeps client-only markers; can only suppress a re-send, never send a wrong email)');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
