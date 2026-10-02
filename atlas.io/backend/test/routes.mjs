@@ -4531,5 +4531,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/async function _stripeCreditBooking\(env, tenantId, bookingId, kind, pi, stripeId, amountCents, opts\)/.test(_WORKER_SRC), 'G1-A: _stripeCreditBooking exists as the reusable twin of _squareCreditBooking/_paypalCreditBooking');
 }
 
+// ==== 13p: PB-parity G1-B -- confirm-on-return credits a BYO-Stripe payment the tenant-signed webhook can't verify ====
+{
+  ok((_WORKER_SRC.match(/\?paid=1&cs=\{CHECKOUT_SESSION_ID\}/g) || []).length === 2, 'G1-B: BOTH booking-checkout success URLs (initial deposit + portal /pay) carry the Stripe session-id template');
+  ok(/if \(psub === 'confirm-pay' && method === 'POST'\)/.test(_WORKER_SRC), 'G1-B: the portal confirm-on-return endpoint exists');
+  ok(/String\(_smd\.booking \|\| ''\) !== String\(brow\.id\) \|\| String\(_smd\.tenant \|\| ''\) !== String\(brow\.tenant_id\)/.test(_WORKER_SRC), 'G1-B: confirm-pay BINDS the session to THIS booking+tenant (it can only ever credit its own booking)');
+  ok(/const _crC = await _stripeCreditBooking\(env, brow\.tenant_id, brow\.id, _pkKeyC, _piId, String\(_sess\.id\), _amtC/.test(_WORKER_SRC), 'G1-B: confirm-pay credits via the reusable _stripeCreditBooking (idempotent on pi -> safe alongside the webhook + sweep)');
+  ok(/if \(_crC && _crC\.credited && _crC\.wasNew && !_crC\.cancelled\)/.test(_WORKER_SRC), 'G1-B: receipt/audit/event fire ONCE per genuinely-new confirm-on-return credit (never on a dup / already-credited)');
+  ok(/fetch\('\/api\/portal\/'\+T\+'\/confirm-pay'/.test(_WORKER_SRC), 'G1-B: the portal page calls confirm-pay on return (when ?cs= is present) BEFORE loading, so the credited state renders');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
