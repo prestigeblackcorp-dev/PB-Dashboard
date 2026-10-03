@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4736,6 +4736,27 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/usage:\{ incl:_ciAllow\*_ciPer, ovRateCents:Math\.round\(_ciOv\*100\)/.test(_ATLAS_SRC13F), 'G37: check-in snapshots the mileage/fuel allowance (incl, overage rate, unit) at trip start');
   ok(/summary:\{ driven:c\.driven, incl:c\.inc, over:c\.over, overCents:Math\.round\(c\.ovAmt\*100\)/.test(_ATLAS_SRC13F), 'G37: close-out snapshots the final driven / included / overage / fuel result');
   ok(_ATLAS_SRC13F === _INDEX_SRC13F, 'G37: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13G: G19 -- co-signer (separate portal, 2nd signature) + the 13C portal-push regex fix ====
+{
+  const _ATLAS_SRC13G = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13G = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // BEHAVIORAL: the co-signer link token round-trips, and a tampered / wrong-key token is rejected (the link can only reach its own booking).
+  const _g19env = { SESSION_KEY: 'g19testkey' };
+  const _g19tok = await _coSignTok(_g19env, 'bkABC123', 'csXYZ789');
+  const _g19p = await _coSignParse(_g19env, _g19tok);
+  ok(_g19p && _g19p.bid === 'bkABC123' && _g19p.csId === 'csXYZ789', 'G19: a co-signer token round-trips to its booking id + co-signer id');
+  ok((await _coSignParse(_g19env, _g19tok.slice(0, -2) + 'zz')) === null, 'G19: a TAMPERED co-signer token (bad HMAC) is rejected -> null');
+  ok((await _coSignParse({ SESSION_KEY: 'different' }, _g19tok)) === null, 'G19: a co-signer token signed under a different SESSION_KEY is rejected');
+  // WORKER source: the helpers, the SEPARATE co-signer route, the owner endpoint, + the 13C portal-push regex fix.
+  ok(/async function _coSignTok\(env, bid, csId\) \{/.test(_WORKER_SRC) && /async function _coSignParse\(env, tok\) \{/.test(_WORKER_SRC), 'G19: stateless HMAC co-signer token helpers (mint + verify, constant-time)');
+  ok(/if \(path\.indexOf\('\/api\/cosign\/'\) === 0\) \{/.test(_WORKER_SRC), 'G19: a SEPARATE /api/cosign/<token> route -- a co-signer never reaches the renter portal_token (pay/manage)');
+  ok(/if \(path === '\/api\/booking\/cosigner' && method === 'POST'\) \{/.test(_WORKER_SRC), 'G19: owner endpoint adds/removes a co-signer + returns their sign link (created server-side so the link resolves immediately)');
+  ok(/\|idvstart\|idvstatus\|gift\|review\|push\)/.test(_WORKER_SRC), 'G19 / 13C fix: the portal route regex now includes push -- the renter web-push subscribe (13C) was unreachable until now');
+  // CLIENT source: the owner booking-view co-signer UI.
+  ok(/function bkAddCoSigner\(id\)\{/.test(_ATLAS_SRC13G) && /function _coSignersHtml\(b\)\{/.test(_ATLAS_SRC13G), 'G19: owner booking view -- add a co-signer + per-co-signer status / copy-link / remove');
+  ok(_ATLAS_SRC13G === _INDEX_SRC13G, 'G19: atlas.html and index.html remain byte-identical');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
