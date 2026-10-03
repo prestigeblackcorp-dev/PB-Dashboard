@@ -4787,5 +4787,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13I === _INDEX_SRC13I, 'G38: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13J: G4 -- per-payment ledger in the booking view (every captured slot, incl. manual G3 + partial G6) ====
+{
+  const _ATLAS_SRC13J = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13J = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/function _bkPaymentsHtml\(b\)\{/.test(_ATLAS_SRC13J), 'G4: a per-payment ledger iterates EVERY captured d.paid slot (reserve/balance/deposit/manual/partial/charge), net of refunds + chargebacks -- the old display keyed only off reserve/balance/deposit stamps and hid manual + partial payments');
+  ok(/<span>Payments received<\/span>/.test(_ATLAS_SRC13J) && /\+_bkPaymentsHtml\(b\)/.test(_ATLAS_SRC13J), 'G4: the ledger renders as a "Payments received" section in openBooking (before Charges to portal)');
+  ok(_ATLAS_SRC13J === _INDEX_SRC13J, 'G4: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

@@ -6063,6 +6063,7 @@ const Atlas = (function(){
         +'<div class="cond-sub">Capture the '+esc(S.fleet.noun)+' at drop-off &mdash; the before/after is your proof if anything changed, and it flows straight into a damage claim.</div>'
         +_condMediaHtml(b,{phase:'return'})+'</div>'
       +((_condMedia(b).some(function(m){return (m.phase||'pickup')==='pickup';}) && _condMedia(b).some(function(m){return m.phase==='return';}))?'<div style="margin:-4px 0 16px"><button class="btn btn--ghost btn--sm btn--full" onclick="Atlas.bkCompareCondition(\''+b.id+'\')"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M8 2v12M3 5l5-3 5 3M3 11l5 3 5-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Compare before / after</button></div>':'')
+      +_bkPaymentsHtml(b)
       +'<div class="cond-sec"><div class="cond-hd"><span>Charges to portal</span><button class="btn btn--ghost btn--sm" onclick="Atlas.bkAddCharge(\''+b.id+'\')">+ Send a charge</button></div>'
         +'<div class="cond-sub">Bill '+esc((b.cust||'the customer').split(' ')[0])+' for extras, damage, cleaning, late fees or anything else &mdash; it appears in their portal to pay online.</div>'
         +_chargesOwnerHtml(b)+'</div>'
@@ -12889,6 +12890,19 @@ const Atlas = (function(){
   /* ---- Charges to the client portal: operator bills the customer; they pay online in their portal ---- */
   function _chId(){ return 'ch'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }   // unique -> two charges in the same ms don't share an id (bkRmCharge/portalPayCharge target one)
   function _charges(b){ if(!b.charges) b.charges=[]; return b.charges; }
+  // G4 (PB-parity): a true per-PAYMENT ledger in the booking view -- iterates EVERY captured d.paid slot (reserve / balance /
+  // deposit / each manual (G3) / each partial installment (G6) / each paid charge), net of refunds + chargebacks. The prior
+  // display keyed only off the reserve/balance/deposit stamps, so manual + partial payments were invisible as individual lines.
+  function _bkPaymentsHtml(b){ var P=(b&&b.paid)||{}; var rows=[];
+    var _lbl=function(k){ if(k==='deposit'||k==='reserve') return 'Reserve / down payment'; if(k==='balance') return 'Balance'; if(k==='security') return 'Refundable deposit'; if(k.indexOf('charge:')===0){ var cid=k.slice(7),c=(b.charges||[]).filter(function(x){return String(x.id)===cid;})[0]; return c?('Charge: '+(c.label||'')):'Charge'; } if(k.indexOf('manual:')===0) return 'Manual payment'; if(k.indexOf('partial:')===0) return 'Partial payment'; if(k==='payment') return 'Payment'; return cap(String(k)); };
+    Object.keys(P).forEach(function(k){ if(String(k).indexOf('#')>=0) return; var s=P[k]; if(!s||typeof s!=='object') return; var amt=Number(s.amountCents)||0; if(amt<=0&&!s.hold) return;
+      var ref=(s.refunded&&Number(s.refunded.amountCents))||0, disp=(s.disputed&&Number(s.disputed.decrementedCents!=null?s.disputed.decrementedCents:s.disputed.amountCents))||0, net=Math.max(0,amt-ref-disp);
+      var method=s.hold?'authorized hold':(s.offline?('offline'+(s.method?(' - '+esc(String(s.method))):'')):(s.square?'Square':s.paypal?'PayPal':'card'));
+      var tags=(ref>0?(' <span class="chip chip--muted" style="font-size:10.5px"><span class="dot"></span>refunded '+money(ref/100)+'</span>'):'')+(disp>0?(' <span class="chip chip--danger" style="font-size:10.5px"><span class="dot"></span>chargeback '+money(disp/100)+'</span>'):'');
+      rows.push({at:Number(s.at)||0, h:'<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--line-2);font-size:13px"><span style="color:var(--body);min-width:0">'+esc(_lbl(k))+' <span style="color:var(--muted);font-size:11px">'+method+'</span>'+tags+'</span><span class="tnum" style="color:var(--ink)">'+money(net/100)+'</span></div>'}); });
+    if(!rows.length) return '';
+    rows.sort(function(a,b){return a.at-b.at;});
+    return '<div class="cond-sec"><div class="cond-hd"><span>Payments received</span></div>'+rows.map(function(r){return r.h;}).join('')+'</div>'; }
   function _chargesOwnerHtml(b){ var cs=_charges(b); if(!cs.length) return '<div class="bk-lenhint" style="margin:0">No charges yet &mdash; add one and it shows up in the customer portal to pay.</div>';
     return '<div style="display:flex;flex-direction:column;gap:6px">'+cs.map(function(c){
       return '<div class="mp-row"><span style="min-width:0"><b style="color:var(--ink)">'+esc(c.label)+'</b> <span style="font-size:11px;color:var(--muted)">'+(c.paidAt?('paid '+_stamp(c.paidAt)):('sent '+_stamp(c.at)))+'</span></span>'
