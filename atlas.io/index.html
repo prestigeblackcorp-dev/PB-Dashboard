@@ -6655,8 +6655,10 @@ const Atlas = (function(){
       +'<div class="field"><label>Note <span style="color:var(--muted);font-weight:400">(optional)</span></label><input class="input" id="ciNote" placeholder="Condition, existing marks, anything agreed"></div>'
       +'<button class="btn btn--ghost btn--sm btn--full" style="margin-bottom:10px" onclick="Atlas.bkAddCondition(\''+id+'\',\'pickup\')">+ Add photos / video</button>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.doCheckIn(\''+id+'\')">'+(b.status==='Confirmed'?(esc(F.gi)+' &mdash; start '+esc(_fterm('book'))):'Save readings')+'</button></div>'); }
-  function doCheckIn(id){ var b=_getBooking(id); if(!b)return; var F=_flowFor(b), odo=val('ciOdo'), fuel=val('ciFuel')||'', note=(val('ciNote')||'').trim();
-    b.checkIn={ odoOut:(odo!==''&&odo!=null)?_r2(parseFloat(odo)||0):null, fuelOut:fuel||null, checks:_flowTicked(F.ci,'ciChk'), note:note.slice(0,300), at:Date.now() };
+  function doCheckIn(id){ var b=_getBooking(id); if(!b)return; var F=_flowFor(b), a=_bkAssetObj(b), odo=val('ciOdo'), fuel=val('ciFuel')||'', note=(val('ciNote')||'').trim();
+    var _ciAllow=(a&&+a.usageAllow>0)?+a.usageAllow:0, _ciOv=(a&&+a.overageRate>0)?+a.overageRate:0, _ciPer=_bkPeriods(b)+_bkExtPeriods(b), _ciUnit=(a&&a.usageUnit)||_flowUnit(F);
+    b.checkIn={ odoOut:(odo!==''&&odo!=null)?_r2(parseFloat(odo)||0):null, fuelOut:fuel||null, checks:_flowTicked(F.ci,'ciChk'), note:note.slice(0,300), at:Date.now(),
+      usage:{ incl:_ciAllow*_ciPer, ovRateCents:Math.round(_ciOv*100), unit:_ciUnit, hasFuel:!!F.f, meter:(_ciAllow>0&&_ciOv>0) } };   // G37: snapshot the mileage/fuel allowance at trip start so the renter's portal can show their usage allowance live, mid-trip
     _upsertBooking(b); _logEvent('booking','Pickup captured on '+b.id+(b.checkIn.odoOut!=null?(' ('+b.checkIn.odoOut+' out)'):''),{booking:b.id}); save(); closeModal();
     if(b.status==='Confirmed'){ setBookingStatus(id,'On rent'); } else { openBooking(id); toast('Saved'); } }   // reuse the guarded transition (persists + re-renders + toast)
   // Shared pure compute for the close-out wizard: overage + fuel + late from the current fields. Reuses _fuelCharge/_lateFee verbatim.
@@ -6706,7 +6708,8 @@ const Atlas = (function(){
     if(c.ovAmt>0 && ck('coApOv')){ b.charges.push({id:_chId(), kind:'meter', label:'Usage: '+c.over+' '+c.unit+' over', amount:c.ovAmt, at:Date.now(), paidAt:null}); applied.push('overage '+money(c.ovAmt)); }
     if(c.fuelAmt>0 && ck('coApFuel')){ if(_fuelRate()>0){ S.money.fuelRate=_fuelRate(); } b.charges.push({id:_chId(), kind:'fuel', label:'Fuel: returned '+c.fi+' (out '+c.fo+'), '+c.fuelShort+'/8 short', amount:c.fuelAmt, at:Date.now(), paidAt:null}); applied.push('fuel '+money(c.fuelAmt)); }
     if(c.lateAmt>0 && ck('coApLate')){ b.charges.push({id:_chId(), kind:'late', label:(c.lt||'Late return')+': '+c.lateNote, amount:c.lateAmt, at:Date.now(), paidAt:null}); applied.push('late '+money(c.lateAmt)); }
-    b.closeOut={ odoIn:(val('coOdoIn')!==''?_r2(parseFloat(val('coOdoIn'))||0):null), fuelIn:val('coFuelIn')||null, checks:_flowTicked(F.co,'coChk'), returnedAt:c.ret||Date.now(), at:Date.now() };
+    b.closeOut={ odoIn:(val('coOdoIn')!==''?_r2(parseFloat(val('coOdoIn'))||0):null), fuelIn:val('coFuelIn')||null, checks:_flowTicked(F.co,'coChk'), returnedAt:c.ret||Date.now(), at:Date.now(),
+      summary:{ driven:c.driven, incl:c.inc, over:c.over, overCents:Math.round(c.ovAmt*100), unit:c.unit, hasOv:c.hasOv, hasFuel:c.hasFuel, fuelOut:c.fo, fuelIn:c.fi, fuelShort:c.fuelShort, fuelCents:Math.round(c.fuelAmt*100) } };   // G37: snapshot the final trip usage so the renter's portal shows what they drove / used + any overage, with context beyond the raw charge line
     _upsertBooking(b); _logEvent('booking','Close-out on '+b.id+(applied.length?(' -- billed '+applied.join(', ')):' -- no charges'),{booking:b.id}); save(); closeModal();
     if(b.status==='On rent'){ setBookingStatus(id,'Returned'); } else { openBooking(id); }
     toast(applied.length?('Recorded &mdash; billed '+applied.join(', ')):'Recorded'); }

@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4717,6 +4717,25 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // CLIENT: the owner Settings>Money toggle, default OFF.
   ok(/Atlas\.setMoney\('allowPartial',this\.checked\)/.test(_ATLAS_SRC13E) && /else if\(k==='allowPartial'\) m\.allowPartial=!!v;/.test(_ATLAS_SRC13E), 'G6: owner Settings>Money has the allowPartial toggle (default OFF -> installments are opt-in)');
   ok(_ATLAS_SRC13E === _INDEX_SRC13E, 'G6: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13F: G37 -- renter portal trip-usage tracker (mileage allowance live mid-trip + final driven/overage/fuel) ====
+{
+  const _ATLAS_SRC13F = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13F = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // BEHAVIORAL: _portalTrip derives the card purely from the snapshots -- mid-trip shows the allowance, after close-out shows the result, null when nothing snapshotted.
+  const _trMid = _portalTrip({ checkIn: { usage: { incl: 300, ovRateCents: 200, unit: 'miles', hasFuel: true, meter: true }, fuelOut: 'Full' } });
+  ok(_trMid && _trMid.closed === false && _trMid.incl === 300 && _trMid.ovRateCents === 200 && _trMid.meter === true && _trMid.driven === null, 'G37: mid-trip (checkIn.usage only) -> allowance shown (incl 300, $2.00/mi), not yet closed, no driven figure');
+  const _trDone = _portalTrip({ checkIn: { usage: { incl: 300, ovRateCents: 200, unit: 'miles', hasFuel: true, meter: true } }, closeOut: { summary: { driven: 350, incl: 300, over: 50, overCents: 10000, unit: 'miles', hasOv: true, hasFuel: true, fuelOut: 'Full', fuelIn: '3/4', fuelShort: 1, fuelCents: 1200 } } });
+  ok(_trDone && _trDone.closed === true && _trDone.driven === 350 && _trDone.over === 50 && _trDone.overCents === 10000 && _trDone.fuelIn === '3/4', 'G37: after close-out -> final driven 350 / 50 over / $100 overage / fuel in surfaced');
+  ok(_portalTrip({}) === null && _portalTrip({ checkIn: {} }) === null, 'G37: no snapshot (older booking / not checked in) -> null, so no card renders (byte-identical to today)');
+  // WORKER: the helper, the /data wiring, and the portal card.
+  ok(/function _portalTrip\(d\) \{/.test(_WORKER_SRC) && /trip: _portalTrip\(d\),/.test(_WORKER_SRC), 'G37: portal /data ships a server-computed trip object (null until a snapshot exists)');
+  ok(/var tripCard='';if\(j\.trip\)\{/.test(_WORKER_SRC), 'G37: the portal renders a "Your trip" usage card from j.trip (allowance mid-trip, driven/overage/fuel after close-out)');
+  // CLIENT: the check-in + close-out snapshots that feed the tracker (no money mutation -- overage/fuel still ride the existing charge rail).
+  ok(/usage:\{ incl:_ciAllow\*_ciPer, ovRateCents:Math\.round\(_ciOv\*100\)/.test(_ATLAS_SRC13F), 'G37: check-in snapshots the mileage/fuel allowance (incl, overage rate, unit) at trip start');
+  ok(/summary:\{ driven:c\.driven, incl:c\.inc, over:c\.over, overCents:Math\.round\(c\.ovAmt\*100\)/.test(_ATLAS_SRC13F), 'G37: close-out snapshots the final driven / included / overage / fuel result');
+  ok(_ATLAS_SRC13F === _INDEX_SRC13F, 'G37: atlas.html and index.html remain byte-identical');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
