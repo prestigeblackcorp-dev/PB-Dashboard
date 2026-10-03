@@ -4796,5 +4796,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13J === _INDEX_SRC13J, 'G4: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13K: G16 (cancel-policy shown at the fee decision) + G26 (lead -> booking pre-fill) ====
+{
+  const _ATLAS_SRC13K = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13K = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/Your disclosed cancellation policy/.test(_ATLAS_SRC13K), 'G16: the cancel modal shows the owner\'s disclosed cancellation policy where the kept fee is chosen (the retained amount lines up with what the customer agreed to)');
+  ok(/var _lpf=function\(\)\{ var c=document\.getElementById\('bkCust'\)/.test(_ATLAS_SRC13K), 'G26: converting a lead pre-fills the booking form (name + contact routed to email/phone) instead of dropping the lead data');
+  ok(_ATLAS_SRC13K === _INDEX_SRC13K, 'G16/G26: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
