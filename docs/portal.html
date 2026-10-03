@@ -2889,12 +2889,16 @@ function showExtensionSign(b){
       '</div></div>';
   }).join('');
 }
+var PB_CRYPTO_LIVE = false;   // flip to true once Coinbase key is set + worker deployed -> reveals the portal crypto button
 function showPayBalance(b){
   const bal = Number(b.remainingBalance) || 0;   // extension is never in the balance now (signed=its own charge, unsigned=folded), so no netting
   if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed','voided'].includes((b.status||'').toLowerCase())) return '';
   const fee   = Math.round(bal * 0.05 * 100) / 100;
   const tax   = Math.round(bal * 0.0825 * 100) / 100;
   const total = Math.round((bal + fee + tax) * 100) / 100;
+  const cryptoFee = Math.round(bal * 0.02 * 100) / 100;
+  const cryptoTotal = Math.round((bal + cryptoFee + Math.round((bal + cryptoFee) * 0.0825 * 100) / 100) * 100) / 100;
+  const cryptoBtnHtml = PB_CRYPTO_LIVE ? ('<button onclick="payBalanceCrypto(\'' + b.id + '\')" id="payCryptoBtn_' + b.id + '" style="width:100%;margin-top:8px;padding:11px;background:rgba(110,168,254,.12);color:#8ab4ff;border:1px solid rgba(110,168,254,.55);border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:.02em;">Pay $' + cryptoTotal.toFixed(2) + ' with Crypto</button><div style="font-size:10px;color:rgba(255,255,255,.4);margin-top:6px;text-align:center;">Crypto: 2% processing (vs 5% card) + 8.25% TX tax</div>') : '';
   // Partial payments already collected (owner-recorded cash/Zelle/etc.) -- acknowledge them to the customer.
   const paidSoFar = Array.isArray(b.balancePayments) ? b.balancePayments.reduce(function(s,p){return s+(Number(p&&p.amount)||0);},0) : (Number(b.balancePaidAmount)||0);
   return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
@@ -2913,6 +2917,7 @@ function showPayBalance(b){
         style="width:100%;padding:11px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:.02em;">
         Pay $${total.toFixed(2)} by Card \u2192
       </button>
+      ${cryptoBtnHtml}
     </div>
   </div>`;
 }
@@ -2936,6 +2941,28 @@ async function payBalance(bookingId){
   }catch(e){
     toast('Network error. Please try again.','error');
     if(btn){ btn.disabled=false; btn.textContent='Pay by Card \u2192'; }
+  }
+}
+
+async function payBalanceCrypto(bookingId){
+  const btn = document.getElementById('payCryptoBtn_'+bookingId);
+  if(btn){ btn.disabled=true; btn.textContent='Loading...'; }
+  try{
+    const r = await fetch(`${WORKER}/portal/pay-balance-crypto`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId })
+    });
+    const d = await r.json();
+    if(r.status===401){ _portalSessionExpired(); return; }
+    if(!r.ok || !d.url){
+      toast(d.error||'Crypto unavailable. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Pay with Crypto'; }
+      return;
+    }
+    window.location.href = d.url;
+  }catch(e){
+    toast('Network error. Please try again.','error');
+    if(btn){ btn.disabled=false; btn.textContent='Pay with Crypto'; }
   }
 }
 
