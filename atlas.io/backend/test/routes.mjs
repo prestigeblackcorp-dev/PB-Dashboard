@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4834,6 +4834,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if\(p\.minOrder && orderCents!=null && orderCents<Math\.round\(\(Number\(p\.minOrder\)\|\|0\)\*100\)\) return \{ok:false,msg:'Order must be at least '\+money\(p\.minOrder\)/.test(_ATLAS_SRC13M), 'G11: the client validator mirrors the gate (only when an order value is supplied, so the no-order public pre-check stays optimistic)');
   ok((_ATLAS_SRC13M.match(/_validatePromo\(promo,per,true,Math\.round\(\(_q0\.subtotal\|\|0\)\*100\)\)/g) || []).length === 2, 'G11: BOTH public booking surfaces (live quote + submit) pass the pre-promo subtotal so the preview matches the server decision');
   ok(_ATLAS_SRC13M === _INDEX_SRC13M, 'G11: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13N: G8 -- ONE canonical extension-addendum clause (sign == reviewed; the two hand-written templates can no longer drift) ====
+{
+  // behavioral: the shared clause is deterministic + type-normalized (so the store-side and review-side strings are byte-identical)
+  const _g8c = _extAddendumClause('Tesla Model 3', 2, 'day', 1700000000000, 150, 'late pickup');
+  ok(_g8c === 'The rental of Tesla Model 3 is extended by 2 days. New return: 2023-11-14. Additional charge: $150.00. Note: late pickup.', 'G8: the canonical clause states asset + periods + new return + charge + note (got ' + JSON.stringify(_g8c) + ')');
+  ok(_extAddendumClause('X', '1', 'week', 0, '50', '') === _extAddendumClause('X', 1, 'week', 0, 50, ''), 'G8: type-normalized -- string inputs == number inputs (store-side and review-side produce identical bytes)');
+  ok(/extended by 1 week\. New return: as agreed\. Additional charge: \$50\.00\.$/.test(_extAddendumClause('X', 1, 'week', 0, 50, '')), 'G8: singular unit (1 week, not "1 weeks") + missing newEnd -> "as agreed" + no trailing Note when absent');
+  // worker source: BOTH the portal review text (what the renter READS) and the signed+hashed document (what /extsign stores) build their material clause from the ONE shared fn, and the old divergent hand-written variant is gone
+  ok(/addendumText: \(_extAddendumClause\(d\.asset, e\.addedPeriods,/.test(_WORKER_SRC), 'G8: the portal /data review text (addendumText) is built from the shared clause');
+  ok(/_extAddendumClause\(d\.asset, _np, _unit, _newEnd, ex\.charge, ex\.note\)/.test(_WORKER_SRC), 'G8: the /extsign signed+hashed document uses the SAME shared clause -> the customer signs byte-for-byte the material terms they reviewed');
+  ok(!/This extends the rental of /.test(_WORKER_SRC), 'G8: the old second hand-written review wording is fully removed (no divergent template left to drift)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
