@@ -4879,5 +4879,18 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   }
 }
 
+// ==== 13Q: G39 -- condition-photo sets can be FINALIZED/locked (tamper-evident evidence); the gallery + multi-file + video + before/after already existed ====
+{
+  const _ATLAS_SRC13Q = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13Q = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/function _condLocked\(b,phase\)\{ return !!_condLock\(b\)\[\(phase==='return'\?'return':'pickup'\)\]; \}/.test(_ATLAS_SRC13Q), 'G39: a per-phase lock (b.condLock{pickup,return}) marks a finalized condition set');
+  ok(/function bkFinalizeCondition\(id,phase\)\{/.test(_ATLAS_SRC13Q) && /function bkUnlockCondition\(id,phase\)\{/.test(_ATLAS_SRC13Q), 'G39: the owner can finalize a set (lock it) and unlock it (both logged via _logEvent)');
+  ok(/if\(_condLocked\(b,phase\)\)\{ toast\('This set is finalized/.test(_ATLAS_SRC13Q), 'G39: adding media to a finalized set is refused');
+  ok(/if\(_it && _condLocked\(b,_it\.phase\|\|'pickup'\)\)\{ toast\('This set is finalized/.test(_ATLAS_SRC13Q), 'G39: removing media from a finalized set is refused');
+  ok(/\(opts\.portal\|\|_lk\)\?''/.test(_ATLAS_SRC13Q), 'G39: the per-item remove control is hidden once the phase is finalized (tamper-evident display)');
+  ok(/Atlas\.bkFinalizeCondition\(/.test(_ATLAS_SRC13Q) && /Atlas\.bkUnlockCondition\(/.test(_ATLAS_SRC13Q), 'G39: Finalize / Unlock controls are wired in the booking-view condition section');
+  ok(_ATLAS_SRC13Q === _INDEX_SRC13Q, 'G39: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
