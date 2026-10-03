@@ -6526,10 +6526,15 @@ const Atlas = (function(){
     b.charges=_charges(b).filter(function(c){ return !(c.kind==='fuel'&&!c.paidAt); });   // replace a prior UNPAID fuel charge so a re-calc re-bills instead of stacking duplicates
     b.charges.push({id:_chId(), kind:'fuel', label:'Fuel: returned '+r+' (out '+o+'), '+f.short+'/8 short', amount:f.amount, at:Date.now(), paidAt:null});
     _upsertBooking(b); _logEvent('booking','Fuel charge '+money(f.amount)+' on '+b.id,{booking:b.id}); save(); closeModal(); openBooking(id); toast('Fuel charge added ('+money(f.amount)+')'); }
-  function _lateFee(schedMs, actualMs, graceHrs, hourlyRate, dailyRate){ if(!schedMs||!actualMs) return {hrsLate:0,amount:0,note:''}; var diffH=(actualMs-schedMs)/3600000, g=Number(graceHrs)||0;
+  function _lateFee(schedMs, actualMs, graceHrs, hourlyRate, capRate){ if(!schedMs||!actualMs) return {hrsLate:0,amount:0,note:''}; var diffH=(actualMs-schedMs)/3600000, g=Number(graceHrs)||0;
     if(diffH<=g) return {hrsLate:Math.max(0,_r2(diffH)),amount:0,note:diffH>0?(Math.round(diffH*60)+' min late -- within '+g+'h grace (no charge)'):'On time'};
     var billH=diffH-g, billHc=Math.ceil(billH), hourly=_r2(billHc*(Number(hourlyRate)||0)), fee=hourly, note=billHc+' hr'+(billHc!==1?'s':'')+' x '+money(hourlyRate)+'/hr after '+g+'h grace';
-    if(+dailyRate>0 && hourly>=+dailyRate){ var xd=Math.ceil(billH/24); fee=_r2(xd*+dailyRate); note=xd+' extra day'+(xd!==1?'s':'')+' @ '+money(dailyRate)+'/day (hourly would exceed the daily rate)'; }
+    // G12 (PB-parity, money): cap the hourly late fee at one extra PERIOD. Was day-only (the cap rate was passed only for the
+    // 'day' model), so a WEEK/MONTH rental returned days late accrued an UNCAPPED hourly fee that could exceed an extra period's
+    // cost. Derive the period length from the rate model; day stays byte-identical (ceil(billH/24) x dayRate), hour keeps no cap
+    // (callers pass capRate 0 for hour). Only ever LOWERS the fee vs the uncapped hourly -- never increases it.
+    var _cr=Number(capRate)||0, _rm=(S.money&&S.money.rateModel)||'day', _ch=(_rm==='week'?168:_rm==='month'?720:24), _un=(_rm==='week'?'week':_rm==='month'?'month':'day');
+    if(_cr>0 && hourly>=_cr){ var xp=Math.ceil(billH/_ch); fee=_r2(xp*_cr); note=xp+' extra '+_un+(xp!==1?'s':'')+' @ '+money(_cr)+'/'+_un+' (hourly would exceed the '+_un+' rate)'; }
     return {hrsLate:_r2(diffH), amount:_r2(fee), note:note}; }
   function _lateGrace(){ return (S.money&&S.money.lateGraceHrs!=null&&+S.money.lateGraceHrs>=0)?+S.money.lateGraceHrs:1; }   // hours of grace (default 1); owner-editable
   function _lateRate(){ return _r2((S.money&&+S.money.lateRate>0)?+S.money.lateRate:25); }   // $ per hour late (default 25); owner-editable
@@ -6539,7 +6544,7 @@ const Atlas = (function(){
     if(!c) return '<div class="bk-lenhint" style="margin:0">Fee for a late return after a grace window &mdash; hourly, capped at the daily rate.</div>';
     return '<div style="display:flex;align-items:center;gap:9px;padding:9px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(c.label)+'</b><div style="font-size:11.5px;color:var(--muted)">'+_stamp(c.at)+(c.paidAt?' &middot; paid':'')+'</div></div><span class="chip '+(c.paidAt?'chip--ok':'chip--warn')+'"><span class="dot"></span>'+money(c.amount)+'</span></div>'; }
   function bkLate(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; var sched=_bkSchedReturnMs(b);
-    var daily=(((S.money&&S.money.rateModel)||'day')==='day')?_bkPeriodRate(b):0;   // only cap at the daily rate for day-model rentals (hourly stays purely hourly)
+    var daily=(((S.money&&S.money.rateModel)||'day')==='hour')?0:_bkPeriodRate(b);   // G12: cap at the booking's PERIOD rate for day/week/month (hour stays purely hourly, no cap); _lateFee derives the period length from the rate model
     var schedStr=sched?new Date(sched).toLocaleString():'not set';
     var pad=function(n){return (n<10?'0':'')+n;}, d=new Date(), defActual=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
     openModal('<div class="modal__head"><h3>Late-return fee</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -6703,7 +6708,7 @@ const Atlas = (function(){
     var allow=(a&&+a.usageAllow>0)?+a.usageAllow:0, ovRate=(a&&+a.overageRate>0)?+a.overageRate:0;
     var odoOut=(b.checkIn&&b.checkIn.odoOut!=null)?b.checkIn.odoOut:((a&&+a.odometer>0)?+a.odometer:'');
     var fuelOut=(b.checkIn&&b.checkIn.fuelOut)||'Full';
-    var sched=_bkSchedReturnMs(b), daily=(((S.money&&S.money.rateModel)||'day')==='day')?_bkPeriodRate(b):0;
+    var sched=_bkSchedReturnMs(b), daily=(((S.money&&S.money.rateModel)||'day')==='hour')?0:_bkPeriodRate(b);   // G12: cap the close-out late fee at the PERIOD rate for day/week/month (was day-only); _lateFee derives the period from the rate model
     var pad=function(n){return (n<10?'0':'')+n;}, d=new Date(), defRet=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
     var fOpts=function(sel){ return _FUEL_LEVELS.slice().reverse().map(function(l){ return '<option'+(l===sel?' selected':'')+'>'+l+'</option>'; }).join(''); };
     var showU=!!F.u||(allow>0&&ovRate>0), verb=F.u==='odo'?'driven':F.u==='hrs'?'run':'used';

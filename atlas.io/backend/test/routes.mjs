@@ -4805,5 +4805,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13K === _INDEX_SRC13K, 'G16/G26: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13L: G12 -- late fee capped at one extra PERIOD for day/week/month (was day-only; week/month ran uncapped) ====
+{
+  const _ATLAS_SRC13L = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13L = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/var _cr=Number\(capRate\)\|\|0, _rm=\(S\.money&&S\.money\.rateModel\)\|\|'day', _ch=\(_rm==='week'\?168:_rm==='month'\?720:24\)/.test(_ATLAS_SRC13L), 'G12: the hourly late fee caps at one extra PERIOD for day/week/month (period length derived from the rate model) -- week/month were uncapped before');
+  ok((_ATLAS_SRC13L.match(/==='hour'\)\?0:_bkPeriodRate\(b\)/g) || []).length === 2, 'G12: BOTH the standalone late-fee tool and the close-out wizard pass the booking period rate as the cap (0 only for the hour model, which stays purely hourly)');
+  ok(_ATLAS_SRC13L === _INDEX_SRC13L, 'G12: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
