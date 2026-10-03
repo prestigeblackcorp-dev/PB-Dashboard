@@ -22,6 +22,13 @@ CHECKS
      and their APP_VERSION matches.
   4. ASCII PURITY           atlas.html, index.html, admin.html: 0 non-ASCII bytes
      (the client source is held to pure ASCII).
+  5. STRUCTURAL INTEGRITY   (G36, the "v167" corruption guard) atlas.html, index.html,
+     admin.html: the exact number of </script> closes, a core function appearing exactly
+     once (duplication canary), and the file ending at the real document close. A botched
+     single-file edit that DUPLICATES a large block or leaks a literal </script> stays
+     byte-identical across the mirror and keeps every string anchor present, so it passes
+     every other check (and the "largest block" JS parse can false-pass a split script) -
+     this is the one check that trips on it.
 
 Exit code 1 if any check FAILS.
 Usage:  python3 tools/atlas-parity-check.py
@@ -147,12 +154,40 @@ def check_ascii():
             line = raw[:raw.find(bytes([non[0]]))].count(b"\n") + 1
             bad(f"{label}: {len(non)} non-ASCII byte(s), first near line {line}")
 
+# ---------------------------------------------------------------- 5. structural integrity (G36: v167 corruption guard)
+# (label, path, expected </script> count, duplication-canary substring that must appear exactly once)
+STRUCT = [
+    ("atlas.html", ATLAS, 2, "function openBooking("),
+    ("index.html", INDEX, 2, "function openBooking("),
+    ("admin.html", ADMIN, 3, "function renderBuildBanner("),
+]
+TAIL = "</script>\n</body>\n</html>"
+def check_structure():
+    print(f"{YEL}5. Structural integrity (v167 corruption guard){OFF}")
+    for label, path, nclose, canary in STRUCT:
+        src = read(path)
+        if src is None:
+            bad(f"{label}: cannot read"); continue
+        c = src.count("</script>")
+        a = src.count(canary)
+        tail_ok = src.rstrip().endswith(TAIL)
+        if c == nclose and a == 1 and tail_ok:
+            ok(f"{label}: {c} </script> closes, 1x {canary}, clean document tail")
+            continue
+        if c != nclose:
+            bad(f"{label}: {c} </script> closes (expected {nclose}) - possible DUPLICATED block or a stray literal </script> (encode it as <\\/script>)")
+        if a != 1:
+            bad(f"{label}: {canary} appears {a}x (expected 1) - possible DUPLICATED block (v167 class)")
+        if not tail_ok:
+            bad(f"{label}: does not end at the real document close (</script></body></html>) - content leaked past the close")
+
 def main():
     print(f"\n{YEL}=== Atlas parity check ==={OFF}  {DIM}{REPO}{OFF}\n")
     check_parity();     print()
     check_buildstamp(); print()
     check_mirror();     print()
     check_ascii();      print()
+    check_structure();  print()
     if fails:
         print(f"{RED}FAILED{OFF} - {len(fails)} problem(s):")
         for f in fails:

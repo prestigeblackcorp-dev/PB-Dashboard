@@ -4863,5 +4863,21 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13O === _INDEX_SRC13O, 'G20: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13P: G36 -- structural-integrity guard against the v167 single-file corruption class (CI backstop; the primary, pre-commit check is tools/atlas-parity-check.py #5) ====
+{
+  const _occ = (s, sub) => s.split(sub).length - 1;
+  const _TAIL = '</script>\n</body>\n</html>';
+  const _struct = [
+    ['atlas.html', readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8'), 2, 'function openBooking('],
+    ['index.html', readFileSync(new URL('../../index.html', import.meta.url), 'utf8'), 2, 'function openBooking('],
+    ['admin.html', readFileSync(new URL('../../admin.html', import.meta.url), 'utf8'), 3, 'function renderBuildBanner('],
+  ];
+  for (const [label, src, nclose, canary] of _struct) {
+    ok(_occ(src, '</script>') === nclose, 'G36: ' + label + ' has exactly ' + nclose + ' </script> closes (a duplicated block or a stray literal </script> changes this; encode a real one as <\\/script>)');
+    ok(_occ(src, canary) === 1, 'G36: ' + label + ' defines ' + canary + ' exactly once (duplication canary -- a v167-class block duplication doubles it)');
+    ok(src.replace(/\s+$/, '').endsWith(_TAIL), 'G36: ' + label + ' ends at the real document close (no content leaked past </script></body></html>)');
+  }
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
