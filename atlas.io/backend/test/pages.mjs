@@ -19,6 +19,7 @@ const PAGES = [
   { name: 'public booking + checkout page', open: '  var js = `', anchor: 'function _bookPageHtml' },
   { name: 'customer portal', open: '  var js = `', anchor: 'function _portalPageHtml' },
   { name: 'password reset', open: '        const rScript = `', anchor: null },
+  { name: 'co-signer sign page', open: '        const _csJs = `', anchor: '/api/cosign/' },   // G19: the co-signer's standalone sign page
 ];
 
 let failures = 0;
