@@ -4753,7 +4753,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/async function _coSignTok\(env, bid, csId\) \{/.test(_WORKER_SRC) && /async function _coSignParse\(env, tok\) \{/.test(_WORKER_SRC), 'G19: stateless HMAC co-signer token helpers (mint + verify, constant-time)');
   ok(/if \(path\.indexOf\('\/api\/cosign\/'\) === 0\) \{/.test(_WORKER_SRC), 'G19: a SEPARATE /api/cosign/<token> route -- a co-signer never reaches the renter portal_token (pay/manage)');
   ok(/if \(path === '\/api\/booking\/cosigner' && method === 'POST'\) \{/.test(_WORKER_SRC), 'G19: owner endpoint adds/removes a co-signer + returns their sign link (created server-side so the link resolves immediately)');
-  ok(/\|idvstart\|idvstatus\|gift\|review\|push\)/.test(_WORKER_SRC), 'G19 / 13C fix: the portal route regex now includes push -- the renter web-push subscribe (13C) was unreachable until now');
+  ok(/\|idvstart\|idvstatus\|gift\|review\|push\|selfextend\)/.test(_WORKER_SRC), 'G19 / 13C fix: the portal route regex includes push (the renter web-push subscribe was unreachable until now) + selfextend (G38)');
   // CLIENT source: the owner booking-view co-signer UI.
   ok(/function bkAddCoSigner\(id\)\{/.test(_ATLAS_SRC13G) && /function _coSignersHtml\(b\)\{/.test(_ATLAS_SRC13G), 'G19: owner booking view -- add a co-signer + per-co-signer status / copy-link / remove');
   ok(_ATLAS_SRC13G === _INDEX_SRC13G, 'G19: atlas.html and index.html remain byte-identical');
@@ -4769,6 +4769,22 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/function bkContractPdf\(id\)\{/.test(_ATLAS_SRC13H) && /function bkReceiptPdf\(id\)\{/.test(_ATLAS_SRC13H), 'G21: agreement + receipt PDF generators (the receipt reuses the structured _receiptItems; the agreement includes the signature trail + co-signers)');
   ok(/Atlas\.bkContractPdf\(/.test(_ATLAS_SRC13H) && /Atlas\.bkReceiptPdf\(/.test(_ATLAS_SRC13H), 'G21: "Agreement PDF" (booking view) + "Download PDF" (receipt modal) buttons are wired');
   ok(_ATLAS_SRC13H === _INDEX_SRC13H, 'G21: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13I: G38 -- self-service add-days (owner opt-in; renter prices + creates + pays + signs their own extension) ====
+{
+  const _ATLAS_SRC13I = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13I = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/if \(psub === 'selfextend' && method === 'POST'\) \{/.test(_WORKER_SRC), 'G38: a portal /selfextend endpoint');
+  ok(/if \(!_seOn\) return json\(\{ ok: false, reason: 'not_enabled'/.test(_WORKER_SRC), 'G38: GATED OFF by default (settings.money.allowSelfExtend) -> refused + the portal card hidden until the owner opts in');
+  ok(/var _seTotal = Math\.round\(_seN \* _seRate \* \(1 \+ _seTaxRate\) \* 100\) \/ 100;/.test(_WORKER_SRC), 'G38: priced at the booking OWN rate x N periods + tax (owner-controlled; carries any promo baked into the booking rate)');
+  ok(/if \(_seConf > 0\) return json\(\{ ok: false, reason: 'conflict'/.test(_WORKER_SRC), 'G38: the EXTENDED window is availability-checked against other confirmed bookings of the asset (reuses the /book overlap math) before any charge is created');
+  ok(/fd\.extensions\.push\(\{ id: _seExId,/.test(_WORKER_SRC) && /kind: 'extension', label: 'Extension: \+'/.test(_WORKER_SRC), 'G38: creates a PENDING extension + an unpaid extension charge on the proven rail -- renter pays via /pay and signs via /extsign (no new money/sign path)');
+  ok(/source === 'portal-self' && !c\.paidAt && Math\.round\(\(Number\(c\.amount\) \|\| 0\) \* 100\) === Math\.round\(_seTotal \* 100\)/.test(_WORKER_SRC), 'G38: a double-tap is deduped (an identical recent unpaid self-ext charge is reused, never duplicated)');
+  ok(/selfExtend: \(!!\(pr\.settings && pr\.settings\.money && pr\.settings\.money\.allowSelfExtend\)/.test(_WORKER_SRC), 'G38: the portal /data gates the self-extend card (null unless enabled AND the booking is not terminal)');
+  ok(/function selfExt\(\)\{/.test(_WORKER_SRC) && /onclick=selfExt\(\)/.test(_WORKER_SRC), 'G38: the portal renders a priced "Add more time" card (live price, pick periods, add+pay)');
+  ok(/Atlas\.setMoney\('allowSelfExtend',this\.checked\)/.test(_ATLAS_SRC13I) && /else if\(k==='allowSelfExtend'\) m\.allowSelfExtend=!!v;/.test(_ATLAS_SRC13I), 'G38: owner Settings>Money has the self-extend toggle (default OFF -> renters send a request you confirm, unchanged)');
+  ok(_ATLAS_SRC13I === _INDEX_SRC13I, 'G38: atlas.html and index.html remain byte-identical');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
