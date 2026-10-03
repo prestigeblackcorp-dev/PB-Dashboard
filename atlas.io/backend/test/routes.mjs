@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4812,6 +4812,28 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/var _cr=Number\(capRate\)\|\|0, _rm=\(S\.money&&S\.money\.rateModel\)\|\|'day', _ch=\(_rm==='week'\?168:_rm==='month'\?720:24\)/.test(_ATLAS_SRC13L), 'G12: the hourly late fee caps at one extra PERIOD for day/week/month (period length derived from the rate model) -- week/month were uncapped before');
   ok((_ATLAS_SRC13L.match(/==='hour'\)\?0:_bkPeriodRate\(b\)/g) || []).length === 2, 'G12: BOTH the standalone late-fee tool and the close-out wizard pass the booking period rate as the cap (0 only for the hour model, which stays purely hourly)');
   ok(_ATLAS_SRC13L === _INDEX_SRC13L, 'G12: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13M: G11 -- promo codes gate on a minimum ORDER VALUE (owner-set), not just code existence / min periods ====
+{
+  const _ATLAS_SRC13M = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13M = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // behavioral: the exported server validator rejects an under-minimum order and accepts one at/over the minimum
+  const _g11prof = { settings: { promos: [{ code: 'BIG50', type: 'amt', value: 50, minOrder: 200 }] } };
+  const _g11under = _promoApply(_g11prof, 'BIG50', 1, 15000);   // $150 subtotal < $200 minimum
+  ok(_g11under && _g11under.ok === false && _g11under.reason === 'minorder', 'G11: a promo with minOrder=$200 is REJECTED on a $150 order (reason minorder) (got ' + JSON.stringify(_g11under) + ')');
+  const _g11at = _promoApply(_g11prof, 'BIG50', 1, 20000);      // exactly $200 -> applies, $50 off
+  ok(_g11at && _g11at.ok === true && _g11at.discountCents === 5000, 'G11: the same promo APPLIES at exactly the $200 minimum ($50 off) (got ' + JSON.stringify(_g11at) + ')');
+  const _g11none = _promoApply({ settings: { promos: [{ code: 'ANY', type: 'pct', value: 10 }] } }, 'ANY', 1, 100);   // no minOrder -> unaffected
+  ok(_g11none && _g11none.ok === true, 'G11: a promo with NO minOrder is unaffected -- byte-identical gate for every existing code (got ' + JSON.stringify(_g11none) + ')');
+  // worker source: the authoritative gate on the pre-tax subtotal
+  ok(/if \(p\.minOrder && \(Number\(totalCents\) \|\| 0\) < Math\.round\(\(Number\(p\.minOrder\) \|\| 0\) \* 100\)\) return \{ ok: false, reason: 'minorder' \};/.test(_WORKER_SRC), 'G11: the server promo validator enforces the minimum order value (dollars) on the pre-tax subtotal');
+  // client source: the owner editor captures it (both add + edit), the mirror validator gates on it, and the public call sites pass the pre-promo subtotal
+  ok(/<label>Minimum order \$ \(optional\)<\/label><input class="input tnum" id="pmMinOrder"/.test(_ATLAS_SRC13M) && /minOrder:parseFloat\(val\('pmMinOrder'\)\)\|\|0/.test(_ATLAS_SRC13M), 'G11: the New-promo editor captures + saves a minimum order value');
+  ok(/<label>Minimum order \$ \(optional\)<\/label><input class="input tnum" id="peMinOrder"/.test(_ATLAS_SRC13M) && /p\.minOrder=parseFloat\(val\('peMinOrder'\)\)\|\|0/.test(_ATLAS_SRC13M), 'G11: the Edit-promo editor captures + saves a minimum order value (kept across edits)');
+  ok(/if\(p\.minOrder && orderCents!=null && orderCents<Math\.round\(\(Number\(p\.minOrder\)\|\|0\)\*100\)\) return \{ok:false,msg:'Order must be at least '\+money\(p\.minOrder\)/.test(_ATLAS_SRC13M), 'G11: the client validator mirrors the gate (only when an order value is supplied, so the no-order public pre-check stays optimistic)');
+  ok((_ATLAS_SRC13M.match(/_validatePromo\(promo,per,true,Math\.round\(\(_q0\.subtotal\|\|0\)\*100\)\)/g) || []).length === 2, 'G11: BOTH public booking surfaces (live quote + submit) pass the pre-promo subtotal so the preview matches the server decision');
+  ok(_ATLAS_SRC13M === _INDEX_SRC13M, 'G11: atlas.html and index.html remain byte-identical');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }

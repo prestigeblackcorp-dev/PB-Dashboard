@@ -2364,16 +2364,17 @@ const Atlas = (function(){
   function _promos(){ if(!S.promos) S.promos=[]; return S.promos; }
   function _findPromo(code){ code=(code||'').trim().toUpperCase(); return _promos().filter(function(p){return p.code===code;})[0]; }
   function _isPersonalPromo(p){ return !!(p && (p.personal || p.loyaltyFor)); }   // fix: loyalty-reward coupons are bound to one customer, never public
-  function _validatePromo(p,days,anon){ if(!p) return {ok:false,msg:'Code not found'}; if(anon && _isPersonalPromo(p)) return {ok:false,msg:'Code not found'};   // fix: anonymous website visitors cannot redeem a customer's personal loyalty coupon
+  function _validatePromo(p,days,anon,orderCents){ if(!p) return {ok:false,msg:'Code not found'}; if(anon && _isPersonalPromo(p)) return {ok:false,msg:'Code not found'};   // fix: anonymous website visitors cannot redeem a customer's personal loyalty coupon
     if(!p.active) return {ok:false,msg:'This code is turned off'};
     if(p.expiry && _todayStr()>p.expiry) return {ok:false,msg:'This code has expired'};
     if(p.cap && (p.used||0)>=p.cap) return {ok:false,msg:'This code has hit its usage limit'};
     if(p.minDays && (days||0)<p.minDays) return {ok:false,msg:'Needs a minimum of '+p.minDays+' '+_perUnit()};
+    if(p.minOrder && orderCents!=null && orderCents<Math.round((Number(p.minOrder)||0)*100)) return {ok:false,msg:'Order must be at least '+money(p.minOrder)+' to use this code'};   // G11: owner-set minimum order value, gated on the pre-promo subtotal -- only when an order value is supplied, so the no-order site pre-check stays optimistic (mirrors worker _promoApply)
     return {ok:true}; }
   function _todayStr(){ try{ var d=new Date(); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }catch(e){ return ''; } }
   function _promoListHtml(){ var ps=_promos(); if(!ps.length) return '<div class="bk-lenhint" style="margin:0">No promo codes yet. Create one and share it &mdash; every redemption is tracked and timestamped.</div>';
     return ps.map(function(p){ var expired=p.expiry&&_todayStr()>p.expiry, capped=p.cap&&(p.used||0)>=p.cap;
-      var meta=[]; if(p.minDays)meta.push('min '+p.minDays+' '+_perUnit()); if(p.expiry)meta.push((expired?'expired ':'ends ')+p.expiry); meta.push((p.used||0)+(p.cap?(' / '+p.cap):'')+' used');
+      var meta=[]; if(p.minDays)meta.push('min '+p.minDays+' '+_perUnit()); if(p.minOrder)meta.push('min '+money(p.minOrder)+' order'); if(p.expiry)meta.push((expired?'expired ':'ends ')+p.expiry); meta.push((p.used||0)+(p.cap?(' / '+p.cap):'')+' used');
       return '<div class="promo-row"><div style="min-width:0"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b class="mono" style="color:var(--ink);font-size:14px;letter-spacing:.03em">'+esc(p.code)+'</b><span class="chip '+((p.active&&!expired&&!capped)?'chip--ok':'chip--muted')+'"><span class="dot"></span>'+(p.type==='pct'?(p.value+'% off'):(money(p.value)+' off'))+'</span></div><div style="font-size:12px;color:var(--muted);margin-top:3px">'+meta.join(' &middot; ')+'</div></div>'
         +'<div style="display:flex;gap:6px;align-items:center;flex:none"><label class="switch" style="transform:scale(.85)"><input type="checkbox" '+(p.active?'checked':'')+' onchange="Atlas.togglePromo(\''+p.id+'\',this.checked)"><span class="switch__t"></span></label><button class="btn btn--ghost btn--sm" style="padding:6px 8px" onclick="Atlas.promoEdit(\''+p.id+'\')">Edit</button><button class="btn btn--sm" style="color:var(--danger);padding:6px 8px" onclick="Atlas.deletePromo(\''+p.id+'\')" title="Delete">&times;</button></div></div>';
     }).join(''); }
@@ -2384,12 +2385,13 @@ const Atlas = (function(){
       +'<div class="field"><label>Amount</label><input class="input tnum" id="pmVal" type="number" min="0" value="10"></div></div>'
       +'<div class="row2"><div class="field"><label>Min '+_perUnit()+' (optional)</label><input class="input tnum" id="pmMin" type="number" min="0" placeholder="0"></div>'
       +'<div class="field"><label>Max uses (optional)</label><input class="input tnum" id="pmCap" type="number" min="0" placeholder="Unlimited"></div></div>'
-      +'<div class="field"><label>Expires (optional)</label><input class="input" id="pmExp" type="date"></div>'
+      +'<div class="row2"><div class="field"><label>Minimum order $ (optional)</label><input class="input tnum" id="pmMinOrder" type="number" min="0" placeholder="No minimum"></div>'
+      +'<div class="field"><label>Expires (optional)</label><input class="input" id="pmExp" type="date"></div></div>'
       +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:8px" onclick="Atlas.savePromo()">Create code</button></div>'); }
   function savePromo(){ if(!_canMod('settings'))return; var code=(val('pmCode')||'').trim().toUpperCase().replace(/\s+/g,'');
     if(!code){ toast('Enter a code'); return; } if(_findPromo(code)){ toast('That code already exists'); return; }
     var v=parseFloat(val('pmVal'))||0; if(v<=0){ toast('Enter a discount amount'); return; }
-    var p={ id:'pm'+Date.now().toString(36), code:code, type:(val('pmType')==='amt'?'amt':'pct'), value:v, minDays:parseInt(val('pmMin'),10)||0, cap:parseInt(val('pmCap'),10)||0, expiry:val('pmExp')||'', used:0, active:true, createdAt:Date.now() };
+    var p={ id:'pm'+Date.now().toString(36), code:code, type:(val('pmType')==='amt'?'amt':'pct'), value:v, minDays:parseInt(val('pmMin'),10)||0, minOrder:parseFloat(val('pmMinOrder'))||0, cap:parseInt(val('pmCap'),10)||0, expiry:val('pmExp')||'', used:0, active:true, createdAt:Date.now() };
     _promos().push(p); _logEvent('promo','Promo code '+p.code+' created ('+(p.type==='pct'?p.value+'% off':money(p.value)+' off')+')',{code:p.code}); save(); closeModal(); renderSet(); toast('Code '+p.code+' created'); }
   function togglePromo(id,on){ if(!_canMod('settings'))return; var p=_promos().filter(function(x){return x.id===id;})[0]; if(p){ p.active=!!on; save(); var el=document.getElementById('promoList'); if(el)el.innerHTML=_promoListHtml(); } }
   function deletePromo(id){ if(!_canMod('settings'))return; if(!confirm('Delete this promo code?'))return; S.promos=_promos().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Promo code deleted'); }
@@ -2400,14 +2402,15 @@ const Atlas = (function(){
       +'<div class="field"><label>Amount</label><input class="input tnum" id="peVal" type="number" min="0" value="'+(p.value||0)+'"></div></div>'
       +'<div class="row2"><div class="field"><label>Min '+_perUnit()+' (optional)</label><input class="input tnum" id="peMin" type="number" min="0" placeholder="0" value="'+(p.minDays||'')+'"></div>'
       +'<div class="field"><label>Max uses (optional)</label><input class="input tnum" id="peCap" type="number" min="0" placeholder="Unlimited" value="'+(p.cap||'')+'"></div></div>'
-      +'<div class="field"><label>Expires (optional)</label><input class="input" id="peExp" type="date" value="'+esc(p.expiry||'')+'"></div>'
+      +'<div class="row2"><div class="field"><label>Minimum order $ (optional)</label><input class="input tnum" id="peMinOrder" type="number" min="0" placeholder="No minimum" value="'+(p.minOrder||'')+'"></div>'
+      +'<div class="field"><label>Expires (optional)</label><input class="input" id="peExp" type="date" value="'+esc(p.expiry||'')+'"></div></div>'
       +'<div class="bk-lenhint" style="margin:0 0 8px">'+(p.used||0)+' redemption'+((p.used||0)===1?'':'s')+' so far &mdash; kept when you save.</div>'
       +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:8px" onclick="Atlas.savePromoEdit(\''+id+'\')">Save changes</button></div>'); }
   function savePromoEdit(id){ if(!_canMod('settings'))return; var p=_promos().filter(function(x){return x.id===id;})[0]; if(!p)return;
     var code=(val('peCode')||'').trim().toUpperCase().replace(/\s+/g,'');
     if(!code){ toast('Enter a code'); return; } var other=_findPromo(code); if(other&&other.id!==id){ toast('That code already exists'); return; }
     var v=parseFloat(val('peVal'))||0; if(v<=0){ toast('Enter a discount amount'); return; }
-    p.code=code; p.type=(val('peType')==='amt'?'amt':'pct'); p.value=v; p.minDays=parseInt(val('peMin'),10)||0; p.cap=parseInt(val('peCap'),10)||0; p.expiry=val('peExp')||'';
+    p.code=code; p.type=(val('peType')==='amt'?'amt':'pct'); p.value=v; p.minDays=parseInt(val('peMin'),10)||0; p.minOrder=parseFloat(val('peMinOrder'))||0; p.cap=parseInt(val('peCap'),10)||0; p.expiry=val('peExp')||'';
     _logEvent('promo','Promo code '+p.code+' edited',{code:p.code}); save(); closeModal(); renderSet(); toast('Code '+p.code+' updated'); }
   /* ---- Loyalty & referrals: points from each customer's paid spend + a shareable referral code, redeemable to a real coupon ---- */
   function _loy(){ if(!S.loyalty) S.loyalty={on:true, perDollar:1, rewardPts:500, rewardVal:50, refPts:250, members:{}}; if(!S.loyalty.members) S.loyalty.members={}; return S.loyalty; }
@@ -12514,8 +12517,9 @@ const Atlas = (function(){
     var asset=val('wbAsset')||'', per=Math.max(1,parseInt(val('wbPer'),10)||1);
     var _wsd=val('wbStart'), _wStartsAt=_wsd? new Date(_wsd+'T09:00:00').getTime() : 0;   // Smart Pricing Increment 1: mirror webSubmitBooking's own date parse so the preview quotes the same startsAt it will submit
     var code=(val('wbPromo')||'').trim().toUpperCase(), disc={type:'none',value:0}, promo=_findPromo(code);
-    if(promo){ var r=_validatePromo(promo,per,true); if(r.ok) disc={type:(promo.type==='pct'?'percent':'flat'),value:promo.value}; }
-    var mEff=_moneyFor(asset), q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc,startsAt:_wStartsAt});
+    var mEff=_moneyFor(asset);
+    if(promo){ var _q0=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:{type:'none',value:0},startsAt:_wStartsAt}); var r=_validatePromo(promo,per,true,Math.round((_q0.subtotal||0)*100)); if(r.ok) disc={type:(promo.type==='pct'?'percent':'flat'),value:promo.value}; }   // G11: gate the promo on the pre-promo subtotal (matches the server _promoApply gate on q.subtotalCents)
+    var q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc,startsAt:_wStartsAt});
     var _rmNote=(q.rateMult&&q.rateMult!==1)? (' ('+(q.rateMult>1?'+':'')+Math.round((q.rateMult-1)*100)+'%)') : '';
     var h='<div class="mp-row"><span>'+money(mEff.baseRate)+' &times; '+per+' '+_perUnit()+_rmNote+'</span><span class="tnum">'+money(q.gross)+'</span></div>';
     if(q.disc) h+='<div class="mp-row mp-ok"><span>Discount'+(code?(' ('+esc(code)+')'):'')+'</span><span class="tnum">&minus;'+money(q.disc)+'</span></div>';
@@ -12538,8 +12542,9 @@ const Atlas = (function(){
     if(_wao){ if(_wao.minLen>0 && per<_wao.minLen){ toast(esc(asset)+' needs at least '+_wao.minLen+' '+S.money.rateModel+(_wao.minLen>1?'s':'')+'.'); return; } if(_wao.maxLen>0 && per>_wao.maxLen){ toast(esc(asset)+' allows at most '+_wao.maxLen+' '+S.money.rateModel+(_wao.maxLen>1?'s':'')+'.'); return; } }
     if(_wst < new Date(new Date().setHours(0,0,0,0)).getTime()){ toast('Please choose a start date that is not in the past.'); return; }
     var code=(val('wbPromo')||'').trim().toUpperCase(), disc={type:'none',value:0}, promo=_findPromo(code);
-    if(code){ if(promo){ var r=_validatePromo(promo,per,true); if(r.ok) disc={type:(promo.type==='pct'?'percent':'flat'),value:promo.value}; else { toast('That promo is not valid'); code=''; promo=null; } } else { code=''; } }
-    var mEff=_moneyFor(asset), q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc,startsAt:_wst});
+    var mEff=_moneyFor(asset);
+    if(code){ if(promo){ var _q0=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:{type:'none',value:0},startsAt:_wst}); var r=_validatePromo(promo,per,true,Math.round((_q0.subtotal||0)*100)); if(r.ok) disc={type:(promo.type==='pct'?'percent':'flat'),value:promo.value}; else { toast(r.msg||'That promo is not valid'); code=''; promo=null; } } else { code=''; } }   // G11: gate on the pre-promo subtotal; show the specific reason (min-order) to the customer
+    var q=calcQuote(mEff,{periods:per,addons:0,extras:[],discount:disc,startsAt:_wst});
     var b={ id:_nextBkId(), createdAt:Date.now(), cust:name, custEmail:email, custPhone:phone,
       asset:asset, rate:mEff.baseRate, periods:per, startTs:_wst, endTs:_wen, time:!!cfg.time,
       extras:[], discount:disc, addons:0, status:'Pending', quote:q, source:'website', promoCode:code };
