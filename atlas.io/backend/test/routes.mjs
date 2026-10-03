@@ -4759,5 +4759,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13G === _INDEX_SRC13G, 'G19: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13H: G21 -- true vector PDFs (client-side pdf-lib) for the agreement + receipt ====
+{
+  const _ATLAS_SRC13H = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13H = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/var PDFLIB_JS='https:\/\/cdnjs\.cloudflare\.com\/ajax\/libs\/pdf-lib\/1\.17\.1\/pdf-lib\.min\.js'/.test(_ATLAS_SRC13H), 'G21: pdf-lib is pinned to an exact cdnjs version (immutable)');
+  ok(/s\.integrity=PDFLIB_SRI; s\.crossOrigin='anonymous'/.test(_ATLAS_SRC13H), 'G21: the pdf-lib <script> loads with Subresource Integrity + crossorigin (supply-chain safe; mirrors the Leaflet loader; CSP allows script-src https:)');
+  ok(/async function _buildPdf\(title,blocks\)\{/.test(_ATLAS_SRC13H) && /return await doc\.save\(\);/.test(_ATLAS_SRC13H), 'G21: a generic vector-PDF renderer (text wrapping + pagination) builds the document client-side');
+  ok(/function bkContractPdf\(id\)\{/.test(_ATLAS_SRC13H) && /function bkReceiptPdf\(id\)\{/.test(_ATLAS_SRC13H), 'G21: agreement + receipt PDF generators (the receipt reuses the structured _receiptItems; the agreement includes the signature trail + co-signers)');
+  ok(/Atlas\.bkContractPdf\(/.test(_ATLAS_SRC13H) && /Atlas\.bkReceiptPdf\(/.test(_ATLAS_SRC13H), 'G21: "Agreement PDF" (booking view) + "Download PDF" (receipt modal) buttons are wired');
+  ok(_ATLAS_SRC13H === _INDEX_SRC13H, 'G21: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

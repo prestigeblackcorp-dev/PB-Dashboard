@@ -6016,6 +6016,7 @@ const Atlas = (function(){
     } else { a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.editBooking(\''+b.id+'\')">Edit</button><button class="btn btn--sm btn--danger" onclick="Atlas.deleteBooking(\''+b.id+'\')">Delete</button>'; }
     a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkRepeat(\''+b.id+'\')"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M3 8a5 5 0 019-3M13 8a5 5 0 01-9 3M11 2v3H8M5 14v-3h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Repeat</button>';
     a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalLink(\''+b.id+'\')" title="Copy this customer\'s signing + payment link"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M6.6 9.4l2.8-2.8M7 4.6l.8-.8a2.4 2.4 0 013.4 3.4l-.8.8M9 11.4l-.8.8a2.4 2.4 0 01-3.4-3.4l.8-.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg> Portal link</button>';
+    a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkContractPdf(\''+b.id+'\')" title="Download the rental agreement (and any signatures) as a PDF"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" style="vertical-align:-2px"><path d="M8 2v7m0 0 3-3m-3 3L5 6M3 11v2a1 1 0 001 1h8a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Agreement PDF</button>';
     if(b.portalRevoked) a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalRevoke(\''+b.id+'\',true)" title="Re-enable this customer\'s portal + signing link">Restore link</button>';
     else a+='<button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalRevoke(\''+b.id+'\',false)" title="Immediately disable this customer\'s portal link -- use if the link was forwarded, screenshotted, or sent to the wrong person">Revoke link</button>';
     var contact=esc(b.custEmail||''); if(b.phone) contact+=(contact?' &middot; ':'')+esc(b.phone);
@@ -13081,8 +13082,52 @@ const Atlas = (function(){
   function openReceipt(id, from){ var b=_getBooking(id); if(!b){ toast('Booking not found'); return; }
     var foot=(from==='portal')
       ? '<button class="btn btn--primary btn--full" onclick="Atlas.downloadReceipt(\''+id+'\')">Download receipt</button><button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px" onclick="Atlas.openPortal(\''+id+'\')">Back to portal</button>'
-      : '<div style="display:flex;gap:10px"><button class="btn btn--primary" onclick="Atlas.downloadReceipt(\''+id+'\')">Download</button><button class="btn btn--ghost" onclick="Atlas.sendReceipt(\''+id+'\')">Send to customer</button></div>';
+      : '<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn--primary" onclick="Atlas.bkReceiptPdf(\''+id+'\')">Download PDF</button><button class="btn btn--ghost" onclick="Atlas.downloadReceipt(\''+id+'\')">Text</button><button class="btn btn--ghost" onclick="Atlas.sendReceipt(\''+id+'\')">Send to customer</button></div>';
     openModal('<div class="modal__head"><h3>Receipt</h3>'+_xBtn()+'</div><div class="modal__body">'+_receiptHtml(b)+'<div style="margin-top:16px">'+foot+'</div></div>'); }
+  // G21 (PB-parity): true VECTOR PDFs for the agreement + receipt (was browser-print / plain-text). Client-side pdf-lib, lazy-loaded
+  // once from cdnjs with SRI (mirrors the Leaflet loader; the CSP allows script-src https:). Pure download -- no server, no money.
+  var PDFLIB_JS='https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js';
+  var PDFLIB_SRI='sha384-weMABwrltA6jWR8DDe9Jp5blk+tZQh7ugpCsF3JwSA53WZM9/14PjS5LAJNHNjAI';
+  var _pdfLibPromise=null;
+  function _loadPdfLib(){ if(window.PDFLib) return Promise.resolve(); if(_pdfLibPromise) return _pdfLibPromise;
+    _pdfLibPromise=new Promise(function(resolve,reject){ var ex=document.getElementById('pdfLibJs'); if(ex){ ex.addEventListener('load',function(){ window.PDFLib?resolve():reject(new Error('noPDFLib')); }); ex.addEventListener('error',function(){ reject(new Error('js')); }); return; }
+      var s=document.createElement('script'); s.id='pdfLibJs'; s.src=PDFLIB_JS; s.integrity=PDFLIB_SRI; s.crossOrigin='anonymous'; s.async=true;
+      s.onload=function(){ window.PDFLib?resolve():reject(new Error('noPDFLib')); }; s.onerror=function(){ reject(new Error('js')); }; document.head.appendChild(s); });
+    _pdfLibPromise.catch(function(){ _pdfLibPromise=null; }); return _pdfLibPromise; }
+  function _pdfDownload(fname,bytes){ try{ var blob=new Blob([bytes],{type:'application/pdf'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download=fname; document.body.appendChild(a); a.click(); setTimeout(function(){ try{ document.body.removeChild(a); URL.revokeObjectURL(url); }catch(e){} },2000); }catch(e){ toast('Could not save the PDF'); } }
+  async function _buildPdf(title,blocks){ var P=window.PDFLib; var doc=await P.PDFDocument.create(); try{ doc.setTitle(title); }catch(e){}
+    var font=await doc.embedFont(P.StandardFonts.Helvetica), bold=await doc.embedFont(P.StandardFonts.HelveticaBold);
+    var W=612,H=792,M=54,y=H-M,page=doc.addPage([W,H]); var ink=P.rgb(0.07,0.09,0.12), mut=P.rgb(0.42,0.45,0.5), line=P.rgb(0.82,0.84,0.87);
+    function np(){ page=doc.addPage([W,H]); y=H-M; } function room(h){ if(y-h<M) np(); }
+    function wrap(text,f,size,maxW){ var words=String(text==null?'':text).split(/\s+/),lines=[],cur=''; for(var i=0;i<words.length;i++){ var w=words[i]; var tryc=cur?(cur+' '+w):w; if(f.widthOfTextAtSize(tryc,size)>maxW && cur){ lines.push(cur); cur=w; } else cur=tryc; } if(cur)lines.push(cur); return lines.length?lines:['']; }
+    function para(text,f,size,color,lead){ var ls=wrap(text,f,size,W-2*M); for(var i=0;i<ls.length;i++){ room(lead); page.drawText(ls[i],{x:M,y:y,size:size,font:f,color:color}); y-=lead; } }
+    for(var i=0;i<blocks.length;i++){ var bl=blocks[i];
+      if(bl.h){ y-=6; room(20); page.drawText(String(bl.h),{x:M,y:y,size:13,font:bold,color:ink}); y-=18; }
+      else if(bl.p!=null){ para(bl.p,font,10.5,ink,15); }
+      else if(bl.small!=null){ para(bl.small,font,8.5,mut,12); }
+      else if(bl.kv){ room(16); page.drawText(String(bl.kv[0]),{x:M,y:y,size:10,font:font,color:mut}); var vs=String(bl.kv[1]==null?'':bl.kv[1]); var vw=bold.widthOfTextAtSize(vs,10); page.drawText(vs,{x:Math.max(M,W-M-vw),y:y,size:10,font:bold,color:ink}); y-=16; }
+      else if(bl.hr){ room(12); page.drawLine({start:{x:M,y:y+4},end:{x:W-M,y:y+4},thickness:0.8,color:line}); y-=12; }
+      else if(bl.sp){ y-=(bl.sp||8); } }
+    return await doc.save(); }
+  async function _pdfTextDoc(title,fname,blocks){ await _loadPdfLib(); if(!window.PDFLib) throw new Error('pdflib'); var bytes=await _buildPdf(title,blocks); _pdfDownload(fname,bytes); }
+  function bkContractPdf(id){ var b=_getBooking(id); if(!b)return; toast('Building the PDF...');
+    var agr=((S.legal&&S.legal.agreement&&S.legal.agreement.text)||(S.brand.name+' - Rental Agreement.\n\nThe renter agrees to rent the item in this booking, to return it on time and in the same condition, and to pay the quoted rate, applicable taxes, and any documented damage, cleaning, fuel or overage, plus the owner posted cancellation policy. This agreement is governed by the laws of the owner jurisdiction.'));
+    if(S.legal&&S.legal.cancelPolicy) agr+='\n\nCANCELLATION POLICY: '+S.legal.cancelPolicy;
+    var blocks=[{h:S.brand.name},{small:'Rental Agreement - '+(b.id||'')+' - generated '+_stamp(Date.now())},{hr:1},{kv:['Customer',b.cust||'-']},{kv:['Asset',b.asset||'-']},{kv:['Dates',_bkWhen(b)]},{kv:['Total',_moneyBase(((b.quote||{}).total)||0)]},{sp:6},{h:'Agreement'}];
+    String(agr).split('\n').forEach(function(ln){ if(ln.trim()==='') blocks.push({sp:6}); else blocks.push({p:ln}); });
+    blocks.push({sp:10},{h:'Signatures'});
+    if(b.portal&&b.portal.signedAt){ blocks.push({kv:['Signed by',b.portal.signerName||b.cust||'-']},{kv:['Date',_stamp(b.portal.signedAt)]}); if(b.sigTrail&&b.sigTrail.ip) blocks.push({kv:['IP address',b.sigTrail.ip]}); if(b.sigTrail&&b.sigTrail.docHash) blocks.push({small:'Document fingerprint: '+String(b.sigTrail.docHash).slice(0,40)}); }
+    else blocks.push({p:'Not yet signed.'});
+    (b.coSigners||[]).forEach(function(c){ if(c&&c.signedAt) blocks.push({sp:4},{kv:['Co-signer',c.signerName||c.name||'-']},{kv:['Signed',_stamp(c.signedAt)]}); });
+    _pdfTextDoc(S.brand.name+' Agreement '+(b.id||''),'agreement-'+(b.id||'booking')+'.pdf',blocks).catch(function(){ toast('Could not build the PDF (check your connection).'); }); }
+  function bkReceiptPdf(id){ var b=_getBooking(id); if(!b)return; toast('Building the PDF...'); var r=_receiptItems(b), pm=_portalMoney(b);
+    var blocks=[{h:S.brand.name},{small:'Receipt '+_receiptNo(b)+' - '+_stamp(b.createdAt||Date.now())},{hr:1},{kv:['Billed to',(b.cust||'-')+(b.custEmail?(' <'+b.custEmail+'>'):'')]},{kv:['Booking',(b.id||'')+' - '+(b.asset||'')]},{sp:6},{h:'Items'}];
+    r.items.forEach(function(it){ blocks.push({kv:[it.label,(it.amt<0?'-'+_moneyBase(-it.amt):_moneyBase(it.amt))]}); });
+    blocks.push({hr:1},{kv:[(pm.gift||pm.chTotal)?'Rental total':'Total',_moneyBase(pm.total)]});
+    if(pm.gift) blocks.push({kv:['Gift credit','-'+_moneyBase(pm.gift)]});
+    (b.charges||[]).forEach(function(c){ blocks.push({kv:[(c.label||'Charge')+' ('+(c.paidAt?'paid':'due')+')',_moneyBase(c.amount||0)]}); });
+    blocks.push({kv:['Amount paid',_moneyBase(pm.collected)]},{kv:['Balance due',_moneyBase(pm.totalDue)]},{sp:12},{small:'Managed and securely processed through Atlas Rental.io'});
+    _pdfTextDoc(S.brand.name+' Receipt '+(b.id||''),'receipt-'+(b.id||'booking')+'.pdf',blocks).catch(function(){ toast('Could not build the PDF (check your connection).'); }); }
   function _pad(s,n){ s=String(s); while(s.length<n)s+=' '; return s.slice(0,n); }
   function downloadReceipt(id){ var b=_getBooking(id); if(!b)return; var money=_moneyBase;   /* final-audit: the downloadable TXT receipt reconciles to base USD (a settlement record) */ var r=_receiptItems(b), q=r.q, pm=_portalMoney(b);
     var extra=pm.gift||pm.chTotal;
@@ -13620,7 +13665,7 @@ const Atlas = (function(){
     setBrandName,setBrandColor,setBrandColorHex,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,revOptApply,revOptAsk,setAutoPrice,autoPriceRevertAll,autoPriceRevertOne,
     goAuth,authSubmit,authTogglePass,ssoLogin,setMoneyStack,bkSaveCard,bkChargeCard,bkRecordPayment,setTipping,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
-    newBooking,editBooking,bkPreview,createBooking,openBooking,bkAddCoSigner,bkCoSignerLink,bkRmCoSigner,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,exportBkIcs,viewCustomer,saveCustNote,emailCustomer,eraseCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,addLead,saveLead,leadStage,leadToBooking,rmLead,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
+    newBooking,editBooking,bkPreview,createBooking,openBooking,bkAddCoSigner,bkCoSignerLink,bkRmCoSigner,bkContractPdf,bkReceiptPdf,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSetView,bkCalNav,exportBkIcs,viewCustomer,saveCustNote,emailCustomer,eraseCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,addLead,saveLead,leadStage,leadToBooking,rmLead,bkAddCondition,bkRmCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkVoidFlow,doVoid,unvoidBooking,bkVoidReport,bkEvidence,bkPortalLink,bkPortalRevoke,bkExtendFlow,bkExtendAmt,bkExtendPreview,bkExtendSave,bkExtRemove,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkRequireResign,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,_mtOverage,bkFuel,saveFuel,_flHint,bkLate,saveLate,_ltHint,bkDriver,saveDriver,bkRmDriver,bkInsurance,saveInsurance,bkBlacklistToggle,blacklistBlockToggle,holdAuth,holdRelease,holdCapture,doCapture,bkCheckIn,doCheckIn,bkCloseOut,doCloseOut,_coCalc,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,setGiftRedeem,
