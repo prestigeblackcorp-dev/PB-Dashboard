@@ -4849,5 +4849,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!/This extends the rental of /.test(_WORKER_SRC), 'G8: the old second hand-written review wording is fully removed (no divergent template left to drift)');
 }
 
+// ==== 13O: G20 -- the full immutable signing trail surfaced in the owner UI (re-signs + extension addenda + co-signers) ====
+{
+  const _ATLAS_SRC13O = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13O = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // worker: the endpoint returns a `history` array (every row, oldest first, classified by sigId prefix) in BOTH branches; the back-compat `record` (latest base row) is unchanged
+  ok(/SELECT id,signer_name,ip,ua,signed_at,doc_hash FROM signatures WHERE tenant_id=\? AND booking_id=\? ORDER BY signed_at ASC/.test(_WORKER_SRC), 'G20: the signature endpoint reads EVERY row for the booking oldest-first (not just the latest base row with LIMIT 1)');
+  ok(/kind: \(_p === 'sx' \? 'extension' : _p === 'cs' \? 'co-signer' : 'agreement'\)/.test(_WORKER_SRC), 'G20: each history entry is classified by its sigId prefix (sx=extension, cs=co-signer, else base agreement/re-sign)');
+  ok((_WORKER_SRC.match(/history: _sgHist/g) || []).length === 2, 'G20: the full chain rides in BOTH the signed and the not-yet-signed responses (additive; the existing `record` is unchanged)');
+  // client: an owner "Signing history" action fetches the chain and renders it, shown alongside Require re-sign
+  ok(/function bkSignHistory\(id\)\{/.test(_ATLAS_SRC13O) && /_api\('\/api\/bookings\/'\+encodeURIComponent\(id\)\+'\/signature'\)/.test(_ATLAS_SRC13O), 'G20: the booking view fetches the full signing trail from the server endpoint');
+  ok(/Atlas\.bkSignHistory\(/.test(_ATLAS_SRC13O), 'G20: a "Signing history" button is wired in the booking view (shown when the booking is signed)');
+  ok(_ATLAS_SRC13O === _INDEX_SRC13O, 'G20: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
