@@ -4995,6 +4995,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(_cbT !== 'charge:confirmed' && _cbT !== 'charge:resolved'\)/.test(_WORKER_SRC), 'crypto: the webhook acts ONLY on a fully-settled charge (confirmed/resolved)');
   ok(/const _cbSentinel = 'cb:' \+ _ccode;/.test(_WORKER_SRC) && /recordTxn\(env, \{ livemode: 1, tenant: _ctenant/.test(_WORKER_SRC), 'crypto: idempotent via a recordTxn sentinel keyed on the charge code -> confirmed+resolved (and retries) apply once');
   ok(/UPDATE tenants SET plan=\?, delinquent_since=NULL, tier=\?, crypto_until=\?/.test(_WORKER_SRC), 'crypto: a paid plan activates + stamps crypto_until (prepaid period); credits + website one-time mirror the Stripe grants');
+  ok(/if \(_exsub && _exsub\.stripe_sub\) return err\(409,/.test(_WORKER_SRC), 'crypto: a crypto PLAN charge is BLOCKED when a Stripe subscription already exists -> no double-billing (self-audit fix)');
+  ok(/if \(_cu > _cbBase\) _cbBase = _cu;/.test(_WORKER_SRC), 'crypto: re-paying a plan EXTENDS crypto_until from remaining prepaid time, never resets it (self-audit fix)');
   ok(/ALTER TABLE tenants ADD COLUMN crypto_until INTEGER/.test(_WORKER_SRC), 'crypto: the crypto_until column');
   ok(/async function _runCryptoExpiry\(env, now\) \{/.test(_WORKER_SRC) && /try \{ await _runCryptoExpiry\(env, Date\.now\(\)\); \}/.test(_WORKER_SRC), 'crypto: the prepaid-plan expiry cron is wired into scheduled()');
   ok(/plan='past_due', delinquent_since=COALESCE\(delinquent_since,\?\)[\s\S]{0,200}\(stripe_sub IS NULL OR stripe_sub=''\) AND crypto_until/.test(_WORKER_SRC), 'crypto: expiry flips ONLY a pure-crypto lapsed plan (no stripe_sub) active->past_due -- a Stripe tenant is never touched');
