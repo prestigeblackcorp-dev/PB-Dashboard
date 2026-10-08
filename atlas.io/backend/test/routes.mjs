@@ -4442,6 +4442,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     const _ATLAS_G3 = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
     ok(/function bkRecordPayment\(id\)\{ if\(!_guard\('billing'/.test(_ATLAS_G3) && /_api\('\/api\/booking\/record-payment'/.test(_ATLAS_G3), 'G3: the dashboard has a Record-a-payment action calling the endpoint');
     ok(/onclick="Atlas\.bkRecordPayment/.test(_ATLAS_G3) && /bkRecordPayment,setTipping/.test(_ATLAS_G3), 'G3: the button is wired + the handler exported');
+    ok(/function _bkRecordPaySubmit\(id\)\{/.test(_ATLAS_G3) && /id="rpAmt"/.test(_ATLAS_G3) && /id="rpMethod"/.test(_ATLAS_G3), 'G3 (in-app test fix): record-payment uses a proper modal form (rpAmt/rpMethod/rpNote) + _bkRecordPaySubmit -- NOT window.prompt() x3 (blocked in sandboxed iframes + native webviews); the POST body is unchanged');
+    ok(!/var amt=prompt\('Payment amount received/.test(_ATLAS_G3), 'G3 (in-app test fix): record-payment no longer calls window.prompt()');
   }
 }
 
