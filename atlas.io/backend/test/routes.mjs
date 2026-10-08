@@ -5057,5 +5057,23 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/await audit\(env, \{ tenant_id: tid \}, null, 'portal\.idv_verified', \{ booking: brow\.id, via: 'reconcile' \}\)/.test(_WORKER_SRC), 'K1: the reconcile marks the booking verified + carries it forward via the SAME trusted path as the /idvstatus poll');
 }
 
+// ==== 13Y: KYC owner-side -- "ask renter to verify" nudge endpoint (K2) + in-progress chip + nudge button (K2/K3) ====
+{
+  const _ATLAS_SRC13Y = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13Y = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // --- worker: the idv-nudge endpoint (bookEdit + CSRF + rate-limited; emails the renter their portal verify link; no-mailer honest) ---
+  ok(/const idn = path\.match\(/.test(_WORKER_SRC) && /\/idv-nudge\$\/\);/.test(_WORKER_SRC), 'K2: the /api/bookings/:id/idv-nudge route exists');
+  ok(/if \(!await rateLimit\(env, 'idvnudge:' \+ idn\[1\], 5, 86400000\)\)/.test(_WORKER_SRC), 'K2: the nudge is rate-limited per booking (no spamming the renter)');
+  ok(/if \(d\.idVerified\) return json\(\{ ok: true, already: 'verified' \}\)/.test(_WORKER_SRC), 'K2: a nudge for an already-verified renter is a clean no-op (never re-asks)');
+  ok(/await audit\(env, ctx, req, 'booking\.idv_nudge'/.test(_WORKER_SRC), 'K2: the nudge is audited');
+  ok(/reason: 'no_mailer'/.test(_WORKER_SRC) && /Connect an email sender/.test(_WORKER_SRC), 'K2: no mailer connected -> honest message (copy the portal link yourself), never a false "sent"');
+  // --- client: the in-progress chip (K3) + the Ask-to-verify / Resend button (K2), gated on Stripe Identity being enabled ---
+  ok(/var ip=!v&&!rj&&b\.portal&&b\.portal\.idv&&b\.portal\.idv\.status==='processing';/.test(_ATLAS_SRC13Y), 'K3: the booking card shows an "ID check in progress" state when the renter has started Stripe Identity');
+  ok(/var idvOn=!!\(S\.idv&&S\.idv\.enabled&&\(!S\.idv\.provider\|\|S\.idv\.provider==='stripe'\)\);/.test(_ATLAS_SRC13Y), 'K2: the Ask-to-verify button is gated on automatic Stripe Identity being turned on for the tenant');
+  ok(/onclick="Atlas\.bkIdvNudge\(/.test(_ATLAS_SRC13Y) && /function bkIdvNudge\(id\)\{/.test(_ATLAS_SRC13Y), 'K2: the card has an Ask-to-verify / Resend-verify-link button wired to bkIdvNudge');
+  ok(/bkPortalLink,bkPortalRevoke,bkIdvNudge,bkExtendFlow,/.test(_ATLAS_SRC13Y), 'K2: bkIdvNudge is exported on the Atlas API object');
+  ok(_ATLAS_SRC13Y === _INDEX_SRC13Y, 'K2/K3: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
