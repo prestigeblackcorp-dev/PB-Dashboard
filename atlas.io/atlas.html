@@ -2328,7 +2328,8 @@ const Atlas = (function(){
     ['abandon',  'Abandoned booking',    'Nudges guests who started but did not finish', null],
     ['balanceDue','Balance-due reminder', 'Reminds the customer of an unpaid balance before pickup', 'before'],
     ['returnDue', 'Return reminder',      'Reminds the customer their rental is due back soon',       'before'],
-    ['overdue',   'Overdue notice',       'Alerts the customer when a return is past due',            null]
+    ['overdue',   'Overdue notice',       'Alerts the customer when a return is past due',            null],
+    ['waitlist',  'Waitlist opening',     'Emails a waitlisted customer when their wanted dates free up', null]
   ];
   function _defaultComms(){ return {
     mode:'managed', resendKey:'', resendVerified:false,
@@ -2350,7 +2351,8 @@ const Atlas = (function(){
       abandon:{ on:false, subject:'Your {business} booking is almost done', body:'Hi {name},\n\nYou started a booking for the {asset} but did not finish. Your dates are still open -- complete it in a tap:\n\n{link}\n\n{business}' },
       balanceDue:{ on:true, days:2, subject:'A balance is due for your {asset} booking', body:'Hi {name},\n\nA quick reminder that your booking for the {asset} ({dates}) has a balance still due. You can review and pay it securely here:\n\n{link}\n\nThank you,\n{business}' },
       returnDue:{ on:true, days:1, subject:'Your {asset} is due back soon', body:'Hi {name},\n\nReminder: your {asset} rental is ending soon. Please return it on time to avoid any late fees.\n\nManage your booking: {link}\n\nThank you,\n{business}' },
-      overdue:{ on:false, subject:'Your {asset} rental is overdue', body:'Hi {name},\n\nOur records show the {asset} has not been returned yet. Please return it as soon as possible to avoid additional charges, or contact us if you have already returned it:\n\n{link}\n\n{business}' }
+      overdue:{ on:false, subject:'Your {asset} rental is overdue', body:'Hi {name},\n\nOur records show the {asset} has not been returned yet. Please return it as soon as possible to avoid additional charges, or contact us if you have already returned it:\n\n{link}\n\n{business}' },
+      waitlist:{ on:false, subject:'A spot opened up at {business}', body:'Hi {name},\n\nGood news -- the {asset} you asked about is now open for {from} to {to}. These fill fast, so reply to grab it.\n\n{business}' }
     },
     campaigns:[]
   }; }
@@ -7331,17 +7333,20 @@ const Atlas = (function(){
     if(!card){ card=document.createElement('div'); card.id='waitCard'; card.className='card'; card.style.marginBottom='16px';
       var cc=document.getElementById('custTbl'); cc=cc&&cc.closest('.card'); if(cc) panel.insertBefore(card,cc); else panel.appendChild(card); }
     var wl=_waitlist();
-    var rows=wl.length? wl.map(function(w){ return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line-2)"><span class="avatar">'+esc((w.cust||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink)">'+esc(w.cust)+'</b><div style="font-size:12px;color:var(--muted)">'+(w.asset?esc(w.asset):('Any '+esc(S.fleet.noun)))+(w.note?(' &middot; '+esc(w.note)):'')+'</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.waitToBooking(\''+w.id+'\')">Book</button><button class="btn btn--ghost btn--sm" onclick="Atlas.editWaitlist(\''+w.id+'\')">Edit</button><button class="icon-btn" style="color:var(--danger)" title="Remove" onclick="Atlas.rmWait(\''+w.id+'\')">'+_rmSvg()+'</button></div>'; }).join('') : '<div class="bk-lenhint" style="margin:0">No one waiting. Add people who wanted a booked-out '+esc(S.fleet.noun)+' &mdash; when one frees up, you fill it fast.</div>';
+    var rows=wl.length? wl.map(function(w){ return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line-2)"><span class="avatar">'+esc((w.cust||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink)">'+esc(w.cust)+'</b><div style="font-size:12px;color:var(--muted)">'+(w.asset?esc(w.asset):('Any '+esc(S.fleet.noun)))+((w.from&&w.to)?(' &middot; '+_fmtDate(w.from)+'\u2013'+_fmtDate(w.to)):'')+(w.note?(' &middot; '+esc(w.note)):'')+'</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.waitToBooking(\''+w.id+'\')">Book</button><button class="btn btn--ghost btn--sm" onclick="Atlas.editWaitlist(\''+w.id+'\')">Edit</button><button class="icon-btn" style="color:var(--danger)" title="Remove" onclick="Atlas.rmWait(\''+w.id+'\')">'+_rmSvg()+'</button></div>'; }).join('') : '<div class="bk-lenhint" style="margin:0">No one waiting. Add people who wanted a booked-out '+esc(S.fleet.noun)+' &mdash; when one frees up, you fill it fast.</div>';
     card.innerHTML='<div class="card__head"><h3>Waitlist'+(wl.length?(' <span style="font-size:12px;color:var(--muted);font-weight:600">'+wl.length+'</span>'):'')+'</h3><button class="btn btn--ghost btn--sm" onclick="Atlas.addWaitlist()">+ Add</button></div><div class="card__body">'+rows+'</div>'; }
   function addWaitlist(){ if(!_guard('bookEdit','Managing the waitlist'))return;
     openModal('<div class="modal__head"><h3>Add to waitlist</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="field"><label>'+cap(_custNoun())+' name</label><input class="input" id="wlName" placeholder="Who is waiting"></div>'
       +'<div class="field"><label>Email or phone</label><input class="input" id="wlContact" placeholder="Optional"></div>'
       +'<div class="field"><label>'+cap(S.fleet.noun)+' they want</label><select class="select" id="wlAsset"><option value="">Any '+esc(S.fleet.noun)+'</option>'+(DATA.assets||[]).map(function(a){return '<option>'+esc(a.name)+'</option>';}).join('')+'</select></div>'
-      +'<div class="field"><label>Note</label><input class="input" id="wlNote" placeholder="Dates, preferences..."></div>'
+      +'<div class="row2"><div class="field"><label>Wanted from (optional)</label><input class="input" id="wlFrom" type="date"></div><div class="field"><label>Wanted to (optional)</label><input class="input" id="wlTo" type="date"></div></div>'
+      +'<div class="field"><label>Note</label><input class="input" id="wlNote" placeholder="Preferences..."></div>'
+      +'<div class="bk-lenhint" style="margin:0 0 8px">Tip: add an email + wanted dates, then turn on the <b>Waitlist opening</b> auto-email (Settings &gt; Communications) and we notify them automatically the moment this '+esc(S.fleet.noun)+' frees up for those dates.</div>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveWaitlist()">Add to waitlist</button></div>'); }
   function saveWaitlist(){ var nm=(val('wlName')||'').trim(); if(!nm){ toast('Add a name'); return; }
-    _waitlist().push({id:'wl'+Date.now().toString(36), cust:nm, contact:(val('wlContact')||'').trim(), asset:(val('wlAsset')||'').trim(), note:(val('wlNote')||'').trim(), at:Date.now()});
+    var _wf=val('wlFrom'), _wt=val('wlTo');
+    _waitlist().push({id:'wl'+Date.now().toString(36), cust:nm, contact:(val('wlContact')||'').trim(), asset:(val('wlAsset')||'').trim(), note:(val('wlNote')||'').trim(), from:(_wf?new Date(_wf+'T00:00:00').getTime():0), to:(_wt?new Date(_wt+'T23:59:59').getTime():0), at:Date.now()});
     _logEvent('booking','Added '+nm+' to the waitlist',{}); save(); closeModal(); _renderWaitCard(); toast(nm+' added to the waitlist'); }
   function rmWait(id){ if(!_guard('bookEdit'))return; S.waitlist=_waitlist().filter(function(w){return w.id!==id;}); save(); _renderWaitCard(); }
   function editWaitlist(id){ if(!_guard('bookEdit','Managing the waitlist'))return; var w=_waitlist().filter(function(x){return x.id===id;})[0]; if(!w)return;
@@ -7349,10 +7354,11 @@ const Atlas = (function(){
       +'<div class="field"><label>'+cap(_custNoun())+' name</label><input class="input" id="wlName" placeholder="Who is waiting" value="'+esc(w.cust||'')+'"></div>'
       +'<div class="field"><label>Email or phone</label><input class="input" id="wlContact" placeholder="Optional" value="'+esc(w.contact||'')+'"></div>'
       +'<div class="field"><label>'+cap(S.fleet.noun)+' they want</label><select class="select" id="wlAsset"><option value=""'+(w.asset?'':' selected')+'>Any '+esc(S.fleet.noun)+'</option>'+(DATA.assets||[]).map(function(a){return '<option'+(w.asset===a.name?' selected':'')+'>'+esc(a.name)+'</option>';}).join('')+'</select></div>'
-      +'<div class="field"><label>Note</label><input class="input" id="wlNote" placeholder="Dates, preferences..." value="'+esc(w.note||'')+'"></div>'
+      +'<div class="row2"><div class="field"><label>Wanted from (optional)</label><input class="input" id="wlFrom" type="date" value="'+(w.from?new Date(w.from).toISOString().slice(0,10):'')+'"></div><div class="field"><label>Wanted to (optional)</label><input class="input" id="wlTo" type="date" value="'+(w.to?new Date(w.to).toISOString().slice(0,10):'')+'"></div></div>'
+      +'<div class="field"><label>Note</label><input class="input" id="wlNote" placeholder="Preferences..." value="'+esc(w.note||'')+'"></div>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveWaitlistEdit(\''+id+'\')">Save changes</button></div>'); }
   function saveWaitlistEdit(id){ if(!_guard('bookEdit'))return; var w=_waitlist().filter(function(x){return x.id===id;})[0]; if(!w)return; var nm=(val('wlName')||'').trim(); if(!nm){ toast('Add a name'); return; }
-    w.cust=nm; w.contact=(val('wlContact')||'').trim(); w.asset=(val('wlAsset')||'').trim(); w.note=(val('wlNote')||'').trim();
+    w.cust=nm; w.contact=(val('wlContact')||'').trim(); w.asset=(val('wlAsset')||'').trim(); w.note=(val('wlNote')||'').trim(); var _wf=val('wlFrom'), _wt=val('wlTo'); w.from=(_wf?new Date(_wf+'T00:00:00').getTime():0); w.to=(_wt?new Date(_wt+'T23:59:59').getTime():0);
     save(); closeModal(); _renderWaitCard(); toast('Waitlist entry updated'); }
   function waitToBooking(id){ if(!_guard('bookEdit'))return; var w=_waitlist().filter(function(x){return x.id===id;})[0]; if(!w)return;   // fix: keep the waitlist entry until the booking is actually saved (createBooking removes it) -> no data loss if the operator abandons the form
     go('bookings'); newBooking(); _waitConvertId=id; setTimeout(function(){ var n=document.getElementById('bkCust'); if(n)n.value=w.cust; if(w.contact){ var e=document.getElementById('bkEmail'); if(e)e.value=w.contact; } var a=document.getElementById('bkAsset'); if(a&&w.asset){ try{ a.value=w.asset; }catch(_){}} try{ bkPreview&&bkPreview(); }catch(_){}}, 250);

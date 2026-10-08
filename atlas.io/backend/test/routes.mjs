@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4890,6 +4890,34 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/\(opts\.portal\|\|_lk\)\?''/.test(_ATLAS_SRC13Q), 'G39: the per-item remove control is hidden once the phase is finalized (tamper-evident display)');
   ok(/Atlas\.bkFinalizeCondition\(/.test(_ATLAS_SRC13Q) && /Atlas\.bkUnlockCondition\(/.test(_ATLAS_SRC13Q), 'G39: Finalize / Unlock controls are wired in the booking-view condition section');
   ok(_ATLAS_SRC13Q === _INDEX_SRC13Q, 'G39: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13R: G24 -- freed-slot WAITLIST NOTIFY (server cron + auto-email; owner opt-in, default OFF) ====
+{
+  const _ATLAS_SRC13R = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13R = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  const _eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  // behavioral: the exported pure matchers
+  ok(_eq(_waitlistEligible({ id: 'w1', contact: 'a@b.com', asset: 'Van', from: 2000, to: 5000 }, 1000), { id: 'w1', email: 'a@b.com', asset: 'Van', from: 2000, to: 5000 }), 'G24: an entry with email + asset + future window is eligible (normalized {id,email,asset,from,to})');
+  ok(_waitlistEligible({ id: 'w', contact: '555-1234', asset: 'Van', from: 2000, to: 5000 }, 1000) === null, 'G24: no email -> not eligible (only a real address is auto-emailed)');
+  ok(_waitlistEligible({ id: 'w', contact: 'a@b.com', asset: '', from: 2000, to: 5000 }, 1000) === null, 'G24: an "any asset" entry -> not eligible (cannot match a specific freed slot)');
+  ok(_waitlistEligible({ id: 'w', contact: 'a@b.com', asset: 'Van', from: 200, to: 500 }, 1000) === null, 'G24: a window already in the past -> not eligible');
+  ok(_waitlistEligible({ id: 'w', contact: 'a@b.com', asset: 'Van', from: 0, to: 0 }, 1000) === null, 'G24: no dates -> not eligible (never a fuzzy "spot open")');
+  ok(_waitlistSlotFree(2000, 5000, [], 0) === true, 'G24: no active bookings -> the window is free');
+  ok(_waitlistSlotFree(2000, 5000, [{ starts: 3000, ends: 4000 }], 0) === false, 'G24: an overlapping active booking -> not free');
+  ok(_waitlistSlotFree(2000, 5000, [{ starts: 6000, ends: 7000 }], 0) === true, 'G24: a non-overlapping booking -> free');
+  ok(_waitlistSlotFree(2000, 5000, [{ starts: 5100, ends: 6000 }], 200) === false, 'G24: the turnaround buffer makes an adjacent booking overlap -> not free');
+  // worker: the cron, its wiring, the owner opt-in gate, the atomic one-shot dedup, and the marketing-class email
+  ok(/async function _runWaitlistNotify\(env, now\) \{/.test(_WORKER_SRC), 'G24: the freed-slot waitlist-notify cron exists');
+  ok(/try \{ await _runWaitlistNotify\(env, Date\.now\(\)\); \}/.test(_WORKER_SRC), 'G24: it runs each scheduled tick (best-effort, never breaks the cron)');
+  ok(/\)\.waitlist;\s+if \(!\(a && a\.on\)\) continue;/.test(_WORKER_SRC), 'G24: OWNER opt-in -- nothing sends unless settings.comms.autos.waitlist.on (default OFF)');
+  ok(/INSERT INTO waitlist_notified \(tenant_id,entry_id,notified_at\) VALUES \(\?,\?,\?\) ON CONFLICT\(tenant_id,entry_id\) DO NOTHING/.test(_WORKER_SRC), 'G24: one-shot dedup is an atomic claim in waitlist_notified (the cron never writes the owner settings blob)');
+  ok(/sendEmail\(env, \{ to: ent\.email, tenant: pr\.id, transactional: false/.test(_WORKER_SRC), 'G24: the notify email is marketing-class (suppression list + CAN-SPAM footer apply)');
+  // client: the auto toggle + the wanted-dates capture
+  ok(/\['waitlist',  'Waitlist opening',/.test(_ATLAS_SRC13R), 'G24: the Waitlist-opening auto renders in Notification settings (toggle + template)');
+  ok(/waitlist:\{ on:false, subject:'A spot opened up at \{business\}'/.test(_ATLAS_SRC13R), 'G24: the auto defaults OFF (owner opt-in)');
+  ok(/id="wlFrom"/.test(_ATLAS_SRC13R) && /id="wlTo"/.test(_ATLAS_SRC13R), 'G24: the waitlist form captures the wanted date window (used to match a freed slot)');
+  ok(_ATLAS_SRC13R === _INDEX_SRC13R, 'G24: atlas.html and index.html remain byte-identical');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
