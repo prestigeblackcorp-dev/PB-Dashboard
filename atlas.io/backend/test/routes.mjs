@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1325,7 +1325,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // C: an extension signature is backed ONLY by an 'sx' row -- a base 'sg' row's id must not satisfy x.sigId (else a staffer who signed the base agreement forges an extension Signed).
   ok(/String\(r\.id\)\.indexOf\('sx'\) === 0\)[^\n]*_sids\[String\(r\.id\)\] = /.test(_WORKER_SRC), "#cycle5-C: _stripUnbackedSig populates _sids only from 'sx' rows (a base 'sg' row cannot back an extension); value shape updated to carry the terms hash in 12k");
   // E: the signed-agreement retrieval (portal download + owner record) excludes 'sx' extension rows so the BASE rental agreement is returned, not the latest addendum.
-  ok((_WORKER_SRC.match(/FROM signatures WHERE tenant_id=\? AND booking_id=\? AND id NOT LIKE 'sx%' ORDER BY signed_at DESC LIMIT 1/g) || []).length >= 2, "#cycle5-E: both agreement-retrieval queries exclude 'sx' extension rows (base agreement, not the extension addendum)");
+  ok((_WORKER_SRC.match(/FROM signatures WHERE tenant_id=\? AND booking_id=\? AND id NOT LIKE 'sx%' AND id NOT LIKE 'cs%' ORDER BY signed_at DESC LIMIT 1/g) || []).length >= 2, "#cycle5-E + G19-fix: both base-agreement-retrieval queries exclude BOTH 'sx' extension AND 'cs' co-signer rows (so a co-signer addendum can never be mistaken for the base rental agreement)");
+  ok((_WORKER_SRC.match(/id NOT LIKE 'sx%' AND id NOT LIKE 'cs%'/g) || []).length === 3, "G19-fix: all THREE base-signature queries (_stripUnbackedSig backing-check, portal download, owner /signature record) exclude 'cs' co-signer rows -- else a real 'cs' row would back a forged base portal.signedAt (reopening the cycle-4 #5 hole for co-signers)");
 
   // ---- CYCLE-6 regression guards (build 12e): the critical regression cycle-6 caught in my own 12d fix, + the clear customer-facing money/legal fixes. ----
   // A (regression, CRITICAL): the dispute _cbKey MUST be declared BEFORE the try block -- a `let` inside try is out of scope in the paired catch, so cycle-5 declaring it INSIDE made the sentinel-delete a swallowed-ReferenceError no-op. STRUCTURAL check (text-only guards missed this): `let _cbKey` is immediately followed on the next line by the try opener.
@@ -4962,11 +4963,55 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/async function _runPendingExpire\(env, now\) \{/.test(_WORKER_SRC), 'G27: a stale-pending auto-expire cron exists');
   ok(/try \{ await _runPendingExpire\(env, Date\.now\(\)\); \}/.test(_WORKER_SRC), 'G27: it runs each scheduled tick (best-effort)');
   ok(/if \(!m\.autoExpirePending\) continue;/.test(_WORKER_SRC), 'G27: OWNER opt-in -- nothing expires unless settings.money.autoExpirePending (default OFF)');
-  ok(/if \(_qbPaidCents\(fd\) > 0 \|\| \(fd\.portal && fd\.portal\.signedAt\)\) break;/.test(_WORKER_SRC), 'G27: the CAS re-checks unpaid + unsigned INSIDE the lock -> a payment/signature landing concurrently aborts the expiry');
+  ok(/if \(_actuallyPaidCents\(fd\) > 0 \|\| \(fd\.portal && fd\.portal\.signedAt\)\) break;/.test(_WORKER_SRC), 'G27: the CAS re-checks unpaid + unsigned INSIDE the lock -> a payment/signature landing concurrently aborts the expiry (captured-only check after the audit fix)');
   ok(/UPDATE bookings SET data=\?, status='Cancelled', updated_at=\? WHERE id=\? AND tenant_id=\? AND updated_at IS \?/.test(_WORKER_SRC), 'G27: expiry writes BOTH data.status AND the status COLUMN atomically (availability + the scan stay consistent)');
   ok(/Atlas\.setMoney\('autoExpirePending',this\.checked\)/.test(_ATLAS_SRC13V) && /else if\(k==='autoExpirePending'\) m\.autoExpirePending=!!v;/.test(_ATLAS_SRC13V), 'G27: Settings>Money has the auto-expire toggle (default OFF)');
   ok(/Atlas\.setMoney\('autoExpireDays',this\.value\)/.test(_ATLAS_SRC13V), 'G27: the owner sets the abandonment window in days');
   ok(_ATLAS_SRC13V === _INDEX_SRC13V, 'G27: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13W: CRYPTO (Coinbase) platform billing + the G27/G19 audit fixes ====
+{
+  const _ATLAS_SRC13W = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13W = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // --- behavioral: _coinbaseVerify (hex HMAC-SHA256 of the raw body, timing-safe, fail-closed) ---
+  {
+    const _sec = 'shh_secret', _body = JSON.stringify({ event: { type: 'charge:confirmed', data: { code: 'ABC', metadata: { tenant: 't', billing: 'credits' } } } });
+    const _good = crypto.createHmac('sha256', _sec).update(_body).digest('hex');
+    ok((await _coinbaseVerify(_body, _good, _sec)) === true, 'crypto: a correctly-signed Coinbase webhook verifies');
+    ok((await _coinbaseVerify(_body, _good.slice(0, -2) + (_good.endsWith('00') ? 'ff' : '00'), _sec)) === false, 'crypto: a tampered signature is rejected');
+    ok((await _coinbaseVerify(_body, _good, 'wrong_secret')) === false, 'crypto: the wrong shared secret is rejected');
+    ok((await _coinbaseVerify(_body, '', _sec)) === false && (await _coinbaseVerify(_body, _good, '')) === false, 'crypto: an empty signature or empty secret fails closed');
+  }
+  // --- behavioral: _actuallyPaidCents (captured slots ONLY, NO quote-estimate fallback) -- the G27/abandoned-nudge fix ---
+  ok(_actuallyPaidCents({ quote: { totalCents: 9999 } }) === 0, 'G27-fix: a booking with a quote total but NO captured payment reads as $0 paid (the bug: _qbPaidCents fell back to the quote and read it as paid -> never expired/nudged)');
+  ok(_actuallyPaidCents({ paid: { balance: { amountCents: 5000 } } }) === 5000, 'G27-fix: a real captured slot is summed');
+  ok(_actuallyPaidCents({ paid: { security: { hold: true, amountCents: 5000 } } }) === 0, 'G27-fix: an uncaptured hold is not counted as paid');
+  ok(_actuallyPaidCents({}) === 0 && _actuallyPaidCents(null) === 0, 'G27-fix: null-safe -> 0');
+  // --- worker: the crypto helpers, endpoints, webhook, expiry cron, schema, and the cryptoEnabled signal ---
+  ok(/function _coinbaseCfg\(env\) \{ return \{ key: \(env && env\.COINBASE_COMMERCE_KEY\)/.test(_WORKER_SRC) && /async function _coinbaseCharge\(cfg, opts\) \{/.test(_WORKER_SRC), 'crypto: Coinbase config + charge helpers (inert until COINBASE_COMMERCE_KEY)');
+  ok(/if \(path === '\/api\/billing\/crypto-charge' && method === 'POST'\) \{/.test(_WORKER_SRC), 'crypto: the crypto-charge endpoint (CSRF + billing cap + rate-limit; kinds plan/credits/website)');
+  ok(/if \(path === '\/api\/coinbase-webhook' && method === 'POST'\) \{/.test(_WORKER_SRC), 'crypto: the Coinbase webhook route');
+  ok(/if \(_cbT !== 'charge:confirmed' && _cbT !== 'charge:resolved'\)/.test(_WORKER_SRC), 'crypto: the webhook acts ONLY on a fully-settled charge (confirmed/resolved)');
+  ok(/const _cbSentinel = 'cb:' \+ _ccode;/.test(_WORKER_SRC) && /recordTxn\(env, \{ livemode: 1, tenant: _ctenant/.test(_WORKER_SRC), 'crypto: idempotent via a recordTxn sentinel keyed on the charge code -> confirmed+resolved (and retries) apply once');
+  ok(/UPDATE tenants SET plan=\?, delinquent_since=NULL, tier=\?, crypto_until=\?/.test(_WORKER_SRC), 'crypto: a paid plan activates + stamps crypto_until (prepaid period); credits + website one-time mirror the Stripe grants');
+  ok(/ALTER TABLE tenants ADD COLUMN crypto_until INTEGER/.test(_WORKER_SRC), 'crypto: the crypto_until column');
+  ok(/async function _runCryptoExpiry\(env, now\) \{/.test(_WORKER_SRC) && /try \{ await _runCryptoExpiry\(env, Date\.now\(\)\); \}/.test(_WORKER_SRC), 'crypto: the prepaid-plan expiry cron is wired into scheduled()');
+  ok(/plan='past_due', delinquent_since=COALESCE\(delinquent_since,\?\)[\s\S]{0,200}\(stripe_sub IS NULL OR stripe_sub=''\) AND crypto_until/.test(_WORKER_SRC), 'crypto: expiry flips ONLY a pure-crypto lapsed plan (no stripe_sub) active->past_due -- a Stripe tenant is never touched');
+  ok((_WORKER_SRC.match(/cryptoEnabled: !!\(env && env\.COINBASE_COMMERCE_KEY\)/g) || []).length === 2, 'crypto: /api/auth/me AND /api/tenant/profile both tell the client whether crypto is enabled');
+  // --- worker: the G27 + abandoned-nudge paid-gate fix uses _actuallyPaidCents (not _qbPaidCents) ---
+  ok(/if \(_actuallyPaidCents\(fd\) > 0 \|\| \(fd\.portal && fd\.portal\.signedAt\)\) break;/.test(_WORKER_SRC), 'G27-fix: the auto-expire guard uses _actuallyPaidCents (captured-only), so a never-paid website pending actually expires');
+  ok(/const _paid = _actuallyPaidCents\(d\) > 0;/.test(_WORKER_SRC), 'G27-fix(twin): the abandoned-booking nudge uses _actuallyPaidCents too, so a never-paid website pending is actually nudged');
+  // --- worker: G19 co-signer audit fixes (cs rows excluded from base queries + cosign soft-deleted guard) ---
+  ok((_WORKER_SRC.match(/id NOT LIKE 'sx%' AND id NOT LIKE 'cs%'/g) || []).length === 3, "G19-fix: all 3 base-signature queries exclude 'cs' co-signer rows (a co-signer row can never back/mask the base agreement)");
+  ok(/if \(_csTr && _csTr\.deleted_at\) return new Response\(_pageDoc\('Unavailable'/.test(_WORKER_SRC), 'G19-fix: the co-sign route blocks a soft-deleted tenant (mirrors the renter portal 410)');
+  // --- client: crypto checkout + buttons + hydrate + return handler; G20 button-condition fix ---
+  ok(/function _cryptoCheckout\(kind,params\)\{/.test(_ATLAS_SRC13W) && /function _cryptoPlanPrompt\(tierId\)\{/.test(_ATLAS_SRC13W), 'crypto: client crypto-checkout + prepaid-plan picker');
+  ok(/_cryptoEnabled=r\[2\]\.json\.cryptoEnabled;/.test(_ATLAS_SRC13W), 'crypto: the client adopts the server cryptoEnabled flag on hydrate (buttons show only when Coinbase is connected)');
+  ok(/Atlas\._cryptoPlanPrompt\(\)/.test(_ATLAS_SRC13W) && /title="Pay with crypto" onclick="Atlas\._cryptoCheckout\(/.test(_ATLAS_SRC13W), 'crypto: a pay-with-crypto button on the plans modal + per credit pack (gated on _cryptoEnabled)');
+  ok(/if\(b==='cryptopending'\)\{ toast\('Crypto payment started/.test(_ATLAS_SRC13W), 'crypto: the return handler polls so the plan/credits reflect once the async on-chain confirmation lands');
+  ok(/\(b\.coSigners\|\|\[\]\)\.some\(function\(c\)\{return c&&c\.signedAt;\}\) \|\| \(b\.extensions\|\|\[\]\)\.some\(function\(e\)\{return e&&e\.signedAt;\}\)/.test(_ATLAS_SRC13W), 'G20-fix: the Signing-history button also shows when only a co-signer / extension signed');
+  ok(_ATLAS_SRC13W === _INDEX_SRC13W, 'crypto: atlas.html and index.html remain byte-identical');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
