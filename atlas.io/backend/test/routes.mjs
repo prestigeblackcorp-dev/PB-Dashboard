@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -5018,6 +5018,43 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if\(b==='cryptopending'\)\{ toast\('Crypto payment started/.test(_ATLAS_SRC13W), 'crypto: the return handler polls so the plan/credits reflect once the async on-chain confirmation lands');
   ok(/\(b\.coSigners\|\|\[\]\)\.some\(function\(c\)\{return c&&c\.signedAt;\}\) \|\| \(b\.extensions\|\|\[\]\)\.some\(function\(e\)\{return e&&e\.signedAt;\}\)/.test(_ATLAS_SRC13W), 'G20-fix: the Signing-history button also shows when only a co-signer / extension signed');
   ok(_ATLAS_SRC13W === _INDEX_SRC13W, 'crypto: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13X: domain buy/resell money-loss fixes (D1/D2/D3/D5/D6) + payment-manipulation hardening (PA1/PA2/P1) + KYC self-heal (K1) ====
+{
+  // --- behavioral: _coinbasePaidCents (sum ONLY confirmed/completed legs; the underpayment oracle for PA1) ---
+  ok(_coinbasePaidCents({ payments: [{ status: 'CONFIRMED', value: { local: { amount: '49.99' } } }] }) === 4999, 'PA1: a single confirmed leg sums to its cents');
+  ok(_coinbasePaidCents({ payments: [{ status: 'CONFIRMED', value: { local: { amount: '20.00' } } }, { status: 'COMPLETED', value: { local: { amount: '29.99' } } }] }) === 4999, 'PA1: multiple confirmed/completed legs sum');
+  ok(_coinbasePaidCents({ payments: [{ status: 'PENDING', value: { local: { amount: '49.99' } } }] }) === 0, 'PA1: a PENDING leg is NOT money in hand -> 0 (caller then proceeds, trusting the charge type)');
+  ok(_coinbasePaidCents({}) === 0 && _coinbasePaidCents(null) === 0, 'PA1: null/empty-safe -> 0');
+  ok(3000 < Math.floor(4999 * 0.98) && !(4900 < Math.floor(4999 * 0.98)), 'PA1: $30 of $49.99 is underpaid; $49.00 is within the 2% fx tolerance');
+  // --- D3: an unparseable/zero registrar price can never collapse the floor to $1 (both the quote and the checkout re-quote) ---
+  ok(/if \(!\(Number\(_s\.costCents\) > 0\)\) return err\(502,/.test(_WORKER_SRC), 'D3: domain checkout refuses to price when the registrar cost is unparseable (<=0) -- no $1 registration of a real-cost name');
+  ok(/reason: 'price_unavailable'/.test(_WORKER_SRC), 'D3: the quote endpoint returns available:false/price_unavailable on an unparseable price rather than a bogus $1 quote');
+  // --- D-bypass: no domain checkout at all until the registrar is connected (else a client price is taken with no server re-quote) ---
+  ok(/if \(!env\.DYNADOT_KEY\) return err\(503, 'Domain registration is not available yet\.'\);/.test(_WORKER_SRC), 'D-bypass: domain checkout is blocked until DYNADOT_KEY is set (closes the no-registrar $1 path)');
+  // --- D2: a second checkout for the SAME (tenant,domain) in any live state is blocked at the source -> no duplicate yearly sub ---
+  ok(/SELECT status FROM domains_sold WHERE tenant_id=\? AND domain=\? AND status IN \('registering','registered','pending_registrar','renew_pending'\) LIMIT 1/.test(_WORKER_SRC), 'D2: pre-checkout duplicate-domain guard (no double subscription that double-renews + double-charges)');
+  // --- D6: the webhook take-over confirms OWNERSHIP via a signed domain-info read, not _registrarSearch availability ---
+  ok(/const _info = await _ddDomainInfo\(env, md\.domain\); _already = !!\(_info && _info\.ok\);/.test(_WORKER_SRC), 'D6: take-over ownership is confirmed by a SIGNED domain-info read (never "unavailable", which a stranger could cause)');
+  // --- D1: a TRANSIENT registrar outcome HOLDS (pending_registrar) + ownership re-check; only a definitive 4xx refunds ---
+  ok(/var _regTransient = \(!_reg\.code \|\| \/\^5\/\.test\(String\(_reg\.code\)\) \|\| String\(_reg\.code\) === '429' \|\| _reg\.reason === 'error' \|\| _reg\.reason === 'no_secret'\);/.test(_WORKER_SRC), 'D1: the register-fail classifier distinguishes a transient blip from a definitive 4xx (mirror the renewal _rnTransient rule)');
+  ok(/await audit\(env, \{ tenant_id: md\.tenant \}, req, 'domain\.registered', \{ domain: md\.domain, via: 'post_error_ownership_confirm' \}\)/.test(_WORKER_SRC), 'D1: a register that actually succeeded despite a transient error is finished as registered (ownership-confirmed), never refunded');
+  ok(/await audit\(env, \{ tenant_id: md\.tenant \}, req, 'domain\.register_pending'/.test(_WORKER_SRC), 'D1: a genuinely-unknown transient outcome HOLDS as pending_registrar (payment stands, no refund), handed to the retry sweep');
+  // --- D5: the register/renew retry sweep is defined + wired; it never refunds a transient; a definitive renew fail alerts the owner ---
+  ok(/async function _runDomainRetrySweep\(env, now\) \{/.test(_WORKER_SRC) && /if \(await _due\(env, 'domain_retry', 3600000\)\) await _runDomainRetrySweep\(env, Date\.now\(\)\)/.test(_WORKER_SRC), 'D5: the domain retry sweep is wired into scheduled() (gated ~1h)');
+  ok(/UPDATE domains_sold SET status='registered' WHERE id=\? AND status='pending_registrar'/.test(_WORKER_SRC) && /UPDATE domains_sold SET status='renew_failed' WHERE id=\? AND status='renew_pending'/.test(_WORKER_SRC), 'D5: the sweep finishes a pending registration and marks a definitively-failed renewal renew_failed (status-guarded, no double-apply)');
+  // --- PA1: the crypto webhook blocks an UNDERPAID charge (resolved underpayments) before granting; alerts the owner ---
+  ok(/const _cpaid = _coinbasePaidCents\(_chg\);/.test(_WORKER_SRC) && /if \(_cgross > 0 && _cpaid > 0 && _cpaid < Math\.floor\(_cgross \* 0\.98\)\) \{/.test(_WORKER_SRC), 'PA1: the Coinbase webhook compares ACTUAL paid vs requested and blocks an underpayment (no full entitlement for a short crypto payment)');
+  ok(/kind: 'crypto_underpaid'/.test(_WORKER_SRC) && /return json\(\{ ok: true, underpaid: true \}, 200\);/.test(_WORKER_SRC), 'PA1: an underpaid crypto charge is recorded + the grant sentinel is NOT claimed (a later top-up can still grant), and the owner is alerted');
+  // --- PA2: a card subscription is blocked while crypto-prepaid time is active -> no double-charge (mirror of the crypto-side guard) ---
+  ok(/if \(_cuN > Date\.now\(\)\) return err\(409, 'Your plan is prepaid with crypto through '/.test(_WORKER_SRC), 'PA2: Stripe plan/trial checkout is blocked while crypto_until is active (symmetric with the crypto-charge guard against an existing card sub)');
+  // --- P1: the PayPal /return AND reconcile both refuse a short-pay (the reconcile branch was missing it; Stripe/Square had it) ---
+  ok(/await audit\(env, \{ tenant_id: _pbrow\.tenant_id \}, req, 'paypal\.short_pay'/.test(_WORKER_SRC), 'P1: the PayPal /return refuses to credit a capture below the amount bound at creation (symmetric with the Square /return short-pay guard)');
+  ok(/'paypal\.reconcile_shortpay'/.test(_WORKER_SRC), 'P1: the PayPal reconcile sweep ALSO refuses a short-pay (it was the one credit path missing the guard the Stripe/Square sweeps had)');
+  // --- K1: the Stripe Identity reconcile sweep finalizes a verification whose /idvstatus poll never completed (KYC self-heal) ---
+  ok(/async function _runIdvReconcile\(env, now\) \{/.test(_WORKER_SRC) && /if \(await _due\(env, 'idv_reconcile', 1800000\)\) await _runIdvReconcile\(env, Date\.now\(\)\)/.test(_WORKER_SRC), 'K1: the KYC reconcile sweep is wired into scheduled() (gated ~30 min) so verification lands even if the renter closed the tab');
+  ok(/await audit\(env, \{ tenant_id: tid \}, null, 'portal\.idv_verified', \{ booking: brow\.id, via: 'reconcile' \}\)/.test(_WORKER_SRC), 'K1: the reconcile marks the booking verified + carries it forward via the SAME trusted path as the /idvstatus poll');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
