@@ -4920,5 +4920,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13R === _INDEX_SRC13R, 'G24: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13S: G31 -- editable dispute REBUTTAL / cover letter (templated + deterministic; complements the evidence report) ====
+{
+  const _ATLAS_SRC13S = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13S = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/function bkRebuttalLetter\(id\)\{/.test(_ATLAS_SRC13S), 'G31: a dispute-rebuttal letter generator builds the draft from the booking facts');
+  ok(/Re: Response to Disputed Transaction - Reference '\+\(b\.id/.test(_ATLAS_SRC13S), 'G31: the letter references the disputed transaction by booking id');
+  ok(/The cardholder electronically signed our rental agreement on '\+_stamp\(p\.signedAt\)/.test(_ATLAS_SRC13S), 'G31: it states authorization (signed-agreement time/IP/fingerprint) only when a signature exists -- never fabricated');
+  ok(/function _rebutCopy\(\)\{/.test(_ATLAS_SRC13S) && /function _rebutPrint\(ref\)\{/.test(_ATLAS_SRC13S), 'G31: the owner can copy the edited letter or open a printable version');
+  ok(/Atlas\.bkRebuttalLetter\(/.test(_ATLAS_SRC13S), 'G31: a "Dispute rebuttal letter" button is wired beside the evidence report');
+  ok(_ATLAS_SRC13S === _INDEX_SRC13S, 'G31: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
