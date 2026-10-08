@@ -4932,5 +4932,23 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13S === _INDEX_SRC13S, 'G31: atlas.html and index.html remain byte-identical');
 }
 
+// ==== 13U: G32 -- orphan dispute recovery (a chargeback the webhook could not auto-link to a booking) ====
+{
+  const _ATLAS_SRC13U = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13U = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // worker: the orphan table, the additive webhook persist, the 3 owner endpoints, and the SAME idempotent sentinel + shared slot-math the webhook uses
+  ok(/CREATE TABLE IF NOT EXISTS dispute_orphans /.test(_WORKER_SRC), 'G32: an orphan-dispute table persists an unmatched chargeback');
+  ok(/else if \(_dAmt > 0 && _dTn && !_dBk\) \{/.test(_WORKER_SRC), 'G32: the dispute webhook records an orphan ONLY when the tenant is known but no booking could be resolved (the decrement path above is untouched)');
+  ok(/INSERT INTO dispute_orphans \(tenant_id,dispute_id,amount_cents,reason,pi,charge,kind,created_at,resolved_at,booking_id\)/.test(_WORKER_SRC), 'G32: the orphan is recorded with its dispute id, amount, reason, PI/charge and kind');
+  ok(/path === '\/api\/disputes\/orphans' && method === 'GET'/.test(_WORKER_SRC), 'G32: an owner endpoint lists unresolved orphan disputes (bookEdit-gated, tenant-scoped)');
+  ok(/path === '\/api\/disputes\/link' && method === 'POST'/.test(_WORKER_SRC) && /path === '\/api\/disputes\/dismiss' && method === 'POST'/.test(_WORKER_SRC), 'G32: owner endpoints link an orphan to a booking or dismiss it (both CSRF-gated)');
+  ok(/const _sentinel = 'cbrev:' \+ _did;/.test(_WORKER_SRC), 'G32: linking applies the revenue decrement under the SAME cbrev:<disputeId> sentinel the webhook uses -> a double-link or a late auto-map never double-counts');
+  ok(/_applied = _slot \? _disputeApplyToSlot\(_slot, _did, _amt,/.test(_WORKER_SRC), 'G32: the decrement reuses the shared, proven _disputeApplyToSlot slot-math (caps at what the slot still holds)');
+  // client: the review modal, link/dismiss actions, and the bell surfacing
+  ok(/function bkOrphanDisputes\(\)\{/.test(_ATLAS_SRC13U) && /function _orphanLink\(did\)\{/.test(_ATLAS_SRC13U) && /function _orphanDismiss\(did\)\{/.test(_ATLAS_SRC13U), 'G32: the owner can review, link (with a confirm showing the booking) and dismiss unmatched disputes');
+  ok(/fn:'bkOrphanDisputes'/.test(_ATLAS_SRC13U), 'G32: unmatched disputes surface as an actionable item in the notification bell');
+  ok(_ATLAS_SRC13U === _INDEX_SRC13U, 'G32: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
