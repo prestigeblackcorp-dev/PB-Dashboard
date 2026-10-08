@@ -5038,14 +5038,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // --- D6: the webhook take-over confirms OWNERSHIP via a signed domain-info read, not _registrarSearch availability ---
   ok(/const _info = await _ddDomainInfo\(env, md\.domain\); _already = !!\(_info && _info\.ok\);/.test(_WORKER_SRC), 'D6: take-over ownership is confirmed by a SIGNED domain-info read (never "unavailable", which a stranger could cause)');
   // --- D1: a TRANSIENT registrar outcome HOLDS (pending_registrar) + ownership re-check; only a definitive 4xx refunds ---
-  ok(/var _regTransient = \(!_reg\.code \|\| \/\^5\/\.test\(String\(_reg\.code\)\) \|\| String\(_reg\.code\) === '429' \|\| _reg\.reason === 'error' \|\| _reg\.reason === 'no_secret'\);/.test(_WORKER_SRC), 'D1: the register-fail classifier distinguishes a transient blip from a definitive 4xx (mirror the renewal _rnTransient rule)');
+  ok(/var _regTransient = _regAlready \|\| \(!_reg\.code \|\| \/\^5\/\.test\(String\(_reg\.code\)\) \|\| String\(_reg\.code\) === '429' \|\| _reg\.reason === 'error' \|\| _reg\.reason === 'no_secret'\);/.test(_WORKER_SRC), 'D1: the register-fail classifier distinguishes a transient blip (incl. already-registered, F3) from a definitive 4xx (mirror the renewal _rnTransient rule)');
   ok(/await audit\(env, \{ tenant_id: md\.tenant \}, req, 'domain\.registered', \{ domain: md\.domain, via: 'post_error_ownership_confirm' \}\)/.test(_WORKER_SRC), 'D1: a register that actually succeeded despite a transient error is finished as registered (ownership-confirmed), never refunded');
   ok(/await audit\(env, \{ tenant_id: md\.tenant \}, req, 'domain\.register_pending'/.test(_WORKER_SRC), 'D1: a genuinely-unknown transient outcome HOLDS as pending_registrar (payment stands, no refund), handed to the retry sweep');
   // --- D5: the register/renew retry sweep is defined + wired; it never refunds a transient; a definitive renew fail alerts the owner ---
   ok(/async function _runDomainRetrySweep\(env, now\) \{/.test(_WORKER_SRC) && /if \(await _due\(env, 'domain_retry', 3600000\)\) await _runDomainRetrySweep\(env, Date\.now\(\)\)/.test(_WORKER_SRC), 'D5: the domain retry sweep is wired into scheduled() (gated ~1h)');
   ok(/UPDATE domains_sold SET status='registered' WHERE id=\? AND status='pending_registrar'/.test(_WORKER_SRC) && /UPDATE domains_sold SET status='renew_failed' WHERE id=\? AND status='renew_pending'/.test(_WORKER_SRC), 'D5: the sweep finishes a pending registration and marks a definitively-failed renewal renew_failed (status-guarded, no double-apply)');
   // --- PA1: the crypto webhook blocks an UNDERPAID charge (resolved underpayments) before granting; alerts the owner ---
-  ok(/const _cpaid = _coinbasePaidCents\(_chg\);/.test(_WORKER_SRC) && /if \(_cgross > 0 && _cpaid > 0 && _cpaid < Math\.floor\(_cgross \* 0\.98\)\) \{/.test(_WORKER_SRC), 'PA1: the Coinbase webhook compares ACTUAL paid vs requested and blocks an underpayment (no full entitlement for a short crypto payment)');
+  ok(/const _cpaid = _coinbasePaidCents\(_chg\);/.test(_WORKER_SRC) && /if \(_cResolvedBlind \|\| \(_cgross > 0 && _cpaid > 0 && _cpaid < \(_cgross - _cTol\)\)\) \{/.test(_WORKER_SRC), 'PA1: the Coinbase webhook compares ACTUAL paid vs requested and blocks an underpayment (no full entitlement for a short crypto payment)');
   ok(/kind: 'crypto_underpaid'/.test(_WORKER_SRC) && /return json\(\{ ok: true, underpaid: true \}, 200\);/.test(_WORKER_SRC), 'PA1: an underpaid crypto charge is recorded + the grant sentinel is NOT claimed (a later top-up can still grant), and the owner is alerted');
   // --- PA2: a card subscription is blocked while crypto-prepaid time is active -> no double-charge (mirror of the crypto-side guard) ---
   ok(/if \(_cuN > Date\.now\(\)\) return err\(409, 'Your plan is prepaid with crypto through '/.test(_WORKER_SRC), 'PA2: Stripe plan/trial checkout is blocked while crypto_until is active (symmetric with the crypto-charge guard against an existing card sub)');
@@ -5073,6 +5073,29 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/onclick="Atlas\.bkIdvNudge\(/.test(_ATLAS_SRC13Y) && /function bkIdvNudge\(id\)\{/.test(_ATLAS_SRC13Y), 'K2: the card has an Ask-to-verify / Resend-verify-link button wired to bkIdvNudge');
   ok(/bkPortalLink,bkPortalRevoke,bkIdvNudge,bkExtendFlow,/.test(_ATLAS_SRC13Y), 'K2: bkIdvNudge is exported on the Atlas API object');
   ok(_ATLAS_SRC13Y === _INDEX_SRC13Y, 'K2/K3: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13Z: full-system audit remediation -- domain F1/F2/F3 + KYC G1/G2/G3/G4 + crypto L1/L2 (adversarial re-audit of 14p/14q) ====
+{
+  // Domain F1: a 2nd distinct subscription for a domain already owned/held is refunded+cancelled, never silently kept (double-charge)
+  ok(/'domain\.duplicate_refunded'/.test(_WORKER_SRC) && /String\(_exd2\.stripe_sub \|\| ''\) !== String\(obj\.subscription\)/.test(_WORKER_SRC), 'D-F1: a duplicate domain subscription (different sub, same name) is refunded+cancelled in the webhook dedup branch, not silently kept');
+  // Domain F2: a dead prior order (canceling/canceled/renew_failed) is CAS-revived on a legitimate re-buy (D2 does not block those states)
+  ok(/const _exTerminal = _ex && \(_ex\.status === 'canceling'/.test(_WORKER_SRC) && /UPDATE domains_sold SET status='registering'[\s\S]{0,200}WHERE id=\? AND status IN \('canceling','canceled','renew_failed'\)/.test(_WORKER_SRC), 'D-F2: re-buying a cancelled/lapsed domain revives the row (status-guarded CAS) instead of stranding the payment');
+  // Domain F3: an "already registered/taken" rejection is NON-definitive (hold), never a refund+delete of a possibly-owned name -- webhook + sweep
+  ok((_WORKER_SRC.split("already|registered|taken|exist|unavailable").length - 1) >= 2, 'D-F3: both the webhook and the retry-sweep treat an already-registered/taken registrar rejection as transient-hold (never auto-refund a name we may own)');
+  // KYC G1: both finalize paths bind the Stripe session to THIS booking via metadata before applying verified
+  ok((_WORKER_SRC.match(/portal\.idv_session_mismatch/g) || []).length === 2, 'K-G1: /idvstatus AND the reconcile sweep both reject a verified session whose metadata.booking/tenant does not match this booking (anti session-id injection)');
+  ok(/String\(_vm\.booking \|\| ''\) !== String\(brow\.id\)/.test(_WORKER_SRC), 'K-G1: the session-binding compares metadata.booking to this booking id');
+  // KYC G2: the reconcile sweep handles any non-terminal Stripe idv (requires_input/requires_action), skipping only terminal local states
+  ok(/_rst === 'verified' \|\| _rst === 'canceled'\) continue;/.test(_WORKER_SRC), 'K-G2: the reconcile sweep no longer requires local status==processing (catches a completed-after-requires_input session)');
+  // KYC G3: only a TRUSTED Stripe completion advances verified_at; an untrusted re-booking carry only ratchets dl_expiry
+  ok(/if \(opts && opts\.trusted\) \{/.test(_WORKER_SRC) && /verified_customers\.name\), dl_expiry=MAX/.test(_WORKER_SRC), 'K-G3: an untrusted re-booking carry never advances verified_at (the annual re-verify cap stays real for unknown-expiry IDs)');
+  // KYC G4: the reconcile re-reads idVerified just before applying (no duplicate owner email on a race with /idvstatus)
+  ok(/if \(_fresh && \(jparse\(_fresh\.data, \{\}\) \|\| \{\}\)\.idVerified\) continue;/.test(_WORKER_SRC), 'K-G4: the reconcile skips a booking a racing /idvstatus poll already finalized');
+  // Crypto L1: the underpayment tolerance is capped at an absolute $5 (not a pure 2% that would allow hundreds on a large prepay)
+  ok(/const _cTol = Math\.min\(Math\.round\(_cgross \* 0\.02\), 500\);/.test(_WORKER_SRC) && /_cpaid < \(_cgross - _cTol\)/.test(_WORKER_SRC), 'C-L1: crypto underpayment tolerance = min(2%, $5)');
+  // Crypto L2: a manually-resolved charge whose paid amount is unparseable does not auto-grant
+  ok(/const _cResolvedBlind = \(_cbT === 'charge:resolved' && _cpaid <= 0 && _cgross > 0\);/.test(_WORKER_SRC), 'C-L2: charge:resolved with an unverifiable paid amount is blocked, not auto-granted');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
