@@ -4757,6 +4757,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/\|idvstart\|idvstatus\|gift\|review\|push\|selfextend\)/.test(_WORKER_SRC), 'G19 / 13C fix: the portal route regex includes push (the renter web-push subscribe was unreachable until now) + selfextend (G38)');
   // CLIENT source: the owner booking-view co-signer UI.
   ok(/function bkAddCoSigner\(id\)\{/.test(_ATLAS_SRC13G) && /function _coSignersHtml\(b\)\{/.test(_ATLAS_SRC13G), 'G19: owner booking view -- add a co-signer + per-co-signer status / copy-link / remove');
+  ok(/function _bkCoSignerSubmit\(id\)\{/.test(_ATLAS_SRC13G) && /onclick="Atlas\._bkCoSignerSubmit\(/.test(_ATLAS_SRC13G), 'G19 (in-app test fix): bkAddCoSigner uses a proper modal form (csName/csEmail) + _bkCoSignerSubmit -- NOT window.prompt(), which is blocked in sandboxed iframes + native webviews');
+  ok(!/function bkAddCoSigner\(id\)\{ if\(!_guard\('bookEdit'\)\)return; var nm=prompt\(/.test(_ATLAS_SRC13G), 'G19 (in-app test fix): the co-signer add no longer calls window.prompt()');
   ok(_ATLAS_SRC13G === _INDEX_SRC13G, 'G19: atlas.html and index.html remain byte-identical');
 }
 
