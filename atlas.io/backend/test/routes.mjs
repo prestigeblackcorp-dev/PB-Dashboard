@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -4948,6 +4948,25 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/function bkOrphanDisputes\(\)\{/.test(_ATLAS_SRC13U) && /function _orphanLink\(did\)\{/.test(_ATLAS_SRC13U) && /function _orphanDismiss\(did\)\{/.test(_ATLAS_SRC13U), 'G32: the owner can review, link (with a confirm showing the booking) and dismiss unmatched disputes');
   ok(/fn:'bkOrphanDisputes'/.test(_ATLAS_SRC13U), 'G32: unmatched disputes surface as an actionable item in the notification bell');
   ok(_ATLAS_SRC13U === _INDEX_SRC13U, 'G32: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13V: G27 -- auto-expire stale PENDING bookings (owner opt-in, default OFF; pending never holds a slot -> pure cleanup) ====
+{
+  const _ATLAS_SRC13V = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13V = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  const _NOW = 1000000000000, _D = 86400000;
+  ok(_pendingExpired(_NOW - 20 * _D, _NOW, 14) === true, 'G27: a pending booking older than the window expires');
+  ok(_pendingExpired(_NOW - 10 * _D, _NOW, 14) === false, 'G27: one younger than the window does not');
+  ok(_pendingExpired(_NOW - 4 * _D, _NOW, 1) === true, 'G27: the window is clamped to a 3-day minimum (days=1 -> 3)');
+  ok(_pendingExpired(0, _NOW, 14) === false, 'G27: a booking with no created_at never expires');
+  ok(/async function _runPendingExpire\(env, now\) \{/.test(_WORKER_SRC), 'G27: a stale-pending auto-expire cron exists');
+  ok(/try \{ await _runPendingExpire\(env, Date\.now\(\)\); \}/.test(_WORKER_SRC), 'G27: it runs each scheduled tick (best-effort)');
+  ok(/if \(!m\.autoExpirePending\) continue;/.test(_WORKER_SRC), 'G27: OWNER opt-in -- nothing expires unless settings.money.autoExpirePending (default OFF)');
+  ok(/if \(_qbPaidCents\(fd\) > 0 \|\| \(fd\.portal && fd\.portal\.signedAt\)\) break;/.test(_WORKER_SRC), 'G27: the CAS re-checks unpaid + unsigned INSIDE the lock -> a payment/signature landing concurrently aborts the expiry');
+  ok(/UPDATE bookings SET data=\?, status='Cancelled', updated_at=\? WHERE id=\? AND tenant_id=\? AND updated_at IS \?/.test(_WORKER_SRC), 'G27: expiry writes BOTH data.status AND the status COLUMN atomically (availability + the scan stay consistent)');
+  ok(/Atlas\.setMoney\('autoExpirePending',this\.checked\)/.test(_ATLAS_SRC13V) && /else if\(k==='autoExpirePending'\) m\.autoExpirePending=!!v;/.test(_ATLAS_SRC13V), 'G27: Settings>Money has the auto-expire toggle (default OFF)');
+  ok(/Atlas\.setMoney\('autoExpireDays',this\.value\)/.test(_ATLAS_SRC13V), 'G27: the owner sets the abandonment window in days');
+  ok(_ATLAS_SRC13V === _INDEX_SRC13V, 'G27: atlas.html and index.html remain byte-identical');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
