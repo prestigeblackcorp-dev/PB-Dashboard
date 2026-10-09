@@ -966,7 +966,7 @@ async function _downloadSignedContractPdf(rootEl, fname){
 // copy. The live signing flow keeps using its own inline fill (untouched), so this can NEVER affect
 // signing. KEEP IN SYNC: if you add a template placeholder to _initSigningMode's fill, add it here too.
 // Returns the filled template HTML, or '' if there is no template.
-function _isSlingFullDay(bk){ return !!(bk && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event'].indexOf(String(bk.type||'').toLowerCase())===-1); }
+function _isSlingFullDay(bk){ return !!(bk && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event','lease'].indexOf(String(bk.type||'').toLowerCase())===-1); }
 // Slingshot FULL-DAY docs carry BOTH signatures (waiver + rental agreement) on EVERY doc, at the primary sig spot.
 function _bothSigsHtml(bk, isWv){
   var _flt = isWv ? '' : 'invert(1)';   // dark rental-agreement needs inverted ink; light waiver renders as-is
@@ -1265,7 +1265,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     // Slingshot FULL-DAY rentals sign TWO docs consecutively -- the WAIVER first, then the CONTRACT. docType is
     // explicit ('waiver'/'contract') on the chained 2nd step; otherwise default to the waiver first (if unsigned)
     // for the primary renter. Every other vehicle + Slingshot hourly + drivers stay on 'contract' (unchanged).
-    var _slingFullDay = !_isDriver && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event'].indexOf(String(bk.type||'').toLowerCase())===-1;
+    var _slingFullDay = !_isDriver && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event','lease'].indexOf(String(bk.type||'').toLowerCase())===-1;
     var _waiverSigned = !!(bk.waiverSig && String(bk.waiverSig).indexOf('data:image/')===0);
     var _dt = (docType==='waiver'||docType==='contract') ? docType : ((_slingFullDay && !_waiverSigned) ? 'waiver' : 'contract');
     document.getElementById('sign-tag').textContent = _isDriver ? 'Additional Driver Agreement' : (_dt==='waiver' ? 'Liability Waiver' : 'Rental Agreement');
@@ -1472,7 +1472,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     }
     window._smData = data;
     _smInitCanvas();
-    if(bk.type==='lease'){ try{ _pbLeaseAckSetup(bk); }catch(e){} }
+    if(bk.type==='lease' && _smDriverIdx===null){ try{ _pbLeaseAckSetup(bk); }catch(e){} }   // initials are lessee(primary)-only; an authorized driver skips the walk
 
     // Sticky bar
     var _sb = document.createElement('div');
@@ -1827,7 +1827,7 @@ function _pbLeaseFill(tmpl, bk, liveSign){
   var term=Number(bk.leaseTerm)||12, down=Number(bk.leaseDown)||0, monthly=Number(bk.leaseMonthly)||0;
   var deposit=Number(bk.leaseDeposit!=null?bk.leaseDeposit:bk.deposit)||0;
   var miles=Number(bk.leaseMiles)|| (term*1250), over=Number(bk.leaseOverage)||0.5;
-  var total=Number(bk.leaseTotal)|| (down+monthly*term);
+  var total=(Number(bk.revenue)>0)?Number(bk.revenue):(Number(bk.leaseTotal)|| (down+monthly*term));   // revenue includes one-time add-ons; keeps {{total_lease}} == the breakdown Lease Total
   var startS=fd(bk.pickupDate||bk.date||''), endS=fd(bk.dropoffDate||'');
   var ini=liveSign?'':(bk.leaseInitials?String(bk.leaseInitials).toUpperCase().slice(0,6):'');
   function R(re,val){ tmpl=tmpl.replace(re,function(){return val;}); }
@@ -1869,7 +1869,7 @@ function _pbLeaseAckSetup(bk){
       '<div style="font-size:15px;font-weight:800;color:#C9A962;margin-bottom:4px">Review &amp; Initial - Required Before Signing</div>'+
       '<div style="font-size:12px;color:rgba(255,255,255,.55);margin-bottom:12px;line-height:1.5">This is a binding motor-vehicle lease. You must review and initial <strong style="color:#fff">4 key sections</strong>. We will scroll you to each one in the agreement above.</div>'+
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px"><label style="font-size:12px;color:rgba(255,255,255,.7)">Your initials:</label>'+
-      '<input id="pbIniInput" type="text" maxlength="5" value="'+di+'" style="width:84px;padding:7px 10px;border:1px solid rgba(201,169,98,.5);border-radius:8px;background:#0e0e12;color:#C9A962;font-weight:800;font-size:15px;text-align:center;letter-spacing:.08em;text-transform:uppercase"></div>'+
+      '<input id="pbIniInput" type="text" maxlength="6" value="'+di+'" style="width:84px;padding:7px 10px;border:1px solid rgba(201,169,98,.5);border-radius:8px;background:#0e0e12;color:#C9A962;font-weight:800;font-size:15px;text-align:center;letter-spacing:.08em;text-transform:uppercase"></div>'+
       '<div id="pbIniProgress" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>'+
       '<button id="pbIniBtn" onclick="_pbIniBegin()" style="padding:11px 24px;border:none;border-radius:10px;background:#C9A962;color:#000;font-weight:800;font-size:15px;cursor:pointer;width:100%;max-width:340px">Begin - Take Me to Section 1</button>'+
       '<div id="pbIniHint" style="font-size:12px;color:rgba(255,255,255,.45);margin-top:10px"></div>';
@@ -2016,7 +2016,7 @@ function _smSubmitSig(bookingId, driverIdx, docType){
             if(_lb){ if(docType==='waiver'){ _lb.waiverSig=sig; _lb.waiverSigDate=sigDate; } else { _lb.customerSig=sig; _lb.customerSigDate=sigDate; } }
           }
           // Slingshot full-day: after the WAIVER, immediately continue to the CONTRACT (consecutive signing).
-          if(docType==='waiver' && _freshBk && _freshBk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event'].indexOf(String(_freshBk.type||'').toLowerCase())===-1){
+          if(docType==='waiver' && _freshBk && _freshBk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event','lease'].indexOf(String(_freshBk.type||'').toLowerCase())===-1){
             document.getElementById('signing-body').innerHTML = '<div style="text-align:center;padding:40px"><div style="font-size:48px;margin-bottom:12px">\u2705</div><div style="font-size:18px;font-weight:800;color:#22c55e;margin-bottom:8px">Waiver signed!</div><div style="color:rgba(255,255,255,.6);font-size:14px">Now review and sign your Rental Agreement\u2026</div></div>';
             var _sbw=document.getElementById('smStickyBar'); if(_sbw) _sbw.remove();
             setTimeout(function(){ _initSigningMode(bookingId, null, _smFromPortal, 'contract'); }, 950);
@@ -2484,7 +2484,7 @@ function renderContractTab(){
   var html = '';
   bks.forEach(function(b){
     var alreadySigned = _isSig(b.customerSig);
-    var _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day = waiver + rental agreement
+    var _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event','lease'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day = waiver + rental agreement
     var _wSig = _isSig(b.waiverSig);
     var _drvs = (b.extraDrivers||[]).filter(function(d){ return d && d.name && d.status !== 'denied'; });   // a denied driver is not a party -> doesn't block "fully signed"
     var _pendingDrv = _drvs.filter(function(d){ return !_isSig(d.sig); }).length;
@@ -2918,7 +2918,7 @@ function showSignContract(b){
   if(['cancelled'].includes(s)) return '';
   // Only show if contract has been sent by admin
   if(!b.contractSent) return '';
-  const _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day signs waiver + agreement
+  const _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event','lease'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day signs waiver + agreement
   const _wSig = b.waiverSig && String(b.waiverSig).startsWith('data:image/');
   const _cSig = b.customerSig && b.customerSig.startsWith('data:image/');
   const alreadySigned = _cSig && (!_sfd || _wSig);   // Slingshot full-day needs BOTH docs signed

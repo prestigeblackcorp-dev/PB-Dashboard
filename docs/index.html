@@ -1715,6 +1715,11 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
         <div id="custSigSignerRow" style="display:none;margin-bottom:8px;font-size:12px;font-weight:700;color:var(--gold)">&#9997; Signing as:
           <select id="custSigSigner" class="finput" style="width:auto;display:inline-block;margin-left:6px;font-weight:700" onchange="_onSigSignerChange()"></select>
         </div>
+        <div id="custLeaseIniRow" style="display:none;margin-bottom:10px;padding:9px 11px;background:rgba(201,169,98,.06);border:1px solid var(--gold-dim);border-radius:9px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:5px">Lease acknowledgment &#8212; the lessee initials the 4 key clauses (Insurance, No-Ownership, AS-IS, Liability). Required to sign a lease.</div>
+          <label style="font-size:12px;color:var(--text);font-weight:700">Lessee initials:
+            <input id="custLeaseIni" type="text" maxlength="6" style="width:84px;margin-left:6px;padding:6px 9px;border:1px solid var(--gold-dim);border-radius:7px;background:#0e0e12;color:#C9A962;font-weight:800;text-align:center;letter-spacing:.08em;text-transform:uppercase"></label>
+        </div>
         <canvas id="custSigCanvas" width="480" height="110" style="width:100%;max-width:480px;height:110px;border:1px dashed var(--border);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block"></canvas>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
           <button class="btn btn-sm" onclick="clearCustSig()">&#10005; Clear</button>
@@ -2600,7 +2605,7 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
       <div id="maintConflictWarning" style="display:none;grid-column:1/-1;background:rgba(255,200,0,.08);border:1px solid rgba(255,200,0,.35);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7"></div>
       <div id="pricingRuleWarn" style="display:none;grid-column:1/-1;background:rgba(201,169,98,.09);border:1px solid rgba(201,169,98,.4);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7;color:var(--text)"></div>
       <div class="fgroup"><div class="flabel">Booking Type</div>
-        <select class="finput" id="fType" onchange="toggleEventFields();toggleLeaseFields();checkSlingshotHourly();onVehicleChange();autoFillDropoff();updateDurationLabel();updateBrokerCalc();updateLiveTotal();updateWeekdayDiscountHint()">
+        <select class="finput" id="fType" onchange="_pbClearMoneyManual();toggleEventFields();toggleLeaseFields();checkSlingshotHourly();onVehicleChange();autoFillDropoff();updateDurationLabel();updateBrokerCalc();updateLiveTotal();updateWeekdayDiscountHint()">
           <option value="daily">Daily Rental</option>
           <option value="hourly">Hourly Booking</option>
           <option value="chauffeur">Chauffeur Service</option>
@@ -4297,7 +4302,11 @@ function recomputeLease(){
   if(p){
     // pre-fill down + monthly + deposit + miles + overage from the preset unless the owner hand-edited them
     if(dnEl && !dnEl._manual) dnEl.value = p.d;
-    if(moEl && !moEl._manual) moEl.value = Math.round(p.b - p.d/term);
+    // monthly derives from the CURRENT (entered) down, min-clamped to the preset -- so raising the down lowers
+    // the monthly by down/term (blended take stays p.b), matching the storefront + Fleet calculator. Was
+    // Math.round(p.b - p.d/term), which ignored the entered down and wrongly inflated the total on more-down.
+    var _downNow = dnEl ? Math.max(parseFloat(dnEl.value)||0, p.d) : p.d;
+    if(moEl && !moEl._manual) moEl.value = Math.round(p.b - _downNow/term);
     if($d('fDeposit') && !$d('fDeposit')._manual) $d('fDeposit').value = p.dep;
     if($d('fIncludedMiles') && !$d('fIncludedMiles')._manual) $d('fIncludedMiles').value = 1250*term;
     if($d('fOverageRate') && !$d('fOverageRate')._manual) $d('fOverageRate').value = (PB_LEASE_OVERAGE[term]!=null?PB_LEASE_OVERAGE[term]:0.5);
@@ -4307,11 +4316,23 @@ function recomputeLease(){
   var dep = parseFloat(($d('fDeposit')&&$d('fDeposit').value)||0)||0;
   var miles = parseFloat(($d('fIncludedMiles')&&$d('fIncludedMiles').value)||0)||0;
   var over = parseFloat(($d('fOverageRate')&&$d('fOverageRate').value)||0)||0;
-  var total = down + monthly*term;          // total lease value (down + monthly x term)
-  var startDue = down + dep + monthly;      // due at signing = down + deposit + first month
+  // One-time add-ons (delivery/photo/etc.) fold into the lease total + due-at-signing; the monthly schedule
+  // (balance) stays monthly*term, so add-ons are collected upfront and still counted in revenue.
+  var _laddon = (parseFloat(($d('fDelivery')&&$d('fDelivery').value)||0)||0)
+    + (parseFloat(($d('fPet')&&$d('fPet').value)||0)||0)
+    + (parseFloat(($d('fPhoto')&&$d('fPhoto').value)||0)||0)
+    + (parseFloat(($d('fChampagne')&&$d('fChampagne').value)||0)||0)
+    + (parseFloat(($d('fRedCarpet')&&$d('fRedCarpet').value)||0)||0)
+    + (parseFloat(($d('fDecor')&&$d('fDecor').value)||0)||0)
+    + (parseFloat(($d('fBouquet')&&$d('fBouquet').value)||0)||0);
+  var total = down + monthly*term + _laddon;   // total lease value (down + monthly x term + one-time add-ons)
+  var startDue = down + dep + monthly + _laddon;  // due at signing = down + deposit + first month + add-ons
   if($d('fRevenue') && !$d('fRevenue')._manual) $d('fRevenue').value = total;
   if($d('fDateLock')) $d('fDateLock').value = 0;   // no date-lock on a lease; down is tracked as leaseDown
-  if($d('fRemainingBalance')){ $d('fRemainingBalance').value = Math.round(monthly*term); $d('fRemainingBalance')._manual = true; }  // monthlies to collect
+  // Balance = monthly schedule. On a NEW lease (or term/monthly change while creating) set it; when EDITING an
+  // existing lease PRESERVE the stored drawn-down balance (repopulation marked it _manual) so collected monthly
+  // payments are never wiped by a routine edit (e.g. fixing a phone number). editingId is null only while adding.
+  if($d('fRemainingBalance')){ var _rbEl=$d('fRemainingBalance'); if(!_rbEl._manual || !editingId){ _rbEl.value = Math.round(monthly*term); } _rbEl._manual = true; }
   var pk = $d('fPickupDate') && $d('fPickupDate').value;
   if(pk && $d('fDropoffDate') && !$d('fDropoffDate')._manual){
     var dd = new Date(pk+'T12:00:00'); if(!isNaN(dd.getTime())){ dd.setMonth(dd.getMonth()+term); $d('fDropoffDate').value = dateStr(dd); }
@@ -4330,6 +4351,11 @@ function toggleLeaseFields(){
   if(daysRow) daysRow.style.display = isL?'none':'';
   if(isL){ if(!_leaseTerm) _leaseTerm=12; setLeaseTerm(_leaseTerm); }
 }
+// When the owner CHANGES the booking type (user action, not edit-open), clear the money _manual locks so the
+// NEW type's calculator (lease -> recomputeLease; daily -> onVehicleChange auto-fill) owns revenue + balance,
+// instead of inheriting the prior type's stale figures. Fires only from the fType onchange; edit-open sets
+// .value programmatically (no onchange), so a routine edit still preserves the stored balance (A-#1).
+function _pbClearMoneyManual(){ try{ if($d('fRevenue')) $d('fRevenue')._manual=false; if($d('fRemainingBalance')) $d('fRemainingBalance')._manual=false; }catch(e){} }
 // The real prestigeblackrentals.com storefront photo for each vehicle (same URLs the live booking site uses). Backfilled
 // onto VEHICLE_COSTS below so every vehicle shows its picture in the dashboard even before any per-vehicle image is saved;
 // a saved custom image always wins (see the pricing-config loader).
@@ -4854,6 +4880,7 @@ function _voidStaleCustomerSig(b, reason){
   if(!vehStale && !colorStale) return false;
   (b._sigHistory=b._sigHistory||[]).push({sig:b.customerSig,date:b.customerSigDate||'',at:Number(b.customerSigAt)||0,vehicle:sigVeh,color:sigColor,voidedAt:Date.now(),reason:reason||'vehicle/color changed'});
   delete b.customerSig; delete b.customerSigDate; delete b.customerSigAt; delete b.customerSigVehicle; delete b.customerSigColor;
+  delete b.leaseInitials; delete b.leaseInitialsAt; delete b.leaseInitialsAck;   // LEASE: void the initials with the sig so a re-render never shows acknowledgments from the voided session
   b.customerSigClearedAt=Date.now(); b._t=Date.now();
   try{ logNotif('contract','Signature voided - '+(reason||'vehicle/color changed')+'; client must re-sign', b.name||'', b.id); }catch(e){}
   return true;
@@ -9503,7 +9530,11 @@ function _kdToggle(id){ var el=document.getElementById(id); if(!el) return; var 
 function _kdInW(s){ var c=s.cutoff,t=s.tod; return function(ds){ if(!c) return true; ds=(ds||'').slice(0,10); return !!ds&&ds>=c&&ds<=t; }; }
 function _bkEarnedComponents(b, cutoff, tod){
   var out=[], inW=function(ds){ if(!cutoff)return true; ds=(ds||'').slice(0,10); return !!ds&&ds>=cutoff&&ds<=(tod||todayStr()); }, pk=b.pickupDate||b.date||'';
-  if(inW(pk)){
+  // LEASE: itemize by earned date (schedule labels) so the drill-down rows reconcile with _earnedRevInWindow;
+  // ext/portal fall through to the loops below (attributed at their own dates).
+  if(b.isLease || b.type==='lease'){
+    _leaseRevSchedule(b).forEach(function(ev){ if(inW(ev.date)) out.push({l:ev.l||'Lease', a:ev.amt}); });
+  } else if(inW(pk)){
     var dl=Number(b.dateLock)||0, ad=getAddons(b), rb=(Number(b.revenue)||0)-dl-ad;
     if(rb>0.005) out.push({l:'Rental base',a:rb}); if(ad>0.005) out.push({l:'Add-ons',a:ad}); if(dl>0.005) out.push({l:'Date lock',a:dl});
     if((Number(b.fuelCharge)||0)>0.005) out.push({l:'Fuel',a:Number(b.fuelCharge)||0});
@@ -10192,7 +10223,15 @@ function renderCharts(filtered){
     if(!b||b._deleted||b.status==='cancelled') return;
     var pickup=b.pickupDate||b.date||'';
     var _cardBal=!_p2pMethod(b.balancePaidMethod), _cardDL=!_p2pMethod(b.dateLockMethod);
-    if(_inWinC(pickup)){ var pk=_bkKey(pickup,gran); if(pk){
+    if(b.isLease||b.type==='lease'){
+      // LEASE: spread revenue (+ its card fee) across the earned-date buckets via the shared schedule, mirroring
+      // _earnedRevInWindow / _earnedCardRevInWindow, so the trend-chart total reconciles with KPI Gross. Cost at pickup.
+      _leaseRevSchedule(b).forEach(function(ev){ if(!_inWinC(ev.date)) return; var lk=_bkKey(ev.date,gran); if(!lk) return;
+        R[lk]=(R[lk]||0)+ev.amt;
+        if(_cardBal){ var lcf=ev.amt*0.1325; R[lk]=(R[lk]||0)+lcf; _chartCardFee+=lcf; _chartCardFeeN++; }
+      });
+      if(_inWinC(pickup)){ var _lpk=_bkKey(pickup,gran); if(_lpk) C[_lpk]=(C[_lpk]||0)+getEstCost(b)+(Number(b.brokerFee)||0)*brokerRateDays(b); }
+    } else if(_inWinC(pickup)){ var pk=_bkKey(pickup,gran); if(pk){
       var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
       R[pk]=(R[pk]||0)+baseAll; C[pk]=(C[pk]||0)+getEstCost(b)+(Number(b.brokerFee)||0)*brokerRateDays(b);
       var cf=(_cardBal?Math.max(0,baseAll-dl):0)*0.1325+(_cardDL?_dlExactPremium(b):0);
@@ -10638,7 +10677,9 @@ function openTypeDrilldown(typeKey){
       var cr=[];
       (bookings||[]).forEach(function(b){ if(!b||b._deleted||b.status==='cancelled')return;
         var pickup=b.pickupDate||b.date||'', fee=0;
-        if(inWin(pickup)){ var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
+        if(b.isLease||b.type==='lease'){
+          if(!_p2pMethod(b.balancePaidMethod)){ _leaseRevSchedule(b).forEach(function(ev){ if(inWin(ev.date)) fee+=ev.amt*0.1325; }); }
+        } else if(inWin(pickup)){ var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
           if(!_p2pMethod(b.balancePaidMethod)) fee+=Math.max(0,baseAll-dl)*0.1325;
           if(!_p2pMethod(b.dateLockMethod)) fee+=_dlExactPremium(b); }
         _extLive(b).forEach(function(e){ var amt=Number(e&&e.additionalCharge)||0; if(!amt)return; var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup); if(inWin(ed)&&!_p2pMethod(e&&e.paymentMethod)&&!e._paidExternally) fee+=amt*0.1325; });
@@ -10665,7 +10706,12 @@ function openBucketDrilldown(bucketKey){
     var revRows=[], costRows=[], totR=0, totC=0;
     (bookings||[]).forEach(function(b){ if(!b||b._deleted||b.status==='cancelled')return;
       var pickup=b.pickupDate||b.date||'';
-      if(inWin(pickup)){
+      if(b.isLease||b.type==='lease'){
+        // LEASE: spread revenue (+ its card fee) across the earned-date events so the drill-down reconciles with the bar.
+        var _lcard=!_p2pMethod(b.balancePaidMethod);
+        _leaseRevSchedule(b).forEach(function(ev){ if(!inWin(ev.date)) return; var lcf=_lcard?ev.amt*0.1325:0; totR+=ev.amt+lcf; revRows.push({id:b.id,date:ev.date,name:b.name,sub:'lease'+(lcf?' + card fee':''),vehicle:b.vehicle,val:ev.amt+lcf}); if(lcf){ totC+=lcf; costRows.push({id:b.id,date:ev.date,name:b.name,sub:'card fee',vehicle:b.vehicle,val:lcf}); } });
+        if(inWin(pickup)){ var _lc=getEstCost(b)+(Number(b.brokerFee)||0)*brokerRateDays(b); if(_lc){ totC+=_lc; costRows.push({id:b.id,date:pickup,name:b.name,sub:'est cost',vehicle:b.vehicle,val:_lc}); } }
+      } else if(inWin(pickup)){
         var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
         var cf=(!_p2pMethod(b.balancePaidMethod)?Math.max(0,baseAll-dl):0)*0.1325+(!_p2pMethod(b.dateLockMethod)?_dlExactPremium(b):0);
         totR+=baseAll+cf; revRows.push({id:b.id,date:pickup,name:b.name,sub:'base'+(cf?' + card fee':''),vehicle:b.vehicle,val:baseAll+cf});
@@ -13639,6 +13685,9 @@ function openModal(id, vehiclePreset, datePreset){
   if($d('fPickupAddress'))  $d('fPickupAddress').value  = b?(b.pickupAddress||''):'';
   if($d('fDropoffAddress')) $d('fDropoffAddress').value = b?(b.dropoffAddress||''):'';
   $d('fRevenue')._manual = !!b;
+  // LEASE: revenue is formula-driven (down + monthly*term + add-ons) -> let recomputeLease own it on edit too,
+  // so changing the down/term/add-ons on an existing lease updates revenue (otherwise _manual would block it).
+  if(b && (b.isLease||b.type==='lease')) $d('fRevenue')._manual = false;
   $d('fStatus').value   = b?b.status  : 'pending';
   $d('fNotes').value    = b?b.notes   : '';
 
@@ -13751,6 +13800,7 @@ function toggleAddon(inputId, defaultPrice, checked){
   updateLiveTotal();
   updateRemainingBalance();
   if($d('fType')&&$d('fType').value==='event') _evRecalc();   // event auto-price folds in add-ons
+  if($d('fType')&&$d('fType').value==='lease') recomputeLease();   // lease: re-fold the one-time add-on into the lease total/revenue
 }
 
 // ===== LUXURY EVENT add-booking calculator (mirrors the PB Luxury Events site; wired into the shared form) =====
@@ -14330,6 +14380,11 @@ function saveBooking(){
       // assigned driver, etc. Form-managed fields are already on `entry`, so this only
       // fills in what's missing; it never overwrites an edited value.
       Object.keys(ex).forEach(function(k){ if(!(k in entry)) entry[k]=ex[k]; });
+      // Converting a lease to another type: the catch-all above re-copies the old lease fields, which would
+      // leave a non-lease booking tagged isLease -- so the close-out mileage/balance and revenue lease branches
+      // (gated on isLease||type==='lease') would mis-fire (e.g. a 3-day rental given a 15,000-mi allowance).
+      // Strip every lease field when the saved type is not a lease.
+      if(entry.type!=='lease'){ ['isLease','leaseTerm','leaseDown','leaseMonthly','leaseDeposit','leaseMiles','leaseOverage','leaseBlended','leaseInitials','leaseInitialsAt','leaseInitialsAck','_coChargesApplied'].forEach(function(k){ delete entry[k]; }); }
       // If the vehicle (or Slingshot color) changed, void a signature that was for the OLD config so the
       // client can re-sign the correct contract (archived + tombstoned + logged). No-op if it still matches.
       _voidStaleCustomerSig(entry, 'vehicle changed to '+(entry.vehicle||''));
@@ -15127,6 +15182,19 @@ function _mileageOverage(b, odomOutArg){
   var vm = VEHICLE_MILEAGE[b.vehicle] || {};
   var oIn  = Number(b.odomIn)||0;
   var oOut = (odomOutArg!=null && !isNaN(Number(odomOutArg))) ? Number(odomOutArg) : (Number(b.odomOut)||0);
+  // LEASE: the mileage allowance is the WHOLE-TERM total (leaseMiles, e.g. 15,000 for a 12-mo lease), charged at
+  // leaseOverage/mi -- NOT the daily-rental catalog per-day x days (b.days is 1 for a form-created lease, which
+  // would collapse the allowance to ~1 day of the catalog and bill at the daily-rental rate). Bypass the per-day/
+  // segment engine entirely. includedMiles/overageRate are stamped equal to leaseMiles/leaseOverage, so either works.
+  if(b.isLease || b.type==='lease'){
+    var _lAllow = Number(b.leaseMiles)||Number(b.includedMiles)||0;
+    var _lRate  = Number(b.leaseOverage)||Number(b.overageRate)||0;
+    var _lDriven = (oIn>0 && oOut>oIn) ? (oOut-oIn) : 0;
+    if(_lAllow<=0) return { mode:'unlimited', allowance:0, driven:_lDriven, over:0, rate:_lRate, charge:0, segs:[], fromOdom:oIn, needOdom:false };
+    var _lOver = Math.max(0, _lDriven - _lAllow);
+    var _lCharge = (_lRate>0 && _lOver>0) ? Math.round(_lOver*_lRate) : 0;
+    return { mode:'standard', allowance:_lAllow, driven:_lDriven, over:_lOver, rate:_lRate, charge:_lCharge, segs:[{label:'Lease term',days:(Number(b.leaseTerm)||0),unlimited:false,perDay:0,miles:_lAllow,startOdom:oIn}], fromOdom:oIn, needOdom:false };
+  }
   var origDays = (typeof brokerRateDays==='function') ? Math.max(0, brokerRateDays(b)) : Math.max(0,(Number(b.days)||1));
   // "Unlimited" (uncapped) is a LEGACY add-on: only true when the booking carries the unlimited fee AND was
   // NOT sold as double-miles. New bookings use "double miles" (b.doubleMiles) -> capped at the DOUBLED
@@ -15373,15 +15441,27 @@ function saveCloseOut(){
   bookings[idx].mileageCharge = _mo2.needOdom ? 0 : _mo2.charge;
   // Recalculate remaining balance to include any new fuel/mileage charges \u2014 only when not yet paid
   if(!bookings[idx].balancePaidAt){
-    var _bRev=Number(bookings[idx].revenue)||0;
-    var _bDep=Number(bookings[idx].deposit)||0;
-    var _bLock=Number(bookings[idx].dateLock)||0;
     var _bFuel=bookings[idx].fuelCharge||0;
     var _bMile=bookings[idx].mileageCharge||0;
     // Include still-unpaid extension charges. Rebuilding the balance from `revenue` alone (the old code)
     // dropped them, erasing money the customer still owes on any booking with an unpaid extension.
     var _bExt=_extLive(bookings[idx]).reduce(function(s,e){ return s+((e&&!e.paid)?Math.max(0,Number(e.additionalCharge)||0):0); },0);
-    bookings[idx].remainingBalance=Math.max(0,_bRev+_bDep-_bLock+_bFuel+_bMile+_bExt);
+    if(bookings[idx].isLease || bookings[idx].type==='lease'){
+      // LEASE: the balance is the monthly schedule the customer pays DOWN over the term (set to
+      // leaseMonthly*term at save, reduced as each monthly is collected) -- NOT the whole-term revenue +
+      // the refundable deposit (rebuilding from those re-inflates the balance to the entire lease value).
+      // Add the close-out overages (fuel/mileage/ext) ONCE; idempotent on re-close via _coChargesApplied.
+      var _prevCo=Number(bookings[idx]._coChargesApplied)||0;
+      var _curBal=Number(bookings[idx].remainingBalance)||0;
+      var _newCo=_bFuel+_bMile+_bExt;
+      bookings[idx].remainingBalance=Math.max(0,(_curBal-_prevCo)+_newCo);
+      bookings[idx]._coChargesApplied=_newCo;
+    } else {
+      var _bRev=Number(bookings[idx].revenue)||0;
+      var _bDep=Number(bookings[idx].deposit)||0;
+      var _bLock=Number(bookings[idx].dateLock)||0;
+      bookings[idx].remainingBalance=Math.max(0,_bRev+_bDep-_bLock+_bFuel+_bMile+_bExt);
+    }
   }
   bookings[idx].damage = $d('coDamageFlagged').checked ? {
     flagged: true,
@@ -20217,7 +20297,14 @@ function openForecastDetail(days, label){
 function _projIso(s){ s=String(s||'').trim(); if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10); var m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if(m) return m[3]+'-'+('0'+m[1]).slice(-2)+'-'+('0'+m[2]).slice(-2); var dd=new Date(s); return isNaN(dd.getTime())?'':dateStr(dd); }
 function _ymAt(off){ var d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+off); return { ym:d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2), label:d.toLocaleString('en-US',{month:'long',year:'numeric'}) }; }
 function _monthBookings(ym){ return (typeof bookings!=='undefined'?bookings:[]).filter(function(b){ if(!b||b._deleted) return false; if(String(b.status||'').toLowerCase()==='cancelled') return false; return _projIso(b.pickupDate||b.date||'').slice(0,7)===ym; }); }
-function _monthRevenue(ym){ return _monthBookings(ym).reduce(function(s,b){ return s+(typeof totalRevenue==='function'?(Number(totalRevenue(b))||0):(Number(b.revenue)||0)); },0); }
+function _monthRevenue(ym){
+  // Non-lease: pickup-month revenue (unchanged). LEASE: the earned revenue in THIS month (down at signing +
+  // that month's monthly), summed over all leases by earned date -- so a multi-month lease is not front-loaded.
+  var _ms=ym+'-01', _me=ym+'-'+('0'+new Date(parseInt(ym.slice(0,4),10),parseInt(ym.slice(5,7),10),0).getDate()).slice(-2);
+  var _base=_monthBookings(ym).reduce(function(s,b){ return s+((b&&(b.isLease||b.type==='lease'))?0:(typeof totalRevenue==='function'?(Number(totalRevenue(b))||0):(Number(b.revenue)||0))); },0);
+  var _lease=(bookings||[]).reduce(function(s,b){ if(!b||b._deleted||b.status==='cancelled'||!(b.isLease||b.type==='lease')) return s; return s+(typeof _earnedRevInWindow==='function'?_earnedRevInWindow(b,_ms,_me):0); },0);
+  return _base+_lease;
+}
 function _nextMonthProjectionCard(){
   var nx=_ymAt(1);
   var booked=_monthRevenue(nx.ym), cnt=_monthBookings(nx.ym).length;
@@ -20682,7 +20769,10 @@ function markDateLockPaid(id){
 function renderTaxTab(){
   var el=$d('taxContent'); if(!el) return;
   var years=new Set();
-  bookings.forEach(function(b){ if(!b._deleted) { var d=b.pickupDate||b.date; if(d) years.add(d.substring(0,4)); } });
+  bookings.forEach(function(b){ if(!b._deleted) { var d=b.pickupDate||b.date; if(d) years.add(d.substring(0,4));
+    // LEASE spans multiple tax years -> add every year from pickup through dropoff so its monthlies show in each.
+    if((b.isLease||b.type==='lease') && d && b.dropoffDate){ var _y1=parseInt(d.substring(0,4),10), _y2=parseInt(String(b.dropoffDate).substring(0,4),10); for(var _y=_y1;_y<=_y2 && _y<=_y1+5;_y++) years.add(String(_y)); }
+  } });
   expenses.forEach(function(e){ if(!e._deleted&&e.date) years.add(e.date.substring(0,4)); });
   incomes.forEach(function(i){ if(!i._deleted&&i.fromDate) years.add(i.fromDate.substring(0,4)); });
   var sortedYears=Array.from(years).sort(function(a,b){return b-a;});
@@ -20709,7 +20799,13 @@ function renderTaxTab(){
         var m=parseInt((i.fromDate||'').substring(5,7),10);
         return (i.fromDate||'').substring(0,4)===yr&&m>=qs&&m<=qe;
       });
-      var qRev=qBk.reduce(function(s,b){return s+totalRevenue(b);},0);
+      // LEASE tax attribution: a multi-month lease's revenue is earned (and taxed) across the quarters it spans
+      // -- down at signing + each monthly on its anniversary -- NOT all in the pickup quarter. Non-lease bookings
+      // keep pickup-quarter recognition; leases are summed over ALL bookings by earned-date (quarter window).
+      var qStart=yr+'-'+('0'+qs).slice(-2)+'-01';
+      var qEnd=yr+'-'+('0'+qe).slice(-2)+'-'+('0'+new Date(parseInt(yr,10),qe,0).getDate()).slice(-2);
+      var qRev=qBk.reduce(function(s,b){return s+((b.isLease||b.type==='lease')?0:totalRevenue(b));},0)
+        + bookings.reduce(function(s,b){ if(!b||b._deleted||b.status==='cancelled'||!(b.isLease||b.type==='lease')) return s; return s+_earnedRevInWindow(b,qStart,qEnd); },0);
       var qOth=qIn.reduce(function(s,i){return s+(Number(i.amount)||0);},0)
         + grouponPayouts.reduce(function(s,p){ if(!p||!p.date)return s; var m=parseInt(String(p.date).substring(5,7),10); return (String(p.date).substring(0,4)===yr&&m>=qs&&m<=qe)?s+(Number(p.amount)||0):s; },0);   // Groupon payouts fold into Other Income (separate array -> no double)
       var qExp=qEx.reduce(function(s,e){return s+(Number(e.amount)||0);},0);
@@ -22992,6 +23088,9 @@ function initCustSigCanvas(){
   // Someone still needs to sign \u2014 show the editable canvas + the "signing as" switch.
   if(lockView) lockView.style.display='none';
   if(editView) editView.style.display='';
+  // LEASE: show the lessee-initials capture for the PRIMARY signer of a lease (required before saving the sig).
+  var _liRow=$d('custLeaseIniRow');
+  if(_liRow){ var _isLeaseB=!!(b&&(b.isLease||b.type==='lease')); _liRow.style.display=(_isLeaseB && !primarySigned)?'':'none'; var _lf=$d('custLeaseIni'); if(_lf && _isLeaseB && b.leaseInitials && !primarySigned) _lf.value=b.leaseInitials; }
   // Default the switch to the first party still needing a signature (primary first, then drivers).
   _populateSigSignerSelect(!primarySigned ? 'primary' : (unsigned.length ? String(drivers.indexOf(unsigned[0])) : 'primary'));
   var oldCanvas=$d('custSigCanvas');
@@ -23035,6 +23134,7 @@ function _onSigSignerChange(){
   if(!sel||!st) return;
   var b=bookings.find(function(x){return x.id===_contractBookingId;});
   var v=sel.value, name='Customer', already=false;
+  var _liR2=$d('custLeaseIniRow'); if(_liR2){ _liR2.style.display=((b&&(b.isLease||b.type==='lease'))&&v==='primary')?'':'none'; }
   if(v==='primary'){ name=(b&&b.name)||'Primary customer'; already=!!(b&&b.customerSig&&b.customerSig.startsWith('data:image/')); }
   else { var d=b&&b.extraDrivers&&b.extraDrivers[Number(v)]; name=(d&&d.name)||('Driver '+(Number(v)+1)); already=!!(d&&d.sig&&String(d.sig).indexOf('data:image/')===0); }
   st.textContent = already ? ('\u2713 '+name+' already signed \u2014 re-sign to replace') : ('Capturing '+name+'\u2019s signature');
@@ -23047,6 +23147,8 @@ function overrideCustSig(){
   delete bookings[idx].customerSigDate;
   delete bookings[idx].customerSigVehicle;
   delete bookings[idx].customerSigColor;
+  // LEASE: clear the stored initials too, so a re-sign can't display acknowledgments from the voided session.
+  delete bookings[idx].leaseInitials; delete bookings[idx].leaseInitialsAt; delete bookings[idx].leaseInitialsAck;
   bookings[idx].customerSigClearedAt=Date.now(); // tombstone: a stale-device merge must NOT resurrect the cleared sig (else the portal stays "Already Signed")
   bookings[idx]._t=Date.now();
   save();
@@ -23083,12 +23185,21 @@ function saveCustSig(){
     return;
   }
   // -- Primary customer (original behavior) --
+  // LEASE: require the lessee initials (captured above) before storing the signature, so an in-person-signed
+  // lease is never recorded without the 4-clause acknowledgment (the portal/link path enforces this via the stepper).
+  var _isLeaseSign=!!(bookings[idx].isLease || bookings[idx].type==='lease');
+  var _liVal='';
+  if(_isLeaseSign){
+    _liVal=($d('custLeaseIni') ? String($d('custLeaseIni').value||'').trim().toUpperCase().slice(0,6) : '');
+    if(!_liVal){ if($d('custSigStatus')){ $d('custSigStatus').style.color='#f87171'; $d('custSigStatus').textContent='Enter the lessee initials to sign this lease.'; } var _lf2=$d('custLeaseIni'); if(_lf2) _lf2.focus(); return; }
+  }
   bookings[idx].customerSig=dataUrl;
   bookings[idx].customerSigDate=dateStr;
   bookings[idx].customerSigAt=t2.getTime();   // precise timestamp for the communication log
   // Log which vehicle + color (Slingshot) were active when the contract was signed
   bookings[idx].customerSigVehicle = bookings[idx].vehicle || '';
   if(bookings[idx].vehicle==='Polaris Slingshot') bookings[idx].customerSigColor = _slingshotColor;
+  if(_isLeaseSign){ bookings[idx].leaseInitials=_liVal; bookings[idx].leaseInitialsAt=t2.getTime(); }
   bookings[idx]._t=Date.now();
   save();
   initCustSigCanvas();
@@ -23107,12 +23218,16 @@ function uploadSignedContract(input){
     var dataUrl=e.target.result;
     var idx=bookings.findIndex(function(x){return x.id===_contractBookingId;});
     if(idx===-1){ toast('Booking not found'); return; }
+    var _isLeaseUp=!!(bookings[idx].isLease || bookings[idx].type==='lease');
+    var _liUp='';
+    if(_isLeaseUp){ _liUp=($d('custLeaseIni')?String($d('custLeaseIni').value||'').trim().toUpperCase().slice(0,6):''); if(!_liUp){ toast('Enter the lessee initials before uploading a signed lease.'); var _lfu=$d('custLeaseIni'); if(_lfu) _lfu.focus(); return; } }
     var t=new Date();
     bookings[idx].customerSig=dataUrl;
     bookings[idx].customerSigDate=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
     bookings[idx].customerSigAt=t.getTime();   // precise timestamp for the communication log
     bookings[idx].customerSigVehicle = bookings[idx].vehicle || '';
     if(bookings[idx].vehicle==='Polaris Slingshot') bookings[idx].customerSigColor = _slingshotColor;
+    if(_isLeaseUp){ bookings[idx].leaseInitials=_liUp; bookings[idx].leaseInitialsAt=t.getTime(); }
     bookings[idx]._t=Date.now();
     save();
     initCustSigCanvas();
@@ -23136,6 +23251,17 @@ function _buildContractBreakdown(bk){
   var decorAmt=Number(bk.decor)||0;
   var bouquetAmt=Number(bk.bouquet)||0;
   var addonsTotal=unlimitedTot+deliveryAmt+petAmt+photoAmt+champagneAmt+decorAmt+bouquetAmt;
+  // LEASE: model as down + (monthly x term months) + any add-ons -- NOT a per-day rate x 1 day (b.days is 1
+  // for a form-created lease, which would render the whole lease as "1 day" at a huge daily rate).
+  if(bk.isLease || bk.type==='lease'){
+    var _lT=Math.max(1,Number(bk.leaseTerm)||1), _lMo=Number(bk.leaseMonthly)||0, _lDn=Number(bk.leaseDown)||0, _lDep=getDeposit(bk);
+    var _lSub=(Number(bk.revenue)||0) || (_lDn+_lMo*_lT+addonsTotal);
+    var _lBal=bk.remainingBalance!=null?Math.max(0,Number(bk.remainingBalance)||0):Math.max(0,_lMo*_lT);
+    return {baseRev:_lMo*_lT,days:_lT,dailyRateNum:_lMo,
+      unlimitedPD:unlimitedPD,unlimitedTot:unlimitedTot,doubleMiles:!!bk.doubleMiles,
+      deliveryAmt:deliveryAmt,petAmt:petAmt,photoAmt:photoAmt,champagneAmt:champagneAmt,decorAmt:decorAmt,bouquetAmt:bouquetAmt,redcarpetAmt:(Number(bk.redcarpet)||0),addonsTotal:addonsTotal,
+      subtotal:_lSub,dateLockAmt:0,depositAmt:_lDep,balanceDue:_lBal,isLease:true,leaseDownAmt:_lDn};
+  }
   var depositAmt=getDeposit(bk);
   var rentalRev=Number(bk.revenue)||0;              // revenue = rental charge only (no deposit)
   var baseRev=Math.max(0,rentalRev-addonsTotal);    // base = revenue minus add-ons
@@ -23153,6 +23279,21 @@ function _buildContractBreakdown(bk){
 function _buildBreakdownTable(bk){
   var bd=_buildContractBreakdown(bk);
   var f=function(n){return '$'+(Math.round(n*100)/100).toFixed(2);};
+  if(bd.isLease){
+    var lr='';
+    if(bd.leaseDownAmt>0) lr+='<tr><td style="padding:4px 8px 4px 0">Down Payment (due at signing)</td><td style="text-align:right;padding:4px 0;font-weight:700">'+f(bd.leaseDownAmt)+'</td></tr>';
+    lr+='<tr><td style="padding:4px 8px 4px 0">Monthly Lease ('+f(bd.dailyRateNum)+'/mo &#215; '+bd.days+' month'+(bd.days!==1?'s':'')+')</td><td style="text-align:right;padding:4px 0;font-weight:700">'+f(bd.baseRev)+'</td></tr>';
+    if(bd.deliveryAmt>0) lr+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Delivery Fee</td><td style="text-align:right;padding:4px 0">'+f(bd.deliveryAmt)+'</td></tr>';
+    if(bd.petAmt>0) lr+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Pet Fee</td><td style="text-align:right;padding:4px 0">'+f(bd.petAmt)+'</td></tr>';
+    if(bd.photoAmt>0) lr+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Photo Package</td><td style="text-align:right;padding:4px 0">'+f(bd.photoAmt)+'</td></tr>';
+    if(bd.champagneAmt>0) lr+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Champagne</td><td style="text-align:right;padding:4px 0">'+f(bd.champagneAmt)+'</td></tr>';
+    if(bd.decorAmt>0) lr+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">D&#233;cor</td><td style="text-align:right;padding:4px 0">'+f(bd.decorAmt)+'</td></tr>';
+    if(bd.bouquetAmt>0) lr+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Flower Bouquet</td><td style="text-align:right;padding:4px 0">'+f(bd.bouquetAmt)+'</td></tr>';
+    if(bd.redcarpetAmt>0) lr+='<tr><td style="padding:4px 8px 4px 0;color:#aaa">Red Carpet Arrival</td><td style="text-align:right;padding:4px 0">'+f(bd.redcarpetAmt)+'</td></tr>';
+    lr+='<tr style="border-top:1.5px solid #888"><td style="padding:7px 8px 4px 0;font-weight:700">Lease Total</td><td style="text-align:right;padding:7px 0 4px;font-weight:700">'+f(bd.subtotal)+'</td></tr>';
+    lr+='<tr style="border-top:1.5px solid #C9A962"><td style="padding:7px 8px 4px 0;font-weight:800;color:#C9A962">Balance Due</td><td style="text-align:right;padding:7px 0 4px;font-weight:800;color:#C9A962">'+f(bd.balanceDue)+'</td></tr>';
+    return '<table style="width:100%;border-collapse:collapse;font-size:11px;color:inherit"><tbody>'+lr+'</tbody></table>';
+  }
   var durLabel=bk.type==='hourly'||bk.type==='chauffeur'?'hr':'day';
   var rows='';
   rows+='<tr><td style="padding:4px 8px 4px 0">Base Rental ('+f(bd.dailyRateNum)+'/'+durLabel+' \u00D7 '+bd.days+' '+durLabel+(bd.days!==1?'s':'')+')</td>'+'<td style="text-align:right;padding:4px 0;font-weight:700">'+f(bd.baseRev)+'</td></tr>';
@@ -26214,7 +26355,7 @@ function _initSigningMode(bookingId, driverIdx){
     window._smData = data;
     window._smBookings = data.bookings || [data.booking].filter(Boolean);
     _smInitCanvas();
-    if(bk.type==='lease'){ try{ _pbLeaseAckSetup(bk); }catch(e){} }
+    if(bk.type==='lease' && _smSigningDriverIdx===null){ try{ _pbLeaseAckSetup(bk); }catch(e){} }   // initials are lessee(primary)-only; an authorized driver skips the walk
 
     // Sticky "Sign Agreement" bar \u2014 fixed to bottom so customers always see it
     // Disappears once they tap/scroll to the canvas
@@ -26244,7 +26385,7 @@ function _pbLeaseFill(tmpl, bk, liveSign){
   var term=Number(bk.leaseTerm)||12, down=Number(bk.leaseDown)||0, monthly=Number(bk.leaseMonthly)||0;
   var deposit=Number(bk.leaseDeposit!=null?bk.leaseDeposit:bk.deposit)||0;
   var miles=Number(bk.leaseMiles)|| (term*1250), over=Number(bk.leaseOverage)||0.5;
-  var total=Number(bk.leaseTotal)|| (down+monthly*term);
+  var total=(Number(bk.revenue)>0)?Number(bk.revenue):(Number(bk.leaseTotal)|| (down+monthly*term));   // revenue includes one-time add-ons; keeps {{total_lease}} == the breakdown Lease Total
   var startS=fd(bk.pickupDate||bk.date||''), endS=fd(bk.dropoffDate||'');
   var ini=liveSign?'':(bk.leaseInitials?String(bk.leaseInitials).toUpperCase().slice(0,6):'');
   function R(re,val){ tmpl=tmpl.replace(re,function(){return val;}); }
@@ -26286,7 +26427,7 @@ function _pbLeaseAckSetup(bk){
       '<div style="font-size:15px;font-weight:800;color:#C9A962;margin-bottom:4px">Review &amp; Initial - Required Before Signing</div>'+
       '<div style="font-size:12px;color:rgba(255,255,255,.55);margin-bottom:12px;line-height:1.5">This is a binding motor-vehicle lease. You must review and initial <strong style="color:#fff">4 key sections</strong>. We will scroll you to each one in the agreement above.</div>'+
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px"><label style="font-size:12px;color:rgba(255,255,255,.7)">Your initials:</label>'+
-      '<input id="pbIniInput" type="text" maxlength="5" value="'+di+'" style="width:84px;padding:7px 10px;border:1px solid rgba(201,169,98,.5);border-radius:8px;background:#0e0e12;color:#C9A962;font-weight:800;font-size:15px;text-align:center;letter-spacing:.08em;text-transform:uppercase"></div>'+
+      '<input id="pbIniInput" type="text" maxlength="6" value="'+di+'" style="width:84px;padding:7px 10px;border:1px solid rgba(201,169,98,.5);border-radius:8px;background:#0e0e12;color:#C9A962;font-weight:800;font-size:15px;text-align:center;letter-spacing:.08em;text-transform:uppercase"></div>'+
       '<div id="pbIniProgress" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>'+
       '<button id="pbIniBtn" onclick="_pbIniBegin()" style="padding:11px 24px;border:none;border-radius:10px;background:#C9A962;color:#000;font-weight:800;font-size:15px;cursor:pointer;width:100%;max-width:340px">Begin - Take Me to Section 1</button>'+
       '<div id="pbIniHint" style="font-size:12px;color:rgba(255,255,255,.45);margin-top:10px"></div>';
@@ -26416,7 +26557,9 @@ function _smSubmitSig(bookingId, driverIdx){
     var _savePayload={bookingId:bookingId,sig:sig,sigDate:sigDate};
     if(_isDriver) _savePayload.driverIdx=_dIdx;
     // LEASE: a primary lessee signature must carry the 4-section acknowledgment (initials) captured above.
-    if(_freshBk && _freshBk.type==='lease' && !_isDriver){
+    // Key on the booking being signed (allBookings[idx]) -- NOT _freshBk alone -- so a failed pre-save reload
+    // (which falls back to the page-load snapshot) still requires + persists the initials rather than skipping them.
+    if(allBookings[idx] && (allBookings[idx].type==='lease'||allBookings[idx].isLease) && !_isDriver){
       if(!window._pbLeaseInitialsDone || !window._pbLeaseInitials){ _showSaveErr('Please initial all 4 required sections above before signing.'); return; }
       _savePayload.initials=window._pbLeaseInitials; _savePayload.initialsAck=window._pbLeaseAck||[];
     }
@@ -27959,12 +28102,46 @@ function _fkpi(label,val,color,sub){
 // KPI, Fleet, and charts all use so "last N days" counts what was EARNED in the window (incl. an extension
 // added this week to a rental that started earlier) -- NOT the old pickup/return-endpoint test that dropped
 // still-active long rentals entirely.
+// Add n months to a date, clamping the day to the target month's last day (Jan 31 + 1mo -> Feb 28/29, not Mar 3).
+function _addMonthsClamped(d, n){
+  var r=new Date(d.getFullYear(), d.getMonth()+n, 1);
+  var lastDay=new Date(r.getFullYear(), r.getMonth()+1, 0).getDate();
+  r.setDate(Math.min(d.getDate(), lastDay)); return r;
+}
+// LEASE earned-revenue schedule: the dated events a lease's revenue is recognized on -- the down at signing
+// (pickup), each scheduled monthly on its anniversary, and the close-out extras (fuel/mileage/kept-deposit/
+// fees = totalRevenue - revenue) at return. Sums EXACTLY to totalRevenue(b). Used by every by-date revenue
+// attribution (KPI window, trend chart, bucket drill-down, card-fee, forecast) so they all agree.
+function _leaseRevSchedule(b){
+  var out=[]; if(!(b && (b.isLease||b.type==='lease'))) return out;
+  var pickup=(b.pickupDate||b.date||'').slice(0,10);
+  var term=Math.max(1,Number(b.leaseTerm)||1), mo=Number(b.leaseMonthly)||0, down=Number(b.leaseDown)||0;
+  // one-time add-ons are collected at signing -> ride on the pickup event (they live inside b.revenue).
+  var _ad=(Number(b.delivery)||0)+(Number(b.pet)||0)+(Number(b.photo)||0)+(Number(b.champagne)||0)+(Number(b.redcarpet)||0)+(Number(b.decor)||0)+(Number(b.bouquet)||0);
+  if(pickup && (down+_ad)) out.push({date:pickup, amt:down+_ad, l:(_ad>0?'Down payment + add-ons':'Down payment')});
+  var pd=(typeof parseLocalDate==='function')?parseLocalDate(pickup):null;
+  if(pd && !isNaN(pd.getTime())){ for(var i=0;i<term;i++){ if(mo) out.push({date:dateStr(_addMonthsClamped(pd,i)), amt:mo, l:'Monthly lease'}); } }
+  else if(pickup && mo){ out.push({date:pickup, amt:mo*term, l:'Lease payments'}); }
+  // close-out EXTRAS only (fuel/mileage/kept-deposit/late fee) at return. Extensions + portal charges are
+  // EXCLUDED here and attributed at their OWN dates by the shared ext/portal loops (in _earnedRevInWindow,
+  // _earnedCardRevInWindow and the 3 chart sites), so they are counted once -- never doubled.
+  var _ext=(typeof extensionCharge==='function')?(Number(extensionCharge(b))||0):0;
+  var _pc=(typeof portalChargesRevenue==='function')?(Number(portalChargesRevenue(b))||0):0;
+  var nonBase=(typeof totalRevenue==='function'?totalRevenue(b):0)-(Number(b.revenue)||0)-_ext-_pc;
+  if(nonBase!==0){ var ret=(b.dropoffDate||pickup||'').slice(0,10); if(ret) out.push({date:ret, amt:nonBase, l:'Close-out charges'}); }
+  return out;
+}
 function _earnedRevInWindow(b, cutoff, tod){
   if(!cutoff) return totalRevenue(b);
   tod=tod||todayStr();
   function _inW(ds){ ds=(ds||'').slice(0,10); return !!ds && ds>=cutoff && ds<=tod; }
   var rev=0, pickup=b.pickupDate||b.date||'';
-  if(_inW(pickup)) rev += (totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b));  // base fields
+  // LEASE: recognize the base (down+addons at signing + monthly per anniversary + close-out extras at return)
+  // via the shared schedule, then fall through to the ext/portal loops (which attribute those at their own
+  // dates for lease + non-lease alike). All-time (no cutoff) still returns full totalRevenue above.
+  if(b.isLease || b.type==='lease'){
+    _leaseRevSchedule(b).forEach(function(ev){ if(_inW(ev.date)) rev+=ev.amt; });
+  } else if(_inW(pickup)) rev += (totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b));  // base fields
   _extLive(b).forEach(function(e){
     var amt=Number(e&&e.additionalCharge)||0; if(!amt) return;
     var ed=e.createdAt?dateStr(new Date(e.createdAt)):(e.paidAt?dateStr(new Date(e.paidAt)):pickup);
@@ -28019,12 +28196,18 @@ function _earnedDlPremiumDelta(b, cutoff, tod){
 function _earnedCardRevInWindow(b, cutoff, tod){
   if(!b) return 0;
   function _cardM(m){ return !_p2pMethod(m); }
-  var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
   function _inW(ds){ if(!cutoff) return true; ds=(ds||'').slice(0,10); return !!ds && ds>=cutoff && ds<=(tod||todayStr()); }
   var pickup=b.pickupDate||b.date||'', rev=0;
-  if(_inW(pickup)){
-    if(_cardM(b.balancePaidMethod)) rev+=Math.max(0,baseAll-dl);
-    if(_cardM(b.dateLockMethod))    rev+=dl;
+  // LEASE: card-eligible base = the lease schedule (down+addons, monthlies, close-out extras) IF paid by card,
+  // attributed by earned date; then fall through to the ext/portal card loops. Mirrors _earnedRevInWindow.
+  if(b.isLease || b.type==='lease'){
+    if(_cardM(b.balancePaidMethod)) _leaseRevSchedule(b).forEach(function(ev){ if(_inW(ev.date)) rev+=ev.amt; });
+  } else {
+    var baseAll=totalRevenue(b)-extensionCharge(b)-portalChargesRevenue(b), dl=Number(b.dateLock)||0;
+    if(_inW(pickup)){
+      if(_cardM(b.balancePaidMethod)) rev+=Math.max(0,baseAll-dl);
+      if(_cardM(b.dateLockMethod))    rev+=dl;
+    }
   }
   _extLive(b).forEach(function(e){
     var amt=Number(e&&e.additionalCharge)||0; if(!amt||!_cardM(e&&e.paymentMethod)) return;
