@@ -2353,6 +2353,21 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
           <div style="font-size:11.5px;color:var(--muted)">Monthly lease rates by term &#183; what the customer pays at min down, and what you make blended</div>
         </div>
       </div>
+      <!-- Build Your Lease (interactive calculator) -->
+      <div id="leaseCalc" style="background:rgba(201,169,98,.05);border:1px solid var(--gold-dim);border-radius:12px;padding:14px;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:800;color:#C9A962;margin-bottom:2px">Build Your Lease &#183; Quick Quote</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:11px">Pick a vehicle, term, and down payment &#8212; see the customer's monthly, due at signing, and your blended take.</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:11px">
+          <label style="flex:2;min-width:170px;font-size:11px;color:var(--muted)">Vehicle
+            <select id="lcVeh" onchange="renderLeaseCalc()" style="width:100%;margin-top:4px;padding:8px 9px;border-radius:8px;background:#0e0e12;color:var(--text);border:1px solid var(--gold-dim);font-size:13px"></select>
+          </label>
+          <label style="flex:1;min-width:130px;font-size:11px;color:var(--muted)">Down payment ($)
+            <input id="lcDown" type="number" step="500" min="0" inputmode="numeric" oninput="renderLeaseCalc()" style="width:100%;margin-top:4px;padding:8px 9px;border-radius:8px;background:#0e0e12;color:var(--text);border:1px solid var(--gold-dim);font-size:13px">
+          </label>
+        </div>
+        <div id="lcTerms" style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px"></div>
+        <div id="lcOut"></div>
+      </div>
       <div id="leasePricingTerms" style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px"></div>
       <div id="leasePricingWrap" style="overflow-x:auto"></div>
       <div style="font-size:11px;color:var(--muted);line-height:1.55;margin-top:11px;background:rgba(201,169,98,.06);border:1px solid var(--gold-dim);border-radius:10px;padding:9px 11px">
@@ -2585,11 +2600,12 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
       <div id="maintConflictWarning" style="display:none;grid-column:1/-1;background:rgba(255,200,0,.08);border:1px solid rgba(255,200,0,.35);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7"></div>
       <div id="pricingRuleWarn" style="display:none;grid-column:1/-1;background:rgba(201,169,98,.09);border:1px solid rgba(201,169,98,.4);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7;color:var(--text)"></div>
       <div class="fgroup"><div class="flabel">Booking Type</div>
-        <select class="finput" id="fType" onchange="toggleEventFields();checkSlingshotHourly();onVehicleChange();autoFillDropoff();updateDurationLabel();updateBrokerCalc();updateLiveTotal();updateWeekdayDiscountHint()">
+        <select class="finput" id="fType" onchange="toggleEventFields();toggleLeaseFields();checkSlingshotHourly();onVehicleChange();autoFillDropoff();updateDurationLabel();updateBrokerCalc();updateLiveTotal();updateWeekdayDiscountHint()">
           <option value="daily">Daily Rental</option>
           <option value="hourly">Hourly Booking</option>
           <option value="chauffeur">Chauffeur Service</option>
           <option value="event">Luxury Event</option>
+          <option value="lease">Lease</option>
         </select></div>
       <!-- LUXURY EVENT fields (shown only when Booking Type = Luxury Event). Picking a package auto-fills the
            occasion, self-drive, the pre-tax price (site formula), the security deposit + Date Night miles/overage.
@@ -2611,6 +2627,26 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
           </div>
         </div>
         <div id="eventPriceHint" style="font-size:12px;color:var(--gold);line-height:1.6"></div>
+      </div>
+      <!-- LEASE fields (shown only when Booking Type = Lease). Choosing a car + term auto-fills the down,
+           monthly, security deposit, included miles, overage, and end date from the lease pricing.
+           Everything stays overridable; the Extras section applies too. -->
+      <div class="fgroup ffull" id="leaseFieldsGroup" style="display:none;grid-column:1/-1;background:rgba(201,169,98,.06);border:1px solid var(--gold-dim);border-radius:10px;padding:12px 14px;gap:10px">
+        <div class="flabel" style="margin-bottom:4px">Lease Term</div>
+        <div id="leaseTermBtns" style="display:flex;gap:7px;flex-wrap:wrap">
+          <button type="button" class="btn btn-sm" data-lterm="3" onclick="setLeaseTerm(3)">3 months</button>
+          <button type="button" class="btn btn-sm" data-lterm="6" onclick="setLeaseTerm(6)">6 months</button>
+          <button type="button" class="btn btn-sm" data-lterm="9" onclick="setLeaseTerm(9)">9 months</button>
+          <button type="button" class="btn btn-sm" data-lterm="12" onclick="setLeaseTerm(12)">12 months</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+          <div><div class="flabel">Down Payment ($)</div>
+            <input type="number" class="finput" id="fLeaseDown" min="0" step="1" oninput="this._manual=true;recomputeLease()"></div>
+          <div><div class="flabel">Monthly Payment ($)</div>
+            <input type="number" class="finput" id="fLeaseMonthly" min="0" step="1" oninput="this._manual=true;recomputeLease()"></div>
+        </div>
+        <div id="leaseSummary" style="font-size:12.5px;color:var(--gold);line-height:1.8;margin-top:10px"></div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:4px">Down, monthly, deposit, mileage, overage, and the end date auto-fill from the lease pricing for the selected car and term. Adjust any field below if needed; extras still apply.</div>
       </div>
       <div class="fgroup"><div class="flabel" id="fDaysLabel">Days</div>
         <input type="number" class="finput" id="fDays" min="1" value="1" onchange="onVehicleChange();updateBrokerCalc();updateMileageHint();onDaysChange();updateDurationLabel()"></div>
@@ -4178,7 +4214,122 @@ function renderLeasePricing(term){
     var wrap=document.getElementById('leasePricingWrap'); if(wrap) wrap.innerHTML=html;
   }catch(e){}
 }
-document.addEventListener('DOMContentLoaded',function(){ try{ renderLeasePricing(12); }catch(e){} });
+var _lcTerm = 12, _lcInited = false;
+function _lcTile(label,val,color){
+  return '<div style="flex:1;min-width:116px;background:rgba(255,255,255,.03);border:1px solid var(--gold-dim);border-radius:10px;padding:9px 11px">'+
+    '<div style="font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:3px">'+label+'</div>'+
+    '<div style="font-size:17px;font-weight:800;font-variant-numeric:tabular-nums'+(color?(';color:'+color):'')+'">'+val+'</div></div>';
+}
+function setLeaseCalcTerm(t){ _lcTerm=t; renderLeaseCalc(); }
+function renderLeaseCalc(){
+  try{
+    var vehSel=document.getElementById('lcVeh'); if(!vehSel) return;
+    if(!_lcInited){ vehSel.innerHTML=Object.keys(PB_LEASE_PRICING).map(function(n){return '<option value="'+n+'">'+n+'</option>';}).join(''); _lcInited=true; }
+    var term=_lcTerm||12;
+    var tb=document.getElementById('lcTerms');
+    if(tb){ tb.innerHTML=[3,6,9,12].map(function(t){ var on=(t===term);
+      return '<button class="btn" style="font-size:12px;padding:6px 12px;text-align:center'+(on?';background:#C9A962;color:#151004;border-color:#C9A962':'')+'" onclick="setLeaseCalcTerm('+t+')">'+t+' mo<span style="display:block;font-size:9px;opacity:.75;font-weight:600">'+(1250*t).toLocaleString()+' mi</span></button>';
+    }).join(''); }
+    var veh=vehSel.value;
+    var out=document.getElementById('lcOut'); if(!out) return;
+    var p=(PB_LEASE_PRICING[veh]?PB_LEASE_PRICING[veh][term]:null);
+    if(!p){ out.innerHTML='<div style="color:var(--muted);font-size:12px">No lease pricing for this selection.</div>'; return; }
+    var minDown=p.d;
+    var downEl=document.getElementById('lcDown');
+    var key=veh+':'+term;
+    if(downEl && (downEl.value===''||downEl._lcKey!==key)){ downEl.value=minDown; downEl._lcKey=key; }
+    var typed=downEl&&downEl.value!==''?Math.max(0,Math.round(+downEl.value||0)):minDown;
+    var belowMin=typed<minDown;
+    var effDown=Math.max(typed,minDown);
+    var monthly=Math.max(0,Math.round(p.b - effDown/term));
+    var dep=p.dep, miles=1250*term, over=(PB_LEASE_OVERAGE[term]||0.5);
+    var dueStart=effDown+dep+monthly, totalMake=p.b*term;
+    out.innerHTML=
+      '<div style="display:flex;flex-wrap:wrap;gap:8px">'+
+        _lcTile('Customer pays','$'+monthly.toLocaleString()+'<span style="font-size:11px;color:var(--muted)">/mo</span>','#C9A962')+
+        _lcTile('Due at signing','$'+dueStart.toLocaleString(),'')+
+        _lcTile('Refundable deposit','$'+dep.toLocaleString(),'')+
+        _lcTile('Included miles',miles.toLocaleString()+'<span style="font-size:11px;color:var(--muted)"> mi</span>','')+
+        _lcTile('Overage','$'+over.toFixed(2)+'<span style="font-size:11px;color:var(--muted)">/mi</span>','')+
+      '</div>'+
+      '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">'+
+        _lcTile('You make / mo (blended)','$'+p.b.toLocaleString(),'#7bd88f')+
+        _lcTile('Total you make ('+term+' mo)','$'+totalMake.toLocaleString(),'#7bd88f')+
+      '</div>'+
+      (belowMin?('<div style="font-size:11px;color:#eab308;margin-top:8px">Minimum down for '+veh+' at '+term+' mo is $'+minDown.toLocaleString()+' &#8212; monthly shown at the minimum.</div>'):'')+
+      '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5">Every extra $1,000 down lowers the monthly by about $'+Math.round(1000/term).toLocaleString()+' (down &#247; term); your blended take stays $'+p.b.toLocaleString()+'/mo either way. 1,250 mi/mo &#183; overage $'+over.toFixed(2)+'/mi &#183; refundable deposit &#183; no credit pulls &#183; no lease-to-own.</div>';
+  }catch(e){}
+}
+document.addEventListener('DOMContentLoaded',function(){ try{ renderLeasePricing(12); }catch(e){} try{ renderLeaseCalc(); }catch(e){} });
+// ---- Lease booking mode: maps the booking vehicle to the lease pricing, auto-fills the Add Booking form, stamps lease fields on save. ----
+var PB_LEASE_VEHICLE_MAP = {
+  "BMW M3":"BMW M3 Competition",
+  "Corvette":"Chevrolet Corvette (White)",
+  "Corvette Z51":"Corvette C8 Z51 (Black)",
+  "Macan":"Porsche Macan",
+  "C300":"Mercedes-Benz AMG C300",
+  "Porsche Boxster S":"Porsche Boxster S",
+  "BMW i4":"BMW i4",
+  "Polaris Slingshot":"Polaris Slingshot"
+};
+var PB_LEASE_OVERAGE = {3:0.65,6:0.60,9:0.50,12:0.50};
+var _leaseTerm = 12, _leaseData = null;
+function _leasePriceFor(vehName, term){
+  var key = PB_LEASE_VEHICLE_MAP[vehName] || (PB_LEASE_PRICING[vehName]?vehName:null);
+  if(!key || !PB_LEASE_PRICING[key]) return null;
+  var p = PB_LEASE_PRICING[key][term]; return p ? {b:p.b,d:p.d,dep:p.dep} : null;
+}
+function _leaseMoney(n){ return '$'+(Math.round(n||0)).toLocaleString('en-US'); }
+function setLeaseTerm(t){
+  _leaseTerm = t;
+  var btns = document.querySelectorAll('#leaseTermBtns [data-lterm]');
+  for(var i=0;i<btns.length;i++){ var on=(+btns[i].getAttribute('data-lterm')===t);
+    btns[i].style.background=on?'#C9A962':''; btns[i].style.color=on?'#151004':''; btns[i].style.borderColor=on?'#C9A962':''; }
+  recomputeLease();
+}
+function recomputeLease(){
+  if(!$d('fType')||$d('fType').value!=='lease') return;
+  var veh = $d('fVehicle')?$d('fVehicle').value:'';
+  var term = _leaseTerm||12;
+  var p = _leasePriceFor(veh, term);
+  var sum = $d('leaseSummary');
+  var dnEl=$d('fLeaseDown'), moEl=$d('fLeaseMonthly');
+  if(p){
+    // pre-fill down + monthly + deposit + miles + overage from the preset unless the owner hand-edited them
+    if(dnEl && !dnEl._manual) dnEl.value = p.d;
+    if(moEl && !moEl._manual) moEl.value = Math.round(p.b - p.d/term);
+    if($d('fDeposit') && !$d('fDeposit')._manual) $d('fDeposit').value = p.dep;
+    if($d('fIncludedMiles') && !$d('fIncludedMiles')._manual) $d('fIncludedMiles').value = 1250*term;
+    if($d('fOverageRate') && !$d('fOverageRate')._manual) $d('fOverageRate').value = (PB_LEASE_OVERAGE[term]!=null?PB_LEASE_OVERAGE[term]:0.5);
+  }
+  var down = dnEl ? (parseFloat(dnEl.value)||0) : 0;
+  var monthly = moEl ? (parseFloat(moEl.value)||0) : 0;
+  var dep = parseFloat(($d('fDeposit')&&$d('fDeposit').value)||0)||0;
+  var miles = parseFloat(($d('fIncludedMiles')&&$d('fIncludedMiles').value)||0)||0;
+  var over = parseFloat(($d('fOverageRate')&&$d('fOverageRate').value)||0)||0;
+  var total = down + monthly*term;          // total lease value (down + monthly x term)
+  var startDue = down + dep + monthly;      // due at signing = down + deposit + first month
+  if($d('fRevenue') && !$d('fRevenue')._manual) $d('fRevenue').value = total;
+  if($d('fDateLock')) $d('fDateLock').value = 0;   // no date-lock on a lease; down is tracked as leaseDown
+  if($d('fRemainingBalance')){ $d('fRemainingBalance').value = Math.round(monthly*term); $d('fRemainingBalance')._manual = true; }  // monthlies to collect
+  var pk = $d('fPickupDate') && $d('fPickupDate').value;
+  if(pk && $d('fDropoffDate') && !$d('fDropoffDate')._manual){
+    var dd = new Date(pk+'T12:00:00'); if(!isNaN(dd.getTime())){ dd.setMonth(dd.getMonth()+term); $d('fDropoffDate').value = dateStr(dd); }
+  }
+  _leaseData = {term:term, down:down, monthly:monthly, deposit:dep, miles:miles, overage:over, total:total, blended:(p?p.b:(monthly+(term?down/term:0)))};
+  if(sum){
+    if(!veh){ sum.innerHTML='<span style="color:var(--muted)">Choose a vehicle to load lease pricing.</span>'; }
+    else if(!p){ sum.innerHTML='<span style="color:var(--muted)">No preset pricing for '+esc(veh)+' - using the values you entered.</span><br>'+term+'-month &#183; '+_leaseMoney(monthly)+'/mo &#183; due at signing '+_leaseMoney(startDue); }
+    else { sum.innerHTML='<b>'+esc(veh)+'</b> &#183; '+term+'-month lease<br>Down '+_leaseMoney(down)+' &#183; <b>'+_leaseMoney(monthly)+'/mo</b> &#183; Deposit '+_leaseMoney(dep)+' &#183; '+miles.toLocaleString()+' mi &#183; overage $'+over.toFixed(2)+'/mi<br>Due at signing '+_leaseMoney(startDue)+' &#183; total of monthly payments '+_leaseMoney(monthly*term)+' &#183; total value '+_leaseMoney(total); }
+  }
+}
+function toggleLeaseFields(){
+  var isL = $d('fType') && $d('fType').value==='lease';
+  var g = $d('leaseFieldsGroup'); if(g) g.style.display = isL?'':'none';
+  var daysEl = $d('fDays'), daysRow = (daysEl && daysEl.closest) ? daysEl.closest('.fgroup') : null;
+  if(daysRow) daysRow.style.display = isL?'none':'';
+  if(isL){ if(!_leaseTerm) _leaseTerm=12; setLeaseTerm(_leaseTerm); }
+}
 // The real prestigeblackrentals.com storefront photo for each vehicle (same URLs the live booking site uses). Backfilled
 // onto VEHICLE_COSTS below so every vehicle shows its picture in the dashboard even before any per-vehicle image is saved;
 // a saved custom image always wins (see the pricing-config loader).
@@ -5504,6 +5655,7 @@ function _syncPayload(noBookings){
     focus_history: JSON.parse(localStorage.getItem('pb_focus_history') || '{}'),          // goal check-off history (fed back to Claude) -- synced so completions match on every device
     contractTemplate: contractTemplate || localStorage.getItem('pb_contract_template') || '',
     slingshotWaiverTemplate: slingshotWaiverTemplate || localStorage.getItem('pb_slingshot_waiver') || '',
+    leaseTemplate: leaseTemplate || localStorage.getItem('pb_lease_template') || '',
     // Only write owner_signature when non-empty OR when user explicitly cleared it
     ...(OWNER_SIGNATURE || _sigCleared ? { owner_signature: OWNER_SIGNATURE } : {}),
     messaging_url: MESSAGING_URL || '',
@@ -5877,6 +6029,10 @@ function cloudLoad(callback) {
           var _preSync = slingshotWaiverTemplate;
           if(typeof _migrateWaiverTemplate === 'function') _migrateWaiverTemplate();
           if(slingshotWaiverTemplate !== _preSync) needsPush = true;
+        }
+        if (data.leaseTemplate && typeof data.leaseTemplate === 'string' && data.leaseTemplate.length > 10) {
+          leaseTemplate = data.leaseTemplate;
+          try { localStorage.setItem('pb_lease_template', leaseTemplate); } catch(e) {}
         }
         if (data.owner_signature && typeof data.owner_signature === 'string' && data.owner_signature.length > 10) {
           OWNER_SIGNATURE = data.owner_signature;
@@ -8062,7 +8218,7 @@ function gcalFetch(method, path, body, _attempt){
 }
 
 function buildGCalEvent(b){
-  var typeLabel = b.type==='daily'?'Daily Rental': b.type==='hourly'?'Hourly Booking':'Chauffeur Service';
+  var typeLabel = b.type==='daily'?'Daily Rental': b.type==='hourly'?'Hourly Booking':b.type==='lease'?'Lease':'Chauffeur Service';
   var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   var lines = [
     'Type: '    + typeLabel,
@@ -10130,8 +10286,8 @@ function renderCharts(filtered){
   });
 
   // ---------- 2) Revenue by Booking Type -- by REVENUE (with counts + %) ----------
-  var TYPES=[{k:'daily',label:'Daily',c:GOLD,noun:'booking'},{k:'hourly',label:'Hourly',c:BLUE,noun:'booking'},{k:'chauffeur',label:'Chauffeur',c:GREEN,noun:'booking'},{k:'event',label:'Events',c:PURPLE,noun:'booking'},{k:'rides',label:'Chauffeur Rides',c:'#2dd4bf',noun:'ride'},{k:'income',label:'Other Income',c:'#f472b6',noun:'entry'},{k:'cardfee',label:'Card Fees (13.25%)',c:'#fbbf24',noun:'card sale'}];
-  var tRev={daily:0,hourly:0,chauffeur:0,event:0,rides:0,income:0,cardfee:0}, tCnt={daily:0,hourly:0,chauffeur:0,event:0,rides:0,income:0,cardfee:0};
+  var TYPES=[{k:'daily',label:'Daily',c:GOLD,noun:'booking'},{k:'hourly',label:'Hourly',c:BLUE,noun:'booking'},{k:'chauffeur',label:'Chauffeur',c:GREEN,noun:'booking'},{k:'event',label:'Events',c:PURPLE,noun:'booking'},{k:'lease',label:'Leases',c:'#e0995e',noun:'lease'},{k:'rides',label:'Chauffeur Rides',c:'#2dd4bf',noun:'ride'},{k:'income',label:'Other Income',c:'#f472b6',noun:'entry'},{k:'cardfee',label:'Card Fees (13.25%)',c:'#fbbf24',noun:'card sale'}];
+  var tRev={daily:0,hourly:0,chauffeur:0,event:0,lease:0,rides:0,income:0,cardfee:0}, tCnt={daily:0,hourly:0,chauffeur:0,event:0,lease:0,rides:0,income:0,cardfee:0};
   (_erList||[]).forEach(function(b){ if(!b||b._deleted||b.status==='cancelled') return; var er=_earnedRevInWindow(b,_cLo,_cHi); if(!er) return; var k=b.isEvent?'event':(b.type||'daily'); if(tRev[k]==null) k='daily'; tRev[k]+=er; tCnt[k]++; }); // EARNED-DATE gross by type -> doughnut total == KPI Gross Revenue
   tRev.rides=_chartRide; tCnt.rides=_rideList.length; tRev.income=_chartIncome; tCnt.income=_incList.length; // non-booking revenue as slices -> doughnut total == KPI Gross Revenue
   tRev.cardfee=_chartCardFee; tCnt.cardfee=_chartCardFeeN; // 13.25% card-fee gross-up slice (payment-date) -> keeps doughnut total == KPI Gross Revenue
@@ -11894,7 +12050,7 @@ function _popTabAssignBookings(){
   opts+=list.map(function(b){
     var when=(typeof fmtDate==='function'&&(b.pickupDate||b.date))?fmtDate(b.pickupDate||b.date):(b.pickupDate||b.date||'TBD');
     if(b.pickupTime) when+=' '+b.pickupTime;
-    var tag=(b.isEvent||b.type==='event')?('Event'+((b.eventPackage||b.eventType)?': '+(b.eventPackage||b.eventType):'')):'Chauffeur';
+    var tag=(b.isEvent||b.type==='event')?('Event'+((b.eventPackage||b.eventType)?': '+(b.eventPackage||b.eventType):'')):(b.type==='lease'?'Lease':'Chauffeur');
     var veh=b.vehicleDisplay||b.vehicle||'Vehicle';
     var mark=(b.assignedDriver&&b.assignedDriver.email)?' \u2713':'';
     return '<option value="'+esc(b.id)+'">'+esc(when+'  \u00B7  '+(b.name||'(no name)')+'  \u00B7  '+veh+'  \u00B7  '+tag+mark)+'</option>';
@@ -13511,6 +13667,10 @@ function openModal(id, vehiclePreset, datePreset){
   $d('fOverageRate')._manual   = !!b;
   $d('fIncludedMiles').value   = b?(b.includedMiles||'')  : '';
   $d('fOverageRate').value     = b?(b.overageRate||'')     : '';
+  // Lease fields: load from the booking when editing a lease; reset for a new booking so the preset auto-fills.
+  if($d('fLeaseDown')){ $d('fLeaseDown')._manual = !!(b && b.isLease); $d('fLeaseDown').value = (b && b.isLease && b.leaseDown!=null) ? b.leaseDown : ''; }
+  if($d('fLeaseMonthly')){ $d('fLeaseMonthly')._manual = !!(b && b.isLease); $d('fLeaseMonthly').value = (b && b.isLease && b.leaseMonthly!=null) ? b.leaseMonthly : ''; }
+  _leaseTerm = (b && b.isLease && b.leaseTerm) ? b.leaseTerm : 12;
   checkSlingshotHourly();
   updateDurationLabel();
   $d('fAddlIncomeAmt').value  = b&&b.addlIncome ? (b.addlIncome.amount||'') : '';
@@ -13570,6 +13730,7 @@ function openModal(id, vehiclePreset, datePreset){
     } else { var _bn0=document.getElementById('pbDraftBanner'); if(_bn0) _bn0.remove(); }
   } else { _pbClearBookingDraft(); }
   toggleEventFields();
+  toggleLeaseFields();
   try{ if(typeof updateRemainingBalance==='function') updateRemainingBalance(); if(typeof updateLiveTotal==='function') updateLiveTotal(); }catch(e){}
   $d('modal').classList.add('open');
 }
@@ -13757,6 +13918,7 @@ function _slingshotHourlyPrice(hrs){
 }
 function onVehicleChange(){
   if($d('fType')&&$d('fType').value==='event'){ _evRecalc(); updateMileageHint(); checkSlingshotHourly(); return; }   // events price via the event calculator, not rate x days
+  if($d('fType')&&$d('fType').value==='lease'){ recomputeLease(); return; }   // leases price via the lease calculator, not rate x days
   var v=$d('fVehicle').value;
   var vc=VEHICLE_COSTS[v];
   if(vc && vc.deposit && !$d('fDeposit')._manual) $d('fDeposit').value=vc.deposit;
@@ -13827,6 +13989,7 @@ function validateDropoffDate(){
 }
 function autoFillDropoff(){
   var type=$d('fType').value;
+  if(type==='lease'){ recomputeLease(); return; }   // lease end date = pickup + term months, handled in recomputeLease
   var pDate=$d('fPickupDate').value;
   var pTime=$d('fPickupTime').value;
   var days=parseInt($d('fDays').value)||1;
@@ -13908,7 +14071,8 @@ function updateMileageHint(){
   // Skip for EVENT bookings -- their included miles come from the event package (Date Night = 50/100), not the vehicle's daily miles.
   var fim=$d('fIncludedMiles');
   var _isEvt=$d('fEventPackage')&&$d('fEventPackage').value;
-  if(vm && fim && !fim._manual && !_isEvt){ fim.value = vm.miles*(dbl?2:1)*days; }
+  var _isLease=$d('fType')&&$d('fType').value==='lease';
+  if(vm && fim && !fim._manual && !_isEvt && !_isLease){ fim.value = vm.miles*(dbl?2:1)*days; }
   var hint=$d('fMileageHint'); if(!hint) return;
   var type=$d('fType')?$d('fType').value:'daily';
   var isHrType=(type==='hourly'||type==='chauffeur');
@@ -14085,6 +14249,18 @@ function saveBooking(){
     entry.wait = (!entry.selfDrive && $d('chkEventWait') && $d('chkEventWait').checked) ? (Number(_evA.wait)||0) : 0;
     var _ev2 = $d('fVehicle2') ? $d('fVehicle2').value : '';
     if(_ev2){ entry.vehicle2 = _ev2; entry.vehicleDisplay = vehicle + ' + ' + _ev2; }
+  }
+
+  // Lease: stamp the lease metadata so the booking renders + groups as a lease and the Lease Agreement is used.
+  if($d('fType') && $d('fType').value==='lease'){
+    entry.isLease      = true;
+    entry.leaseTerm    = _leaseTerm||12;
+    entry.leaseDown    = parseFloat(($d('fLeaseDown')&&$d('fLeaseDown').value)||0)||0;
+    entry.leaseMonthly = parseFloat(($d('fLeaseMonthly')&&$d('fLeaseMonthly').value)||0)||0;
+    entry.leaseDeposit = parseFloat($d('fDeposit').value)||0;
+    entry.leaseMiles   = parseFloat($d('fIncludedMiles').value)||0;
+    entry.leaseOverage = parseFloat($d('fOverageRate').value)||0;
+    if(_leaseData) entry.leaseBlended = _leaseData.blended;
   }
 
   if(editingId){
@@ -18876,7 +19052,7 @@ function _evAgreement(b){
     +'<tr><td class="k">Vehicle / VIN</td><td class="v">'+esc(b.vehicle||'')+(vin?(' &middot; VIN '+esc(vin)):'')+'</td></tr></table>'
     +'<div style="margin-top:10px">'+bt+'</div>'
     +(dr?('<h2>Additional Authorized Drivers &mdash; Signatures</h2>'+dr):'');
-  var tpl=isW?(typeof slingshotWaiverTemplate!=='undefined'?slingshotWaiverTemplate:''):(typeof contractTemplate!=='undefined'?contractTemplate:'');
+  var tpl=(b.type==='lease'&&typeof leaseTemplate!=='undefined'&&leaseTemplate)?leaseTemplate:(isW?(typeof slingshotWaiverTemplate!=='undefined'?slingshotWaiverTemplate:''):(typeof contractTemplate!=='undefined'?contractTemplate:''));
   if(tpl){
     var bd={}; try{ bd=_buildContractBreakdown(b); }catch(e){ bd={}; }
     var vi=(typeof VEHICLE_INFO!=='undefined'&&VEHICLE_INFO[b.vehicle])?VEHICLE_INFO[b.vehicle]:{}; var v=b.verify||{};
@@ -18886,6 +19062,7 @@ function _evAgreement(b){
     var _csig=(_ps&&_ps.sig)?'<img src="'+_ps.sig+'" style="max-height:56px;max-width:260px;object-fit:contain;display:inline-block;vertical-align:bottom;background:transparent;filter:brightness(0)">':'';
     var _osig=(typeof OWNER_SIGNATURE!=='undefined'&&OWNER_SIGNATURE&&String(OWNER_SIGNATURE).indexOf('data:image/')===0)?'<img src="'+OWNER_SIGNATURE+'" style="max-height:56px;max-width:260px;object-fit:contain;display:inline-block;vertical-align:bottom;background:transparent;filter:brightness(0)">':'<span style="font-family:cursive;font-size:26px;color:#111;line-height:1">Edwin P. Watson Jr.</span>';
     var map={customer_name:b.name||'',today:_sd,customer_signed_date:_sd,customer_signature:_csig,signature:_csig,owner_signature:_osig,vehicle:b.vehicle||'',rental_type:b.type||'daily',pickup_date:b.pickupDate||b.date||'',pickup_time:b.pickupTime||'',dropoff_date:b.dropoffDate||'',dropoff_time:b.dropoffTime||'',duration:dur,total_revenue:_evFmtMoney(bd.subtotal!=null?bd.subtotal:(b.revenue||0)),deposit_amount:_evFmtMoney(bd.depositAmt||0),balance_due:_evFmtMoney(bd.balanceDue||0),vehicle_model:vi.model||'',vehicle_color:vi.color||b.customerSigColor||'',vehicle_vin:vi.vin||'',license_number:v.idNumber||'',license_state:v.idState||'',license_type:v.idType||'',license_expiry:v.idExpiry||'',customer_dob:v.idDob||'',verified_name:v.idName||'',license_address:v.idAddress||''};
+    if(b.type==='lease'){ var _lT=Number(b.leaseTerm)||12,_lD=Number(b.leaseDown)||0,_lM=Number(b.leaseMonthly)||0,_lDep=Number(b.leaseDeposit!=null?b.leaseDeposit:b.deposit)||0,_lMi=Number(b.leaseMiles)||_lT*1250,_lOv=Number(b.leaseOverage)||0.5,_lTot=Number(b.leaseTotal)||(_lD+_lM*_lT); Object.assign(map,{rental_type:'Lease',lease_term:_lT+' months',lease_start:(b.pickupDate||b.date||''),lease_end:(b.dropoffDate||''),first_payment_date:(b.pickupDate||b.date||''),down_payment:_evFmtMoney(_lD),monthly_payment:_evFmtMoney(_lM)+'/mo',total_lease:_evFmtMoney(_lTot),included_miles:_lMi.toLocaleString()+' mi',overage_rate:'$'+_lOv.toFixed(2)+'/mi',deposit_amount:_evFmtMoney(_lDep),lessee_initials:(b.leaseInitials?String(b.leaseInitials).toUpperCase().slice(0,6):'')}); }
     var merged=String(tpl).replace(/<script[\s\S]*?<\/script>/gi,'').replace(/\{\{\s*([a-zA-Z_]+)\s*\}\}/g,function(mm,k){ k=k.toLowerCase(); return (map[k]!=null&&map[k]!=='')?String(map[k]):'________'; });
     var isHtml=/<(div|p|table|br|span|h[1-6]|img)\b/i.test(merged);
     out+='<h2>Full Executed Agreement Text</h2><div style="border:1px solid #ddd;border-radius:6px;padding:16px;font-size:12px;'+(isHtml?'':'white-space:pre-wrap;')+'background:#fcfcfc;overflow-wrap:anywhere">'+(isHtml?merged:esc(merged))+'</div>';
@@ -19624,7 +19801,7 @@ function generateInvoice(id){
     (b.email?'<div style="color:#666;font-size:13px">'+esc(b.email)+'</div>':'')+
     '<div class="inv-sec">Booking Details</div>'+
     '<div class="inv-row"><span class="inv-lbl">Vehicle</span><span class="inv-val">'+esc(b.vehicle)+'</span></div>'+
-    '<div class="inv-row"><span class="inv-lbl">Service</span><span class="inv-val">'+(b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service')+'</span></div>'+
+    '<div class="inv-row"><span class="inv-lbl">Service</span><span class="inv-val">'+(b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':b.type==='lease'?'Lease':'Chauffeur Service')+'</span></div>'+
     '<div class="inv-row"><span class="inv-lbl">Pickup</span><span class="inv-val">'+(b.pickupDate?fmtDate(b.pickupDate):fmtDate(b.date))+(b.pickupTime?' @ '+fmtTime(b.pickupTime):'')+'</span></div>'+
     (b.dropoffDate?'<div class="inv-row"><span class="inv-lbl">Drop-off</span><span class="inv-val">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' @ '+fmtTime(b.dropoffTime):'')+'</span></div>':'')+
     '<div class="inv-row"><span class="inv-lbl">Duration</span><span class="inv-val">'+b.days+' '+(b.type==='hourly'?'hr':'day')+(b.days!==1?'s':'')+'</span></div>'+
@@ -22092,9 +22269,269 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
 </body>
 </html>`;
 
+var leaseTemplate = '';  // LEASE: motor-vehicle lease agreement (selected when booking.type==='lease'); synced to pb_data/leaseTemplate
+var DEFAULT_LEASE_TEMPLATE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prestige Black - Motor Vehicle Lease Agreement</title>
+<style>
+  @page { margin: 0.5in; size: letter; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 11.5px; color: #e0e0e0; background: #111; line-height: 1.6; }
+  .wrap { max-width: 760px; margin: 0 auto; background: #0d0d0d; border: 1.5px solid #C9A962; padding: 38px 46px 46px; }
+  .hdr { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+  .co { font-weight: 700; font-size: 12px; line-height: 1.9; color: #e0e0e0; }
+  .logo-block { text-align: center; }
+  .logo-p { font-size: 46px; font-weight: 900; color: #C9A962; font-family: Georgia, serif; line-height: 1; }
+  .logo-sub { font-size: 7.5px; letter-spacing: .28em; text-transform: uppercase; color: #C9A962; margin-top: 4px; }
+  h1 { text-align: center; font-size: 22px; font-weight: 400; color: #e0e0e0; font-family: Georgia, serif; margin-bottom: 6px; }
+  .subttl { text-align:center; font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:#C9A962; margin-bottom: 24px; }
+  h2 { font-size: 11.5px; font-weight: 700; text-transform: uppercase; color: #e0e0e0; margin: 22px 0 10px; }
+  .fr { display: flex; align-items: baseline; margin-bottom: 6px; gap: 8px; }
+  .fl { width: 200px; flex-shrink: 0; color: #999; font-size: 11px; }
+  .fv { flex: 1; color: #e0e0e0; font-weight: 500; border-bottom: 1px solid #333; min-height: 16px; padding-bottom: 2px; word-break: break-word; }
+  p { margin-bottom: 9px; font-size: 11.5px; color: #ccc; }
+  ul { margin: 6px 0 10px 18px; }
+  li { margin-bottom: 6px; font-size: 11.5px; color: #ccc; }
+  .center { text-align: center; color: #888; margin: 10px 0 8px; }
+  .cap { color: #e9e2cf; font-weight: 700; }
+  .box { border: 1.5px solid #C9A962; background: rgba(201,169,98,.06); border-radius: 6px; padding: 12px 15px; margin: 12px 0; }
+  .box h2 { margin-top: 0; color: #C9A962; }
+  .box p, .box li { color: #ddd; }
+  .initial { margin-top: 8px; font-size: 10.5px; color: #C9A962; }
+  .initial .ln { display:inline-block; border-bottom:1px solid #C9A962; width: 80px; height: 15px; margin-left: 6px; vertical-align: bottom; text-align:center; font-weight:800; line-height:15px; color:#C9A962; letter-spacing:.04em; }
+  .initial.pbini-active { outline:2px solid #C9A962; outline-offset:4px; border-radius:6px; background:rgba(201,169,98,.14); padding:5px 9px; transition:background .2s; }
+  .initial.pbini-done { color:#2e7d32; }
+  .initial.pbini-done .ln { border-bottom-color:#2e7d32; color:#2e7d32; }
+  .sig-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 32px; }
+  .sig-line { border-bottom: 1.5px solid #C9A962; min-height: 82px; margin-bottom: 7px; display: flex; align-items: flex-end; padding-bottom: 0; }
+  .sig-label { font-size: 10.5px; color: #999; margin-top: 3px; }
+  .note { font-size: 10.5px; color: #777; margin-top: 6px; }
+  @media print { body { background: #0d0d0d; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  @media (max-width: 520px) {
+    .wrap { padding: 20px 16px 28px; border-left: none; border-right: none; }
+    .hdr { flex-direction: column; gap: 10px; align-items: center; text-align: center; }
+    .co { text-align: center; }
+    .fr { flex-direction: column; gap: 2px; margin-bottom: 10px; }
+    .fl { width: 100%; font-size: 10px; color: #777; }
+    .fv { border-bottom: none; padding-bottom: 6px; border-bottom: 1px solid #222; }
+    .sig-grid { grid-template-columns: 1fr; gap: 20px; }
+    h1 { font-size: 17px; }
+    h2 { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- HEADER -->
+  <div class="hdr">
+    <div class="co">
+      Prestige Black Corporation<br>
+      5473 Blair Rd. Ste 100<br>
+      Dallas, TX 75231<br>
+      (214) 207-2481
+    </div>
+    <div class="logo-block">
+      <div class="logo-p">P</div>
+      <div class="logo-sub">Prestige<br>Black</div>
+    </div>
+  </div>
+
+  <h1>Motor Vehicle Lease Agreement</h1>
+  <div class="subttl">Short-Term Luxury Vehicle Lease &bull; Texas</div>
+
+  <!-- 1. PARTIES -->
+  <h2>1. Parties</h2>
+  <p>This Motor Vehicle Lease Agreement ("Agreement" or "Lease") is made and entered into on this <strong class="cap">{{today}}</strong>, by and between:</p>
+  <div class="fr"><span class="fl">Lessor / Owner:</span><span class="fv">Prestige Black Corporation</span></div>
+  <div class="fr"><span class="fl">Address:</span><span class="fv">5473 Blair Rd. Ste 100 Dallas, TX 75231</span></div>
+  <div class="fr"><span class="fl">Phone:</span><span class="fv">(214) 207-2481</span></div>
+  <p class="center">and</p>
+  <div class="fr"><span class="fl">Lessee / Renter:</span><span class="fv">{{customer_name}}</span></div>
+  <div class="fr"><span class="fl">Address:</span><span class="fv">{{license_address}}</span></div>
+  <div class="fr"><span class="fl">Phone:</span><span class="fv">{{customer_phone}}</span></div>
+  <div class="fr"><span class="fl">Driver's License No.:</span><span class="fv">{{license_number}}</span></div>
+  <div class="fr"><span class="fl">State of Issue:</span><span class="fv">{{license_state}}</span></div>
+  {{broker_line}}
+  <p>Lessor and Lessee are each a "Party" and together the "Parties." Lessor is engaged in the trade or business of renting and leasing motor vehicles.</p>
+  <p>Lessee represents and warrants that Lessee is at least 21 years of age, holds a valid driver's license, maintains (or will maintain before taking possession) the full-coverage insurance required by Section 7, and that all information Lessee has provided is true and correct. These representations are a material inducement to Lessor's entry into this Lease, and any misrepresentation is a material default.</p>
+
+  <!-- 2. VEHICLE INFORMATION -->
+  <h2>2. Leased Vehicle</h2>
+  <p>Lessor agrees to lease to Lessee, and Lessee agrees to lease from Lessor, the following motor vehicle (the "Vehicle"):</p>
+  <div class="fr"><span class="fl">Make:</span><span class="fv">{{vehicle_make}}</span></div>
+  <div class="fr"><span class="fl">Model:</span><span class="fv">{{vehicle_model}}</span></div>
+  <div class="fr"><span class="fl">Year:</span><span class="fv">{{vehicle_year}}</span></div>
+  <div class="fr"><span class="fl">Color:</span><span class="fv">{{vehicle_color}}</span></div>
+  <div class="fr"><span class="fl">VIN:</span><span class="fv">{{vehicle_vin}}</span></div>
+  <div class="fr"><span class="fl">Odometer at Lease Start:</span><span class="fv">{{odometer_in}}</span></div>
+  <div class="fr"><span class="fl">Delivery:</span><span class="fv">{{delivery_fee}}</span></div>
+
+  <!-- 3. LEASE TERM -->
+  <h2>3. Lease Term</h2>
+  <div class="fr"><span class="fl">Lease Term:</span><span class="fv">{{lease_term}}</span></div>
+  <div class="fr"><span class="fl">Lease begins on:</span><span class="fv">{{lease_start}}</span></div>
+  <div class="fr"><span class="fl">Lease ends on:</span><span class="fv">{{lease_end}}</span></div>
+  <p>This is a fixed-term lease. The Vehicle must be returned to Lessor on or before the lease end date and time unless the Lease is renewed or extended in a writing signed by both Parties. There is no automatic renewal.</p>
+
+  <!-- 4. RENT, PAYMENTS, AND FEES -->
+  <h2>4. Rent, Payments, and Fees</h2>
+  <div class="fr"><span class="fl">Down Payment (due at signing):</span><span class="fv">{{down_payment}}</span></div>
+  <div class="fr"><span class="fl">Monthly Payment:</span><span class="fv">{{monthly_payment}}</span></div>
+  <div class="fr"><span class="fl">First Monthly Payment Due:</span><span class="fv">{{first_payment_date}}</span></div>
+  <div class="fr"><span class="fl">Payments Due:</span><span class="fv">Monthly, in advance, on the same day of each month</span></div>
+  <div class="fr"><span class="fl">Refundable Security Deposit:</span><span class="fv">{{deposit_amount}} <em style="font-weight:400;color:#888">(refundable per Section 6)</em></span></div>
+  <div class="fr"><span class="fl">Total of Monthly Payments:</span><span class="fv">{{total_lease}}</span></div>
+  <ul>
+    <li>The Down Payment and first Monthly Payment, plus the Security Deposit, are due at signing before Lessee takes possession.</li>
+    <li>Each Monthly Payment is due <strong class="cap">in advance</strong>. A payment not received within three (3) calendar days of its due date is late, and a <strong>late fee of $95</strong> applies to each late Monthly Payment.</li>
+    <li>Any payment returned, reversed, charged back, or declined is subject to a <strong>$45 returned-payment fee</strong>, in addition to any late fee, and Lessee must immediately cure the payment by cleared funds.</li>
+    <li>Lessee is responsible for all applicable state and local taxes, tolls, parking, citations, and administrative fees associated with Lessee's use of the Vehicle.</li>
+    <li><strong>Refuel Fee:</strong> $30 per quarter tank short of the fuel level (or, for electric vehicles, the state of charge) at delivery.</li>
+  </ul>
+
+  <!-- 5. MILEAGE -->
+  <h2>5. Mileage Allowance and Excess-Mileage Charges</h2>
+  <div class="fr"><span class="fl">Included Mileage (this Lease):</span><span class="fv">{{included_miles}}</span></div>
+  <div class="fr"><span class="fl">Excess-Mileage Rate:</span><span class="fv">{{overage_rate}}</span></div>
+  <p>The included mileage above is the total mileage allowance for the entire Lease Term (based on 1,250 miles per month). Miles driven beyond the included mileage are billed at the Excess-Mileage Rate above and are due at or before the end of the Lease. Odometer readings at lease start and lease end are conclusive for this calculation. Tampering with, disconnecting, or altering the odometer is a material breach of this Agreement.</p>
+
+  <!-- 6. SECURITY DEPOSIT -->
+  <h2>6. Security Deposit</h2>
+  <p>A refundable Security Deposit of <strong class="cap">{{deposit_amount}}</strong> is required before Lessee takes possession of the Vehicle. Lessor may apply the Security Deposit to any amount Lessee owes under this Agreement, including unpaid rent, excess-mileage charges, damage beyond ordinary wear, cleaning, fuel/charge, fees, fines, tolls, citations, late charges, and the cost of repossession or recovery. The Security Deposit (or its balance) is refunded within fourteen (14) days after the Vehicle is returned and inspected, provided no amounts are owed. The Security Deposit does not limit Lessee's liability, is not an advance payment of rent, and does not authorize Lessee to withhold any payment.</p>
+
+  <!-- 7. INSURANCE (REQUIRED) -->
+  <div class="box">
+  <h2>7. Insurance - Required Throughout the Lease</h2>
+  <p><span class="cap">LESSEE MUST MAINTAIN, AT LESSEE'S OWN EXPENSE, FULL-COVERAGE AUTOMOBILE INSURANCE ON THE VEHICLE FOR THE ENTIRE LEASE TERM</span>, including liability, collision, and comprehensive coverage, with limits no less than those required by Texas law and sufficient to cover the full value of the Vehicle. Lessee shall:</p>
+  <ul>
+    <li>Name <strong>Prestige Black Corporation</strong> as an <strong>additional insured and loss payee</strong> on the policy;</li>
+    <li>Provide proof of insurance (declarations page) before taking possession and at any time on request;</li>
+    <li>Keep the coverage continuously in force; and</li>
+    <li>Not allow the policy to lapse, reduce below required limits, or exclude the Vehicle or any authorized driver.</li>
+  </ul>
+  <p><span class="cap">A LAPSE, CANCELLATION, OR REDUCTION OF REQUIRED INSURANCE IS A MATERIAL DEFAULT</span> under Section 13 and permits immediate repossession. Lessee's insurance is primary; any insurance carried by Lessor is excess and non-contributory. Lessee is fully responsible for any loss, theft, damage, deductible, or diminished value to the Vehicle regardless of fault.</p>
+  <div class="initial" id="pbIniRow1" data-pbini-label="Section 7 - Insurance Required Throughout the Lease">Lessee initials:<span class="ln" id="pbIni1" data-pbini="1">{{lessee_initials}}</span></div>
+  </div>
+
+  <!-- 8. MAINTENANCE -->
+  <h2>8. Maintenance, Condition, and Alterations</h2>
+  <p>Lessor is responsible for routine scheduled maintenance (oil/fluids, standard service intervals, and ordinary wear items) during the Lease Term. Lessee shall:</p>
+  <ul>
+    <li>Operate and care for the Vehicle in a reasonable and prudent manner and keep all fluids and tire pressures at proper levels between services;</li>
+    <li>Promptly notify Lessor of any mechanical issue, warning light, accident, damage, theft, or loss;</li>
+    <li>Not perform, or allow any third party to perform, any repair, modification, tuning, wrap, tint, badge change, wheel/tire change, or alteration without Lessor's prior written consent; and</li>
+    <li>Return the Vehicle in the same condition as delivered, ordinary wear and tear excepted.</li>
+  </ul>
+  <p>Lessee acknowledges receipt of the Vehicle in clean, good operating condition. Any damage, mechanical issue, or loss must be reported immediately. Excess wear, damage, missing items, or needed reconditioning at lease end are charged to Lessee.</p>
+
+  <!-- 9. USE OF VEHICLE -->
+  <h2>9. Use of the Vehicle</h2>
+  <p>Lessee agrees:</p>
+  <ul>
+    <li>To operate the Vehicle only for lawful personal (and, if noted above, business) use.</li>
+    <li>Not to use the Vehicle for racing, timed events, track or competition use, towing, off-road use, transporting passengers or property for hire, driving-for-hire or rideshare, subleasing, or any illegal purpose.</li>
+    <li>Not to operate the Vehicle while impaired by alcohol, drugs, or any substance, and not to transport controlled substances or contraband.</li>
+    <li>Not to permit any person other than the authorized driver(s) listed and approved under this Agreement to operate the Vehicle.</li>
+    <li>Not to take the Vehicle outside the State of Texas without Lessor's prior written consent.</li>
+    <li><strong class="cap">Unauthorized Drivers - Consequences:</strong> Allowing or permitting any individual who is not listed and authorized under this Agreement to operate the Vehicle constitutes a material breach. In such event, the <strong>entire Security Deposit shall be forfeited and retained in full</strong>, and Lessor reserves the right to <strong>immediately repossess and pick up the Vehicle</strong>, ending the Lease. <strong>No refund will be issued for any remaining lease period</strong>, and Lessee remains responsible for the full Lease Term and any retrieval, towing, or administrative costs.</li>
+    <li>To operate the Vehicle in full compliance with all applicable federal, state, and local traffic laws, ordinances, and regulations. If Lessee commits, causes, or is cited for any traffic violation, moving violation, reckless driving, excessive speeding, illegal racing, improper use of the Vehicle, or other unlawful operation during the Lease, Lessor reserves the right to withhold all or a portion of the Security Deposit to cover fines, penalties, administrative costs, towing, impound fees, increased insurance exposure, or damages resulting from such violation.</li>
+    <li>Any evidence of reckless operation, including but not limited to excessive speeding (20+ mph over the posted limit), racing, burnouts, drifting, launch-control abuse, track use, or operation in a manner that materially increases risk, constitutes a material breach and may result in immediate termination of the Lease without refund and forfeiture of the Security Deposit.</li>
+    <li><strong class="cap">100 MPH Speed Policy - Three-Strike Rule:</strong> Operating the Vehicle at or above 100 mph is a serious violation of this Agreement and is tracked as follows:
+      <ul style="margin-top:6px">
+        <li><strong>Strike 1:</strong> Formal written warning issued to Lessee, with notice that future violations escalate.</li>
+        <li><strong>Strike 2:</strong> A portion of the Security Deposit may be withheld at Lessor's discretion as a penalty for repeated violation.</li>
+        <li><strong>Strike 3:</strong> Immediate termination of the Lease. Lessor will dispatch vehicle retrieval at Lessee's current location. <strong>No refund will be issued for any remaining lease period.</strong> The Security Deposit is forfeited in full. Lessee is responsible for any towing, retrieval, or administrative costs.</li>
+      </ul>
+    </li>
+  </ul>
+
+  <!-- 10. OWNERSHIP -->
+  <div class="box">
+  <h2>10. Ownership - Lease Only; No Option to Purchase</h2>
+  <p><span class="cap">THIS IS A LEASE ONLY. LESSEE ACQUIRES NO OWNERSHIP, EQUITY, OR TITLE INTEREST IN THE VEHICLE OF ANY KIND. THIS AGREEMENT IS NOT A LEASE-TO-OWN, LEASE-PURCHASE, RENT-TO-OWN, INSTALLMENT SALE, OR FINANCING AGREEMENT, AND LESSEE HAS NO OPTION, RIGHT, OR EXPECTATION TO PURCHASE THE VEHICLE AT ANY TIME.</span> Legal and equitable title to the Vehicle remains at all times with Lessor. No payment made under this Agreement builds equity or applies toward any purchase. Lessee shall not sell, pledge, encumber, sublease, assign, or grant any security interest in the Vehicle, and any attempt to do so is void and a material default.</p>
+  <div class="initial" id="pbIniRow2" data-pbini-label="Section 10 - Lease Only; No Ownership or Purchase Option">Lessee initials:<span class="ln" id="pbIni2" data-pbini="2">{{lessee_initials}}</span></div>
+  </div>
+
+  <!-- 11. AS-IS / NO WARRANTY -->
+  <div class="box">
+  <h2>11. "AS IS" Lease - Disclaimer of Warranties</h2>
+  <p><span class="cap">THE VEHICLE IS LEASED "AS IS" AND "WITH ALL FAULTS." TO THE MAXIMUM EXTENT PERMITTED BY LAW, LESSOR DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY, ANY IMPLIED WARRANTY OF FITNESS FOR A PARTICULAR PURPOSE, AND ANY WARRANTY ARISING FROM COURSE OF DEALING OR USAGE OF TRADE.</span> Lessee has inspected the Vehicle, or had the opportunity to do so, and accepts it in its present condition. Any manufacturer warranty, to the extent transferable, is the sole warranty available to Lessee.</p>
+  <div class="initial" id="pbIniRow3" data-pbini-label="Section 11 - Vehicle Leased AS-IS; Warranties Disclaimed">Lessee initials:<span class="ln" id="pbIni3" data-pbini="3">{{lessee_initials}}</span></div>
+  </div>
+
+  <!-- 12. LIABILITY / WAIVER / INDEMNITY -->
+  <div class="box">
+  <h2>12. Assumption of Risk, Limitation of Liability, Release, and Indemnification</h2>
+  <p><span class="cap">PLEASE READ THIS SECTION CAREFULLY. IT LIMITS LESSOR'S LIABILITY AND SHIFTS RISK TO LESSEE, INCLUDING FOR LESSOR'S OWN NEGLIGENCE.</span></p>
+
+  <p><strong>(a) Assumption of Risk.</strong> <span class="cap">LESSEE UNDERSTANDS THAT THE VEHICLE IS A HIGH-PERFORMANCE AND/OR LUXURY MOTOR VEHICLE AND THAT OPERATING ANY MOTOR VEHICLE INVOLVES INHERENT AND SERIOUS RISKS, INCLUDING THE RISK OF COLLISION, PROPERTY DAMAGE, BODILY INJURY, AND DEATH. LESSEE KNOWINGLY, VOLUNTARILY, AND EXPRESSLY ASSUMES ALL SUCH RISKS ARISING FROM OR RELATED TO THE POSSESSION, CONDITION, USE, OR OPERATION OF THE VEHICLE.</span></p>
+
+  <p><strong>(b) Limitation of Liability.</strong> <span class="cap">TO THE MAXIMUM EXTENT PERMITTED BY LAW, LESSOR SHALL NOT BE LIABLE TO LESSEE, ANY DRIVER, PASSENGER, OR THIRD PARTY FOR ANY INJURY, DEATH, PROPERTY DAMAGE, LOSS, OR EXPENSE OF ANY KIND ARISING FROM OR RELATED TO THE CONDITION, SELECTION, MAINTENANCE, USE, OR OPERATION OF THE VEHICLE, EVEN IF CAUSED IN WHOLE OR IN PART BY LESSOR'S OWN NEGLIGENCE. IN NO EVENT SHALL LESSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, CONSEQUENTIAL, SPECIAL, PUNITIVE, OR EXEMPLARY DAMAGES, OR FOR LOST PROFITS, LOST TIME, OR LOSS OF USE. LESSOR'S TOTAL LIABILITY UNDER THIS AGREEMENT, IF ANY, SHALL NOT EXCEED THE TOTAL AMOUNTS ACTUALLY PAID BY LESSEE TO LESSOR UNDER THIS AGREEMENT.</span> This limitation does not apply to liability that cannot be limited or excluded by law, including Lessor's own gross negligence or willful misconduct.</p>
+
+  <p><strong>(c) Release.</strong> <span class="cap">LESSEE RELEASES, WAIVES, AND DISCHARGES LESSOR AND ITS OWNERS, OFFICERS, MEMBERS, EMPLOYEES, AGENTS, AND AFFILIATES FROM ANY AND ALL CLAIMS, DEMANDS, AND CAUSES OF ACTION ARISING FROM OR RELATED TO THE USE OR OPERATION OF THE VEHICLE, INCLUDING CLAIMS BASED ON LESSOR'S OWN NEGLIGENCE, TO THE FULLEST EXTENT PERMITTED BY LAW.</span></p>
+
+  <p><strong>(d) Graves Amendment.</strong> Lessor is engaged in the trade or business of renting and leasing motor vehicles. Pursuant to the Graves Amendment, 49 U.S.C. Section 30106, Lessor (as owner of the Vehicle) shall not be liable under any theory of vicarious liability, under the law of any State, for harm to persons or property arising from the use, operation, or possession of the Vehicle during the Lease Term, where (i) Lessor is engaged in the trade or business of leasing or renting motor vehicles, and (ii) there is no negligence or criminal wrongdoing on the part of Lessor.</p>
+
+  <p><strong>(e) Indemnification.</strong> <span class="cap">LESSEE AGREES TO INDEMNIFY, DEFEND, AND HOLD HARMLESS LESSOR AND ITS OWNERS, OFFICERS, MEMBERS, EMPLOYEES, AGENTS, AND AFFILIATES FROM AND AGAINST ANY AND ALL CLAIMS, DAMAGES, LOSSES, LIABILITIES, FINES, PENALTIES, AND EXPENSES (INCLUDING REASONABLE ATTORNEYS' FEES AND COURT COSTS) ARISING FROM OR RELATED TO LESSEE'S USE, OPERATION, OR POSSESSION OF THE VEHICLE, OR ANY BREACH OF THIS AGREEMENT, INCLUDING CLAIMS ALLEGING LESSOR'S OWN NEGLIGENCE, TO THE FULLEST EXTENT PERMITTED BY LAW.</span></p>
+
+  <p><strong>(f) Personal Belongings.</strong> Prestige Black is not responsible or liable for any personal items, valuables, or belongings left in, lost from, or forgotten in the Vehicle before, during, or after the Lease. It is Lessee's sole responsibility to remove and verify all personal belongings. Any items left behind are surrendered at Lessee's own risk.</p>
+  <div class="initial" id="pbIniRow4" data-pbini-label="Section 12 - Liability, Release, Graves Amendment and Indemnity">Lessee initials:<span class="ln" id="pbIni4" data-pbini="4">{{lessee_initials}}</span></div>
+  </div>
+
+  <!-- 13. DEFAULT & REPOSSESSION -->
+  <h2>13. Default and Repossession</h2>
+  <p>Each of the following is an event of default ("Default"): (i) Lessee fails to make any payment when due and does not cure within three (3) days of written notice; (ii) Lessee's required insurance lapses, is cancelled, or is reduced below required limits; (iii) Lessee breaches any other term of this Agreement; (iv) the Vehicle is used in violation of Section 9; (v) Lessee provides false information; or (vi) Lessee becomes insolvent or the Vehicle is seized or threatened with seizure.</p>
+  <p>Upon a Default, Lessor may, to the extent permitted by Texas law (including Tex. Bus. &amp; Com. Code Ch. 2A): (a) declare the entire remaining balance of all Monthly Payments for the Lease Term immediately due and payable; (b) terminate the Lease; (c) <strong>take possession of and repossess the Vehicle</strong>, including by Lessor's own agents, without breach of the peace and without prior judicial process, and Lessee consents to such repossession; and (d) recover all unpaid amounts, excess-mileage and damage charges, late and returned-payment fees, and all costs of repossession, recovery, storage, and collection, including reasonable attorneys' fees. Lessor's remedies are cumulative. No refund of any kind is owed on a Default.</p>
+
+  <!-- 14. EARLY TERMINATION -->
+  <h2>14. Early Termination by Lessee</h2>
+  <p>If Lessee returns the Vehicle or ends the Lease before the Lease end date for any reason other than Lessor's uncured material breach, the Down Payment is non-refundable, the then-current month's payment is non-refundable, and Lessee remains responsible for any amounts already accrued (including excess mileage and damage). Any additional early-termination amount will be as agreed in writing by the Parties. The Security Deposit is applied and refunded per Section 6.</p>
+
+  <!-- 15. RETURN -->
+  <h2>15. Return of the Vehicle</h2>
+  <p>The Vehicle must be returned to the agreed location on or before the lease end date and time. <strong>Late returns are subject to a $75 per hour late fee</strong>, applied after a 1-hour grace period, in addition to continued daily lease charges at Lessor's then-current rate. Failure to return the Vehicle within 24 hours of the scheduled time without Lessor's written consent shall be considered unauthorized possession / theft of the Vehicle and reported to law enforcement. At return, Lessee is responsible for excess mileage, fuel/charge, cleaning, and any damage beyond ordinary wear and tear.</p>
+
+  <!-- 16. NO CREDIT / NOT FINANCING -->
+  <h2>16. No Credit Decision; Not a Financing Transaction</h2>
+  <p>Lessee acknowledges that this Lease is approved based on Lessee's insurance and payment, not on a credit report, and that <strong>no consumer credit report was obtained</strong> as a condition of this Lease. This Agreement is not a loan, retail installment contract, or extension of consumer credit, and it does not create any ownership or purchase right (see Section 10). Lessor does not report this account to any consumer reporting agency, except that unpaid amounts after Default may be referred for collection.</p>
+
+  <!-- 17. GOVERNING LAW -->
+  <h2>17. Governing Law, Venue, and Severability</h2>
+  <p>This Agreement is governed by and construed in accordance with the laws of the State of Texas, including Chapter 2A (Leases) of the Texas Business &amp; Commerce Code, without regard to conflict-of-laws principles. Exclusive venue for any dispute lies in the state or federal courts located in Dallas County, Texas, and the Parties consent to that jurisdiction and venue. If any provision of this Agreement is held unenforceable, the remaining provisions remain in full force, and the unenforceable provision shall be enforced to the maximum extent permitted by law.</p>
+
+  <!-- 18. ENTIRE AGREEMENT -->
+  <h2>18. Entire Agreement</h2>
+  <p>This Agreement (together with any schedule, authorized-driver addendum, and signed extension) constitutes the entire understanding between the Parties and supersedes all prior negotiations, representations, or agreements, written or oral. Any modification must be in a writing signed by both Parties. Lessee acknowledges having read, understood, and voluntarily agreed to each provision, including the conspicuous provisions in Sections 7, 10, 11, and 12.</p>
+
+  <!-- 19. SIGNATURES -->
+  <h2>19. Signatures</h2>
+  <p class="note">By signing below, Lessee acknowledges reading and agreeing to all terms of this Motor Vehicle Lease Agreement, including the CONSPICUOUS, ALL-CAPS provisions that limit Lessor's liability, disclaim warranties, and require insurance and indemnification.</p>
+  <div class="sig-grid">
+    <div>
+      <div class="sig-line">{{owner_signature}}</div>
+      <div class="sig-label">Lessor - Date: {{today}}</div>
+      <div class="sig-label" style="margin-top:4px">Printed Name: Edwin P. Watson Jr. on behalf of Prestige Black Corporation</div>
+    </div>
+    <div>
+      <div class="sig-line">{{customer_signature}}</div>
+      <div class="sig-label">Lessee - Date: {{customer_signed_date}}</div>
+      <div class="sig-label" style="margin-top:4px">Printed Name: {{customer_name}}</div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
+`;
+
 var slingshotWaiverTemplate = '';
 var _contractTemplateMode = ''; // '' = contract, 'waiver' = slingshot waiver
 var _contractIsWaiver = false;  // tracks what's currently open in the contract view modal
+var _contractIsLease = false;   // LEASE: tracks when the contract view is showing the motor-vehicle lease agreement (mirrors _contractIsWaiver)
 var _slingshotColor = 'Green'; // 'Green' or 'White' \u2014 color picker in waiver modal
 var SLINGSHOT_SPECS = {
   Green: { vin: '57XAAPHD4S8167698', model: 'Slingshot SL', year: '2025' },
@@ -22316,6 +22753,7 @@ var DEFAULT_SLINGSHOT_WAIVER_TEMPLATE = `<!DOCTYPE html>
 function loadContractTemplate(){
   contractTemplate = localStorage.getItem('pb_contract_template') || DEFAULT_CONTRACT_TEMPLATE;
   slingshotWaiverTemplate = localStorage.getItem('pb_slingshot_waiver') || DEFAULT_SLINGSHOT_WAIVER_TEMPLATE;
+  leaseTemplate = localStorage.getItem('pb_lease_template') || DEFAULT_LEASE_TEMPLATE;
   _migrateContractTemplate();
   _migrateWaiverTemplate();
 }
@@ -22801,7 +23239,7 @@ function _renderContractContent(){
     return;
   }
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
-  var activeTemplate=_contractIsWaiver?slingshotWaiverTemplate:contractTemplate;
+  var activeTemplate=_contractIsLease?(leaseTemplate||contractTemplate):(_contractIsWaiver?slingshotWaiverTemplate:contractTemplate);
   activeTemplate = activeTemplate.replace(/Jalen Nguyen/g, 'Edwin P. Watson Jr.');   // owner change safety net (render-time)
   if(!activeTemplate) return;
 
@@ -22865,7 +23303,7 @@ function _renderContractContent(){
   var days=_bd.days;
   // rental_hours: for waiver \u2014 daily bookings count as 24h per day, hourly uses hours directly
   var rentalHours = b.type==='daily' ? (Number(days)||1)*24 : (Number(days)||1);
-  var rentalType=b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service';
+  var rentalType=b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':b.type==='lease'?'Lease':'Chauffeur Service';
   var t=new Date(); var todayFmt=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
   // dailyRate = base rental per day (NOT totalRevenue/days \u2014 that incorrectly inflates rate with add-ons)
   var dailyRate=days>0?'$'+_bd.dailyRateNum.toFixed(2):'N/A';
@@ -22902,6 +23340,7 @@ function _renderContractContent(){
   }
   var brokerLine=b.broker?'<div class="fr"><span class="fl">Referred By (Broker):</span><span class="fv">'+esc(b.broker)+'</span></div>':'';
   function sr(v){ return function(){ return v; }; }
+  if(b.type==='lease' && typeof _pbLeaseFill==='function') activeTemplate = _pbLeaseFill(activeTemplate, b, false);
   var filled=activeTemplate
     .replace(/\{\{customer_name\}\}/gi,      sr(b.name||''))
     .replace(/\{\{customer_phone\}\}/gi,     sr(b.phone||''))
@@ -23110,13 +23549,16 @@ function openContract(id){
   var isSlingshot = b.vehicle==='Polaris Slingshot';
   var isDailySling = isSlingshot && b.type==='daily';
   // Daily Slingshot: start on contract (toggle available); hourly Slingshot: waiver only
-  _contractIsWaiver = isSlingshot && !isDailySling;
+  var isLease = (b.type==='lease');
+  _contractIsLease = isLease;
+  _contractIsWaiver = !isLease && isSlingshot && !isDailySling;
   // Restore the color: signed color > sent color > default Green
   _slingshotColor = (isSlingshot && b.customerSigColor) ? b.customerSigColor
                   : (isSlingshot && b.contractSentColor) ? b.contractSentColor
                   : 'Green';
-  $d('contractModalTitle').textContent = _contractIsWaiver ? '\u26A0 Liability Waiver' : '\uD83D\uDCDD Rental Agreement';
+  $d('contractModalTitle').textContent = _contractIsLease ? '\uD83D\uDCDD Motor Vehicle Lease Agreement' : (_contractIsWaiver ? '\u26A0 Liability Waiver' : '\uD83D\uDCDD Rental Agreement');
   $d('contractEditTemplateBtn').textContent = _contractIsWaiver ? '\u270F Edit Waiver Template' : '\u270F Edit Template';
+  { var _cet=$d('contractEditTemplateBtn'); if(_cet) _cet.style.display = _contractIsLease ? 'none' : ''; }
   // Color picker \u2014 show for any Slingshot (needed for waiver portion on daily too)
   var colorBar = $d('contractColorBar');
   var colorRow = $d('slingshotColorRow');
@@ -23129,8 +23571,9 @@ function openContract(id){
   if(isDailySling) _updateSlingshotDocToggleBtns(false);
   // Apply restored color (signed > sent > Green default)
   switchSlingshotColor(_slingshotColor);
-  var activeTemplate = _contractIsWaiver ? slingshotWaiverTemplate : contractTemplate;
+  var activeTemplate = _contractIsLease ? (leaseTemplate||contractTemplate) : (_contractIsWaiver ? slingshotWaiverTemplate : contractTemplate);
   if(!activeTemplate){
+    if(_contractIsLease){ toast('No lease agreement template is loaded.'); return; }
     if(confirm((_contractIsWaiver?'No slingshot waiver template set up yet.':'No contract template set up yet.')+'\nOpen the template editor now?')){ openContractTemplate(_contractIsWaiver?'waiver':''); }
     return;
   }
@@ -23272,7 +23715,7 @@ async function sendSignedCopyToClient(){
       (b.address?'<br><span style="font-size:13px;color:#555">\uD83D\uDCCD '+esc(b.address)+'</span>':'')+'</td></tr>'+
     (b.dropoffDate?'<tr><td style="padding:6px 12px 6px 0;color:#555">Drop-off</td><td style="padding:6px 0">'+fmtDate(b.dropoffDate)+(b.dropoffTime?' at '+fmtTime(b.dropoffTime):'')+
       (b.dropoffAddress?'<br><span style="font-size:13px;color:#555">\uD83D\uDCCD '+esc(b.dropoffAddress)+'</span>':'')+'</td></tr>':'')+
-    '<tr><td style="padding:6px 12px 6px 0;color:#555">Type</td><td style="padding:6px 0">'+(b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':'Chauffeur Service')+'</td></tr>'+
+    '<tr><td style="padding:6px 12px 6px 0;color:#555">Type</td><td style="padding:6px 0">'+(b.type==='daily'?'Daily Rental':b.type==='hourly'?'Hourly Booking':b.type==='lease'?'Lease':'Chauffeur Service')+'</td></tr>'+
     (b.type==='daily'?'<tr><td style="padding:6px 12px 6px 0;color:#555">Duration</td><td style="padding:6px 0">'+b.days+' day'+(b.days!==1?'s':'')+'</td></tr>':'')+
     addons.map(function(a){ return '<tr><td style="padding:4px 12px 4px 0;color:#555">'+a.l+'</td><td style="padding:4px 0">'+$$(a.v)+'</td></tr>'; }).join('')+
     '<tr style="border-top:1px solid #eee"><td style="padding:8px 12px 6px 0;font-weight:700">Total</td><td style="padding:8px 0;font-weight:700;color:#b8982e">'+$$(rev)+'</td></tr>'+
@@ -25600,8 +26043,9 @@ function _initSigningMode(bookingId, driverIdx){
       return;
     }
     // Render the contract
-    var tmpl = (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+    var tmpl = (bk.type==='lease') ? (data.leaseTemplate||data.contractTemplate||'') : (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
     if(!tmpl){ body.innerHTML='<div style="color:#f87171;padding:20px">No contract template found. Please contact Prestige Black Rentals.</div>'; return; }
+    if(bk.type==='lease' && typeof _pbLeaseFill==='function') tmpl = _pbLeaseFill(tmpl, bk, true);
     // Comprehensive token substitution \u2014 mirrors _renderContractContent in the owner modal
     var today=new Date(); var tStr=(today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
     var _sbd=_buildContractBreakdown(bk);
@@ -25630,7 +26074,7 @@ function _initSigningMode(bookingId, driverIdx){
         .replace(/Slingshot SL \(\{\{vehicle_color\}\}\)/g,'{{vehicle_model}} ({{vehicle_color}})')
         .replace(/Slingshot SL(?! \(\{\{vehicle_color)/g, '{{vehicle_model}}');
     }
-    var _sRentalType=bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
+    var _sRentalType=bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':bk.type==='lease'?'Lease':'Chauffeur Service';
     var _sPickupFull=fmtDateFull(bk.pickupDate||bk.date||'');
     var _sReturnFull=fmtDateFull(bk.dropoffDate||'');
     var _sVm=VEHICLE_MILEAGE[bk.vehicle]||{};
@@ -25770,6 +26214,7 @@ function _initSigningMode(bookingId, driverIdx){
     window._smData = data;
     window._smBookings = data.bookings || [data.booking].filter(Boolean);
     _smInitCanvas();
+    if(bk.type==='lease'){ try{ _pbLeaseAckSetup(bk); }catch(e){} }
 
     // Sticky "Sign Agreement" bar \u2014 fixed to bottom so customers always see it
     // Disappears once they tap/scroll to the canvas
@@ -25781,6 +26226,119 @@ function _initSigningMode(bookingId, driverIdx){
   }).catch(function(err){
     body.innerHTML='<div style="color:#f87171;padding:20px">Network error loading contract. Please try again or contact (214) 207-2481.<br><small style="opacity:.5">'+err+'</small></div>';
   });
+}
+
+// ============================ LEASE: signing-time acknowledgment (shared portal + dashboard) =========
+// A motor-vehicle lease requires the signer to INITIAL 4 conspicuous clauses (Insurance, No-Ownership,
+// AS-IS, Liability/Release) before the signature unlocks. The contract renders inside the same-origin
+// #smContractFrame srcdoc iframe, so this walks the signer to each [data-pbini] box in it, writes their
+// adopted initials in, and only then enables #smSubmitBtn. Additive + lease-only: never runs unless
+// booking.type==='lease'. If the iframe is unreachable it still gates signing on 4 taps (degrades safe).
+function _pbIniFrameDoc(){
+  try{ var f=document.getElementById('smContractFrame'); return (f&&f.contentDocument)?f.contentDocument:null; }catch(e){ return null; }
+}
+function _pbLeaseFill(tmpl, bk, liveSign){
+  if(!bk || bk.type!=='lease' || !tmpl) return tmpl;
+  var money=function(n){ n=Number(n)||0; return '$'+n.toLocaleString('en-US',{maximumFractionDigits:0}); };
+  var fd=function(s){ try{ if(typeof fmtDateFull==='function'){ var r=fmtDateFull(s); if(r) return r; } }catch(e){} return s||''; };
+  var term=Number(bk.leaseTerm)||12, down=Number(bk.leaseDown)||0, monthly=Number(bk.leaseMonthly)||0;
+  var deposit=Number(bk.leaseDeposit!=null?bk.leaseDeposit:bk.deposit)||0;
+  var miles=Number(bk.leaseMiles)|| (term*1250), over=Number(bk.leaseOverage)||0.5;
+  var total=Number(bk.leaseTotal)|| (down+monthly*term);
+  var startS=fd(bk.pickupDate||bk.date||''), endS=fd(bk.dropoffDate||'');
+  var ini=liveSign?'':(bk.leaseInitials?String(bk.leaseInitials).toUpperCase().slice(0,6):'');
+  function R(re,val){ tmpl=tmpl.replace(re,function(){return val;}); }
+  R(/\{\{lease_term\}\}/gi, term+' months');
+  R(/\{\{lease_start\}\}/gi, startS);
+  R(/\{\{lease_end\}\}/gi, endS);
+  R(/\{\{first_payment_date\}\}/gi, startS);
+  R(/\{\{down_payment\}\}/gi, money(down));
+  R(/\{\{monthly_payment\}\}/gi, money(monthly)+'/mo');
+  R(/\{\{total_lease\}\}/gi, money(total));
+  R(/\{\{included_miles\}\}/gi, miles.toLocaleString('en-US')+' mi');
+  R(/\{\{overage_rate\}\}/gi, '$'+over.toFixed(2)+'/mi');
+  R(/\{\{deposit_amount\}\}/gi, money(deposit));
+  R(/\{\{lessee_initials\}\}/gi, ini);
+  return tmpl;
+}
+var _PB_INI_SECTIONS=[{n:'1',t:'Section 7 - Insurance Required'},{n:'2',t:'Section 10 - Lease Only; No Ownership'},{n:'3',t:'Section 11 - Leased AS-IS; No Warranties'},{n:'4',t:'Section 12 - Liability, Release and Indemnity'}];
+function _pbIniRenderProgress(activeIdx){
+  var box=document.getElementById('pbIniProgress'); if(!box) return;
+  var done=(window._pbLeaseAck||[]).length, h='';
+  for(var i=0;i<_PB_INI_SECTIONS.length;i++){
+    var isDone=i<done, isAct=(i===activeIdx);
+    var bg=isDone?'rgba(46,125,50,.92)':(isAct?'#C9A962':'rgba(255,255,255,.08)');
+    var col=(!isDone&&!isAct)?'rgba(255,255,255,.5)':'#000';
+    h+='<span style="padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800;background:'+bg+';color:'+col+'">'+(isDone?'&#10003; ':'')+_PB_INI_SECTIONS[i].t.split(' - ')[0]+'</span>';
+  }
+  box.innerHTML=h;
+}
+function _pbLeaseAckSetup(bk){
+  try{
+    window._pbLeaseAck=[]; window._pbLeaseInitialsDone=false; window._pbLeaseInitials=''; window._pbLeaseBk=bk;
+    var sign=document.getElementById('smSignSection'); if(!sign) return;
+    var nm=(bk&&bk.name)?String(bk.name).trim():'';
+    var di=nm?nm.split(/\s+/).map(function(p){return p.charAt(0);}).join('').toUpperCase().slice(0,4):'';
+    var panel=document.createElement('div');
+    panel.id='pbLeaseAck';
+    panel.style.cssText='background:rgba(201,169,98,.06);border:2px solid rgba(201,169,98,.45);border-radius:14px;padding:18px;margin-bottom:18px';
+    panel.innerHTML=
+      '<div style="font-size:15px;font-weight:800;color:#C9A962;margin-bottom:4px">Review &amp; Initial - Required Before Signing</div>'+
+      '<div style="font-size:12px;color:rgba(255,255,255,.55);margin-bottom:12px;line-height:1.5">This is a binding motor-vehicle lease. You must review and initial <strong style="color:#fff">4 key sections</strong>. We will scroll you to each one in the agreement above.</div>'+
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px"><label style="font-size:12px;color:rgba(255,255,255,.7)">Your initials:</label>'+
+      '<input id="pbIniInput" type="text" maxlength="5" value="'+di+'" style="width:84px;padding:7px 10px;border:1px solid rgba(201,169,98,.5);border-radius:8px;background:#0e0e12;color:#C9A962;font-weight:800;font-size:15px;text-align:center;letter-spacing:.08em;text-transform:uppercase"></div>'+
+      '<div id="pbIniProgress" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>'+
+      '<button id="pbIniBtn" onclick="_pbIniBegin()" style="padding:11px 24px;border:none;border-radius:10px;background:#C9A962;color:#000;font-weight:800;font-size:15px;cursor:pointer;width:100%;max-width:340px">Begin - Take Me to Section 1</button>'+
+      '<div id="pbIniHint" style="font-size:12px;color:rgba(255,255,255,.45);margin-top:10px"></div>';
+    sign.parentNode.insertBefore(panel, sign);
+    _pbIniRenderProgress(-1);
+    var sub=document.getElementById('smSubmitBtn');
+    if(sub){ sub.disabled=true; sub.style.opacity='.4'; sub.style.cursor='not-allowed'; }
+    sign.style.opacity='.5';
+    var msg=document.getElementById('smSigMsg'); if(msg) msg.textContent='Complete the 4 section acknowledgments above to unlock signing.';
+    var sb=document.getElementById('smStickyBar'); if(sb){ var sbb=sb.querySelector('button'); if(sbb){ sbb.textContent='Review & Initial to Sign'; sbb.setAttribute('onclick',"var s=document.getElementById('pbLeaseAck');if(s)s.scrollIntoView({behavior:'smooth',block:'center'});"); } }
+  }catch(e){ try{ var s2=document.getElementById('smSubmitBtn'); if(s2){ s2.disabled=false; s2.style.opacity='1'; } var sg=document.getElementById('smSignSection'); if(sg) sg.style.opacity='1'; }catch(_e){} }
+}
+function _pbIniBegin(){
+  var inp=document.getElementById('pbIniInput');
+  var v=inp?String(inp.value||'').trim().toUpperCase().slice(0,6):'';
+  if(!v){ var hn=document.getElementById('pbIniHint'); if(hn){hn.style.color='#f87171';hn.textContent='Please enter your initials first.';} if(inp) inp.focus(); return; }
+  window._pbLeaseInitials=v; window._pbLeaseAck=[];
+  if(inp) inp.disabled=true;
+  _pbIniGo(0);
+}
+function _pbIniGo(idx){
+  if(idx>=_PB_INI_SECTIONS.length){ _pbIniComplete(); return; }
+  var sec=_PB_INI_SECTIONS[idx];
+  var doc=_pbIniFrameDoc();
+  var box=doc?doc.querySelector('[data-pbini="'+sec.n+'"]'):null;
+  var row=box?(box.closest?box.closest('.initial'):box.parentNode):null;
+  if(doc){ try{ var prev=doc.querySelectorAll('.pbini-active'); for(var i=0;i<prev.length;i++) prev[i].classList.remove('pbini-active'); }catch(e){} }
+  try{ var fr=document.getElementById('smContractFrame'); if(fr) fr.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){}
+  if(row){ try{ row.classList.add('pbini-active'); }catch(e){} }
+  if(box){ setTimeout(function(){ try{ box.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){} }, 280); }
+  var btn=document.getElementById('pbIniBtn');
+  if(btn){ btn.textContent='Initial '+sec.t.split(' - ')[0]+' & Continue'; btn.setAttribute('onclick','_pbIniConfirm('+idx+')'); }
+  var hint=document.getElementById('pbIniHint');
+  if(hint){ hint.style.color='rgba(255,255,255,.6)'; hint.textContent='Read '+sec.t+' (highlighted above), then tap to initial.'+(box?'':' If it is not highlighted, scroll up in the agreement to '+sec.t+'.'); }
+  _pbIniRenderProgress(idx);
+}
+function _pbIniConfirm(idx){
+  var sec=_PB_INI_SECTIONS[idx];
+  var doc=_pbIniFrameDoc();
+  var box=doc?doc.querySelector('[data-pbini="'+sec.n+'"]'):null;
+  if(box){ try{ box.textContent=window._pbLeaseInitials; var row=box.closest?box.closest('.initial'):box.parentNode; if(row){ row.classList.remove('pbini-active'); row.classList.add('pbini-done'); } }catch(e){} }
+  (window._pbLeaseAck=window._pbLeaseAck||[]).push({section:sec.t, at:Date.now()});
+  _pbIniGo(idx+1);
+}
+function _pbIniComplete(){
+  window._pbLeaseInitialsDone=true;
+  var panel=document.getElementById('pbLeaseAck');
+  if(panel){ panel.innerHTML='<div style="font-size:15px;font-weight:800;color:#2ec27a;margin-bottom:4px">&#10003; All 4 Sections Acknowledged</div><div style="font-size:12px;color:rgba(255,255,255,.55);line-height:1.5">You initialed Sections 7, 10, 11 and 12 as <strong style="color:#C9A962">'+(window._pbLeaseInitials||'')+'</strong>. You can now sign below.</div>'; panel.style.borderColor='rgba(46,194,122,.5)'; }
+  var sign=document.getElementById('smSignSection'); if(sign){ sign.style.opacity='1'; }
+  var sub=document.getElementById('smSubmitBtn'); if(sub){ sub.disabled=false; sub.style.opacity='1'; sub.style.cursor='pointer'; }
+  var msg=document.getElementById('smSigMsg'); if(msg) msg.textContent='By signing, you agree to the terms of the lease agreement above.';
+  try{ if(sign) sign.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){}
 }
 
 function _smInitCanvas(){
@@ -25857,6 +26415,11 @@ function _smSubmitSig(bookingId, driverIdx){
     // Save ONLY the signature via the public /signing/save endpoint (no auth required)
     var _savePayload={bookingId:bookingId,sig:sig,sigDate:sigDate};
     if(_isDriver) _savePayload.driverIdx=_dIdx;
+    // LEASE: a primary lessee signature must carry the 4-section acknowledgment (initials) captured above.
+    if(_freshBk && _freshBk.type==='lease' && !_isDriver){
+      if(!window._pbLeaseInitialsDone || !window._pbLeaseInitials){ _showSaveErr('Please initial all 4 required sections above before signing.'); return; }
+      _savePayload.initials=window._pbLeaseInitials; _savePayload.initialsAck=window._pbLeaseAck||[];
+    }
     fetch(workerUrl+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_savePayload)})
     .then(function(r){ return r.json(); })
     .then(function(res){
@@ -26238,7 +26801,7 @@ function _portalRender(body,bookingId,bk){
   var sigUrl=(location.origin+location.pathname.replace(/[^\/]*$/,'')+'portal.html')+'?sign='+encodeURIComponent(bookingId);
   var dailyRate=(t.rev>0&&t.days>0)?Math.round(t.rev/t.days):0;
   var sc={confirmed:'#22c55e',pending:'#f97316',completed:'#60a5fa',cancelled:'#ef4444'}[bk.status]||'#9ca3af';
-  var typeLabel=bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
+  var typeLabel=bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':bk.type==='lease'?'Lease':'Chauffeur Service';
   var durUnit=bk.type==='hourly'||bk.type==='chauffeur'?'hr':'day';
 
   // For daily bookings, show duration from date diff (same as dashboard) to avoid bk.days mismatch
