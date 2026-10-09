@@ -2344,6 +2344,22 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
       </div>
     </div>
 
+    <!-- Lease Pricing (reference) -->
+    <div class="tbl-card" id="leasePricingCard" style="margin-top:16px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:12px;margin:-2px -2px 16px;padding:14px 16px;background:linear-gradient(135deg,rgba(201,169,98,.12),rgba(201,169,98,.02));border-bottom:1px solid var(--gold-dim)">
+        <div style="width:38px;height:38px;border-radius:11px;background:var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">&#128273;</div>
+        <div style="flex:1;min-width:0">
+          <div class="tbl-title" style="margin-bottom:1px">Lease Pricing</div>
+          <div style="font-size:11.5px;color:var(--muted)">Monthly lease rates by term &#183; what the customer pays at min down, and what you make blended</div>
+        </div>
+      </div>
+      <div id="leasePricingTerms" style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px"></div>
+      <div id="leasePricingWrap" style="overflow-x:auto"></div>
+      <div style="font-size:11px;color:var(--muted);line-height:1.55;margin-top:11px;background:rgba(201,169,98,.06);border:1px solid var(--gold-dim);border-radius:10px;padding:9px 11px">
+        Monthly shown is at the <b style="color:var(--text)">minimum down</b>; every extra $1,000 of down lowers it by (down &#247; term). <b style="color:var(--text)">You make/mo</b> is the blended take with the down averaged in &#8212; the floor the car should earn. Deposit is refundable. Miles: 1,250/mo (15k on 12&#8209;mo), overage $0.50/mi. No credit pulls &#183; full coverage required &#183; no lease-to-own.
+      </div>
+    </div>
+
     <!-- Assign Driver -->
     <div class="tbl-card" style="margin-top:16px;overflow:hidden">
       <div style="display:flex;align-items:center;gap:12px;margin:-2px -2px 16px;padding:14px 16px;background:linear-gradient(135deg,rgba(201,169,98,.12),rgba(201,169,98,.02));border-bottom:1px solid var(--gold-dim)">
@@ -4120,6 +4136,49 @@ var VEHICLE_COSTS = {
   "Suburban":           { rate:0,    deposit:0    },
   "Escalade Chauffeur": { rate:0,    deposit:0    },
 };
+// ---- Lease Pricing (reference card under Fleet). Same per-vehicle lease rates as the storefront lease page. ----
+// b = blended "you make"/mo floor, d = minimum down, dep = refundable deposit. Monthly a customer pays = b - d/term.
+var PB_LEASE_PRICING = {
+  "BMW M3 Competition":        {3:{b:6500,d:2000,dep:1500},6:{b:6000,d:2500,dep:3000},9:{b:5700,d:3000,dep:5000},12:{b:5500,d:3500,dep:5000}},
+  "Chevrolet Corvette (White)":{3:{b:6500,d:2000,dep:1500},6:{b:6000,d:2500,dep:3000},9:{b:5700,d:3000,dep:5000},12:{b:5500,d:3500,dep:5000}},
+  "Corvette C8 Z51 (Black)":   {3:{b:6500,d:2000,dep:1500},6:{b:6000,d:2500,dep:3000},9:{b:5700,d:3000,dep:5000},12:{b:5500,d:3500,dep:5000}},
+  "Mercedes-Benz AMG C300":    {3:{b:5300,d:1500,dep:1000},6:{b:4900,d:2000,dep:2000},9:{b:4650,d:2500,dep:3000},12:{b:4500,d:3000,dep:3000}},
+  "Porsche Macan":             {3:{b:4750,d:1500,dep:1000},6:{b:4350,d:2000,dep:2000},9:{b:4150,d:2500,dep:3000},12:{b:4000,d:3000,dep:3000}},
+  "Porsche Boxster S":         {3:{b:3850,d:1000,dep:1000},6:{b:3550,d:1500,dep:2000},9:{b:3350,d:2000,dep:3000},12:{b:3250,d:2500,dep:3000}},
+  "BMW i4":                    {3:{b:3550,d:1500,dep:1000},6:{b:3250,d:2000,dep:2000},9:{b:3100,d:2500,dep:3000},12:{b:3000,d:3000,dep:3000}},
+  "Polaris Slingshot":         {3:{b:2650,d:1000,dep:1500},6:{b:2450,d:1500,dep:2000},9:{b:2350,d:2000,dep:2500},12:{b:2250,d:2500,dep:2500}}
+};
+function renderLeasePricing(term){
+  try{
+    term = term || 12;
+    var terms=[3,6,9,12];
+    var tb=document.getElementById('leasePricingTerms');
+    if(tb){ tb.innerHTML=terms.map(function(t){
+      var on=(t===term);
+      return '<button class="btn" style="font-size:12px;padding:6px 14px'+(on?';background:#C9A962;color:#151004;border-color:#C9A962':'')+'" onclick="renderLeasePricing('+t+')">'+t+' mo</button>';
+    }).join(''); }
+    var th='<th style="text-align:right;padding:7px 9px;border-bottom:1px solid var(--gold-dim)">';
+    var html='<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:540px">'+
+      '<thead><tr style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em">'+
+      '<th style="text-align:left;padding:7px 9px;border-bottom:1px solid var(--gold-dim)">Vehicle</th>'+
+      th+'Monthly (min down)</th>'+th+'Min down</th>'+th+'Deposit</th>'+th+'Due to start</th>'+th+'You make/mo</th>'+
+      '</tr></thead><tbody>';
+    Object.keys(PB_LEASE_PRICING).forEach(function(name){
+      var p=PB_LEASE_PRICING[name][term]; if(!p) return;
+      var mo=Math.round(p.b - p.d/term), start=p.d+p.dep+mo;
+      var td='<td style="text-align:right;padding:7px 9px;border-bottom:1px solid rgba(255,255,255,.05);font-variant-numeric:tabular-nums">';
+      html+='<tr><td style="padding:7px 9px;border-bottom:1px solid rgba(255,255,255,.05);font-weight:700">'+name+'</td>'+
+        td+'<b style="color:#C9A962">$'+mo.toLocaleString()+'</b></td>'+
+        td+'$'+p.d.toLocaleString()+'</td>'+
+        td+'$'+p.dep.toLocaleString()+'</td>'+
+        td+'$'+start.toLocaleString()+'</td>'+
+        td+'<span style="color:var(--muted)">$'+p.b.toLocaleString()+'</span></td></tr>';
+    });
+    html+='</tbody></table><div style="font-size:11px;color:var(--muted);margin-top:8px">'+term+'-month lease includes '+(1250*term).toLocaleString()+' miles &#183; Due to start = down + deposit + first month.</div>';
+    var wrap=document.getElementById('leasePricingWrap'); if(wrap) wrap.innerHTML=html;
+  }catch(e){}
+}
+document.addEventListener('DOMContentLoaded',function(){ try{ renderLeasePricing(12); }catch(e){} });
 // The real prestigeblackrentals.com storefront photo for each vehicle (same URLs the live booking site uses). Backfilled
 // onto VEHICLE_COSTS below so every vehicle shows its picture in the dashboard even before any per-vehicle image is saved;
 // a saved custom image always wins (see the pricing-config loader).
