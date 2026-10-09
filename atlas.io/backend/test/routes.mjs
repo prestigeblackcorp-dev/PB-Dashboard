@@ -5116,5 +5116,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(_owC > 0\) await _atlasOwedClear\(env, md\.tenant, _owC\);/.test(_WORKER_SRC), 'L4: the owed is cleared only on a NEW successful GMV payment (gated on _wasNew), so an abandoned checkout keeps it on the ledger');
 }
 
+// ==== 13AB: renewal COGS (F4-b, closing the last documented domain-P&L gap) + self-extend 30-min grace ====
+{
+  // F4-b: _registrarRenew surfaces the renewal wholesale; it is booked (date-attributed, mode-filtered, idempotent per domain/year) + summed into the P&L domain COGS
+  ok(/code: String\(res\.code \|\| ''\), costCents: _rc \};/.test(_WORKER_SRC), 'F4-b: _registrarRenew returns the parsed renewal wholesale cost');
+  ok(/async function _bookDomainRenewalCogs\(env, tenantId, domain, costCents, livemode, now\)/.test(_WORKER_SRC) && /INSERT OR IGNORE INTO platform_domain_cogs/.test(_WORKER_SRC), 'F4-b: renewal COGS is booked into platform_domain_cogs, idempotent per domain per year (drc:<tenant>:<domain>:<year>)');
+  ok(/CREATE TABLE IF NOT EXISTS platform_domain_cogs/.test(_WORKER_SRC), 'F4-b: the renewal-COGS ledger table exists');
+  ok((_WORKER_SRC.match(/await _bookDomainRenewalCogs\(/g) || []).length >= 2, 'F4-b: BOTH the webhook renewal and the retry-sweep renewal book the renewal COGS');
+  ok(/FROM platform_domain_cogs WHERE at>=\? AND at<\? AND COALESCE\(livemode,0\)=\?/.test(_WORKER_SRC) && /const domCogsRange = \(Number\(_domInitRange\) \|\| 0\) \+ \(Number\(_domRenewRange\) \|\| 0\);/.test(_WORKER_SRC), 'F4-b: the P&L folds renewal COGS (date-attributed, mode-filtered) into domain COGS alongside the initial registration cost');
+  // L3 grace tightened to 30 minutes (per owner)
+  ok(/var _cut = now - 30 \* 60000;/.test(_WORKER_SRC), 'L3: the abandoned self-extension grace is 30 minutes');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
