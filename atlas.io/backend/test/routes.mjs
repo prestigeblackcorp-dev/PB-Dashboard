@@ -5080,7 +5080,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // Domain F1: a 2nd distinct subscription for a domain already owned/held is refunded+cancelled, never silently kept (double-charge)
   ok(/'domain\.duplicate_refunded'/.test(_WORKER_SRC) && /String\(_exd2\.stripe_sub \|\| ''\) !== String\(obj\.subscription\)/.test(_WORKER_SRC), 'D-F1: a duplicate domain subscription (different sub, same name) is refunded+cancelled in the webhook dedup branch, not silently kept');
   // Domain F2: a dead prior order (canceling/canceled/renew_failed) is CAS-revived on a legitimate re-buy (D2 does not block those states)
-  ok(/const _exTerminal = _ex && \(_ex\.status === 'canceling'/.test(_WORKER_SRC) && /UPDATE domains_sold SET status='registering'[\s\S]{0,200}WHERE id=\? AND status IN \('canceling','canceled','renew_failed'\)/.test(_WORKER_SRC), 'D-F2: re-buying a cancelled/lapsed domain revives the row (status-guarded CAS) instead of stranding the payment');
+  ok(/const _exTerminal = _ex && \(_ex\.status === 'canceling'/.test(_WORKER_SRC) && /UPDATE domains_sold SET status='registering'[\s\S]{0,220}WHERE id=\? AND status IN \('canceling','canceled','renew_failed','register_failed','refund_failed'\)/.test(_WORKER_SRC), 'D-F2: re-buying a cancelled/lapsed/failed domain revives the row (status-guarded CAS, new-sub only) instead of stranding the payment');
   // Domain F3: an "already registered/taken" rejection is NON-definitive (hold), never a refund+delete of a possibly-owned name -- webhook + sweep
   ok((_WORKER_SRC.split("already|registered|taken|exist|unavailable").length - 1) >= 2, 'D-F3: both the webhook and the retry-sweep treat an already-registered/taken registrar rejection as transient-hold (never auto-refund a name we may own)');
   // KYC G1: both finalize paths bind the Stripe session to THIS booking via metadata before applying verified
@@ -5101,12 +5101,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // ==== 13AA: deferred-item remediation -- domain P&L (F4) + self-extend occupancy (L3) + GMV carried-fee (L4) ====
 {
   // F4-a: a REFUNDED domain sale reverses the revenue booked on payment (all 3 refund sites) so the P&L nets to zero
-  ok((_WORKER_SRC.match(/amount_cents: -_tt, stripe_id: sid \+ ':domrev'/g) || []).length === 2, 'F4-a: the webhook duplicate-refund AND definitive-fail both reverse the booked domain revenue');
+  ok((_WORKER_SRC.match(/amount_cents: -_tt, stripe_id: sid \+ ':domrev'/g) || []).length === 3, 'F4-a: the webhook duplicate-refund + definitive-fail + the live-stuck take-over duplicate (14v F1) all reverse the booked domain revenue');
   ok(/stripe_id: r\.id \+ ':domrev'/.test(_WORKER_SRC), 'F4-a: the retry-sweep definitive-reject also reverses the domain revenue (mode matched to the original txn)');
   // F4-c: a swept renewal (renew_pending -> registered) books its renewal revenue (year-stamped id), which it did not before
   ok(/stripe_id: rr\.id \+ ':rnswp:' \+ new Date\(now\)\.getUTCFullYear\(\)/.test(_WORKER_SRC), 'F4-c: the retry-sweep books renewal revenue when it completes a held renew_pending (only on the status-guarded flip)');
   // F4-d: domain COGS counts every DELIVERED state, not just registered (a canceling/lapsing domain was still paid for)
-  ok(/const _DOM_DELIVERED = "status IN \('registered','canceling','renew_failed','renew_pending'\)";/.test(_WORKER_SRC), 'F4-d: domain COGS sums all delivered states (not status=registered only), so a canceling/lapsing domain still counts its wholesale cost');
+  ok(/const _DOM_DELIVERED = "status IN \('registered','canceling','canceled','renew_failed','renew_pending'\) AND tenant_id != '__platform_test__'";/.test(_WORKER_SRC), 'F4-d + money-A/C: domain COGS sums all DELIVERED states (incl. canceled), excludes the platform test-buy tenant (no live-P&L leak)');
   // L3: an abandoned unpaid+unsigned self-extension releases its phantom slot-hold after a 2h grace (cron)
   ok(/async function _runSelfExtendExpire\(env, now\) \{/.test(_WORKER_SRC) && /if \(await _due\(env, 'selfext_expire', 3600000\)\) await _runSelfExtendExpire\(env, Date\.now\(\)\)/.test(_WORKER_SRC), 'L3: the self-extend-expire sweep is wired into scheduled() (gated ~1h)');
   ok(/'portal\.self_extend_expired'/.test(_WORKER_SRC) && /e\.by !== 'portal-self' \|\| \(Number\(e\.signedAt\) \|\| 0\) > 0/.test(_WORKER_SRC), 'L3: only an unsigned portal-self extension is expired; the mutator re-checks paid+signed (CAS-safe, never expires a paid/signed one)');
@@ -5158,6 +5158,23 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if\(id==='coinbase'\)\{ return _modalCoinbase\(\); \}/.test(_ATLAS_SRC13AC) && /Atlas\.connect\('coinbase','Crypto'\)/.test(_ATLAS_SRC13AC), 'crypto-BYO: the Payments settings has an Accept-crypto card wired to the connect modal');
   ok(/connectCoinbase,setActivePay/.test(_ATLAS_SRC13AC), 'crypto-BYO: connectCoinbase is exported on the Atlas API object');
   ok(_ATLAS_SRC13AC === _INDEX_SRC13AC, 'crypto-BYO: atlas.html and index.html remain byte-identical');
+}
+
+// ==== 13AD: domain re-audit remediation (1 HIGH + 2 MED + LOWs from the 2-agent end-to-end audit of 14p->14t) ====
+{
+  // F1 (HIGH): the >5-min live-stuck take-over now REFUNDS a genuinely-distinct second subscription instead of COALESCE-orphaning it (double-charge-forever)
+  ok(/if \(_ex\.stripe_sub && obj\.subscription && String\(_ex\.stripe_sub\) !== String\(obj\.subscription\)\)/.test(_WORKER_SRC) && /via: 'livestuck_takeover'/.test(_WORKER_SRC), 'F1: the live-stuck take-over refunds a DISTINCT duplicate subscription (no orphaned double-renewing sub)');
+  // F2/D: _domainFailRefund REPORTS success; both the webhook and the sweep definitive-fail refund BEFORE delete, only reverse on a real refund, else keep a register_failed tombstone + alert
+  ok(/return \{ ok: _refunded, pi: pi \|\| '' \};/.test(_WORKER_SRC), 'F2: _domainFailRefund returns an outcome so callers only delete+reverse on a REAL refund');
+  ok((_WORKER_SRC.match(/'domain\.register_failed_refund_failed'/g) || []).length === 2, 'F2: BOTH the webhook and the sweep keep a register_failed tombstone + alert when the refund did NOT go through (never a silent unrefunded charge, never a books/reality mismatch)');
+  ok((_WORKER_SRC.match(/SET status='register_failed' WHERE id=\?/g) || []).length === 2, 'D: a failed-refund definitive rejection TOMBSTONES the row (redelivery dedups; a re-buy with a new sub revives) instead of DELETE+re-enter');
+  // money-B: the sweep renewal definitive-fail now REFUNDS this year's charge (symmetric with the webhook renewal-fail), not just alert
+  ok(/'domain\.renew_failed_refunded'/.test(_WORKER_SRC), 'money-B: a definitively-failed RENEWAL is refunded in the sweep too (symmetric with the webhook)');
+  // F3: a per-row lock before the sweep registrar-renew so two overlapping sweeps cannot double-charge Dynadot
+  ok(/if \(!await rateLimit\(env, 'rnsweep:' \+ rr\.id, 1, 3600000\)\) continue;/.test(_WORKER_SRC), 'F3: a per-row 1/hr lock gates the sweep renewal charge (no double Dynadot renewal on overlapping sweeps)');
+  // money-C: a domain subscription.deleted advances canceling->canceled; canceled is a DELIVERED COGS state; test-buy tenant excluded from COGS
+  ok(/T === 'customer\.subscription\.deleted' && md\.billing === 'domain'/.test(_WORKER_SRC) && /'domain\.subscription_deleted'/.test(_WORKER_SRC), 'money-C: a domain subscription.deleted advances the row canceling->canceled (leaves the active portfolio; sunk COGS still counts)');
+  ok(/const _DOM_DELIVERED = "status IN \('registered','canceling','canceled','renew_failed','renew_pending'\) AND tenant_id != '__platform_test__'";/.test(_WORKER_SRC), 'money-A/C: COGS includes canceled (delivered) + excludes the platform test-buy tenant (no live-P&L leak)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
