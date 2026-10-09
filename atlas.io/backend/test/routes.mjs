@@ -5140,7 +5140,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_WORKER_SRC.indexOf("if (psub === 'coinbase' && method === 'POST')") >= 0 && _WORKER_SRC.indexOf("'coinbase', Date.now()") >= 0 && /'portal\.crypto_start'/.test(_WORKER_SRC), 'crypto-BYO: the portal /coinbase pay endpoint creates the charge + tracks it in pending_payments (authoritative booking/kind/amount binding)');
   ok(_WORKER_SRC.indexOf("square|coinbase|sign") >= 0, 'crypto-BYO: the portal psub allowlist includes coinbase');
   // --- worker: the per-tenant webhook (verify w/ THAT tenant's secret; authoritative binding; underpayment guard; idempotent credit) ---
-  ok(_WORKER_SRC.indexOf("coinbase-webhook/([\\w-]+)$") >= 0, 'crypto-BYO: the per-tenant /api/coinbase-webhook/<tenantId> route exists');
+  ok(_WORKER_SRC.indexOf("const _cbwh = path.match(") >= 0 && /coinbase-webhook\\\/\(\[\\w-\]\+\)\$/.test(_WORKER_SRC), 'crypto-BYO: the per-tenant /api/coinbase-webhook/<tenantId> route exists');
   ok(/if \(!await _coinbaseVerify\(_cbRaw, _cbSig, _cbCreds\.webhookSecret\)\) return err\(400/.test(_WORKER_SRC), 'crypto-BYO: the webhook verifies with THAT tenant\'s stored shared secret, fail-closed');
   ok(/_cbPaid < \(_cbWant - _cbTol\)/.test(_WORKER_SRC) && /portal\.crypto_underpaid/.test(_WORKER_SRC), 'crypto-BYO: the webhook blocks an UNDERPAID crypto booking payment (min(2%,$5) fx tolerance) before crediting');
   // --- worker: the reconcile sweep settles a confirmed charge whose webhook was missed ---
