@@ -5098,5 +5098,23 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/const _cResolvedBlind = \(_cbT === 'charge:resolved' && _cpaid <= 0 && _cgross > 0\);/.test(_WORKER_SRC), 'C-L2: charge:resolved with an unverifiable paid amount is blocked, not auto-granted');
 }
 
+// ==== 13AA: deferred-item remediation -- domain P&L (F4) + self-extend occupancy (L3) + GMV carried-fee (L4) ====
+{
+  // F4-a: a REFUNDED domain sale reverses the revenue booked on payment (all 3 refund sites) so the P&L nets to zero
+  ok((_WORKER_SRC.match(/amount_cents: -_tt, stripe_id: sid \+ ':domrev'/g) || []).length === 2, 'F4-a: the webhook duplicate-refund AND definitive-fail both reverse the booked domain revenue');
+  ok(/stripe_id: r\.id \+ ':domrev'/.test(_WORKER_SRC), 'F4-a: the retry-sweep definitive-reject also reverses the domain revenue (mode matched to the original txn)');
+  // F4-c: a swept renewal (renew_pending -> registered) books its renewal revenue (year-stamped id), which it did not before
+  ok(/stripe_id: rr\.id \+ ':rnswp:' \+ new Date\(now\)\.getUTCFullYear\(\)/.test(_WORKER_SRC), 'F4-c: the retry-sweep books renewal revenue when it completes a held renew_pending (only on the status-guarded flip)');
+  // F4-d: domain COGS counts every DELIVERED state, not just registered (a canceling/lapsing domain was still paid for)
+  ok(/const _DOM_DELIVERED = "status IN \('registered','canceling','renew_failed','renew_pending'\)";/.test(_WORKER_SRC), 'F4-d: domain COGS sums all delivered states (not status=registered only), so a canceling/lapsing domain still counts its wholesale cost');
+  // L3: an abandoned unpaid+unsigned self-extension releases its phantom slot-hold after a 2h grace (cron)
+  ok(/async function _runSelfExtendExpire\(env, now\) \{/.test(_WORKER_SRC) && /if \(await _due\(env, 'selfext_expire', 3600000\)\) await _runSelfExtendExpire\(env, Date\.now\(\)\)/.test(_WORKER_SRC), 'L3: the self-extend-expire sweep is wired into scheduled() (gated ~1h)');
+  ok(/'portal\.self_extend_expired'/.test(_WORKER_SRC) && /e\.by !== 'portal-self' \|\| \(Number\(e\.signedAt\) \|\| 0\) > 0/.test(_WORKER_SRC), 'L3: only an unsigned portal-self extension is expired; the mutator re-checks paid+signed (CAS-safe, never expires a paid/signed one)');
+  // L4: the GMV carried-fee is PEEKed at async-checkout open and CLEARED only on payment success (abandonment never loses it)
+  ok(/async function _atlasOwedPeek\(env, tenantId\)/.test(_WORKER_SRC) && /async function _atlasOwedClear\(env, tenantId, cents\)/.test(_WORKER_SRC), 'L4: peek + clear-on-success helpers exist');
+  ok(/const _owed = \(_ap\.on && kind !== 'security'\) \? await _atlasOwedPeek\(env, brow\.tenant_id\)/.test(_WORKER_SRC), 'L4: the renter /pay path PEEKS the owed (does not claim it at open)');
+  ok(/if \(_owC > 0\) await _atlasOwedClear\(env, md\.tenant, _owC\);/.test(_WORKER_SRC), 'L4: the owed is cleared only on a NEW successful GMV payment (gated on _wasNew), so an abandoned checkout keeps it on the ledger');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
