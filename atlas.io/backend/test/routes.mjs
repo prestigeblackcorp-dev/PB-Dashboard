@@ -3618,7 +3618,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 {
   // ---- source-guards: the wiring is in place and matched exactly ----
   ok(/ALTER TABLE payment_index ADD COLUMN booking_id TEXT/.test(_WORKER_SRC), '#1: payment_index carries a booking_id column (added idempotently in ensurePlatformSchema)');
-  ok((_WORKER_SRC.match(/INSERT INTO payment_index \(pi, tenant_id, booking_id, at\) VALUES \(\?,\?,\?,\?\) ON CONFLICT\(pi\) DO UPDATE SET booking_id=excluded\.booking_id/g) || []).length === 3, '#1: the Square (paymentId), PayPal (captureId) AND Stripe-credit-fn (pi) credit paths index the payment id -> booking at credit time (G1-A added the Stripe twin)');
+  ok((_WORKER_SRC.match(/INSERT INTO payment_index \(pi, tenant_id, booking_id, at\) VALUES \(\?,\?,\?,\?\) ON CONFLICT\(pi\) DO UPDATE SET booking_id=excluded\.booking_id/g) || []).length === 4, '#1: the Square/PayPal/Stripe-credit-fn AND crypto credit paths index the payment id -> booking at credit time (G1-A Stripe twin; crypto BYO twin)');
   ok(/bind\(String\(paymentId \|\| ""\)\.slice\(0, 120\)/.test(_WORKER_SRC), '#1: the Square credit path indexes by paymentId');
   ok(/bind\(String\(captureId \|\| ""\)\.slice\(0, 120\)/.test(_WORKER_SRC), '#1: the PayPal credit path indexes by captureId');
   // helper: idempotent per dispute, capped for a booked security hold, decrement-only, sentinel cleaned on non-commit
@@ -4012,12 +4012,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // ==== 12v: cycle-12 fixes -- G5 estimate-replace nets disputes (BUG A) + payment-start re-collectable after clawback (BUG B) ====
 {
   // ---- BUG A: all 4 _priorReal estimate-replace reducers net a slot's disputed decrement ----
-  ok((_WORKER_SRC.match(/return s2 \+ Math\.max\(0, \(Number\(pp\.amountCents\) \|\| 0\) - Math\.round\(Number\(pp\.disputed && \(pp\.disputed\.decrementedCents != null \? pp\.disputed\.decrementedCents : pp\.disputed\.amountCents\)\) \|\| 0\)\);/g) || []).length === 5, 'cycle-12 A: all 5 G5 _priorReal reducers net a disputed slot (else a charged-back slot resurrects revenue at estimate-replace time) -- G1-A added the Stripe-credit-fn twin');
+  ok((_WORKER_SRC.match(/return s2 \+ Math\.max\(0, \(Number\(pp\.amountCents\) \|\| 0\) - Math\.round\(Number\(pp\.disputed && \(pp\.disputed\.decrementedCents != null \? pp\.disputed\.decrementedCents : pp\.disputed\.amountCents\)\) \|\| 0\)\);/g) || []).length === 6, 'cycle-12 A: all 6 G5 _priorReal reducers net a disputed slot (else a charged-back slot resurrects revenue at estimate-replace time) -- G1-A Stripe twin; crypto BYO twin');
   // still exclude a refunded slot (unchanged) + still 4 reducers total
-  ok((_WORKER_SRC.match(/_priorReal = Object\.keys\(d\.paid/g) || []).length === 5, 'cycle-12 A: exactly 5 _priorReal reducers (Stripe webhook + off-session + Square + PayPal + Stripe-credit-fn) -- G1-A');
+  ok((_WORKER_SRC.match(/_priorReal = Object\.keys\(d\.paid/g) || []).length === 6, 'cycle-12 A: exactly 6 _priorReal reducers (Stripe webhook + off-session + Square + PayPal + Stripe-credit-fn + crypto-credit-fn) -- G1-A + crypto BYO');
 
   // ---- BUG B: payment-start guards allow re-collection once a slot is FULLY clawed back ----
-  ok((_WORKER_SRC.match(/&& !_slotFullyClawed\(/g) || []).length === 6, 'cycle-12 B: all 6 payment-start guards (charge + non-charge x /pay,/paypal,/square) check _slotFullyClawed');
+  ok((_WORKER_SRC.match(/&& !_slotFullyClawed\(/g) || []).length === 8, 'cycle-12 B: all 8 payment-start guards (charge + non-charge x /pay,/paypal,/square,/coinbase) check _slotFullyClawed');
   // behavioral: _slotFullyClawed is a pure predicate
   ok(_slotFullyClawed({ amountCents: 5000, disputed: { decrementedCents: 5000 } }) === true, 'cycle-12 B: a fully charged-back slot is fully clawed');
   ok(_slotFullyClawed({ amountCents: 5000, disputed: { decrementedCents: 3000 } }) === false, 'cycle-12 B: a PARTIALLY charged-back slot is NOT fully clawed (still net-paid -> guard still refuses a 2nd payment)');
@@ -4033,7 +4033,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/kind: \(_isGmvRef \? 'refund_gmv' : 'refund'\), amount_cents: \(_isGmvRef \? 0 : -Math\.abs\(amt\)\)/.test(_WORKER_SRC), 'GMV: a GMV refund writes a 0-amount refund_gmv sentinel (keeps the booking revenue decrement, never drags Atlas SaaS P&L negative by pass-through money)');
 
   // ---- BUG C: _chargeOwedCents residual (used by _portalDue + all 3 payment paths) ----
-  ok((_WORKER_SRC.match(/_chargeOwedCents\(d, _chg\.id, Math\.round\(\(Number\(_chg\.amount\) \|\| 0\) \* 100\), !!_chg\.paidAt\)/g) || []).length === 3, 'BUG C: all 3 payment paths charge the RESIDUAL owed (never the full charge again after a partial chargeback)');
+  ok((_WORKER_SRC.match(/_chargeOwedCents\(d, _chg\.id, Math\.round\(\(Number\(_chg\.amount\) \|\| 0\) \* 100\), !!_chg\.paidAt\)/g) || []).length === 4, 'BUG C: all 4 payment paths (/pay + /square + /paypal + /coinbase) charge the RESIDUAL owed (never the full charge again after a partial chargeback)');
   // never paid online -> full owed; paid offline -> 0
   ok(_chargeOwedCents({ paid: {} }, 'X', 5000, false) === 5000, 'BUG C: a never-paid charge owes the full amount');
   ok(_chargeOwedCents({ paid: {} }, 'X', 5000, true) === 0, 'BUG C: an owner-marked-paid (offline) charge owes 0');
@@ -4546,12 +4546,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 
 // ==== 13q: PB-parity G1-C -- reconcile sweep settles a BYO-Stripe payment whose renter paid but never returned ====
 {
-  ok((_WORKER_SRC.match(/INSERT OR IGNORE INTO pending_payments \(order_id,tenant_id,booking_id,kind,amt_cents,processor,created_at\)/g) || []).length === 4, 'G1-C: BOTH Stripe checkout sites (initial deposit + portal /pay) track the session in pending_payments (was 2 = Square+PayPal, now 4)');
+  ok((_WORKER_SRC.match(/INSERT OR IGNORE INTO pending_payments \(order_id,tenant_id,booking_id,kind,amt_cents,processor,created_at\)/g) || []).length === 5, 'G1-C: all payment checkout sites track the session in pending_payments (Square + PayPal + 2 Stripe + crypto/Coinbase = 5)');
   ok(/else if \(row\.processor === 'stripe'\) \{/.test(_WORKER_SRC), 'G1-C: _settleOnePending has a Stripe branch (reuses the proven Square/PayPal sweep)');
   ok(/_res = await _stripeCreditBooking\(env, row\.tenant_id, row\.booking_id, _kind, _piS, String\(_ssS\.id\), _amt/.test(_WORKER_SRC), 'G1-C: the sweep credits via the idempotent _stripeCreditBooking (same pi -> dup no-op with confirm-on-return + webhook)');
   ok(/stripe\.reconcile_shortpay/.test(_WORKER_SRC) && /stripe\.reconcile_mismatch/.test(_WORKER_SRC), 'G1-C: the sweep refuses a short-pay and a booking-mismatch (mirror the Square/PayPal guards) before crediting');
   ok(/if \(_amt < \(Number\(row\.amt_cents\) \|\| 0\)\) \{ await _pendSettle\(env, _oid\);[\s\S]*?stripe\.reconcile_shortpay/.test(_WORKER_SRC), 'G1-C: short-pay is settled-and-dropped, never credited');
-  ok(/row\.processor === 'stripe' \? 'Stripe' : 'PayPal'/.test(_WORKER_SRC), 'G1-C: the reconcile receipt names Stripe correctly');
+  ok(/row\.processor === 'stripe' \? 'Stripe' : row\.processor === 'coinbase' \? 'crypto' : 'PayPal'/.test(_WORKER_SRC), 'G1-C: the reconcile receipt names the processor correctly (incl. crypto)');
 }
 
 // ==== 13r: PB-parity G15 -- cancel ledger reflects the server's AUTHORITATIVE kept amount (a failed-refund shortfall no longer falls out of the books) ====
@@ -5126,6 +5126,38 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/FROM platform_domain_cogs WHERE at>=\? AND at<\? AND COALESCE\(livemode,0\)=\?/.test(_WORKER_SRC) && /const domCogsRange = \(Number\(_domInitRange\) \|\| 0\) \+ \(Number\(_domRenewRange\) \|\| 0\);/.test(_WORKER_SRC), 'F4-b: the P&L folds renewal COGS (date-attributed, mode-filtered) into domain COGS alongside the initial registration cost');
   // L3 grace tightened to 30 minutes (per owner)
   ok(/var _cut = now - 30 \* 60000;/.test(_WORKER_SRC), 'L3: the abandoned self-extension grace is 30 minutes');
+}
+
+// ==== 13AC: BYO per-tenant crypto (Coinbase) -- renters pay bookings in crypto, an ADDITIVE rail alongside the card processor ====
+{
+  const _ATLAS_SRC13AC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13AC = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // --- worker: creds (JSON {apiKey,webhookSecret} in the encrypted secret) + get-charge (reconcile) + the booking-credit twin ---
+  ok(/async function _coinbaseCreds\(env, tenantId\)/.test(_WORKER_SRC) && /JSON\.parse\(ti\.secret\)/.test(_WORKER_SRC), 'crypto-BYO: per-tenant Coinbase creds (API key + webhook secret) read from the encrypted integration');
+  ok(/async function _coinbaseCreditBooking\(env, tenantId, bookingId, kind, chargeCode, amountCents\)/.test(_WORKER_SRC), 'crypto-BYO: the booking-credit twin of _squareCreditBooking exists');
+  ok(/String\(p\.coinbase \|\| ''\) === String\(chargeCode\)/.test(_WORKER_SRC), 'crypto-BYO: crediting is idempotent on the Coinbase charge code (no double-credit on webhook replay / reconcile)');
+  // --- worker: the portal pay endpoint (server-authoritative amount; authoritative pending_payments binding) ---
+  ok(_WORKER_SRC.indexOf("if (psub === 'coinbase' && method === 'POST')") >= 0 && _WORKER_SRC.indexOf("'coinbase', Date.now()") >= 0 && /'portal\.crypto_start'/.test(_WORKER_SRC), 'crypto-BYO: the portal /coinbase pay endpoint creates the charge + tracks it in pending_payments (authoritative booking/kind/amount binding)');
+  ok(_WORKER_SRC.indexOf("square|coinbase|sign") >= 0, 'crypto-BYO: the portal psub allowlist includes coinbase');
+  // --- worker: the per-tenant webhook (verify w/ THAT tenant's secret; authoritative binding; underpayment guard; idempotent credit) ---
+  ok(_WORKER_SRC.indexOf("coinbase-webhook/([\\w-]+)$") >= 0, 'crypto-BYO: the per-tenant /api/coinbase-webhook/<tenantId> route exists');
+  ok(/if \(!await _coinbaseVerify\(_cbRaw, _cbSig, _cbCreds\.webhookSecret\)\) return err\(400/.test(_WORKER_SRC), 'crypto-BYO: the webhook verifies with THAT tenant\'s stored shared secret, fail-closed');
+  ok(/_cbPaid < \(_cbWant - _cbTol\)/.test(_WORKER_SRC) && /portal\.crypto_underpaid/.test(_WORKER_SRC), 'crypto-BYO: the webhook blocks an UNDERPAID crypto booking payment (min(2%,$5) fx tolerance) before crediting');
+  // --- worker: the reconcile sweep settles a confirmed charge whose webhook was missed ---
+  ok(/\} else if \(row\.processor === 'coinbase'\) \{/.test(_WORKER_SRC) && /coinbase\.reconcile_shortpay/.test(_WORKER_SRC), 'crypto-BYO: the reconcile sweep handles a confirmed Coinbase charge (payment-legs = settlement proof) with its own short-pay guard');
+  // --- worker: /data capability flag + connect MFA-gating + status endpoint ---
+  ok(/cryptoPay: _cbOn,/.test(_WORKER_SRC), 'crypto-BYO: the portal /data surfaces cryptoPay so the portal shows the crypto button ALONGSIDE the primary processor');
+  ok(/\['stripe', 'paypal', 'square', 'coinbase'\]\.indexOf/.test(_WORKER_SRC), 'crypto-BYO: connecting Coinbase (a payout processor) is MFA step-up-gated like the card processors');
+  ok(/if \(path === '\/api\/integrations\/coinbase\/status' && method === 'GET'\)/.test(_WORKER_SRC), 'crypto-BYO: the owner status endpoint (connected? + the per-tenant webhook URL to paste into Coinbase)');
+  // --- worker: the portal UI button + async "processing" return handler ---
+  ok(/function cpay\(kind,chg\)\{/.test(_WORKER_SRC) && /onclick="cpay\(/.test(_WORKER_SRC), 'crypto-BYO: the portal has a Pay-with-crypto button (shown when j.cryptoPay) wired to cpay()');
+  ok(/indexOf\('cryptopending=1'\)>=0/.test(_WORKER_SRC), 'crypto-BYO: the portal shows a "payment processing" banner on the async crypto return (confirms on-chain, receipt by email)');
+  // --- client: the owner Settings connect card + modal + status, byte-identical mirror ---
+  ok(/function connectCoinbase\(\)\{/.test(_ATLAS_SRC13AC) && /function _modalCoinbase\(\)\{/.test(_ATLAS_SRC13AC), 'crypto-BYO: the owner Settings has a connect-crypto function + modal');
+  ok(/provider:'coinbase', secret:JSON\.stringify\(\{apiKey:key,webhookSecret:wh\}\)/.test(_ATLAS_SRC13AC), 'crypto-BYO: the connect posts both secrets inside the single encrypted secret field');
+  ok(/if\(id==='coinbase'\)\{ return _modalCoinbase\(\); \}/.test(_ATLAS_SRC13AC) && /Atlas\.connect\('coinbase','Crypto'\)/.test(_ATLAS_SRC13AC), 'crypto-BYO: the Payments settings has an Accept-crypto card wired to the connect modal');
+  ok(/connectCoinbase,setActivePay/.test(_ATLAS_SRC13AC), 'crypto-BYO: connectCoinbase is exported on the Atlas API object');
+  ok(_ATLAS_SRC13AC === _INDEX_SRC13AC, 'crypto-BYO: atlas.html and index.html remain byte-identical');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }

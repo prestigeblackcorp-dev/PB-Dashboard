@@ -4263,6 +4263,56 @@ const Atlas = (function(){
       +'</div>');
   }
 
+  /* ---- Crypto (Coinbase Commerce, BYO per-tenant): renters pay bookings in crypto as an ADDITIVE rail alongside the card processor ---- */
+  var _cbState={loaded:false,connected:false,webhookUrl:''};
+  function _cbConnected(){ return !!(_cbState&&_cbState.connected); }
+  function _cbStatusLoad(){
+    if(!(ATLAS_BACKEND && _apiCsrf)) return;
+    _api('/api/integrations/coinbase/status',{method:'GET'}).then(function(res){
+      var j=res.json||{}; if(!j.ok) return;
+      var was=_cbState.connected;
+      _cbState.loaded=true; _cbState.connected=!!j.connected; _cbState.webhookUrl=j.webhookUrl||'';
+      try{ if(was!==_cbState.connected && document.querySelector('.panel[data-panel="settings"]').classList.contains('active')) renderSet(); }catch(e){}
+    }).catch(function(){});
+  }
+  function connectCoinbase(){
+    if(!_canMod('settings')){ toast('Your role is read-only.'); return; }
+    if(!(ATLAS_BACKEND && _apiCsrf)){ toast('Sign in to connect crypto.'); return; }
+    var key=String((document.getElementById('cbApiKey')||{}).value||'').trim();       // TRANSIENT: read at submit, sent encrypted, NEVER assigned to S / save()
+    var wh=String((document.getElementById('cbWebhookSecret')||{}).value||'').trim();
+    if(!key||!wh){ toast('Paste both your Coinbase Commerce API key and webhook shared secret.'); return; }
+    toast('Connecting to Coinbase\u2026');
+    var _send=function(proof){   // retry-able so an mfa_required (owner opted into 2FA on payout changes) can re-send with a fresh code
+      var _b={provider:'coinbase', secret:JSON.stringify({apiKey:key,webhookSecret:wh}), meta:{}};
+      if(proof){ if(proof.code)_b.code=proof.code; if(proof.password)_b.password=proof.password; }
+      _api('/api/integrations/connect',{method:'POST',body:_b}).then(function(res){ var j=res.json||{};
+        if(j.mfa_required){ _stepUpPrompt(function(p){ _send(p); }); return; }
+        if(!(res.status>=200&&res.status<300&&j.ok)){ toast((j.error||j.reason)?('Could not connect: '+(j.error||j.reason)):'Could not connect to Coinbase'); return; }
+        key=''; wh='';   // DISCARD the raw secrets immediately
+        _cbState.connected=true;
+        _logEvent('billing','Crypto (Coinbase) connected',{connected:true});
+        closeModal(); renderSet(); _cbStatusLoad();
+        toast('Crypto connected \u2014 renters can now pay with crypto alongside your card processor.');
+      }).catch(function(){ toast('Could not reach the server \u2014 try again'); });
+    };
+    _send(null);
+  }
+  function _modalCoinbase(){
+    var conn=_cbConnected();
+    var _wh=esc(_cbState.webhookUrl||(((typeof location!=='undefined'&&location.origin)?location.origin:'https://atlasrental.io')+'/api/coinbase-webhook/your-account'));
+    openModal('<div class="modal__head"><h3>Accept crypto (Coinbase)</h3>'+_xBtn()+'</div>'
+      +'<div class="modal__body">'
+      +'<p style="font-size:13px;color:var(--muted);margin:0 0 10px">Let renters pay with Bitcoin, Ethereum, USDC and more. Money settles to <b>your own</b> Coinbase Commerce account (turn on auto-convert to USDC for stable value if you like). This is an extra option shown alongside your card processor &mdash; it never replaces it.</p>'
+      +'<ol class="step-list"><li>Create a free account at <code>commerce.coinbase.com</code>.</li><li>Open <b>Settings &rarr; Security &rarr; API keys</b>, create a key, and paste it below.</li><li>Open <b>Settings &rarr; Webhook subscriptions</b>, add the endpoint below, then copy its <b>Shared Secret</b> into the field below.</li></ol>'
+      +'<div class="field"><label>Your webhook endpoint (paste into Coinbase)</label><input class="input mono" readonly onclick="try{this.select()}catch(e){}" value="'+_wh+'"></div>'
+      +'<a class="btn btn--ghost btn--sm" href="https://commerce.coinbase.com/" target="_blank" rel="noopener" style="margin:0 0 12px;text-decoration:none">Open Coinbase Commerce &#8599;</a>'
+      +'<div class="field"><label>API key</label><input class="input mono" id="cbApiKey" type="password" autocomplete="off" placeholder="'+(conn?'Paste to replace':'xxxxxxxx-xxxx-xxxx-...')+'"></div>'
+      +'<div class="field"><label>Webhook shared secret</label><input class="input mono" id="cbWebhookSecret" type="password" autocomplete="off" placeholder="'+(conn?'Paste to replace':'paste the Shared Secret')+'"></div>'
+      +'<button class="btn btn--primary btn--full" onclick="Atlas.connectCoinbase()">'+(conn?'Update crypto':'Connect crypto')+'</button>'
+      +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">'+(conn?'Connected \u2014 renters see a Pay with crypto button in their portal.':'\u{1F512} Your API key and webhook secret are encrypted at rest and never stored in the browser. Disconnect anytime.')+'</p>'
+      +'</div>');
+  }
+
   /* ============================== APP ============================== */
   const NAV=[
     ['overview','Overview','M3 10l7-6 7 6M5 9v7h4v-4h2v4h4V9'],
@@ -8824,6 +8874,10 @@ const Atlas = (function(){
         }).join('')}
         <div class="bk-lenhint" style="margin:12px 0 0">You keep your processor and your money &mdash; Atlas just routes the charge. Real processing goes live with your backend; today it is a safe test flow.</div>
       </div>
+      <div class="set-block"><h3>Accept crypto <span class="chip chip--muted" style="font-size:10px;vertical-align:middle;font-weight:600">Bitcoin, Ethereum, USDC</span></h3><div class="desc">Let renters pay with crypto through your own <b>Coinbase Commerce</b> account &mdash; shown alongside your card processor in the booking portal, never replacing it. Money settles to you (turn on auto-convert to USDC for stable value if you like); each payment confirms on-chain and the renter gets an emailed receipt.</div>
+        <div class="conn-row"><div class="conn-row__ic">&#8383;</div><div class="conn-row__t"><b>Coinbase Commerce</b><small>Renters pay BTC / ETH / USDC right in their booking portal</small></div>
+          <div class="conn-act">${_cbConnected()?`<span class="chip chip--ok"><span class="dot"></span>Connected</span> <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('coinbase','Crypto')">Manage</button>`:`<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('coinbase','Crypto')">Connect crypto</button>`}</div></div>
+      </div>
       <div class="set-block"><h3>Identity verification <span class="chip chip--muted" style="font-size:10px;vertical-align:middle;font-weight:600">Know who you are renting to</span></h3><div class="desc">Confirm every renter is a real person holding a genuine, unexpired government photo ID &mdash; before they leave with your ${esc(S.fleet.nouns||'rentals')}. Turn it on and each renter is asked, right inside their booking, to scan their ID and take a quick selfie. It is checked automatically in seconds: the document is authenticated, the selfie is matched to it (a live capture, not a screenshot), and the ID&rsquo;s expiry is read and saved for you. No app to install, no training, no paperwork &mdash; and a verified renter is remembered, so they are never asked twice.</div>
         <div id="idvState">${_idvStateHtml()}</div>
       </div>
@@ -8837,7 +8891,7 @@ const Atlas = (function(){
       </div>
       <div class="set-block"><h3>Webhooks</h3><div class="desc">Let your other tools react the moment something happens here. Atlas can ping your website, Zapier, or any app your developer builds the instant a booking is created or paid &mdash; no coding needed to set up.</div>
         <button class="btn btn--primary" onclick="Atlas.openWebhooks()">Set up webhooks</button>
-      </div>`; _qboStatusLoad(); _xeroStatusLoad(); _ppStatusLoad(); _sqStatusLoad(); _idvStatusLoad(); }
+      </div>`; _qboStatusLoad(); _xeroStatusLoad(); _ppStatusLoad(); _sqStatusLoad(); _cbStatusLoad(); _idvStatusLoad(); }
     else if(setCur==='portal'){ var pc=_portalCfg(); b.innerHTML=`
       <div class="set-block"><h3>Member portal</h3><div class="desc">Your customers' branded self-service area &mdash; fully generated for you and yours to edit.</div>
         <div class="conn-row"><div class="conn-row__ic" style="background:var(--brand-100);color:var(--brand-700)">&#128279;</div><div class="conn-row__t"><b>${S.brand.subdomain}.atlasrental.io/portal</b><small>Live &middot; branded as ${esc(S.brand.name)}</small></div><button class="btn btn--primary btn--sm conn-act" onclick="Atlas.copyPortal()">Copy link</button></div>
@@ -10692,6 +10746,7 @@ const Atlas = (function(){
     if(id==='web'){ return _modalEmbed(); }   // booking-embed connect shows a real, copyable snippet -- there is no key to paste
     if(id==='paypal'){ return _modalPaypal(); }   // PayPal is REAL per-tenant: its own modal collects Client ID (meta) + Secret (transient) + a sandbox flag and truly wires payments
     if(id==='square'){ return _modalSquare(); }   // Square is REAL per-tenant: its own modal collects Location ID (meta) + Access Token (transient) + a sandbox flag and truly wires payments
+    if(id==='coinbase'){ return _modalCoinbase(); }   // Crypto (Coinbase Commerce) BYO: its modal collects the API key + webhook shared secret (both encrypted) + shows the per-tenant webhook URL to paste into Coinbase
     const steps=GUIDES[id]||['Follow the guided steps to connect.'];
     var _cf=CONN_FIELDS[id];
     var fieldsHtml=_cf ? _cf.map(function(f,i){ return '<div class="field"><label>'+f.label+'</label><input class="input" id="connKey'+i+'" placeholder="'+f.ph+'"></div>'; }).join('')
@@ -13823,7 +13878,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,togglePush,setTypeRate,setCancelPolicy,setSenderAddress,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,syncTax,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,togglePush,setTypeRate,setCancelPolicy,setSenderAddress,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,connectCoinbase,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,syncTax,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
