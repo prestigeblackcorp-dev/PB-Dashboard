@@ -966,7 +966,7 @@ async function _downloadSignedContractPdf(rootEl, fname){
 // copy. The live signing flow keeps using its own inline fill (untouched), so this can NEVER affect
 // signing. KEEP IN SYNC: if you add a template placeholder to _initSigningMode's fill, add it here too.
 // Returns the filled template HTML, or '' if there is no template.
-function _isSlingFullDay(bk){ return !!(bk && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event'].indexOf(String(bk.type||'').toLowerCase())===-1); }
+function _isSlingFullDay(bk){ return !!(bk && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event','lease'].indexOf(String(bk.type||'').toLowerCase())===-1); }
 // Slingshot FULL-DAY docs carry BOTH signatures (waiver + rental agreement) on EVERY doc, at the primary sig spot.
 function _bothSigsHtml(bk, isWv){
   var _flt = isWv ? '' : 'invert(1)';   // dark rental-agreement needs inverted ink; light waiver renders as-is
@@ -1005,9 +1005,10 @@ function _smOrigTerms(bk){
   return { returnStr: origReturn, days: days };
 }
 function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
-  var tmpl = (docType==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+  var tmpl = (bk.type==='lease') ? (data.leaseTemplate|| /* M2: no daily-contract fallback for a lease (see live-sign path) */ '') : (docType==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
   if(!tmpl) return '';
   tmpl = tmpl.replace(/Jalen Nguyen/g, 'Edwin P. Watson Jr.');   // owner change: never render the prior owner on a client-facing doc, whatever the stored template says
+  if(bk.type==='lease' && typeof _pbLeaseFill==='function') tmpl = _pbLeaseFill(tmpl, bk, !readOnly);
   var _isWv = (docType==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly'));   // waiver=light doc (dark ink); contract=dark doc (needs inverted ink)
   // Slingshot color normalization
   if(bk.vehicle==='Polaris Slingshot'){
@@ -1264,7 +1265,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     // Slingshot FULL-DAY rentals sign TWO docs consecutively -- the WAIVER first, then the CONTRACT. docType is
     // explicit ('waiver'/'contract') on the chained 2nd step; otherwise default to the waiver first (if unsigned)
     // for the primary renter. Every other vehicle + Slingshot hourly + drivers stay on 'contract' (unchanged).
-    var _slingFullDay = !_isDriver && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event'].indexOf(String(bk.type||'').toLowerCase())===-1;
+    var _slingFullDay = !_isDriver && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event','lease'].indexOf(String(bk.type||'').toLowerCase())===-1;
     var _waiverSigned = !!(bk.waiverSig && String(bk.waiverSig).indexOf('data:image/')===0);
     var _dt = (docType==='waiver'||docType==='contract') ? docType : ((_slingFullDay && !_waiverSigned) ? 'waiver' : 'contract');
     document.getElementById('sign-tag').textContent = _isDriver ? 'Additional Driver Agreement' : (_dt==='waiver' ? 'Liability Waiver' : 'Rental Agreement');
@@ -1301,9 +1302,10 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     }
 
     // Pick template (docType-aware: waiver -> the Slingshot waiver template; contract -> the rental agreement)
-    var tmpl = (_dt==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+    var tmpl = (bk.type==='lease') ? (data.leaseTemplate|| /* M2: NEVER fall back to the daily rental agreement for a lease; an absent leaseTemplate (worker not redeployed / sync lag) must hit the "contact us" block below, not serve the wrong legal doc */ '') : (_dt==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
     tmpl = tmpl.replace(/Jalen Nguyen/g, 'Edwin P. Watson Jr.');   // owner change: never render the prior owner on the doc the client SIGNS (mirror the download render)
     if(!tmpl){ body.innerHTML='<div style="color:#f87171;padding:20px">No contract template found. Please contact Prestige Black Rentals.</div>'; return; }
+    if(bk.type==='lease' && typeof _pbLeaseFill==='function') tmpl = _pbLeaseFill(tmpl, bk, true);
 
     // Slingshot color normalization
     if(bk.vehicle==='Polaris Slingshot'){
@@ -1470,6 +1472,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     }
     window._smData = data;
     _smInitCanvas();
+    if(bk.type==='lease' && _smDriverIdx===null){ try{ _pbLeaseAckSetup(bk); }catch(e){} }   // initials are lessee(primary)-only; an authorized driver skips the walk
 
     // Sticky bar
     var _sb = document.createElement('div');
@@ -1808,6 +1811,119 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx, fromPortal){
   });
 }
 
+// ============================ LEASE: signing-time acknowledgment (shared portal + dashboard) =========
+// A motor-vehicle lease requires the signer to INITIAL 4 conspicuous clauses (Insurance, No-Ownership,
+// AS-IS, Liability/Release) before the signature unlocks. The contract renders inside the same-origin
+// #smContractFrame srcdoc iframe, so this walks the signer to each [data-pbini] box in it, writes their
+// adopted initials in, and only then enables #smSubmitBtn. Additive + lease-only: never runs unless
+// booking.type==='lease'. If the iframe is unreachable it still gates signing on 4 taps (degrades safe).
+function _pbIniFrameDoc(){
+  try{ var f=document.getElementById('smContractFrame'); return (f&&f.contentDocument)?f.contentDocument:null; }catch(e){ return null; }
+}
+function _pbLeaseFill(tmpl, bk, liveSign){
+  if(!bk || bk.type!=='lease' || !tmpl) return tmpl;
+  var money=function(n){ n=Number(n)||0; return '$'+n.toLocaleString('en-US',{maximumFractionDigits:0}); };
+  var fd=function(s){ try{ if(typeof fmtDateFull==='function'){ var r=fmtDateFull(s); if(r) return r; } }catch(e){} return s||''; };
+  var term=Number(bk.leaseTerm)||12, down=Number(bk.leaseDown)||0, monthly=Number(bk.leaseMonthly)||0;
+  var deposit=Number(bk.leaseDeposit!=null?bk.leaseDeposit:bk.deposit)||0;
+  var miles=Number(bk.leaseMiles)|| (term*1250), over=Number(bk.leaseOverage)||0.5;
+  var total=monthly*term;   // agreement line is literally "Total of Monthly Payments" == the monthly installments summed; down payment, deposit and one-time add-ons each print on their own line, so they must NOT be folded in here (the itemized Lease Total in the breakdown table is the all-in figure)
+  var startS=fd(bk.pickupDate||bk.date||''), endS=fd(bk.dropoffDate||'');
+  var ini=liveSign?'':(bk.leaseInitials?String(bk.leaseInitials).toUpperCase().slice(0,6):'');
+  function R(re,val){ tmpl=tmpl.replace(re,function(){return val;}); }
+  R(/\{\{lease_term\}\}/gi, term+' months');
+  R(/\{\{lease_start\}\}/gi, startS);
+  R(/\{\{lease_end\}\}/gi, endS);
+  R(/\{\{first_payment_date\}\}/gi, startS);
+  R(/\{\{down_payment\}\}/gi, money(down));
+  R(/\{\{monthly_payment\}\}/gi, money(monthly)+'/mo');
+  R(/\{\{total_lease\}\}/gi, money(total));
+  R(/\{\{included_miles\}\}/gi, miles.toLocaleString('en-US')+' mi');
+  R(/\{\{overage_rate\}\}/gi, '$'+over.toFixed(2)+'/mi');
+  R(/\{\{deposit_amount\}\}/gi, money(deposit));
+  R(/\{\{lessee_initials\}\}/gi, ini);
+  return tmpl;
+}
+var _PB_INI_SECTIONS=[{n:'1',t:'Section 7 - Insurance Required'},{n:'2',t:'Section 10 - Lease Only; No Ownership'},{n:'3',t:'Section 11 - Leased AS-IS; No Warranties'},{n:'4',t:'Section 12 - Liability, Release and Indemnity'}];
+function _pbIniRenderProgress(activeIdx){
+  var box=document.getElementById('pbIniProgress'); if(!box) return;
+  var done=(window._pbLeaseAck||[]).length, h='';
+  for(var i=0;i<_PB_INI_SECTIONS.length;i++){
+    var isDone=i<done, isAct=(i===activeIdx);
+    var bg=isDone?'rgba(46,125,50,.92)':(isAct?'#C9A962':'rgba(255,255,255,.08)');
+    var col=(!isDone&&!isAct)?'rgba(255,255,255,.5)':'#000';
+    h+='<span style="padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800;background:'+bg+';color:'+col+'">'+(isDone?'&#10003; ':'')+_PB_INI_SECTIONS[i].t.split(' - ')[0]+'</span>';
+  }
+  box.innerHTML=h;
+}
+function _pbLeaseAckSetup(bk){
+  try{
+    window._pbLeaseAck=[]; window._pbLeaseInitialsDone=false; window._pbLeaseInitials=''; window._pbLeaseBk=bk;
+    var sign=document.getElementById('smSignSection'); if(!sign) return;
+    var nm=(bk&&bk.name)?String(bk.name).trim():'';
+    var di=nm?nm.split(/\s+/).map(function(p){return p.charAt(0);}).join('').toUpperCase().slice(0,4):'';
+    var panel=document.createElement('div');
+    panel.id='pbLeaseAck';
+    panel.style.cssText='background:rgba(201,169,98,.06);border:2px solid rgba(201,169,98,.45);border-radius:14px;padding:18px;margin-bottom:18px';
+    panel.innerHTML=
+      '<div style="font-size:15px;font-weight:800;color:#C9A962;margin-bottom:4px">Review &amp; Initial - Required Before Signing</div>'+
+      '<div style="font-size:12px;color:rgba(255,255,255,.55);margin-bottom:12px;line-height:1.5">This is a binding motor-vehicle lease. You must review and initial <strong style="color:#fff">4 key sections</strong>. We will scroll you to each one in the agreement above.</div>'+
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px"><label style="font-size:12px;color:rgba(255,255,255,.7)">Your initials:</label>'+
+      '<input id="pbIniInput" type="text" maxlength="6" value="'+di+'" style="width:84px;padding:7px 10px;border:1px solid rgba(201,169,98,.5);border-radius:8px;background:#0e0e12;color:#C9A962;font-weight:800;font-size:15px;text-align:center;letter-spacing:.08em;text-transform:uppercase"></div>'+
+      '<div id="pbIniProgress" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>'+
+      '<button id="pbIniBtn" onclick="_pbIniBegin()" style="padding:11px 24px;border:none;border-radius:10px;background:#C9A962;color:#000;font-weight:800;font-size:15px;cursor:pointer;width:100%;max-width:340px">Begin - Take Me to Section 1</button>'+
+      '<div id="pbIniHint" style="font-size:12px;color:rgba(255,255,255,.45);margin-top:10px"></div>';
+    sign.parentNode.insertBefore(panel, sign);
+    _pbIniRenderProgress(-1);
+    var sub=document.getElementById('smSubmitBtn');
+    if(sub){ sub.disabled=true; sub.style.opacity='.4'; sub.style.cursor='not-allowed'; }
+    sign.style.opacity='.5';
+    var msg=document.getElementById('smSigMsg'); if(msg) msg.textContent='Complete the 4 section acknowledgments above to unlock signing.';
+    var sb=document.getElementById('smStickyBar'); if(sb){ var sbb=sb.querySelector('button'); if(sbb){ sbb.textContent='Review & Initial to Sign'; sbb.setAttribute('onclick',"var s=document.getElementById('pbLeaseAck');if(s)s.scrollIntoView({behavior:'smooth',block:'center'});"); } }
+  }catch(e){ try{ var s2=document.getElementById('smSubmitBtn'); if(s2){ s2.disabled=false; s2.style.opacity='1'; } var sg=document.getElementById('smSignSection'); if(sg) sg.style.opacity='1'; }catch(_e){} }
+}
+function _pbIniBegin(){
+  var inp=document.getElementById('pbIniInput');
+  var v=inp?String(inp.value||'').trim().toUpperCase().slice(0,6):'';
+  if(!v){ var hn=document.getElementById('pbIniHint'); if(hn){hn.style.color='#f87171';hn.textContent='Please enter your initials first.';} if(inp) inp.focus(); return; }
+  window._pbLeaseInitials=v; window._pbLeaseAck=[];
+  if(inp) inp.disabled=true;
+  _pbIniGo(0);
+}
+function _pbIniGo(idx){
+  if(idx>=_PB_INI_SECTIONS.length){ _pbIniComplete(); return; }
+  var sec=_PB_INI_SECTIONS[idx];
+  var doc=_pbIniFrameDoc();
+  var box=doc?doc.querySelector('[data-pbini="'+sec.n+'"]'):null;
+  var row=box?(box.closest?box.closest('.initial'):box.parentNode):null;
+  if(doc){ try{ var prev=doc.querySelectorAll('.pbini-active'); for(var i=0;i<prev.length;i++) prev[i].classList.remove('pbini-active'); }catch(e){} }
+  try{ var fr=document.getElementById('smContractFrame'); if(fr) fr.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){}
+  if(row){ try{ row.classList.add('pbini-active'); }catch(e){} }
+  if(box){ setTimeout(function(){ try{ box.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){} }, 280); }
+  var btn=document.getElementById('pbIniBtn');
+  if(btn){ btn.textContent='Initial '+sec.t.split(' - ')[0]+' & Continue'; btn.setAttribute('onclick','_pbIniConfirm('+idx+')'); }
+  var hint=document.getElementById('pbIniHint');
+  if(hint){ hint.style.color='rgba(255,255,255,.6)'; hint.textContent='Read '+sec.t+' (highlighted above), then tap to initial.'+(box?'':' If it is not highlighted, scroll up in the agreement to '+sec.t+'.'); }
+  _pbIniRenderProgress(idx);
+}
+function _pbIniConfirm(idx){
+  var sec=_PB_INI_SECTIONS[idx];
+  var doc=_pbIniFrameDoc();
+  var box=doc?doc.querySelector('[data-pbini="'+sec.n+'"]'):null;
+  if(box){ try{ box.textContent=window._pbLeaseInitials; var row=box.closest?box.closest('.initial'):box.parentNode; if(row){ row.classList.remove('pbini-active'); row.classList.add('pbini-done'); } }catch(e){} }
+  (window._pbLeaseAck=window._pbLeaseAck||[]).push({section:sec.t, at:Date.now()});
+  _pbIniGo(idx+1);
+}
+function _pbIniComplete(){
+  window._pbLeaseInitialsDone=true;
+  var panel=document.getElementById('pbLeaseAck');
+  if(panel){ panel.innerHTML='<div style="font-size:15px;font-weight:800;color:#2ec27a;margin-bottom:4px">&#10003; All 4 Sections Acknowledged</div><div style="font-size:12px;color:rgba(255,255,255,.55);line-height:1.5">You initialed Sections 7, 10, 11 and 12 as <strong style="color:#C9A962">'+(window._pbLeaseInitials||'')+'</strong>. You can now sign below.</div>'; panel.style.borderColor='rgba(46,194,122,.5)'; }
+  var sign=document.getElementById('smSignSection'); if(sign){ sign.style.opacity='1'; }
+  var sub=document.getElementById('smSubmitBtn'); if(sub){ sub.disabled=false; sub.style.opacity='1'; sub.style.cursor='pointer'; }
+  var msg=document.getElementById('smSigMsg'); if(msg) msg.textContent='By signing, you agree to the terms of the lease agreement above.';
+  try{ if(sign) sign.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){}
+}
+
 function _smInitCanvas(){
   var c = document.getElementById('smSigCanvas'); if(!c) return;
   var ctx = c.getContext('2d'); var drawing = false; var lastX=0, lastY=0;
@@ -1885,6 +2001,11 @@ function _smSubmitSig(bookingId, driverIdx, docType){
     var _savePayload = {bookingId, sig, sigDate, t:_sigTokenFor(bookingId)};
     if(docType==='waiver') _savePayload.doc='waiver';
     if(_isDriver) _savePayload.driverIdx = _dIdx;
+    // LEASE: a primary lessee signature must carry the 4-section acknowledgment (initials) captured above.
+    if(_freshBk && _freshBk.type==='lease' && !_isDriver){
+      if(!window._pbLeaseInitialsDone || !window._pbLeaseInitials){ _showSaveErr('Please initial all 4 required sections above before signing.'); return; }
+      _savePayload.initials = window._pbLeaseInitials; _savePayload.initialsAck = window._pbLeaseAck || [];
+    }
     return fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_savePayload)})
       .then(r => r.json())
       .then(function(res){
@@ -1895,7 +2016,7 @@ function _smSubmitSig(bookingId, driverIdx, docType){
             if(_lb){ if(docType==='waiver'){ _lb.waiverSig=sig; _lb.waiverSigDate=sigDate; } else { _lb.customerSig=sig; _lb.customerSigDate=sigDate; } }
           }
           // Slingshot full-day: after the WAIVER, immediately continue to the CONTRACT (consecutive signing).
-          if(docType==='waiver' && _freshBk && _freshBk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event'].indexOf(String(_freshBk.type||'').toLowerCase())===-1){
+          if(docType==='waiver' && _freshBk && _freshBk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event','lease'].indexOf(String(_freshBk.type||'').toLowerCase())===-1){
             document.getElementById('signing-body').innerHTML = '<div style="text-align:center;padding:40px"><div style="font-size:48px;margin-bottom:12px">\u2705</div><div style="font-size:18px;font-weight:800;color:#22c55e;margin-bottom:8px">Waiver signed!</div><div style="color:rgba(255,255,255,.6);font-size:14px">Now review and sign your Rental Agreement\u2026</div></div>';
             var _sbw=document.getElementById('smStickyBar'); if(_sbw) _sbw.remove();
             setTimeout(function(){ _initSigningMode(bookingId, null, _smFromPortal, 'contract'); }, 950);
@@ -2155,6 +2276,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   var paidFlag   = sp.get('paid');
   var paidBkId   = sp.get('bookingId');
   var paidChgId  = sp.get('chargeId');
+  var paidPartial= sp.get('partial')==='1';   // H3: a single lease MONTHLY payment -> a partial; do NOT paint the balance paid-in-full on return (the worker records it as a partial + leaves the residual)
   var paidSid    = sp.get('session_id');   // Stripe checkout session id -> the worker verifies the payment before marking paid
   var paidSelfKind = sp.get('selfKind');   // 'extras' | 'addtime' -> chauffeur self-service checkout (mark-self-paid appends the paid charge / folds add-time hours in)
 
@@ -2186,7 +2308,7 @@ document.addEventListener('DOMContentLoaded',()=>{
       if(_pBk){
         if(paidChgId){
           (_pBk.portalCharges||[]).forEach(function(c){ if(c&&c.id===paidChgId) c.paidAt=_paidNow; });
-        } else {
+        } else if(!paidPartial){   // H3: a single lease monthly is a partial -> don't optimistically show paid-in-full
           _pBk.balancePaidAt = _paidNow;
         }
       }
@@ -2224,7 +2346,7 @@ document.addEventListener('DOMContentLoaded',()=>{
                     (_pBk.portalCharges||[]).forEach(function(c){
                       if(c && c.id===paidChgId && !c.paidAt) c.paidAt = _paidNow;
                     });
-                  } else {
+                  } else if(!paidPartial && !(_markResult && _markResult.partial)){   // H3: a monthly partial keeps its residual -> leave loadPortalData's refreshed balance, don't paint paid-in-full
                     if(!_pBk.balancePaidAt) _pBk.balancePaidAt = _paidNow;
                     if(!_pBk.balancePaidMethod) _pBk.balancePaidMethod = 'Stripe (portal)';
                     if(!_pBk.balancePaidAmount && _markResult && _markResult.amount != null) _pBk.balancePaidAmount = _markResult.amount;
@@ -2363,7 +2485,7 @@ function renderContractTab(){
   var html = '';
   bks.forEach(function(b){
     var alreadySigned = _isSig(b.customerSig);
-    var _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day = waiver + rental agreement
+    var _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event','lease'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day = waiver + rental agreement
     var _wSig = _isSig(b.waiverSig);
     var _drvs = (b.extraDrivers||[]).filter(function(d){ return d && d.name && d.status !== 'denied'; });   // a denied driver is not a party -> doesn't block "fully signed"
     var _pendingDrv = _drvs.filter(function(d){ return !_isSig(d.sig); }).length;
@@ -2797,7 +2919,7 @@ function showSignContract(b){
   if(['cancelled'].includes(s)) return '';
   // Only show if contract has been sent by admin
   if(!b.contractSent) return '';
-  const _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day signs waiver + agreement
+  const _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event','lease'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day signs waiver + agreement
   const _wSig = b.waiverSig && String(b.waiverSig).startsWith('data:image/');
   const _cSig = b.customerSig && b.customerSig.startsWith('data:image/');
   const alreadySigned = _cSig && (!_sfd || _wSig);   // Slingshot full-day needs BOTH docs signed
@@ -2893,6 +3015,65 @@ var PB_CRYPTO_LIVE = false;   // flip to true once Coinbase key is set + worker 
 function showPayBalance(b){
   const bal = Number(b.remainingBalance) || 0;   // extension is never in the balance now (signed=its own charge, unsigned=folded), so no netting
   if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed','voided'].includes((b.status||'').toLowerCase())) return '';
+  // ---- H3: a LEASE pays by the month, not the whole term at once. Show this month's payment as the primary
+  // action (one monthly = leaseMonthly, clamped to the remaining balance so the final stub month pays off the
+  // lease), with a secondary link to settle the full remaining balance early. Each monthly charge is recorded
+  // as a partial that decrements remainingBalance (worker /portal/pay-balance amount + mark-balance-paid #5). ----
+  if(b.type==='lease' && Number(b.leaseMonthly)>0){
+    const lmPaidSoFar = Array.isArray(b.balancePayments) ? b.balancePayments.reduce(function(s,p){return s+(Number(p&&p.amount)||0);},0) : (Number(b.balancePaidAmount)||0);
+    const lmMonthly = Math.round((Number(b.leaseMonthly)||0)*100)/100;
+    const lmTerm    = Number(b.leaseTerm)||0;
+    const lmThis    = Math.round(Math.min(lmMonthly, bal)*100)/100;          // final payment may be a stub < one month
+    const lmTotal   = Math.round((lmThis + lmThis*0.05 + lmThis*0.0825)*100)/100;
+    const lmFullTot = Math.round((bal + bal*0.05 + bal*0.0825)*100)/100;
+    const lmPaidCnt = lmMonthly>0 ? Math.round(lmPaidSoFar/lmMonthly) : 0;
+    const lmProg    = lmTerm>0 ? (lmPaidCnt+' of '+lmTerm+' monthly payments made') : (lmPaidCnt+' monthly payment'+(lmPaidCnt===1?'':'s')+' made');
+    // Next scheduled due date (payment 1 was collected at signing): same day-of-month each month, or -- when the
+    // start day is a 29/30/31 that isn't in every month -- every 30 calendar days. Mirrors the worker reminder schedule.
+    var lmNextDue='';
+    (function(){
+      var _m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(b.pickupDate||b.date||'')); if(!_m) return;
+      var _s=new Date(+_m[1],+_m[2]-1,+_m[3],12,0,0), _d=_s.getDate(), _t0=new Date(); _t0.setHours(0,0,0,0);
+      for(var _n=1;_n<lmTerm;_n++){
+        var _due=_d<=28 ? new Date(_s.getFullYear(),_s.getMonth()+_n,_d,12,0,0) : new Date(_s.getTime()+_n*30*86400000);
+        var _dd=new Date(_due.getFullYear(),_due.getMonth(),_due.getDate(),12,0,0); _dd.setHours(0,0,0,0);
+        if(_dd>=_t0){
+          var _days=Math.round((_dd-_t0)/86400000);
+          var _rel=_days<=0?'due today':_days===1?'in 1 day':('in '+_days+' days');   // reminder email goes out when this hits 'in 3 days'
+          lmNextDue=_due.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+' ('+_rel+')';
+          break;
+        }
+      }
+    })();
+    return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+      <div style="background:rgba(201,169,98,.06);border:1px solid rgba(201,169,98,.28);border-radius:12px;padding:12px 14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div style="font-size:12px;font-weight:800;color:#C9A962;">&#128467; Lease Monthly Payment</div>
+          <div style="font-size:11px;color:rgba(255,255,255,.6);">${lmProg}</div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <div style="font-size:12px;font-weight:700;color:#C9A962;">${lmThis<lmMonthly-0.005?'Final payment':'This month'}</div>
+          <div style="font-size:16px;font-weight:800;color:#C9A962;">$${lmThis.toFixed(2)}</div>
+        </div>
+        <div style="font-size:10px;color:rgba(255,255,255,.55);margin-bottom:8px;">
+          Charged: $${lmTotal.toFixed(2)} &nbsp;&middot;&nbsp; includes 5% processing fee + 8.25% TX tax
+        </div>
+        ${lmNextDue?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:11px;color:rgba(255,255,255,.5);">
+          <div>Next payment due</div><div style="color:#C9A962;font-weight:700;">${lmNextDue}</div>
+        </div>`:''}
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:11px;color:rgba(255,255,255,.5);">
+          <div>Balance remaining</div><div>$${bal.toFixed(2)}</div>
+        </div>
+        <button onclick="payLeaseMonth('${b.id}', ${lmThis})" id="payBtn_${b.id}"
+          style="width:100%;padding:11px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;letter-spacing:.02em;">
+          Pay This Month &mdash; $${lmTotal.toFixed(2)} &rarr;
+        </button>
+        <div style="text-align:center;margin-top:9px;">
+          <a href="#" onclick="payBalance('${b.id}');return false;" style="font-size:11px;color:rgba(255,255,255,.5);">or settle the full remaining balance ($${lmFullTot.toFixed(2)})</a>
+        </div>
+      </div>
+    </div>`;
+  }
   const fee   = Math.round(bal * 0.05 * 100) / 100;
   const tax   = Math.round(bal * 0.0825 * 100) / 100;
   const total = Math.round((bal + fee + tax) * 100) / 100;
@@ -2941,6 +3122,31 @@ async function payBalance(bookingId){
   }catch(e){
     toast('Network error. Please try again.','error');
     if(btn){ btn.disabled=false; btn.textContent='Pay by Card \u2192'; }
+  }
+}
+
+// H3: charge ONE lease monthly payment (a partial of the remaining balance). Same endpoint + Stripe flow as
+// payBalance, but sends `amount` so the worker charges only this month; the finalize records it as a partial
+// and decrements remainingBalance. Returning with &partial=1 keeps the portal from flashing "paid in full".
+async function payLeaseMonth(bookingId, amount){
+  const btn = document.getElementById('payBtn_'+bookingId);
+  if(btn){ btn.disabled=true; btn.textContent='Loading\u2026'; }
+  try{
+    const r = await fetch(`${WORKER}/portal/pay-balance`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId, amount:amount })
+    });
+    const d = await r.json();
+    if(r.status===401){ _portalSessionExpired(); return; }
+    if(!r.ok || !d.url){
+      toast(d.error||'Unable to open payment. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Pay This Month \u2192'; }
+      return;
+    }
+    window.location.href = d.url;
+  }catch(e){
+    toast('Network error. Please try again.','error');
+    if(btn){ btn.disabled=false; btn.textContent='Pay This Month \u2192'; }
   }
 }
 
