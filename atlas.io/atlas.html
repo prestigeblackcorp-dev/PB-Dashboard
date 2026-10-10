@@ -2255,8 +2255,9 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23q';
+  var APP_VERSION='2026.7.23r';
   var APP_CHANGELOG=[
+    'Launch-readiness fixes from a deep audit: the CAN-SPAM mailing-address field in Messaging now actually saves; recurring bookings start fresh (unpaid + unsigned) instead of inheriting the first one&rsquo;s payment and reading as already-collected; BYO-Stripe balance payments confirm on return; a booking deleted on one device stays deleted everywhere; custom team roles are shown exactly what their permissions allow; and read-only teammates can no longer open customers&rsquo; ID scans',
     'More multi-type polish: if you rent several kinds of things, the Overview &ldquo;active&rdquo; KPI and the Revenue optimizer now say &ldquo;Out on rent&rdquo; / &ldquo;Assets&rdquo; instead of your main type&rsquo;s word, so every headline reads consistently',
     'Locations hold real details now: give each branch an address, hours and phone (Settings &rarr; Bookings &rarr; Edit), and a customer who picks that location on your booking site sees them. Renaming a location updates every asset tagged to it',
     'Multi-type polish: if you rent several kinds of things, the Bookings page now reads &ldquo;Bookings&rdquo; / &ldquo;New booking&rdquo; with &ldquo;Customer&rdquo; and &ldquo;Asset&rdquo; columns (instead of your main type&rsquo;s words), matching the tab name',
@@ -3148,9 +3149,12 @@ const Atlas = (function(){
   var _inviteToken='';                 // set when arriving via /?invite=<token> (teammate accepting an invite)
   var _selfActor=null;                 // RUNTIME-ONLY (never persisted to the shared tenant blob): the gating actor for a logged-in NON-owner. null = owner / full access.
   // Build a permission actor for a logged-in teammate from their server role. Mirrors previewAs so the SAME _canMod/_canCap gating applies live.
-  function _selfActorFor(role, email){ var r=(['manager','ops','desk','viewer'].indexOf(String(role))>=0)?role:'desk'; return { id:'self', name:(email||'You'), email:(email||''), role:r, perms:(ROLE_PRESETS[r]?ROLE_PRESETS[r].make():_permsAll(false)) }; }
+  function _selfActorFor(role, email, caps){ var r=(['manager','ops','desk','viewer'].indexOf(String(role))>=0)?role:'desk'; var perms=null;
+    if(caps){ try{ var p=(typeof caps==='string')?JSON.parse(caps):caps; if(p && (p.mods||p.caps)) perms=p; }catch(e){} }   // audit c1 [4]: gate by the member's ACTUAL stored caps (custom roles too), from /api/auth/me user.caps -- matches server _can. Falls back to the role preset only when no caps blob.
+    if(!perms) perms=(ROLE_PRESETS[r]?ROLE_PRESETS[r].make():_permsAll(false));
+    return { id:'self', name:(email||'You'), email:(email||''), role:(role||r), perms:perms }; }
   // Adopt (or clear) the self-actor from an /api/auth/me user payload. Owner (role==='owner' or platform isOwner) => null => full access, unchanged path.
-  function _applySelfRole(user){ try{ if(user && user.role && user.role!=='owner' && !user.isOwner){ _selfActor=_selfActorFor(user.role, user.email); } else { _selfActor=null; } }catch(e){} }
+  function _applySelfRole(user){ try{ if(user && user.role && user.role!=='owner' && !user.isOwner){ _selfActor=_selfActorFor(user.role, user.email, user.caps); } else { _selfActor=null; } }catch(e){} }
   // Show the set-password screen for a teammate accepting an invite (reuses the auth card).
   function showAcceptInvite(token){ _inviteToken=String(token||''); _authMode='invite'; renderAuth(); show('auth'); var e=document.getElementById('authPass'); if(e) setTimeout(function(){e.focus();},60); }
   /* ---- 2FA (MFA) login challenge state + trusted-device token storage. Off by default: this code path only runs
@@ -6568,6 +6572,7 @@ const Atlas = (function(){
       delete nb.charges; delete nb.incidents; delete nb.review; delete nb.cancelFee; delete nb.cancelledAt; delete nb.portal;
       delete nb.promoCode; delete nb.referredByCode; delete nb.refAwarded;   // a recurring occurrence must not re-consume a promo cap slot or re-award a referral on each completion
       delete nb.conditionMedia; delete nb.claim; delete nb.hold; delete nb.meter; delete nb.plan; delete nb.giftRedemptions; delete nb.idVerified; delete nb.idVerifiedAt; delete nb.idRejected; delete nb.idRejectedAt;   // fix: a clone must not inherit the prior rental's photos/claim/hold/meter/plan/gift/ID-verification
+      delete nb.paid; delete nb.revCents; delete nb.sigTrail; delete nb.agreement; delete nb.paidOffline;   // audit c1 [1]: each recurring occurrence starts financially + legally CLEAN -- not the source's captured payment slots (else the portal reads "settled", due=$0, the owner can never collect, AND the P&L counts revenue never received), nor its reconciled revenue, signature or agreement (the customer re-signs + re-pays each occurrence)
       _upsertBooking(nb); made++; }
     _logEvent('booking','Created '+made+' recurring bookings from '+b.id+(skipped?(' ('+skipped+' skipped -- dates unavailable)'):''),{booking:b.id}); save(); closeModal(); renderOverview(); renderBookings();
     var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled'&&x.status!=='Voided';}).length; toast(made+' recurring bookings created'+(skipped?(' \u2014 '+skipped+' skipped (dates unavailable)'):'')); }
@@ -8899,7 +8904,7 @@ const Atlas = (function(){
           +'<div style="display:flex;gap:8px;align-items:center;margin-top:10px">'+(cm.sms.connected?'<span class="chip chip--ok"><span class="dot"></span>Connected</span>':'<span class="chip chip--muted">Not connected</span>')+'<button class="btn btn--ghost btn--sm" onclick="Atlas.connectSms()">Connect &amp; test</button></div>'):'')
         +'<div class="bk-lenhint" style="margin:10px 0 0"><b style="color:var(--ink)">Compliance helpers (TCPA):</b> you can only text customers who opted in from their portal (time-stamped), and every template identifies you and ends with &ldquo;Reply STOP to opt out&rdquo;. Point your SMS number&rsquo;s inbound webhook at <code>atlasrental.io/api/sms/inbound</code> and STOP replies <b>auto-suppress</b> that number for good (START re-subscribes). You stay responsible for honoring opt-outs.</div>';
       html+='</div><div class="set-block"><h3>Sender details</h3><div class="desc">Required so your emails are compliant and land in the inbox.</div>'
-        +'<div class="field"><label>Business mailing address</label><input class="input" value="'+esc((cm.business&&cm.business.address)||'')+'" placeholder="123 Main St, Suite 4, Austin, TX 78701" onchange="Atlas.setCommsField(\'business.address\',this.value)"></div>'
+        +'<div class="field"><label>Business mailing address</label><input class="input" value="'+esc((S.legal&&S.legal.senderAddress)||'')+'" placeholder="123 Main St, Suite 4, Austin, TX 78701" onchange="Atlas.setSenderAddress(this.value)"></div>'   /* audit c1 [0]: write the SAME S.legal.senderAddress the worker CAN-SPAM footer reads (was setCommsField('business.address'), a key read nowhere -> this compliance-labeled field did nothing) */
         +'<div class="bk-lenhint" style="margin:8px 0 0">US law (CAN-SPAM) requires a physical mailing address and a one-tap unsubscribe in every marketing email &mdash; add your address above. Once your email sender is connected, Atlas adds a <b>working</b> one-tap unsubscribe (link + List-Unsubscribe header) to every email automatically, and honors it.</div>';
       html+='</div><div class="set-block"><h3>Email builder &amp; broadcasts</h3><div class="desc">Design a branded email or text and send it to any group of customers.</div>'
         +'<button class="btn btn--primary" onclick="Atlas.openEmailBuilder(null)">Compose message</button>';
@@ -9147,7 +9152,7 @@ const Atlas = (function(){
       if(S.setup&&S.setup.goal) p.push('Owner goal: '+S.setup.goal);
       try{ if(S.money){ p.push('Pricing: base '+money(S.money.baseRate||0)+' per '+_perUnitOne()+(S.money.tax?(', tax '+S.money.tax+'%'):'')); } }catch(e){}
       var na=(typeof DATA!=='undefined'&&DATA.assets)?DATA.assets.length:0, nb=(typeof DATA!=='undefined'&&DATA.bookings)?DATA.bookings.length:0;
-      try{ if(na){ p.push('Fleet ('+na+'): '+DATA.assets.slice(0,12).map(function(a){return a.name+(a.type?(' ['+a.type+']'):'');}).join(', ')); } }catch(e){}
+      try{ if(na){ p.push(cap(_adNouns())+' ('+na+'): '+DATA.assets.slice(0,12).map(function(a){return a.name+(a.type?(' ['+a.type+']'):'');}).join(', ')); } }catch(e){}   // audit c1 [19]: send the owner's own asset word (Assets/Vessels/...) to the AI grounding context, never the literal 'Fleet' (the model is told never to say fleet for a non-car business -- feeding it 'Fleet' primed the exact wrong word)
       p.push('Bookings on file: '+nb);
       return p.join('. ');
     }catch(e){ return ''; }

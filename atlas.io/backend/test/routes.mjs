@@ -4265,7 +4265,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // ---- #10 (data-integrity MED): the delete-resurrection tombstone guard is ON by default ----
   ok(/_pcfgGet\(env, 'sync_tombstones_enabled', '1'\)\) === '1'\) : false/.test(_WORKER_SRC), '#10: the booking-write tombstone gate now defaults ON (default "1")');
   ok(!/_pcfgGet\(env, 'sync_tombstones_enabled', '0'\)/.test(_WORKER_SRC), '#10: no lingering default-OFF read of the flag');
-  ok(/Number\(\(body\.data && body\.data\._t\) \|\| 0\) <= Number\(_tb\.deleted_at \|\| 0\)/.test(_WORKER_SRC), '#10: the resurrection block stays STALE-ONLY (incoming _t <= deletion time); a genuine newer re-create still passes');
+  ok(/\.first\(\); if \(_tb\) \{ await audit\(env, ctx, req, coll \+ '\.resurrect_blocked'/.test(_WORKER_SRC), '#10 + audit c1 [5]: the resurrection block is UNCONDITIONAL now -- ANY re-create of a tombstoned id is blocked (the client re-stamps data._t=now on every push, defeating the old stale-only "_t <= deletion time" clause that let a lagging device resurrect a booking deleted on another device)');
   ok(/INSERT OR REPLACE INTO sync_tombstones \(tenant_id, coll, id, deleted_at\)/.test(_WORKER_SRC), '#10: a DELETE writes a tombstone (so the guard has something to check)');
 }
 
@@ -4763,7 +4763,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/async function _coSignTok\(env, bid, csId\) \{/.test(_WORKER_SRC) && /async function _coSignParse\(env, tok\) \{/.test(_WORKER_SRC), 'G19: stateless HMAC co-signer token helpers (mint + verify, constant-time)');
   ok(/if \(path\.indexOf\('\/api\/cosign\/'\) === 0\) \{/.test(_WORKER_SRC), 'G19: a SEPARATE /api/cosign/<token> route -- a co-signer never reaches the renter portal_token (pay/manage)');
   ok(/if \(path === '\/api\/booking\/cosigner' && method === 'POST'\) \{/.test(_WORKER_SRC), 'G19: owner endpoint adds/removes a co-signer + returns their sign link (created server-side so the link resolves immediately)');
-  ok(/\|idvstart\|idvstatus\|gift\|review\|push\|selfextend\)/.test(_WORKER_SRC), 'G19 / 13C fix: the portal route regex includes push (the renter web-push subscribe was unreachable until now) + selfextend (G38)');
+  ok(/\|idvstart\|idvstatus\|gift\|review\|push\|selfextend\|confirm-pay\)/.test(_WORKER_SRC), 'G19 / 13C fix + audit c1 [3]: the portal route regex includes push + selfextend (G38) + confirm-pay (the BYO-Stripe balance-payment return round-trip POSTs /confirm-pay and was 404 until now)');
   // CLIENT source: the owner booking-view co-signer UI.
   ok(/function bkAddCoSigner\(id\)\{/.test(_ATLAS_SRC13G) && /function _coSignersHtml\(b\)\{/.test(_ATLAS_SRC13G), 'G19: owner booking view -- add a co-signer + per-co-signer status / copy-link / remove');
   ok(/function _bkCoSignerSubmit\(id\)\{/.test(_ATLAS_SRC13G) && /onclick="Atlas\._bkCoSignerSubmit\(/.test(_ATLAS_SRC13G), 'G19 (in-app test fix): bkAddCoSigner uses a proper modal form (csName/csEmail) + _bkCoSignerSubmit -- NOT window.prompt(), which is blocked in sandboxed iframes + native webviews');
