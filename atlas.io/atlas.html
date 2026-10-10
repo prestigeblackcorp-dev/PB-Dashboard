@@ -2255,8 +2255,9 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23r';
+  var APP_VERSION='2026.7.23s';
   var APP_CHANGELOG=[
+    'More audit fixes: multi-unit assets (stock &gt; 1) accept concurrent bookings and self-service extensions up to their real unit count instead of blocking at the first; your customer portal now uses the booked item&rsquo;s own words on a multi-type account; the billing tab is owner-only; a manager can grant view access to Assets/Bookings/Live Map; and the assistant stays honest (offers re-login) when your session drops mid-request',
     'Launch-readiness fixes from a deep audit: the CAN-SPAM mailing-address field in Messaging now actually saves; recurring bookings start fresh (unpaid + unsigned) instead of inheriting the first one&rsquo;s payment and reading as already-collected; BYO-Stripe balance payments confirm on return; a booking deleted on one device stays deleted everywhere; custom team roles are shown exactly what their permissions allow; and read-only teammates can no longer open customers&rsquo; ID scans',
     'More multi-type polish: if you rent several kinds of things, the Overview &ldquo;active&rdquo; KPI and the Revenue optimizer now say &ldquo;Out on rent&rdquo; / &ldquo;Assets&rdquo; instead of your main type&rsquo;s word, so every headline reads consistently',
     'Locations hold real details now: give each branch an address, hours and phone (Settings &rarr; Bookings &rarr; Edit), and a customer who picks that location on your booking site sees them. Renaming a location updates every asset tagged to it',
@@ -5965,8 +5966,9 @@ const Atlas = (function(){
     if(a && a.status==='Maintenance') return {type:'maintenance', reason:'in maintenance'};   // fix: a unit marked out of service is not bookable (owner can still knowingly override the confirm in createBooking)
     if(a && a.blackouts){ for(var i=0;i<a.blackouts.length;i++){ var bl=a.blackouts[i], f=Number(bl.from)||0, t=Number(bl.to)||0; if(t<f){var x=f;f=t;t=x;}
       if(_rangesOverlap(startTs,endTs,f-43200000,t+43200000)) return {type:'blackout', reason:(bl.reason||'blocked dates')}; } }   // #avail-fix: from/to are stored at NOON, so snap to day boundaries (noon-12h=midnight start, noon+12h=next midnight, exclusive). Old t+86400000 (noon+24h) over-blocked the morning after + under-blocked the first morning. Mirrors the worker _blkWin gate.
-    var c=(DATA.bookings||[]).filter(function(b){ return b.id!==excludeId && ((_aid&&b.assetId)?(String(b.assetId)===_aid):(b.asset===assetName)) && b.status!=='Cancelled' && b.status!=='Completed' && b.status!=='Voided' && String(b.status||'').toLowerCase()!=='pending'; })   // #void: a voided (early-terminated) trip frees the asset the same day. full-audit #6: a PENDING booking never holds a slot (only Confirmed+) -> exclude it so the client conflict warning matches the server gate (which now excludes pending too).
-      .filter(function(b){ var s=Number(b.startTs)||0, e=_bkEffectiveEndTs(b); if(!(e>s))e=s+_periodMs(); return _rangesOverlap(startTs,endTs,s-_buf,e+_buf); })[0];   // occupancy runs to the EFFECTIVE end (incl. active extensions) so an extended rental blocks the added time
+    var _ovl=(DATA.bookings||[]).filter(function(b){ return b.id!==excludeId && ((_aid&&b.assetId)?(String(b.assetId)===_aid):(b.asset===assetName)) && b.status!=='Cancelled' && b.status!=='Completed' && b.status!=='Voided' && String(b.status||'').toLowerCase()!=='pending'; })   // #void: a voided (early-terminated) trip frees the asset the same day. full-audit #6: a PENDING booking never holds a slot (only Confirmed+) -> exclude it so the client conflict warning matches the server gate (which now excludes pending too).
+      .filter(function(b){ var s=Number(b.startTs)||0, e=_bkEffectiveEndTs(b); if(!(e>s))e=s+_periodMs(); return _rangesOverlap(startTs,endTs,s-_buf,e+_buf); });   // occupancy runs to the EFFECTIVE end (incl. active extensions) so an extended rental blocks the added time
+    var _qCap=Math.max(1,parseInt(a&&a.qty,10)||1); var c=(_ovl.length>=_qCap)?_ovl[0]:null;   // audit c1 [22]: COUNT overlapping active bookings; conflict only once they reach the asset's qty (unit count) -- a multi-unit asset (qty>1) can take concurrent bookings up to its stock. Mirrors the worker /book + _availabilityCheck gates (qty=1 => byte-identical first-overlap behavior).
     if(c) return {type:'booking', reason:c.id+(c.cust?(' \u2014 '+c.cust):'')};
     if(S.autoHoldOverdue){ var _sd=_serviceDue(a); if(_sd&&_sd.overdue) return {type:'maintenance', reason:'overdue for service'+(_sd.label&&_sd.label!=='Service overdue'?(' \u2014 '+_sd.label):'')}; }   // self-driving fleet (opt-in): warn before booking an asset overdue for service; owner can override, same path as maintenance/blackout
     return null; }
@@ -8514,7 +8516,7 @@ const Atlas = (function(){
   /* ---- settings ---- */
   const SET=[['branding','Branding'],['money','Money rules'],['bookings','Bookings'],['legal','Contracts &amp; Legal'],['comms','Messaging'],['integrations','Integrations'],['portal','Member portal'],['team','Team'],['security','Security'],['billing','Plan &amp; billing'],['support','Help &amp; feedback']];
   let setCur='branding';
-  function _setTabs(){ return _isOwnerAcct()? [['owner','Owner console']].concat(SET) : SET; }   // owner console is EMAIL-gated (OWNER_EMAIL only), never tier -- a client-spoofed diamond tier cannot surface it
+  function _setTabs(){ var _st=SET.filter(function(s){ return s[0]!=='billing' || _canCap('billing'); }); return _isOwnerAcct()? [['owner','Owner console']].concat(_st) : _st; }   // owner console is EMAIL-gated (OWNER_EMAIL only), never tier -- a client-spoofed diamond tier cannot surface it. audit c1 [18]: hide the Plan & billing tab from a role without the billing cap (owner/billing-capable see it) -- it was shown then server-blocked.
   function buildSettings(){
     document.getElementById('setTabs').innerHTML=_setTabs().map(s=>`<button class="set-tab ${s[0]===setCur?'active':''}" data-set="${s[0]}" onclick="Atlas.setTab('${s[0]}')">${s[1]}</button>`).join('');
     renderSet(); setTimeout(_scrollActiveSetTab,20);
@@ -10157,7 +10159,8 @@ const Atlas = (function(){
   // existing offline nav heuristic (or an honest not-yet-connected message) on {live:false} or any error --
   // this never regresses #131's nav-by-voice, it just gives it a card+undo experience once it IS live.
   function _aioPlan(q){
-    if(!(ATLAS_BACKEND && _apiCsrf)){ _aioPlanFallback(q); return; }
+    if(ATLAS_BACKEND && !_apiCsrf){ _aioSignedOut(); return; }   // audit c1 [8]: signed-out -> honest re-login (like _aioSingle/_aioCouncil), never silently apply local brand/nav/config changes against a dead session
+    if(!ATLAS_BACKEND){ _aioPlanFallback(q); return; }
     aioMsg('bot','<div class="cx-think"><span class="cx-dot"></span><span class="cx-dot"></span><span class="cx-dot"></span> Working on it&hellip;</div>');
     _api('/api/aio/plan',{method:'POST',body:{q:String(q),context:_aioChatContext(),allowed:_aioManifest()}}).then(function(res){
       var j=res&&res.json;
@@ -10174,6 +10177,7 @@ const Atlas = (function(){
         return;
       }
       if(res.status===429){ var _rl=(j&&j.error)?esc(String(j.error)):'Atlas.io is at its limit right now &mdash; please try again in a moment.'; aioMsg('bot','<div class="cx-note">'+_rl+'</div>'); return; }   // surface the real rate limit, not the silent offline heuristic
+      if(res.status===401 || res.status===403){ _aioSignedOut(); return; }   // audit c1 [8]: session expired mid-plan -> re-login prompt, not a silent local fallback that reads like a live result
       _aioPlanFallback(q);
     }).catch(function(){ _aioDropThink(); _aioPlanFallback(q); });
   }
