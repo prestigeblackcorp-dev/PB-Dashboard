@@ -2255,8 +2255,10 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23d';
+  var APP_VERSION='2026.7.23f';
   var APP_CHANGELOG=[
+    'Atlas.io assistant polish: correct wording for every rental type (no more &ldquo;Add a aircraft&rdquo;), and a clearer, cleaner message when something has to be finished from a settings tab instead of chat',
+    'Atlas.io assistant is honest when your session has signed out &mdash; it offers a one-tap sign-in instead of a generic menu &mdash; and the Revenue optimizer labels utilization with your own asset word, not &ldquo;fleet&rdquo;',
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
     'Atlas.io chat actions now also cover pricing, fees &amp; promo codes (Settings &gt; Owner console, beta): every change previews before/after and only applies when you tap Apply, with one-tap undo',
     'Atlas.io can now make small, reversible changes for you right from chat (Settings &gt; Owner console, beta): theme, navigation, business profile and email timing, always previewed with one-tap undo',
@@ -5569,7 +5571,7 @@ const Atlas = (function(){
       +'</tbody></table></div>'; }
   function assetPnlSetPeriod(k){ _assetPnlPeriod=k; var b=document.getElementById('assetPnlBody'); if(b)b.innerHTML=_assetPnlHtml(); }
   // ---- Utilization heatmap: assets x last 30 days, filled cell = booked that day ----
-  function _utilHeatmapHtml(){ var assets=(DATA.assets||[]); if(!assets.length) return '<div class="bk-lenhint" style="margin:0">Add a '+esc(S.fleet.noun||'asset')+' to see the heatmap.</div>';
+  function _utilHeatmapHtml(){ var assets=(DATA.assets||[]); if(!assets.length) return '<div class="bk-lenhint" style="margin:0">Add your first '+esc(S.fleet.noun||'asset')+' to see the heatmap.</div>';
     var D=86400000, days=30, d0=new Date(); d0.setHours(0,0,0,0); var start=d0.getTime()-(days-1)*D;
     var _endOf=function(b){ return (typeof _bkEffectiveEndTs==='function')?_bkEffectiveEndTs(b):(Number(b.endTs)||Number(b.startTs)||0); };
     var byKey={}; (DATA.bookings||[]).filter(_isCommitted).forEach(function(b){ if(!b.startTs)return; var e=_endOf(b); if(!(e>start))return; var rec={s:b.startTs,e:e}; if(b.assetId){(byKey[b.assetId]=byKey[b.assetId]||[]).push(rec);} if(b.asset){(byKey[b.asset]=byKey[b.asset]||[]).push(rec);} });
@@ -5661,7 +5663,7 @@ const Atlas = (function(){
     var body=document.getElementById('revOptBody'); if(!body) return;
     var head = r.bookingsCount ? ('<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px">'
         +'<div style="flex:1;min-width:160px"><div style="font-size:12px;color:var(--muted)">Money left on the table</div><div style="font-size:24px;font-weight:800;color:var(--ink)" class="tnum">'+money(r.headline)+'<span style="font-size:12px;font-weight:600;color:var(--muted)"> /mo est.</span></div></div>'
-        +'<div style="flex:1;min-width:160px"><div style="font-size:12px;color:var(--muted)">Fleet '+_fterm('util')+'</div><div style="font-size:24px;font-weight:800;color:var(--ink)" class="tnum">'+r.utilAvg+'%</div></div>'
+        +'<div style="flex:1;min-width:160px"><div style="font-size:12px;color:var(--muted)">'+esc(cap(S.fleet.nouns))+' '+_fterm('util').toLowerCase()+'</div><div style="font-size:24px;font-weight:800;color:var(--ink)" class="tnum">'+r.utilAvg+'%</div></div>'
         +'</div>') : '';
     var rows=r.suggestions.filter(function(s){ return s.kind!=='info'; }).map(function(s){
       var btn='<button class="btn btn--primary btn--sm" onclick="Atlas.revOptApply(\''+s.kind+'\''+(s.assetId?(",'"+s.assetId+"'"):'')+')">Apply</button>';
@@ -5995,7 +5997,7 @@ const Atlas = (function(){
   function createBooking(editId){
     if(!_guard('bookEdit','Saving bookings'))return;
     // Guard: a real (non-demo) owner with 0 assets can't book a phantom vehicle onto real revenue. Add a vehicle first.
-    if(!editId && !(DATA.assets||[]).length && !_isDemoTenant()){ toast('Add a '+S.fleet.noun+' first, then take a booking'); closeModal(); go('fleet'); return; }
+    if(!editId && !(DATA.assets||[]).length && !_isDemoTenant()){ toast('Add your first '+S.fleet.noun+', then take a booking'); closeModal(); go('fleet'); return; }
     var cust=(val('bkCust')||'').trim(); if(!cust){ toast('Enter a customer name'); return; }
     var w=_bkReadWhen();
     var disc=_bkReadDiscount(), extras=(_bkDraft?_bkDraft.extras:[]).slice();
@@ -9144,12 +9146,17 @@ const Atlas = (function(){
         var _coErr=(j&&j.error)?esc(String(j.error)):'The live council could not reach any model right now. Please try again in a moment.';
         aioMsg('bot','<div class="cx-note">Live council unavailable &mdash; '+_coErr+'</div>'); return;
       }
+      if(res.status===401 || res.status===403){ _aioSignedOut(); return; }   // session expired mid-use -> offer re-login, never a canned preview that reads like a live answer
       if(res.status===429){ _aioDropThink(); var _rl=(j&&j.error)?esc(String(j.error)):'Atlas.io is at its limit right now &mdash; please try again in a moment.'; aioMsg('bot','<div class="cx-note">'+_rl+'</div>'); return; }   // surface the real rate limit instead of a canned preview that reads like a live answer
       _councilRenderPreview(q);
     }).catch(function(){ _councilRenderPreview(q); });
   }
   // the built-in "what can I do" menu -- aioReply returns null when it does not recognize an intent, and every caller falls back to this.
   function _aioMenu(){ return 'Got it - I know you rent <b>'+esc(S.fleet.nouns)+'</b>, so I can set your pricing, fill idle '+esc(S.fleet.nouns)+', research your local '+esc(S.fleet.noun)+'-rental market for gaps, draft customer messages, or explain any number. What would you like to do?'; }
+  // Signed out (expired session): the live council/single endpoints 401/403 and _apiCsrf is null. Be honest and offer
+  // re-login instead of silently serving the built-in menu, which reads like a real answer and hides that nothing is
+  // actually reaching the live AI (the exact "it just repeats itself / is a hassle" failure mode). Free, no credit.
+  function _aioSignedOut(){ _aioDropThink(); aioMsg('bot','<div class="cx-note">You are signed out, so I cannot reach your live Atlas AI right now. Sign back in and we will pick up right where we left off.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.goAuth(\'login\')">Sign back in</button></div>'); }
   // PARITY (Council OFF): a real grounded SINGLE-model answer for any question the built-in intents don't cover -- same
   // server endpoint, grounding, constitution and white-label as the council, one advisor instead of three (bills 1, not N).
   // So Council-off answers arbitrary questions like Council-on does, differing only by depth. No keys/backend -> the menu.
@@ -9166,6 +9173,7 @@ const Atlas = (function(){
         return;
       }
       if(res.status>=200 && res.status<300 && j && j.live){ _aioDropThink(); var _e=(j&&j.error)?esc(String(j.error)):'Atlas.io could not reach a model right now. Please try again in a moment.'; aioMsg('bot','<div class="cx-note">'+_e+'</div>'); return; }
+      if(res.status===401 || res.status===403){ _aioSignedOut(); return; }   // session expired mid-use -> offer re-login, not the built-in menu
       if(res.status===429){ _aioDropThink(); var _rl=(j&&j.error)?esc(String(j.error)):'Atlas.io is at its limit right now - please try again in a moment.'; aioMsg('bot','<div class="cx-note">'+_rl+'</div>'); return; }
       _aioDropThink(); var _m=_aioMenu(); aioMsg('bot',_m); _aioArmFromText(_m); try{ _aioTurnPush('a',_m); }catch(e){}   // no keys/backend (live:false) -> the built-in menu
     }).catch(function(){ _aioDropThink(); var _m=_aioMenu(); aioMsg('bot',_m); _aioArmFromText(_m); });
@@ -9255,7 +9263,8 @@ const Atlas = (function(){
     if(_wantsPlan){ _aioPlan(q); return; }
     if(_aioCouncilOn){ _aioCouncil(q); return; }
     if(_wantsSingle){ _aioSingle(q); return; }   // unrecognized -> real grounded single-model answer (parity with council)
-    setTimeout(function(){ var _r=(_tmpl!==null?_tmpl:_aioMenu()); aioMsg('bot',_r); _aioArmFromText(_r); _aioTurnPush('a',_r); },450);
+    setTimeout(function(){ if(_tmpl===null && ATLAS_BACKEND && !_apiCsrf){ _aioSignedOut(); return; }   // backend expected but no session -> signed out: be honest, never serve the canned menu as if it were a live answer
+      var _r=(_tmpl!==null?_tmpl:_aioMenu()); aioMsg('bot',_r); _aioArmFromText(_r); _aioTurnPush('a',_r); },450);
   }
   // Any reply that ends in an offer ("Want me to ...?") arms a pending action so a plain "yes" runs the right thing.
   function _aioArmFromText(t){
@@ -9868,7 +9877,7 @@ const Atlas = (function(){
       cap:'bookEdit', money:true, tier:'confirm',
       label:function(p){ var a=_aioAssetByName(p.asset); return 'Create a booking for '+esc(String(p.customer||'').trim())+' \u2014 '+esc(a?a.name:String(p.asset||''))+', '+esc(_aioNormDate(p.start)||String(p.start||''))+(p.end?(' to '+esc(_aioNormDate(p.end)||String(p.end))):''); },
       summary:function(p){ var a=_aioAssetByName(p.asset), st=_aioDateMs(p.start), en=p.end?_aioDateMs(p.end):NaN; if(isNaN(en)||en<=st) en=st+_periodMs(); var per=isNaN(st)?0:_derivePeriods(st,en); var q=null; try{ q=calcQuote(a?_moneyFor(a.name):S.money,{periods:per,addons:0,extras:[],discount:{type:'none',value:0},startsAt:st}); }catch(e){} return {field:'New booking', before:'(none)', after:(a?a.name:String(p.asset||''))+' \u00b7 '+per+' '+_perUnit()+(q?(' \u00b7 '+money(q.total)):'')}; },
-      validate:function(p){ if(!(DATA.assets||[]).length) return {ok:false,msg:'Add a '+esc(S.fleet.noun)+' first, then I can book it.'}; var cust=String(p.customer||'').trim(); if(!cust) return {ok:false,msg:'Who is the booking for? Give me a customer name.'}; if(cust.length>80) return {ok:false,msg:'Keep the customer name under 80 characters.'}; var a=_aioAssetByName(p.asset); if(!a) return {ok:false,msg:'Which '+esc(S.fleet.noun)+'? I could not match "'+esc(String(p.asset||''))+'" to one you have.'}; if(isNaN(_aioDateMs(p.start))) return {ok:false,msg:'Give me a start date like 2026-08-01.'}; if(p.end&&isNaN(_aioDateMs(p.end))) return {ok:false,msg:'That end date did not read as a date \u2014 try 2026-08-05.'}; return {ok:true}; },
+      validate:function(p){ if(!(DATA.assets||[]).length) return {ok:false,msg:'Add your first '+esc(S.fleet.noun)+', then I can book it.'}; var cust=String(p.customer||'').trim(); if(!cust) return {ok:false,msg:'Who is the booking for? Give me a customer name.'}; if(cust.length>80) return {ok:false,msg:'Keep the customer name under 80 characters.'}; var a=_aioAssetByName(p.asset); if(!a) return {ok:false,msg:'Which '+esc(S.fleet.noun)+'? I could not match "'+esc(String(p.asset||''))+'" to one you have.'}; if(isNaN(_aioDateMs(p.start))) return {ok:false,msg:'Give me a start date like 2026-08-01.'}; if(p.end&&isNaN(_aioDateMs(p.end))) return {ok:false,msg:'That end date did not read as a date \u2014 try 2026-08-05.'}; return {ok:true}; },
       snapshot:function(){ _aioNewBkId=_nextBkId(); return {id:_aioNewBkId}; },
       apply:function(p){ var id=_aioNewBkId||_nextBkId(); _aioNewBkId=''; return _aioCreateBooking(id,p); },
       undo:function(snap){ if(!snap||!snap.id) return; _delBooking(snap.id); try{ renderOverview(); }catch(e){} try{ renderBookings(); }catch(e){} try{ renderCustomers(); }catch(e){} try{ _bkBadge(); }catch(e){} }
@@ -10103,8 +10112,8 @@ const Atlas = (function(){
         if(j.ok===false){ aioMsg('bot', esc(j.error||'I could not read a plan from that \u2014 try rephrasing.')); return; }
         if(j.reply){ aioMsg('bot', esc(j.reply)); _aioTurnPush('a', j.reply); }
         if(j.actions && j.actions.length) _aioProposeActions(j.actions);
-        if(j.clarify && j.clarify.length) aioMsg('bot', j.clarify.map(function(c){return esc(c);}).join('<br>'));
-        if(j.unsupported && j.unsupported.length) aioMsg('bot', 'From chat I cannot yet '+esc(j.unsupported[0])+' \u2014 you can still do that from the right tab.');
+        if(j.clarify && j.clarify.length && !(j.reply && /\?\s*$/.test(String(j.reply)))) aioMsg('bot', j.clarify.map(function(c){return esc(c);}).join('<br>'));   // dedup: skip clarify when the reply already ends in a question (was double-asking)
+        if(j.unsupported && j.unsupported.length) aioMsg('bot', esc(_aioClip(String(j.unsupported[0]||''),300))+' <span style="color:var(--muted)">You can still do that from the right tab.</span>');   // present the planner's plain-English reason as-is -- the old "From chat I cannot yet "+reason prefix garbled full sentences; internal action ids are stripped server-side
         if(!j.reply && !(j.actions&&j.actions.length) && !(j.clarify&&j.clarify.length) && !(j.unsupported&&j.unsupported.length)) aioMsg('bot', aioReply(q)||_aioMenu());
         return;
       }
@@ -10542,7 +10551,7 @@ const Atlas = (function(){
     var per=(model==='day'?18:model==='week'?2.6:model==='hour'?40:model==='month'?1:3);
     var basis=(model==='month'?'one long-term tenant':model==='hour'?'a modest ~40 billable hours a month':'~60% booked');
     return `Love it &mdash; more ${many} = more revenue. At ${money(m.baseRate)}/${model}, ${basis} on a new ${one} adds roughly <b>${money(_r2(m.baseRate*per))}/mo</b>. Add it now and I'll price it and start marketing it for you.`
-      +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('fleet');try{Atlas.addVehicle()}catch(e){}">Add a ${one}</button>`; }
+      +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('fleet');try{Atlas.addVehicle()}catch(e){}">Add another ${one}</button>`; }
   // Market/gap research \u2014 fleet-specific. This is the seam where the live Atlas.io AI (worker + AI key)
   // will run REAL market research on the owner's asset type + location on slow days; canned + personalized for now.
   function _aioMarketReply(s){
