@@ -482,11 +482,11 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
         run: async () => {
           if (/INSERT INTO users \(id,email,pw_hash,pw_salt,tenant_id,role,created_at\)/.test(sql)) {
             const [id, email, pw_hash, pw_salt, tenant_id, role, created_at] = a;
-            users.set(id, { id, email, pw_hash, pw_salt, tenant_id, role, created_at, email_verified: 1, mfa_method: null, mfa_secret_enc: null, mfa_pending_enc: null, mfa_backup_json: null, mfa_enabled_at: null });
+            users.set(id, { id, email, pw_hash, pw_salt, tenant_id, role, created_at, email_verified: 1, mfa_method: null, mfa_secret_enc: null, mfa_pending_enc: null, mfa_backup_json: null, mfa_pending_backup_json: null, mfa_enabled_at: null });
             usersByEmail.set(email, id);
           } else if (/UPDATE users SET last_login=\? WHERE id=\?/.test(sql)) { const u = users.get(a[1]); if (u) u.last_login = a[0]; }
-          else if (/UPDATE users SET mfa_pending_enc=\?, mfa_backup_json=\? WHERE id=\?/.test(sql)) { const u = users.get(a[2]); if (u) { u.mfa_pending_enc = a[0]; u.mfa_backup_json = a[1]; } }
-          else if (/mfa_method='totp', mfa_secret_enc=mfa_pending_enc, mfa_pending_enc=NULL/.test(sql)) { const u = users.get(a[1]); if (u) { u.mfa_method = 'totp'; u.mfa_secret_enc = u.mfa_pending_enc; u.mfa_pending_enc = null; u.mfa_enabled_at = a[0]; } }
+          else if (/UPDATE users SET mfa_pending_enc=\?, mfa_pending_backup_json=\? WHERE id=\?/.test(sql)) { const u = users.get(a[2]); if (u) { u.mfa_pending_enc = a[0]; u.mfa_pending_backup_json = a[1]; } }   // audit c5 [19]: setup stages codes in the pending column (promoted at confirm), not live mfa_backup_json
+          else if (/mfa_method='totp', mfa_secret_enc=mfa_pending_enc/.test(sql)) { const u = users.get(a[1]); if (u) { u.mfa_method = 'totp'; u.mfa_secret_enc = u.mfa_pending_enc; u.mfa_backup_json = (u.mfa_pending_backup_json != null ? u.mfa_pending_backup_json : u.mfa_backup_json); u.mfa_pending_enc = null; u.mfa_pending_backup_json = null; u.mfa_enabled_at = a[0]; } }   // audit c5 [19]: confirm promotes the staged backup codes to live
           else if (/mfa_method='email', mfa_secret_enc=NULL/.test(sql)) { const u = users.get(a[1]); if (u) { u.mfa_method = 'email'; u.mfa_secret_enc = null; u.mfa_pending_enc = null; u.mfa_backup_json = null; u.mfa_enabled_at = a[0]; } }
           else if (/mfa_method=NULL, mfa_secret_enc=NULL/.test(sql)) { const u = users.get(a[0]); if (u) { u.mfa_method = null; u.mfa_secret_enc = null; u.mfa_pending_enc = null; u.mfa_backup_json = null; u.mfa_enabled_at = null; } }
           else if (/UPDATE users SET mfa_backup_json=\? WHERE id=\?/.test(sql)) { const u = users.get(a[1]); if (u) u.mfa_backup_json = a[0]; }
