@@ -2256,7 +2256,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23y';
+  var APP_VERSION='2026.7.23z';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -3318,7 +3318,8 @@ const Atlas = (function(){
     else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }
     else { startTrial(); }
   }
-  function logout(){ try{ store.logout(); }catch(e){}   // drop the session pointer first
+  async function logout(){ try{ if(ATLAS_BACKEND && _apiCsrf){ await Promise.race([_api('/api/auth/logout',{method:'POST'}).catch(function(){}), new Promise(function(r){ setTimeout(r,1500); })]); } }catch(e){}   // audit c5 [5] (SECURITY): revoke the server session + clear the HttpOnly atlas_sid cookie BEFORE the hard reload, while _apiCsrf is still set -- JS cannot delete an HttpOnly cookie, so without this the session row stayed valid (24h sliding / 30d absolute) and "logout" did not log out (shared-device account takeover). Raced with a 1.5s cap so a slow/unreachable server never hangs logout.
+    try{ store.logout(); }catch(e){}   // drop the session pointer first
     // #isolation (SECURITY): a hard reload to a clean URL guarantees NO prior-tenant state survives into the next
     // account -- not S, not DATA, not the applied brand CSS variables, not any cached array or module flag. Without this,
     // switching accounts on a shared device could briefly show the previous tenant's vehicles/branding. One account must
@@ -13418,13 +13419,15 @@ const Atlas = (function(){
       else if(bl.sp){ y-=(bl.sp||8); } }
     return await doc.save(); }
   async function _pdfTextDoc(title,fname,blocks){ await _loadPdfLib(); if(!window.PDFLib) throw new Error('pdflib'); var bytes=await _buildPdf(title,blocks); _pdfDownload(fname,bytes); }
-  function bkContractPdf(id){ var b=_getBooking(id); if(!b)return; toast('Building the PDF...');
-    var agr=((S.legal&&S.legal.agreement&&S.legal.agreement.text)||(S.brand.name+' - Rental Agreement.\n\nThe renter agrees to rent the item in this booking, to return it on time and in the same condition, and to pay the quoted rate, applicable taxes, and any documented damage, cleaning, fuel or overage, plus the owner posted cancellation policy. This agreement is governed by the laws of the owner jurisdiction.'));
-    if(S.legal&&S.legal.cancelPolicy) agr+='\n\nCANCELLATION POLICY: '+S.legal.cancelPolicy;
+  async function bkContractPdf(id){ var b=_getBooking(id); if(!b)return; toast('Building the PDF...');
+    var _signedDoc=null, _signedHash='';
+    if(b.portal&&b.portal.signedAt&&ATLAS_BACKEND&&_apiCsrf){ try{ var _sgr=await _api('/api/bookings/'+encodeURIComponent(id)+'/signature'); var _sgj=(_sgr&&_sgr.json)||{}; if(_sgj.signed&&_sgj.record&&_sgj.record.docText){ _signedDoc=String(_sgj.record.docText); _signedHash=String(_sgj.record.docHash||''); } }catch(e){} }   // audit c5 [4] (legal): a signed agreement PDF must render the IMMUTABLE signed text (signatures.doc_text) under its own fingerprint -- NOT the owner's CURRENT S.legal.agreement.text, which may have been edited after signing (the body would then contradict the hash that certifies it).
+    var agr=(_signedDoc)||((S.legal&&S.legal.agreement&&S.legal.agreement.text)||(S.brand.name+' - Rental Agreement.\n\nThe renter agrees to rent the item in this booking, to return it on time and in the same condition, and to pay the quoted rate, applicable taxes, and any documented damage, cleaning, fuel or overage, plus the owner posted cancellation policy. This agreement is governed by the laws of the owner jurisdiction.'));
+    if(!_signedDoc&&S.legal&&S.legal.cancelPolicy) agr+='\n\nCANCELLATION POLICY: '+S.legal.cancelPolicy;   // the signed doc_text already embeds the policy that was agreed; only append the CURRENT policy to an unsigned/preview agreement
     var blocks=[{h:S.brand.name},{small:'Rental Agreement - '+(b.id||'')+' - generated '+_stamp(Date.now())},{hr:1},{kv:['Customer',b.cust||'-']},{kv:['Asset',b.asset||'-']},{kv:['Dates',_bkWhen(b)]},{kv:['Total',_moneyBase(((b.quote||{}).total)||0)]},{sp:6},{h:'Agreement'}];
     String(agr).split('\n').forEach(function(ln){ if(ln.trim()==='') blocks.push({sp:6}); else blocks.push({p:ln}); });
     blocks.push({sp:10},{h:'Signatures'});
-    if(b.portal&&b.portal.signedAt){ blocks.push({kv:['Signed by',b.portal.signerName||b.cust||'-']},{kv:['Date',_stamp(b.portal.signedAt)]}); if(b.sigTrail&&b.sigTrail.ip) blocks.push({kv:['IP address',b.sigTrail.ip]}); if(b.sigTrail&&b.sigTrail.docHash) blocks.push({small:'Document fingerprint: '+String(b.sigTrail.docHash).slice(0,40)}); }
+    if(b.portal&&b.portal.signedAt){ blocks.push({kv:['Signed by',b.portal.signerName||b.cust||'-']},{kv:['Date',_stamp(b.portal.signedAt)]}); if(b.sigTrail&&b.sigTrail.ip) blocks.push({kv:['IP address',b.sigTrail.ip]}); var _fp=_signedHash||((b.sigTrail&&b.sigTrail.docHash)||''); if(_signedDoc&&_fp) blocks.push({small:'Document fingerprint: '+String(_fp).slice(0,40)}); else if(!_signedDoc) blocks.push({small:'The fingerprinted signed copy of record is in the customer portal; the text above is the current agreement.'}); }   // audit c5 [4]: show the fingerprint ONLY alongside the signed text it actually certifies (never under possibly-edited current text)
     else blocks.push({p:'Not yet signed.'});
     (b.coSigners||[]).forEach(function(c){ if(c&&c.signedAt) blocks.push({sp:4},{kv:['Co-signer',c.signerName||c.name||'-']},{kv:['Signed',_stamp(c.signedAt)]}); });
     _pdfTextDoc(S.brand.name+' Agreement '+(b.id||''),'agreement-'+(b.id||'booking')+'.pdf',blocks).catch(function(){ toast('Could not build the PDF (check your connection).'); }); }
