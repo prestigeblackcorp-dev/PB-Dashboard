@@ -1005,7 +1005,7 @@ function _smOrigTerms(bk){
   return { returnStr: origReturn, days: days };
 }
 function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
-  var tmpl = (bk.type==='lease') ? (data.leaseTemplate||data.contractTemplate||'') : (docType==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+  var tmpl = (bk.type==='lease') ? (data.leaseTemplate|| /* M2: no daily-contract fallback for a lease (see live-sign path) */ '') : (docType==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
   if(!tmpl) return '';
   tmpl = tmpl.replace(/Jalen Nguyen/g, 'Edwin P. Watson Jr.');   // owner change: never render the prior owner on a client-facing doc, whatever the stored template says
   if(bk.type==='lease' && typeof _pbLeaseFill==='function') tmpl = _pbLeaseFill(tmpl, bk, !readOnly);
@@ -1302,7 +1302,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     }
 
     // Pick template (docType-aware: waiver -> the Slingshot waiver template; contract -> the rental agreement)
-    var tmpl = (bk.type==='lease') ? (data.leaseTemplate||data.contractTemplate||'') : (_dt==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+    var tmpl = (bk.type==='lease') ? (data.leaseTemplate|| /* M2: NEVER fall back to the daily rental agreement for a lease; an absent leaseTemplate (worker not redeployed / sync lag) must hit the "contact us" block below, not serve the wrong legal doc */ '') : (_dt==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
     tmpl = tmpl.replace(/Jalen Nguyen/g, 'Edwin P. Watson Jr.');   // owner change: never render the prior owner on the doc the client SIGNS (mirror the download render)
     if(!tmpl){ body.innerHTML='<div style="color:#f87171;padding:20px">No contract template found. Please contact Prestige Black Rentals.</div>'; return; }
     if(bk.type==='lease' && typeof _pbLeaseFill==='function') tmpl = _pbLeaseFill(tmpl, bk, true);
@@ -1827,7 +1827,7 @@ function _pbLeaseFill(tmpl, bk, liveSign){
   var term=Number(bk.leaseTerm)||12, down=Number(bk.leaseDown)||0, monthly=Number(bk.leaseMonthly)||0;
   var deposit=Number(bk.leaseDeposit!=null?bk.leaseDeposit:bk.deposit)||0;
   var miles=Number(bk.leaseMiles)|| (term*1250), over=Number(bk.leaseOverage)||0.5;
-  var total=(Number(bk.revenue)>0)?Number(bk.revenue):(Number(bk.leaseTotal)|| (down+monthly*term));   // revenue includes one-time add-ons; keeps {{total_lease}} == the breakdown Lease Total
+  var total=monthly*term;   // agreement line is literally "Total of Monthly Payments" == the monthly installments summed; down payment, deposit and one-time add-ons each print on their own line, so they must NOT be folded in here (the itemized Lease Total in the breakdown table is the all-in figure)
   var startS=fd(bk.pickupDate||bk.date||''), endS=fd(bk.dropoffDate||'');
   var ini=liveSign?'':(bk.leaseInitials?String(bk.leaseInitials).toUpperCase().slice(0,6):'');
   function R(re,val){ tmpl=tmpl.replace(re,function(){return val;}); }
@@ -2276,6 +2276,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   var paidFlag   = sp.get('paid');
   var paidBkId   = sp.get('bookingId');
   var paidChgId  = sp.get('chargeId');
+  var paidPartial= sp.get('partial')==='1';   // H3: a single lease MONTHLY payment -> a partial; do NOT paint the balance paid-in-full on return (the worker records it as a partial + leaves the residual)
   var paidSid    = sp.get('session_id');   // Stripe checkout session id -> the worker verifies the payment before marking paid
   var paidSelfKind = sp.get('selfKind');   // 'extras' | 'addtime' -> chauffeur self-service checkout (mark-self-paid appends the paid charge / folds add-time hours in)
 
@@ -2307,7 +2308,7 @@ document.addEventListener('DOMContentLoaded',()=>{
       if(_pBk){
         if(paidChgId){
           (_pBk.portalCharges||[]).forEach(function(c){ if(c&&c.id===paidChgId) c.paidAt=_paidNow; });
-        } else {
+        } else if(!paidPartial){   // H3: a single lease monthly is a partial -> don't optimistically show paid-in-full
           _pBk.balancePaidAt = _paidNow;
         }
       }
@@ -2345,7 +2346,7 @@ document.addEventListener('DOMContentLoaded',()=>{
                     (_pBk.portalCharges||[]).forEach(function(c){
                       if(c && c.id===paidChgId && !c.paidAt) c.paidAt = _paidNow;
                     });
-                  } else {
+                  } else if(!paidPartial && !(_markResult && _markResult.partial)){   // H3: a monthly partial keeps its residual -> leave loadPortalData's refreshed balance, don't paint paid-in-full
                     if(!_pBk.balancePaidAt) _pBk.balancePaidAt = _paidNow;
                     if(!_pBk.balancePaidMethod) _pBk.balancePaidMethod = 'Stripe (portal)';
                     if(!_pBk.balancePaidAmount && _markResult && _markResult.amount != null) _pBk.balancePaidAmount = _markResult.amount;
@@ -3014,6 +3015,45 @@ var PB_CRYPTO_LIVE = false;   // flip to true once Coinbase key is set + worker 
 function showPayBalance(b){
   const bal = Number(b.remainingBalance) || 0;   // extension is never in the balance now (signed=its own charge, unsigned=folded), so no netting
   if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed','voided'].includes((b.status||'').toLowerCase())) return '';
+  // ---- H3: a LEASE pays by the month, not the whole term at once. Show this month's payment as the primary
+  // action (one monthly = leaseMonthly, clamped to the remaining balance so the final stub month pays off the
+  // lease), with a secondary link to settle the full remaining balance early. Each monthly charge is recorded
+  // as a partial that decrements remainingBalance (worker /portal/pay-balance amount + mark-balance-paid #5). ----
+  if(b.type==='lease' && Number(b.leaseMonthly)>0){
+    const lmPaidSoFar = Array.isArray(b.balancePayments) ? b.balancePayments.reduce(function(s,p){return s+(Number(p&&p.amount)||0);},0) : (Number(b.balancePaidAmount)||0);
+    const lmMonthly = Math.round((Number(b.leaseMonthly)||0)*100)/100;
+    const lmTerm    = Number(b.leaseTerm)||0;
+    const lmThis    = Math.round(Math.min(lmMonthly, bal)*100)/100;          // final payment may be a stub < one month
+    const lmTotal   = Math.round((lmThis + lmThis*0.05 + lmThis*0.0825)*100)/100;
+    const lmFullTot = Math.round((bal + bal*0.05 + bal*0.0825)*100)/100;
+    const lmPaidCnt = lmMonthly>0 ? Math.round(lmPaidSoFar/lmMonthly) : 0;
+    const lmProg    = lmTerm>0 ? (lmPaidCnt+' of '+lmTerm+' monthly payments made') : (lmPaidCnt+' monthly payment'+(lmPaidCnt===1?'':'s')+' made');
+    return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+      <div style="background:rgba(201,169,98,.06);border:1px solid rgba(201,169,98,.28);border-radius:12px;padding:12px 14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div style="font-size:12px;font-weight:800;color:#C9A962;">&#128467; Lease Monthly Payment</div>
+          <div style="font-size:11px;color:rgba(255,255,255,.6);">${lmProg}</div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <div style="font-size:12px;font-weight:700;color:#C9A962;">${lmThis<lmMonthly-0.005?'Final payment':'This month'}</div>
+          <div style="font-size:16px;font-weight:800;color:#C9A962;">$${lmThis.toFixed(2)}</div>
+        </div>
+        <div style="font-size:10px;color:rgba(255,255,255,.55);margin-bottom:8px;">
+          Charged: $${lmTotal.toFixed(2)} &nbsp;&middot;&nbsp; includes 5% processing fee + 8.25% TX tax
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:11px;color:rgba(255,255,255,.5);">
+          <div>Balance remaining</div><div>$${bal.toFixed(2)}</div>
+        </div>
+        <button onclick="payLeaseMonth('${b.id}', ${lmThis})" id="payBtn_${b.id}"
+          style="width:100%;padding:11px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;letter-spacing:.02em;">
+          Pay This Month &mdash; $${lmTotal.toFixed(2)} &rarr;
+        </button>
+        <div style="text-align:center;margin-top:9px;">
+          <a href="#" onclick="payBalance('${b.id}');return false;" style="font-size:11px;color:rgba(255,255,255,.5);">or settle the full remaining balance ($${lmFullTot.toFixed(2)})</a>
+        </div>
+      </div>
+    </div>`;
+  }
   const fee   = Math.round(bal * 0.05 * 100) / 100;
   const tax   = Math.round(bal * 0.0825 * 100) / 100;
   const total = Math.round((bal + fee + tax) * 100) / 100;
@@ -3062,6 +3102,31 @@ async function payBalance(bookingId){
   }catch(e){
     toast('Network error. Please try again.','error');
     if(btn){ btn.disabled=false; btn.textContent='Pay by Card \u2192'; }
+  }
+}
+
+// H3: charge ONE lease monthly payment (a partial of the remaining balance). Same endpoint + Stripe flow as
+// payBalance, but sends `amount` so the worker charges only this month; the finalize records it as a partial
+// and decrements remainingBalance. Returning with &partial=1 keeps the portal from flashing "paid in full".
+async function payLeaseMonth(bookingId, amount){
+  const btn = document.getElementById('payBtn_'+bookingId);
+  if(btn){ btn.disabled=true; btn.textContent='Loading\u2026'; }
+  try{
+    const r = await fetch(`${WORKER}/portal/pay-balance`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId, amount:amount })
+    });
+    const d = await r.json();
+    if(r.status===401){ _portalSessionExpired(); return; }
+    if(!r.ok || !d.url){
+      toast(d.error||'Unable to open payment. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Pay This Month \u2192'; }
+      return;
+    }
+    window.location.href = d.url;
+  }catch(e){
+    toast('Network error. Please try again.','error');
+    if(btn){ btn.disabled=false; btn.textContent='Pay This Month \u2192'; }
   }
 }
 
