@@ -3028,6 +3028,17 @@ function showPayBalance(b){
     const lmFullTot = Math.round((bal + bal*0.05 + bal*0.0825)*100)/100;
     const lmPaidCnt = lmMonthly>0 ? Math.round(lmPaidSoFar/lmMonthly) : 0;
     const lmProg    = lmTerm>0 ? (lmPaidCnt+' of '+lmTerm+' monthly payments made') : (lmPaidCnt+' monthly payment'+(lmPaidCnt===1?'':'s')+' made');
+    // Next scheduled due date (payment 1 was collected at signing): same day-of-month each month, or -- when the
+    // start day is a 29/30/31 that isn't in every month -- every 30 calendar days. Mirrors the worker reminder schedule.
+    var lmNextDue='';
+    (function(){
+      var _m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(b.pickupDate||b.date||'')); if(!_m) return;
+      var _s=new Date(+_m[1],+_m[2]-1,+_m[3],12,0,0), _d=_s.getDate(), _t0=new Date(); _t0.setHours(0,0,0,0);
+      for(var _n=1;_n<lmTerm;_n++){
+        var _due=_d<=28 ? new Date(_s.getFullYear(),_s.getMonth()+_n,_d,12,0,0) : new Date(_s.getTime()+_n*30*86400000);
+        if(_due>=_t0){ lmNextDue=_due.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); break; }
+      }
+    })();
     return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
       <div style="background:rgba(201,169,98,.06);border:1px solid rgba(201,169,98,.28);border-radius:12px;padding:12px 14px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
@@ -3041,6 +3052,9 @@ function showPayBalance(b){
         <div style="font-size:10px;color:rgba(255,255,255,.55);margin-bottom:8px;">
           Charged: $${lmTotal.toFixed(2)} &nbsp;&middot;&nbsp; includes 5% processing fee + 8.25% TX tax
         </div>
+        ${lmNextDue?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:11px;color:rgba(255,255,255,.5);">
+          <div>Next payment due</div><div style="color:#C9A962;font-weight:700;">${lmNextDue}</div>
+        </div>`:''}
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:11px;color:rgba(255,255,255,.5);">
           <div>Balance remaining</div><div>$${bal.toFixed(2)}</div>
         </div>
