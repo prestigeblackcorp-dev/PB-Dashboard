@@ -2255,8 +2255,9 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23o';
+  var APP_VERSION='2026.7.23p';
   var APP_CHANGELOG=[
+    'Locations hold real details now: give each branch an address, hours and phone (Settings &rarr; Bookings &rarr; Edit), and a customer who picks that location on your booking site sees them. Renaming a location updates every asset tagged to it',
     'Multi-type polish: if you rent several kinds of things, the Bookings page now reads &ldquo;Bookings&rdquo; / &ldquo;New booking&rdquo; with &ldquo;Customer&rdquo; and &ldquo;Asset&rdquo; columns (instead of your main type&rsquo;s words), matching the tab name',
     'Assign work to your team: open any booking to set who handles it, filter the bookings list to &ldquo;Mine&rdquo; to see just yours, and every booking shows its assignee at a glance (appears once you have team members)',
     'Schedules per asset &amp; per worker: each asset can now have its own turnaround/reset time before the next booking (a yacht that needs 4 hours vs a kayak that needs none) &mdash; honored everywhere availability is checked &mdash; and the staff scheduler now warns before you double-book the same person on overlapping shifts',
@@ -8597,7 +8598,7 @@ const Atlas = (function(){
   function _locationsHtml(){ var ls=_locList(), ro=!_canMod('settings');
     var _lc=_curTier().locations, _lcTxt=(_lc===Infinity)?'unlimited':_lc;   // packaging(2): usage against the HARD per-plan location cap
     var head='<div class="bk-lenhint" style="margin:0 0 6px">'+ls.length+' of '+_lcTxt+' '+esc(_fterm(_lc===1?'loc':'locs'))+' on '+esc(_curTier().name)+'.</div>';
-    var rows=ls.length ? ls.map(function(l,i){ return '<div class="mp-row"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">'+esc(_locName(l))+'</span>'+(ro?'':'<button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:4px 8px;flex:none" title="Remove" onclick="Atlas.removeLocation('+i+')">&times;</button>')+'</div>'; }).join('')
+    var rows=ls.length ? ls.map(function(l,i){ var _la=(l&&l.address)||'', _lh=(l&&l.hours)||'', _lp=(l&&l.phone)||''; var _sub=[_la,_lh,_lp].filter(Boolean).join(' - '); return '<div class="mp-row" style="align-items:flex-start"><div style="min-width:0;flex:1"><div style="overflow:hidden;text-overflow:ellipsis">'+esc(_locName(l))+'</div>'+(_sub?'<div class="bk-lenhint" style="margin:2px 0 0">'+esc(_sub)+'</div>':'')+'</div>'+(ro?'':'<button class="btn btn--ghost btn--sm" style="padding:4px 8px;flex:none" onclick="Atlas.editLocation('+i+')">Edit</button><button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:4px 8px;flex:none" title="Remove" onclick="Atlas.removeLocation('+i+')">&times;</button>')+'</div>'; }).join('')
       : '<div class="bk-lenhint" style="margin:6px 0 0">No '+esc(_fterm('locs'))+' yet.</div>';
     var add=ro?'':'<div style="display:flex;gap:8px;margin-top:12px"><input class="input" id="locNew" placeholder="'+esc((S.brand&&S.brand.city)||'Downtown')+'" style="flex:1" onkeydown="if(event.key===\'Enter\'){event.preventDefault();Atlas.addLocation();}"><button class="btn btn--ghost" onclick="Atlas.addLocation()">Add '+esc(_fterm('loc'))+'</button></div>';
     return head+rows+add; }
@@ -8605,6 +8606,17 @@ const Atlas = (function(){
     var _lc=_curTier().locations; if(_lc!==Infinity && _locList().length>=_lc){ promptUpgrade('locations'); return; }   // packaging(2): HARD cap -- locations have no unlock/overage path (unlike assets)
     _locList().push({name:v}); save(); var el=document.getElementById('locList'); if(el)el.innerHTML=_locationsHtml(); toast(cap(_fterm('loc'))+' added'); }
   function removeLocation(i){ if(!_canMod('settings'))return; var ls=_locList(); i=parseInt(i,10); if(!(i>=0&&i<ls.length))return; if(!confirm('Remove this location? Assets tagged to it keep their label, but the location is deleted.')) return; ls.splice(i,1); save(); var el=document.getElementById('locList'); if(el)el.innerHTML=_locationsHtml(); }
+  function editLocation(i){ if(!_canMod('settings'))return; var ls=_locList(); i=parseInt(i,10); var l=ls[i]; if(!l)return; if(typeof l!=='object'){ l={name:String(l||'')}; ls[i]=l; }
+    openModal('<div class="modal__head"><h3>Edit '+esc(_fterm('loc'))+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="field"><label>Name</label><input class="input" id="locEName" value="'+esc(l.name||'')+'"></div>'
+      +'<div class="field"><label>Address <span style="color:var(--muted);font-weight:400;font-size:12px">(shown to customers who pick this '+esc(_fterm('loc'))+' on your booking site)</span></label><input class="input" id="locEAddr" value="'+esc(l.address||'')+'" placeholder="123 Dock St, Miami FL 33130"></div>'
+      +'<div class="row2"><div class="field"><label>Hours</label><input class="input" id="locEHours" value="'+esc(l.hours||'')+'" placeholder="Mon-Sat 9am-6pm"></div>'
+      +'<div class="field"><label>Phone</label><input class="input" id="locEPhone" value="'+esc(l.phone||'')+'" placeholder="(305) 555-0100"></div></div>'
+      +'<button class="btn btn--primary btn--full" style="margin-top:10px" onclick="Atlas.saveLocationEdit('+i+')">Save</button></div>'); }
+  function saveLocationEdit(i){ if(!_canMod('settings'))return; var ls=_locList(); i=parseInt(i,10); var l=ls[i]; if(!l)return; var oldNm=_locName(l); var nm=(val('locEName')||'').trim(); if(!nm){ toast('Name is required'); return; }
+    ls[i]={ name:nm, address:(val('locEAddr')||'').trim(), hours:(val('locEHours')||'').trim(), phone:(val('locEPhone')||'').trim() };
+    if(oldNm && oldNm!==nm){ var _n=0; (DATA.assets||[]).forEach(function(a){ if(a && a.loc===oldNm){ a.loc=nm; _n++; } }); if(_n) _saveAssets(); }   // rename cascades to assets tagged to this location so the free-text a.loc link stays consistent
+    save(); closeModal(); var el=document.getElementById('locList'); if(el)el.innerHTML=_locationsHtml(); toast(cap(_fterm('loc'))+' saved'); }
   function renderSet(){
     const b=document.getElementById('setBody'); const m=S.money;
     if(m && !m.payout) m.payout={enabled:false,label:'Partner payout',kind:'percent',value:0,base:'subtotal'};   // back-compat for tenants saved before payouts
@@ -13940,7 +13952,7 @@ const Atlas = (function(){
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,setGiftRedeem,
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,liveTour,tourNext,tourBack,tourEnd,
-    setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,addLocation,removeLocation,
+    setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,addLocation,removeLocation,editLocation,saveLocationEdit,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetPhotoAdd,assetPhotoRmGallery,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,ovCustomizeKpis,ovCustomizeAna,ovKpiToggle,ovKpiMove,ovKpiSave,ovKpiDragStart,ovKpiDrop,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
