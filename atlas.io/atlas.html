@@ -2255,8 +2255,9 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23p';
+  var APP_VERSION='2026.7.23q';
   var APP_CHANGELOG=[
+    'More multi-type polish: if you rent several kinds of things, the Overview &ldquo;active&rdquo; KPI and the Revenue optimizer now say &ldquo;Out on rent&rdquo; / &ldquo;Assets&rdquo; instead of your main type&rsquo;s word, so every headline reads consistently',
     'Locations hold real details now: give each branch an address, hours and phone (Settings &rarr; Bookings &rarr; Edit), and a customer who picks that location on your booking site sees them. Renaming a location updates every asset tagged to it',
     'Multi-type polish: if you rent several kinds of things, the Bookings page now reads &ldquo;Bookings&rdquo; / &ldquo;New booking&rdquo; with &ldquo;Customer&rdquo; and &ldquo;Asset&rdquo; columns (instead of your main type&rsquo;s words), matching the tab name',
     'Assign work to your team: open any booking to set who handles it, filter the bookings list to &ldquo;Mine&rdquo; to see just yours, and every booking shows its assignee at a glance (appears once you have team members)',
@@ -4396,7 +4397,7 @@ const Atlas = (function(){
     document.getElementById('utilTitle').textContent=`${cap(_adNouns())} ${_fterm('util').toLowerCase()}`;
     document.getElementById('fleetH').textContent=`Your ${_adNouns()}`;
     document.getElementById('addAssetLbl').textContent='Add '+S.fleet.noun;
-    document.getElementById('bookH').textContent=cap(_fterm('books'));
+    document.getElementById('bookH').textContent=_multiType()?'Bookings':cap(_fterm('books'));
     document.getElementById('newBookLbl').textContent='New '+(_multiType()?'booking':_fterm('book'));
     var _na=DATA.assets.length, _nb=DATA.bookings.filter(b=>b.status!=='Completed').length;
     ['fleetBadge','m_fleetBadge'].forEach(function(idn){ var e=document.getElementById(idn); if(e)e.textContent=_na; });
@@ -4639,7 +4640,7 @@ const Atlas = (function(){
     amt:opts.noAmt?null:(opts.earned?_bkEarnedRev(b):_bkTotal(b)), onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')" }; }); }
   function drillKpi(which){ var nc=_isCommitted;   // realized bookings only (excludes pending pipeline + cancelled) -- ties to every revenue surface
     if(which==='rev'||which==='anaRev'){ _drill('Revenue', 'Every '+_fterm('book')+' behind your revenue (rental + collected add-on charges) &mdash; tap one to open it', _bkList(function(b){return nc(b)&&(which==='anaRev'||_inOvRange(b));},{earned:true}).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total revenue'}); }
-    else if(which==='active'){ _drill(cap(_fterm('active')), 'Out on rent right now', _bkList(function(b){return b.status==='On rent';},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing active right now.'}); }   // KPI value (_ovKpiDefs, ~L4779) counts On rent ONLY -- Confirmed belongs to the Upcoming KPI -> the drill must match the card, else the count and the listed rows disagree
+    else if(which==='active'){ _drill(cap(_multiType()?'Out on rent':_fterm('active')), 'Out on rent right now', _bkList(function(b){return b.status==='On rent';},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing active right now.'}); }   // KPI value (_ovKpiDefs, ~L4779) counts On rent ONLY -- Confirmed belongs to the Upcoming KPI -> the drill must match the card, else the count and the listed rows disagree
     else if(which==='util'){ _drill(cap(_fterm('util')), 'Utilization per '+esc(S.fleet.noun), (DATA.assets||[]).slice().sort(function(a,b){return b.util-a.util;}).map(function(a){return {label:'<b>'+esc(a.name)+'</b>',sub:esc(a.status),chip:'<b class="tnum">'+a.util+'%</b>',onClick:"Atlas.closeModal();Atlas.openAsset('"+a.id+"')"};}), {showTotal:false}); }
     else if(which==='upcoming'){ _drill('Upcoming', 'Confirmed and pending '+_fterm('books'), _bkList(function(b){return b.status==='Confirmed'||b.status==='Pending';},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing upcoming.'}); }
     else if(which==='count'){ _drill(cap(_fterm('books')), 'Earned '+_fterm('books')+' (pending + cancelled excluded)'+(_ovRange!=='all'?(' &middot; '+_ovRangeBounds(_ovRange).short):''), _bkList(function(b){return nc(b)&&_inOvRange(b);},{earned:true}), {totalLabel:'Total revenue'}); }   /* re-audit MED: the count KPI VALUE is range-filtered (_inOvRange) but the drill listed ALL committed -> value and list disagreed when a range was set. Now the drill matches the value + discloses the range. */
@@ -4963,7 +4964,7 @@ const Atlas = (function(){
     var defs=[
       {id:'rev',label:'Revenue'+(_ovRange!=='all'?(' '+'\u00b7'+' '+_ovRangeBounds(_ovRange).short):''),ic:'M10 2v16M6 6h6a2 2 0 010 4H6a2 2 0 000 4h7',v:money(rev),c:"Atlas.drillKpi('rev')"},
       {id:'net',label:(_net<0?'Net Loss':'Net Profit'),ic:'M3 16l4-5 3 3 7-9',v:money(_net),c:"Atlas.drillKpi('net')"},
-      {id:'active',label:_fterm('active'),ic:'M4 4h12v12H4zM4 8h12',v:active,c:"Atlas.drillKpi('active')"},
+      {id:'active',label:_multiType()?'Out on rent':_fterm('active'),ic:'M4 4h12v12H4zM4 8h12',v:active,c:"Atlas.drillKpi('active')"},
       {id:'util',label:_fterm('util'),ic:'M4 16V8M9 16V4M14 16v-6',v:util+'%',c:"Atlas.drillKpi('util')"},
       {id:'upcoming',label:'Upcoming',ic:'M10 3a7 7 0 100 14 7 7 0 000-14zM10 6v4l3 2',v:_bk.filter(function(b){return b.status==='Confirmed'||b.status==='Pending';}).length,c:"Atlas.drillKpi('upcoming')"},
       {id:'count',label:'Total '+_fterm('books'),ic:'M5 4h10v12H5zM7 8h6M7 11h6',v:cnt,c:"Atlas.drillKpi('count')"},
@@ -5691,7 +5692,7 @@ const Atlas = (function(){
     var body=document.getElementById('revOptBody'); if(!body) return;
     var head = r.bookingsCount ? ('<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px">'
         +'<div style="flex:1;min-width:160px"><div style="font-size:12px;color:var(--muted)">Money left on the table</div><div style="font-size:24px;font-weight:800;color:var(--ink)" class="tnum">'+money(r.headline)+'<span style="font-size:12px;font-weight:600;color:var(--muted)"> /mo est.</span></div></div>'
-        +'<div style="flex:1;min-width:160px"><div style="font-size:12px;color:var(--muted)">'+esc(cap(S.fleet.nouns))+' '+_fterm('util').toLowerCase()+'</div><div style="font-size:24px;font-weight:800;color:var(--ink)" class="tnum">'+r.utilAvg+'%</div></div>'
+        +'<div style="flex:1;min-width:160px"><div style="font-size:12px;color:var(--muted)">'+esc(cap(_adNouns()))+' '+_fterm('util').toLowerCase()+'</div><div style="font-size:24px;font-weight:800;color:var(--ink)" class="tnum">'+r.utilAvg+'%</div></div>'
         +'</div>') : '';
     var rows=r.suggestions.filter(function(s){ return s.kind!=='info'; }).map(function(s){
       var btn='<button class="btn btn--primary btn--sm" onclick="Atlas.revOptApply(\''+s.kind+'\''+(s.assetId?(",'"+s.assetId+"'"):'')+')">Apply</button>';
