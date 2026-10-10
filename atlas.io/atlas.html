@@ -1739,7 +1739,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
             pend.push(_idbPut(k,v).then(function(){ try{ _rRemove(k); }catch(e){} }).catch(function(){}));   // copy -> verify(commit) -> free localStorage; on IDB fail keep the ls copy
           });
           Promise.all(pend).then(function(){ _bigReady=true; resolve(); });
-        }).catch(function(){ _bigReady=true; resolve(); });
+        }).catch(function(){ resolve(); });   // audit c4 [12]: an IDB hydration failure (open OK but _idbAll rejects) must NOT flip _bigReady with an empty _bigCache -- that shadows real localStorage big-key data (atlas_bookings_/atlas_assets_/atlas_tenant_) to null (empty-tenant, and a later setItem could then overwrite the untouched native values). Stay in native passthrough (resolve WITHOUT _bigReady) so the existing data stays readable, matching the op.onerror/onblocked paths.
       };
     }catch(e){ resolve(); }
   });
@@ -2256,7 +2256,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23w';
+  var APP_VERSION='2026.7.23x';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -3797,8 +3797,7 @@ const Atlas = (function(){
   function _typeNoun(id){ var t=_typeById(id); return (t&&t.noun)||S.fleet.noun; }
   function _typeNouns(id){ var t=_typeById(id); return (t&&t.nouns)||S.fleet.nouns; }
   // True only while the fleet still holds default demo/sample data (never matches a name the operator typed).
-  function _isSampleAssets(){ return DATA.assets && DATA.assets.length>0 && DATA.assets.every(function(a){
-    return /^unit\s*\d+$/i.test(a.name||'') || FLEET_TYPES.some(function(ft){return ft.sample.indexOf(a.name)>=0;}); }); }
+  function _isSampleAssets(){ return DATA.assets && DATA.assets.length>0 && DATA.assets.every(function(a){ return a && a._seed===true; }); }   // audit c4 [5]: detect seeded SAMPLE assets by an explicit _seed tag, NOT by coincidental name-match -- the cars samples are REAL model names (Tesla Model S, Range Rover Sport, ...), so the old name-match renamed a real tenant's assets on a fleet-type change and orphaned their bookings. Untagged assets (incl. anything pre-dating this tag) are now never auto-renamed.
   // Change what the operator rents anytime -> relabels the whole dashboard (KPIs, charts, fleet, plans, website).
   function setFleetType(id){ var t=FLEET_TYPES.find(function(x){return x.id===id;}); if(!t)return;
     var reseed=_isSampleAssets();      // only rename sample assets; anything you named yourself is left untouched
@@ -4509,9 +4508,9 @@ const Atlas = (function(){
     DATA.assets=store.assets();
     if(!DATA.assets.length){
       if(demo){ DATA.assets=names.slice(0,6).map((n,i)=>({name:n,rate:Math.round(S.money.baseRate*(1+(i%3-1)*.25)),
-        status:i===4?'On rent':i===2?'Maintenance':'Available',util:[86,72,0,64,91,48][i]})); }
+        status:i===4?'On rent':i===2?'Maintenance':'Available',util:[86,72,0,64,91,48][i],_seed:true})); }   // audit c4 [5]: tag seeded SAMPLE assets so a fleet-type change reseeds ONLY these, never a real asset whose name coincidentally matches a sample
       else if(S.firstAsset && (S.firstAsset.name||'').trim()){ var _fa={ id:_assetId(), name:S.firstAsset.name.trim(),
-        rate:parseFloat(S.firstAsset.rate)||S.money.baseRate, status:(S.firstAsset.status==='Maintenance'?'Maintenance':'Available'), util:0 }; if(S.firstAsset.photo)_fa.photo=S.firstAsset.photo; DATA.assets=[_fa]; }   // fix: carry the onboarding photo onto the first asset
+        rate:parseFloat(S.firstAsset.rate)||S.money.baseRate, status:(S.firstAsset.status==='Maintenance'?'Maintenance':'Available'), util:0 }; if(S.firstAsset.photo)_fa.photo=S.firstAsset.photo; DATA.assets=[_fa]; S.firstAsset={}; try{save();}catch(e){} }   // fix: carry the onboarding photo onto the first asset. audit c4 [4]: consume the onboarding seed after it is placed once, so intentionally deleting your last asset does NOT resurrect the first asset on the next boot (seedData runs on every rebuild).
       else DATA.assets=[];
       store.saveAssets(DATA.assets);
     }
@@ -4800,10 +4799,10 @@ const Atlas = (function(){
     // asset no longer resolves to a known kind (renamed/deleted asset) -- so this table always foots to the all-kind total.
     var incomeInRange=_allIncomes().reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0);
     var genExp=_ledger().expenses.reduce(function(s,e){ if(!_expInRange(e,B)) return s; var ek=e.assetKind||''; return s+((!ek||!known[ek])?(e.amount||0):0); },0);
-    var strayRev=0, strayPay=0;
-    (DATA.bookings||[]).forEach(function(b){ if(!_bkInRange(b,B)) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_bkEarnedRev(b); strayPay+=((b.quote&&b.quote.payoutAmt)||0); });
+    var strayRev=0, strayPay=0, strayTax=0;
+    (DATA.bookings||[]).forEach(function(b){ if(!_bkInRange(b,B)) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_bkEarnedRev(b); strayPay+=((b.quote&&b.quote.payoutAmt)||0); strayTax+=_bkTax(b); });   // audit c4 [10]: accumulate the stray (renamed/deleted-asset) bookings' sales tax too
     (DATA.bookings||[]).forEach(function(b){ var t=_bDate(b); if(!b||b.status!=='Cancelled'||t<B.from||t>B.to) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_collectedCharges(b); });
-    var gRev=_r2(incomeInRange+strayRev), gExp=_r2(genExp), gNet=_r2(gRev-gExp-strayPay);
+    var gRev=_r2(incomeInRange+strayRev), gExp=_r2(genExp), gNet=_r2(gRev-gExp-strayPay-strayTax);   // audit c4 [10]: subtract stray tax so the General/shared row + the by-type table foot to _pnlSummary(all).net (each known-kind row already subtracts its own _bkTax)
     rows.push({kind:'General / shared',rev:gRev,exp:gExp,net:gNet,margin:(gRev>0?Math.round(gNet/gRev*1000)/10:0)});
     return rows; }
   function _pnlMonthLabel(d){ try{ return d.toLocaleDateString('en-US',{month:'short',year:'numeric'}); }catch(e){ return (d.getMonth()+1)+'/'+d.getFullYear(); } }
@@ -4929,6 +4928,8 @@ const Atlas = (function(){
       +'<div class="mp-row mp-ok" style="cursor:pointer" onclick="Atlas.drillLedger(\'income\')"><span>+ Other income</span><b class="tnum">'+money(inc)+'</b></div>'
       +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillLedger(\'expense\')"><span>&minus; Expenses</span><b class="tnum" style="color:var(--danger)">'+money(exp)+'</b></div>'
       +(pay>0?'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillKpi(\'payout\')"><span>&minus; '+esc(_payoutLabel())+'</span><b class="tnum" style="color:var(--danger)">'+money(pay)+'</b></div>':'')
+      +(_cancelledFeeIncome()>0?'<div class="mp-row mp-ok"><span>+ Cancellation fees kept</span><b class="tnum">'+money(_cancelledFeeIncome())+'</b></div>':'')
+      +(_taxCollected()>0?'<div class="mp-row"><span>&minus; Sales tax collected</span><b class="tnum" style="color:var(--danger)">'+money(_taxCollected())+'</b></div>':'')
       +'<div class="mp-row mp-total" style="cursor:pointer" onclick="Atlas.drillKpi(\'net\')"><span>Net Profit</span><b class="tnum">'+money(_netProfit())+'</b></div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.logIncome()">+ Log income</button><button class="btn btn--ghost btn--sm" onclick="Atlas.logExpense()">+ Log expense</button></div>'; }
   /* ---- Blocked / unavailable days per asset ---- */
@@ -5927,7 +5928,7 @@ const Atlas = (function(){
   }
   function bkFilter(s){ _bkFilter=s; renderBookings(); }
   function newBooking(){ if(!_guard('bookEdit','Creating bookings'))return; _waitConvertId=null; _bookingForm(null); }   /* re-audit MED: clear any stale waitlist-conversion id so a NEW booking never inherits an abandoned conversion and silently deletes an unrelated waitlist entry. waitToBooking re-sets it AFTER calling this. */
-  function editBooking(id){ if(!_guard('bookEdit','Editing bookings'))return; _bookingForm(_getBooking(id)); }
+  function editBooking(id){ if(!_guard('bookEdit','Editing bookings'))return; _waitConvertId=null; _bookingForm(_getBooking(id)); }   // audit c4 [16]: clear any stale waitlist-conversion id (mirror newBooking) so saving an unrelated booking edit can't silently delete a live waitlist entry via createBooking's removal line
   // The date / time / duration inputs -- shape depends on the operator's Booking model (Settings > Bookings).
   function _bkWhenFieldsHtml(periods){ var cfg=_bookingCfg(), unitLbl=cap(_perUnit());
     var sD='<div class="field"><label>Start date</label><input class="input" type="date" id="bkStart" oninput="Atlas.bkPreview()"></div>';
@@ -7519,7 +7520,7 @@ const Atlas = (function(){
     w.cust=nm; w.contact=(val('wlContact')||'').trim(); w.asset=(val('wlAsset')||'').trim(); w.note=(val('wlNote')||'').trim(); var _wf=val('wlFrom'), _wt=val('wlTo'); w.from=(_wf?new Date(_wf+'T00:00:00').getTime():0); w.to=(_wt?new Date(_wt+'T23:59:59').getTime():0);
     save(); closeModal(); _renderWaitCard(); toast('Waitlist entry updated'); }
   function waitToBooking(id){ if(!_guard('bookEdit'))return; var w=_waitlist().filter(function(x){return x.id===id;})[0]; if(!w)return;   // fix: keep the waitlist entry until the booking is actually saved (createBooking removes it) -> no data loss if the operator abandons the form
-    go('bookings'); newBooking(); _waitConvertId=id; setTimeout(function(){ var n=document.getElementById('bkCust'); if(n)n.value=w.cust; if(w.contact){ var e=document.getElementById('bkEmail'); if(e)e.value=w.contact; } var a=document.getElementById('bkAsset'); if(a&&w.asset){ try{ a.value=w.asset; }catch(_){}} try{ bkPreview&&bkPreview(); }catch(_){}}, 250);
+    go('bookings'); newBooking(); _waitConvertId=id; setTimeout(function(){ var n=document.getElementById('bkCust'); if(n)n.value=w.cust; if(w.contact){ var _wtc=document.getElementById(w.contact.indexOf('@')>=0?'bkEmail':'bkPhone'); if(_wtc)_wtc.value=w.contact; } var a=document.getElementById('bkAsset'); if(a&&w.asset){ try{ a.value=w.asset; }catch(_){}} try{ bkPreview&&bkPreview(); }catch(_){}}, 250);
     toast('Filling from the waitlist -- finish the booking'); }
   function _waitSurface(assetName){ var wl=_waitlist().filter(function(w){ return !w.asset || w.asset===assetName; }); if(!wl.length) return;
     toast(wl.length+' on the waitlist for this '+S.fleet.noun+' -- check Customers to fill it'); }
@@ -11430,8 +11431,8 @@ const Atlas = (function(){
     var chk=document.getElementById('impAssetsChk'); var addAssets=!!(chk&&chk.checked);
     if(snap.money && typeof snap.money==='object'){ S.money=S.money||{}; for(var k in snap.money){ S.money[k]=snap.money[k]; } }
     if(snap.loyalty && typeof snap.loyalty==='object') S.loyalty=snap.loyalty;   // fix: restore stored-value program config only when the snapshot actually carries it
-    if(snap.promos && snap.promos.length!=null) S.promos=snap.promos;
-    if(snap.giftcards && snap.giftcards.length!=null) S.giftcards=snap.giftcards;
+    if(snap.promos && Array.isArray(snap.promos)){ var _cpk={}; (S.promos||[]).forEach(function(p){ if(p&&p.id!=null)_cpk[String(p.id)]=1; if(p&&p.code)_cpk['c:'+String(p.code).toLowerCase()]=1; }); snap.promos.forEach(function(p){ if(!p)return; var k=p.id!=null?String(p.id):(p.code?('c:'+String(p.code).toLowerCase()):null); if(k==null||_cpk[k])return; S.promos=S.promos||[]; S.promos.push(p); }); }   // audit c4 [1]: MERGE-ADD only (by id/code); never overwrite or drop a live promo code
+    if(snap.giftcards && Array.isArray(snap.giftcards)){ var _cgk={}; (S.giftcards||[]).forEach(function(g){ if(g&&g.id!=null)_cgk[String(g.id)]=1; if(g&&g.code)_cgk['c:'+String(g.code).toUpperCase()]=1; }); snap.giftcards.forEach(function(g){ if(!g)return; var k=g.id!=null?String(g.id):(g.code?('c:'+String(g.code).toUpperCase()):null); if(k==null||_cgk[k])return; S.giftcards=S.giftcards||[]; S.giftcards.push(g); }); }   // audit c4 [1]: MERGE-ADD only -- gift cards are prepaid customer money + recognized revenue; a snapshot restore must NEVER delete a live card or revert its redeemed[] ledger (the deleteGift guard refuses exactly this). Only cards the snapshot has that aren't already present are added.
     var added=0; if(addAssets && snap.assets){ var cap=_vehCap(), _u=_fleetUnits(); snap.assets.forEach(function(a){ if(cap!==Infinity && _u>=cap) return; var na={ id:_assetId(), name:a.name, rate:a.rate, status:a.status||'Available', util:0, tenant:null }; if(a.type) na.type=a.type; if(a.loc) na.loc=a.loc; DATA.assets.push(na); added++; _u++; }); _saveAssets(); }   // packaging(1): stop at the plan's UNIT cap (each restored asset is 1 unit)
     save(); _logEvent('owner','Restored a setup snapshot'+(added?(' + '+added+' assets'):''),{}); _pendingSetup=null; closeModal(); try{ buildApp(); go('settings'); }catch(e){} toast('Setup restored'+(added?(' &mdash; '+added+' assets added'):'')); }
   function _assetId(){ return 'a'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
