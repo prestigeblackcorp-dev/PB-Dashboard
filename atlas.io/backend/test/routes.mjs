@@ -1894,14 +1894,21 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const pbEnv = (on) => ({ DB: pbDB(on), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', ANTHROPIC_KEY: 'sk-ant-test' });
   const pbReq = (body) => { const headers = { 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }; return { method: 'POST', url: 'https://atlasrental.io/api/aio', headers: { get: (k) => { const v = headers[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => (body || {}), text: async () => JSON.stringify(body || {}) }; };
   const pbFetch = () => { globalThis.fetch = () => { pbfetch++; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ content: [{ type: 'text', text: 'FRESH' }] }) }); }; };
-  const Q = 'how do I get more bookings for my rental gear';
+  const Q = 'how do I market my rentals to new customers';   // a SPECIFIC intent ('marketing') -- the B2 safety gate serves a cross-tenant playbook only for a confidently-classified intent, never the 'general' catch-all
 
-  // (a) playbook serving ON + no own answer -> served from the shared GENERIC playbook, ZERO provider calls, playbook:true
+  // (a) playbook serving ON + no own answer + a specific intent -> served from the shared GENERIC playbook, ZERO provider calls, playbook:true
   pbfetch = 0; pbFetch();
   let pr = await worker.fetch(pbReq({ q: Q, single: true }), pbEnv(true), ctx);
   let pj = await pr.json();
-  ok(pr.status === 200 && pj.cached === true && pj.playbook === true && /GENERIC:/.test(pj.synthesis || ''), 'sponge Stage8b: a new question is answered from the shared de-identified playbook (playbook:true)');
+  ok(pr.status === 200 && pj.cached === true && pj.playbook === true && /GENERIC:/.test(pj.synthesis || ''), 'sponge Stage8b: a specific-intent question is answered from the shared de-identified playbook (playbook:true)');
   ok(pbfetch === 0, 'sponge Stage8b: a playbook serve makes ZERO provider calls');
+
+  // (a2) SAFETY GATE (B2 launch): a VAGUE / 'general'-intent question does NOT serve the cross-tenant playbook -> it
+  // recomputes (council), so an off-topic generic answer can never preempt a real answer for a question it does not fit.
+  pbfetch = 0; pbFetch();
+  pr = await worker.fetch(pbReq({ q: 'something feels off with my business lately', single: true }), pbEnv(true), ctx);
+  pj = await pr.json();
+  ok(!pj.playbook && pbfetch > 0, 'sponge Stage8b SAFETY GATE: a vague general-intent question is NOT served a cross-tenant playbook (recomputes)');
 
   // (b) playbook serving OFF -> recompute (never cross-tenant served)
   pbfetch = 0; pbFetch();
