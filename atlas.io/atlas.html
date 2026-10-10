@@ -2255,8 +2255,10 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23f';
+  var APP_VERSION='2026.7.23h';
   var APP_CHANGELOG=[
+    'Rent several kinds of things under one account? Atlas now reads right for multi-type businesses &mdash; the dashboard says &ldquo;assets&rdquo; instead of your main type, each item shows its own type&rsquo;s words (a car is &ldquo;utilized,&rdquo; a boat &ldquo;chartered&rdquo;), and counts use correct singulars (&ldquo;1 vessel,&rdquo; not &ldquo;1 vessels&rdquo;)',
+    'Atlas.io assistant is sharper on real goals: ask it to grow, say &ldquo;give me the plan,&rdquo; or &ldquo;what will it cost&rdquo; and it now builds a concrete, grounded plan from your numbers instead of a generic pitch &mdash; and it uses your own customer word (charterers / tenants / clients), not just &ldquo;renters&rdquo;',
     'Atlas.io assistant polish: correct wording for every rental type (no more &ldquo;Add a aircraft&rdquo;), and a clearer, cleaner message when something has to be finished from a settings tab instead of chat',
     'Atlas.io assistant is honest when your session has signed out &mdash; it offers a one-tap sign-in instead of a generic menu &mdash; and the Revenue optimizer labels utilization with your own asset word, not &ldquo;fleet&rdquo;',
     'Clearer sign-up &amp; sign-in: a show/hide password button, instant checks that tell you exactly what to fix, and the real 8-character password rule shown up front',
@@ -4338,7 +4340,7 @@ const Atlas = (function(){
     if(hit) return hit[0];
     hit=_navAllowed().filter(function(n){ return n[0].indexOf(q)>=0 || (n[1]||'').toLowerCase().indexOf(q)>=0 || _navLabelFor(n).toLowerCase().indexOf(q)>=0; })[0];
     return hit?hit[0]:null; }
-  function _navLabelFor(n){ var c=_navCfg(); if(c.labels[n[0]]) return c.labels[n[0]]; return n[0]==='fleet'?cap(S.fleet.nouns):(n[0]==='bookings'?cap(_fterm('books')):n[1]); }
+  function _navLabelFor(n){ var c=_navCfg(); if(c.labels[n[0]]) return c.labels[n[0]]; return n[0]==='fleet'?cap(_adNouns()):(n[0]==='bookings'?cap(_fterm('books')):n[1]); }
   function _refreshNavBadges(){ try{ var na=(DATA.assets||[]).length, nb=(DATA.bookings||[]).filter(function(b){return b.status!=='Completed'&&b.status!=='Cancelled'&&b.status!=='Voided';}).length;
     ['fleetBadge','m_fleetBadge'].forEach(function(id){ var e=document.getElementById(id); if(e)e.textContent=na; });
     ['bookBadge','m_bookBadge'].forEach(function(id){ var e=document.getElementById(id); if(e)e.textContent=nb; }); }catch(e){} }
@@ -4382,9 +4384,9 @@ const Atlas = (function(){
     // greet
     const h=new Date().getHours(); const g=h<12?'Good morning':h<18?'Good afternoon':'Good evening';
     document.getElementById('greetLine').textContent=`${g}, ${_ownerName()}`;
-    document.getElementById('greetSub').textContent=`Here's how your ${S.fleet.nouns} are doing today.`;
-    document.getElementById('utilTitle').textContent=`${cap(S.fleet.nouns)} ${_fterm('util').toLowerCase()}`;
-    document.getElementById('fleetH').textContent=`Your ${S.fleet.nouns}`;
+    document.getElementById('greetSub').textContent=`Here's how your ${_adNouns()} are doing today.`;
+    document.getElementById('utilTitle').textContent=`${cap(_adNouns())} ${_fterm('util').toLowerCase()}`;
+    document.getElementById('fleetH').textContent=`Your ${_adNouns()}`;
     document.getElementById('addAssetLbl').textContent='Add '+S.fleet.noun;
     document.getElementById('bookH').textContent=cap(_fterm('books'));
     document.getElementById('newBookLbl').textContent='New '+_fterm('book');
@@ -4429,7 +4431,7 @@ const Atlas = (function(){
     document.querySelectorAll('.mnav__i').forEach(b=>{ var _on=b.dataset.mnav===nav; b.classList.toggle('active',_on); if(_on) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current'); });
     document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.panel===nav));
     var _navRow=NAV.find(n=>n[0]===nav);   // never let an unknown nav id hard-crash the whole switch
-    document.getElementById('pageTitle').textContent=(nav==='fleet')?cap(S.fleet.nouns):(nav==='bookings'?cap(_fterm('books')):(_navRow?_navRow[1]:cap(nav)));
+    document.getElementById('pageTitle').textContent=(nav==='fleet')?cap(_adNouns()):(nav==='bookings'?cap(_fterm('books')):(_navRow?_navRow[1]:cap(nav)));
     window.scrollTo(0,0);
     if(nav==='website') renderWebsite();   // reflect current brand, fleet and prices every visit
     if(nav==='analytics') renderAnalytics();   // reports + activity log stay live as data changes
@@ -4570,12 +4572,22 @@ const Atlas = (function(){
     try{renderOverview();}catch(e){} try{renderFleet();}catch(e){} try{renderBookings();}catch(e){} try{renderCustomers();}catch(e){} try{renderAnalytics();}catch(e){} try{renderWebsite();}catch(e){} try{renderTeam();}catch(e){} try{buildSettings();}catch(e){} }
   // Per-type term for the current fleet (KPIs/labels reconfigure to what the client rents).
   function _fterm(k){ var t=FLEET_TERMS[S.fleet&&S.fleet.id]||FLEET_TERMS.custom; return (t&&t[k])||FLEET_TERMS.cars[k]; }
+  // Per-ASSET term: on a multi-type account each asset carries its own type (a.type), so its card uses THAT type's word
+  // (a car reads "utilized", a vessel "chartered") instead of the primary type's. Single-type assets have no a.type and
+  // fall back to the primary -- identical to _fterm, so single-type accounts are unchanged.
+  function _ftermFor(id,k){ var t=FLEET_TERMS[id]||FLEET_TERMS[S.fleet&&S.fleet.id]||FLEET_TERMS.custom; return (t&&t[k])||FLEET_TERMS.cars[k]; }
   // The word for THIS fleet type's customer (renter / tenant / client / charterer). Falls back to the reservation-vs-rental
   // heuristic for any type that has not declared one. _custNoun(true) => plural.
   function _custNoun(plural){ var t=_typeById((S.fleet&&S.fleet.id)||'cars')||{};
     var one=t.customerNoun||(S.fleet&&S.fleet.customerNoun)||'', many=t.customerNouns||(S.fleet&&S.fleet.customerNouns)||(one?one+'s':'');
     if(!one){ one=(_fterm('book')==='reservation')?'tenant':'renter'; many=one+'s'; }
     return plural?many:one; }
+  // Multi-type accounts rent SEVERAL verticals under one roof, so no single type's noun fits them all: AGGREGATE labels
+  // (greeting, nav, fleet header/title, fleet count) fall back to the neutral "assets"/"asset". A single-type account
+  // keeps its own word (vessels/vehicles/items/...). Per-asset cards still use each asset's own type where wired.
+  function _multiType(){ return !!(S.fleet && Array.isArray(S.fleet.also) && S.fleet.also.length); }
+  function _adNouns(){ return _multiType() ? 'assets' : S.fleet.nouns; }
+  function _adNoun(){ return _multiType() ? 'asset' : S.fleet.noun; }
   // A plan's cap, described in the client's OWN asset noun (packages gate any asset type).
   function _tierCap(t){ var n='assets';   // pricing is platform-level -> neutral "assets" for every rental type
     if(t.vehicles===Infinity) return 'Unlimited '+n+' + locations';
@@ -5068,7 +5080,7 @@ const Atlas = (function(){
   function openAsset(id){ var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return; var t=a.tenant||{}, ro=!_canCap('fleetEdit'), dis=ro?' disabled':'';
     var rl=(_fterm('book')==='reservation')?'tenant':'renter', locL=cap(_fterm('loc'));
     openModal('<div class="modal__head"><h3>'+esc(a.name)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">'+statusChip(a.status)+(a.loc?'<span style="font-size:12.5px;color:var(--muted)">in '+esc(a.loc)+'</span>':'')+'<span style="flex:1"></span><span style="font-size:13px;color:var(--muted)">'+a.util+'% '+_fterm('occ')+'</span></div>'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">'+statusChip(a.status)+(a.loc?'<span style="font-size:12.5px;color:var(--muted)">in '+esc(a.loc)+'</span>':'')+'<span style="flex:1"></span><span style="font-size:13px;color:var(--muted)">'+a.util+'% '+_ftermFor(a.type, 'occ')+'</span></div>'
       +'<div class="row2"><div class="field"><label>Name</label><input class="input" id="aName" value="'+esc(a.name)+'"'+dis+'></div>'
       +'<div class="field"><label>'+esc(locL)+'</label><input class="input" id="aLoc" list="vLocList2" value="'+esc(a.loc||'')+'"'+dis+'><datalist id="vLocList2">'+(function(){var ls=[];DATA.assets.forEach(function(x){if(x.loc&&ls.indexOf(x.loc)<0)ls.push(x.loc);});return ls.map(function(l){return '<option value="'+esc(l)+'"></option>';}).join('');})()+'</datalist></div></div>'
       +'<div class="row2"><div class="field"><label>City / market <span style="color:var(--muted);font-weight:400;font-size:12px">(where this one rents)</span></label><input class="input" id="aLocCity" value="'+esc(a.locCity||'')+'" placeholder="'+esc((S.brand&&S.brand.city)||'City')+'"'+dis+'></div>'
@@ -5398,7 +5410,7 @@ const Atlas = (function(){
     return `<div class="asset" style="cursor:pointer" onclick="Atlas.openAsset('${a.id}')">
       <div class="asset__img"${a.photo?` style="background-image:url('${_cssUrl(a.photo)}');background-size:cover;background-position:center"`:''}>${a.photo?'':`<svg viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`}
       <span class="chip chip--${a.status==='Available'?'ok':a.status==='Maintenance'?'warn':'info'}" style="position:absolute;top:10px;left:10px"><span class="dot"></span>${a.status}</span>${_serviceCardBadge(a)}</div>
-      <div class="asset__body"><b>${esc(a.name)}</b>${(+a.qty>1)?` <span style="font-size:10px;font-weight:800;color:var(--muted);letter-spacing:.3px;margin-left:5px;vertical-align:middle">&times;${(+a.qty)} units</span>`:''}${a.loc?`<div style="font-size:11.5px;color:var(--muted);margin-top:1px">${esc(a.loc)}</div>`:''}${ten?`<div style="font-size:11.5px;color:var(--brand-700);font-weight:600;margin-top:1px">${esc(cap(_custNoun()))}: ${esc(a.tenant.name)}</div>`:''}<div class="asset__meta"><span>${a.util}% ${_fterm('occ')}</span><span class="asset__price">${money(a.rate)}/${S.money.rateModel[0]}</span></div></div>${_assetCardLock(a)}</div>`; }
+      <div class="asset__body"><b>${esc(a.name)}</b>${(+a.qty>1)?` <span style="font-size:10px;font-weight:800;color:var(--muted);letter-spacing:.3px;margin-left:5px;vertical-align:middle">&times;${(+a.qty)} units</span>`:''}${a.loc?`<div style="font-size:11.5px;color:var(--muted);margin-top:1px">${esc(a.loc)}</div>`:''}${ten?`<div style="font-size:11.5px;color:var(--brand-700);font-weight:600;margin-top:1px">${esc(cap(_custNoun()))}: ${esc(a.tenant.name)}</div>`:''}<div class="asset__meta"><span>${a.util}% ${_ftermFor(a.type, 'occ')}</span><span class="asset__price">${money(a.rate)}/${S.money.rateModel[0]}</span></div></div>${_assetCardLock(a)}</div>`; }
   function renderFleet(){
     _recomputeUtil();   // fresh per-asset utilization before the fleet grid + location grid read a.util (was only recomputed in renderOverview/_forecast, so a freshly-added asset could paint stale)
     var capN=_vehCap(), capTxt=(capN===Infinity)?'unlimited':capN, n=DATA.assets.length, avail=DATA.assets.filter(function(a){return a.status==='Available';}).length;
@@ -5431,7 +5443,7 @@ const Atlas = (function(){
         +(more>0?'<div style="grid-column:1/-1;text-align:center;padding:10px"><button class="btn btn--ghost btn--sm" onclick="Atlas.fleetShowAll()">Show all '+_tot+' '+esc(S.fleet.nouns)+'</button></div>':'');
     } else {
       locsEl.innerHTML='';
-      document.getElementById('fleetSub').textContent=`${_fleetUnits()} of ${capTxt} units (${n} ${S.fleet.nouns}) on ${_curTier().name} \u00b7 ${avail} available now`;
+      document.getElementById('fleetSub').textContent=`${_fleetUnits()} of ${capTxt} units (${n} ${n===1?_adNoun():_adNouns()}) on ${_curTier().name} \u00b7 ${avail} available now`;
       grid.innerHTML=DATA.assets.length?(_lockBanner+_maintBanner+DATA.assets.map(_assetCard).join('')):'<div class="empty" style="grid-column:1/-1"><div class="empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M3 13l2-5h14l2 5v5H3zM7 18a2 2 0 100-4 2 2 0 000 4zM17 18a2 2 0 100-4 2 2 0 000 4z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></div><h3>No '+esc(S.fleet.nouns)+' yet</h3><p>Add your first '+esc(S.fleet.noun)+' to start taking bookings &mdash; you can bulk-import the rest later.</p><button class="btn btn--primary" onclick="Atlas.addVehicle()">Add your first '+esc(S.fleet.noun)+'</button></div>';
     }
   }
@@ -5621,8 +5633,8 @@ const Atlas = (function(){
         var monthlyWk=wk.rev/REVOPT_WINDOW_DAYS*30;
         out.suggestions.push({ id:'weekend', kind:'weekend',
           title:'Add a weekend uplift',
-          text:Math.round(wk.share*100)+'% of your recent '+_fterm('books')+' start on a Friday or Saturday, and your '+((S.fleet&&S.fleet.nouns)||'fleet')+' are running '+out.utilAvg+'% '+_fterm('util').toLowerCase()+' - renters are already choosing weekends without a price nudge. A +'+REVOPT_WEEKEND_PCT+'% weekend rate would follow that real demand.',
-          why:Math.round(wk.share*100)+'% of '+win.length+' bookings in the last '+REVOPT_WINDOW_DAYS+' days started Fri/Sat; '+((S.fleet&&S.fleet.nouns)||'fleet')+' '+_fterm('util').toLowerCase()+' '+out.utilAvg+'% is at/above the 40% healthy floor.',
+          text:Math.round(wk.share*100)+'% of your recent '+_fterm('books')+' start on a Friday or Saturday, and your '+_adNouns()+' are running '+out.utilAvg+'% '+_fterm('util').toLowerCase()+' - renters are already choosing weekends without a price nudge. A +'+REVOPT_WEEKEND_PCT+'% weekend rate would follow that real demand.',
+          why:Math.round(wk.share*100)+'% of '+win.length+' bookings in the last '+REVOPT_WINDOW_DAYS+' days started Fri/Sat; '+_adNouns()+' '+_fterm('util').toLowerCase()+' '+out.utilAvg+'% is at/above the 40% healthy floor.',
           impact:Math.round(monthlyWk*REVOPT_WEEKEND_PCT/100) }); } }
     // ---- Rule 2: high-demand assets (util >= 75%) -> raise the rate ~10% ----
     var hot=assets.filter(function(a){ return (Number(a.util)||0)>=REVOPT_HIGH_UTIL; }).sort(function(x,y){ return (Number(y.util)||0)-(Number(x.util)||0); });
@@ -5646,9 +5658,9 @@ const Atlas = (function(){
     } else if(out.utilAvg<=REVOPT_LOW_UTIL){
       var avgRate=assets.reduce(function(s,a){ return s+(Number(a.rate)||0); },0)/Math.max(1,assets.length);
       out.suggestions.push({ id:'idle:fleet', kind:'idle',
-        title:'Fill idle days across your '+((S.fleet&&S.fleet.nouns)||'fleet'),
-        text:'Your '+((S.fleet&&S.fleet.nouns)||'fleet')+' are running '+out.utilAvg+'% '+_fterm('util').toLowerCase()+' overall. A last-minute discount for bookings within '+REVOPT_LASTMIN_DAYS+' days of pickup can turn idle days into revenue instead of $0.',
-        why:'Across your '+((S.fleet&&S.fleet.nouns)||'fleet')+' '+_fterm('util').toLowerCase()+' is '+out.utilAvg+'%, at/below the '+REVOPT_LOW_UTIL+'% idle floor.',
+        title:'Fill idle days across your '+_adNouns(),
+        text:'Your '+_adNouns()+' are running '+out.utilAvg+'% '+_fterm('util').toLowerCase()+' overall. A last-minute discount for bookings within '+REVOPT_LASTMIN_DAYS+' days of pickup can turn idle days into revenue instead of $0.',
+        why:'Across your '+_adNouns()+' '+_fterm('util').toLowerCase()+' is '+out.utilAvg+'%, at/below the '+REVOPT_LOW_UTIL+'% idle floor.',
         impact:Math.round(Math.max(0,1-out.utilAvg/100)*upm*avgRate*REVOPT_CAPTURE*(1+REVOPT_LASTMIN_PCT/100)) }); }
     if(!out.suggestions.length) out.notice = (win.length<REVOPT_MIN_SAMPLE) ? 'Not enough booking history yet to recommend a change.' : 'Nothing to flag right now - your pricing already looks balanced for the data on file.';
     return out;
@@ -7985,7 +7997,7 @@ const Atlas = (function(){
   function _trkDashHtml(){ return '<div class="trk-kpis" id="trkKpis"></div><div class="trk-grid">'
     +'<div class="trk-map-wrap"><div id="trkLMap" style="position:absolute;inset:0"></div>'
     +'<div class="trk-map-legend"><span><i class="d-mv"></i>Moving</span><span><i class="d-id"></i>Idle</span><span><i class="d-pk"></i>Parked</span><span><i class="d-of"></i>Offline</span></div></div>'
-    +'<div class="trk-side"><div class="trk-side__hd">'+esc(cap((S.fleet&&S.fleet.nouns)||'fleet'))+'</div><div id="trkList"></div></div></div><div id="trkDetail"></div>'; }
+    +'<div class="trk-side"><div class="trk-side__hd">'+esc(cap_adNouns())+'</div><div id="trkList"></div></div></div><div id="trkDetail"></div>'; }
   function _trkMapBg(){ var s='<rect x="0" y="0" width="1000" height="620" fill="var(--trk-map)"/>';
     s+='<path d="M0,470 Q300,430 520,500 T1000,455 L1000,620 L0,620 Z" fill="var(--trk-park)"/>';
     var i; for(i=100;i<1000;i+=140){ s+='<line x1="'+i+'" y1="0" x2="'+i+'" y2="620" stroke="var(--trk-road)" stroke-width="'+((i-100)%280===0?7:3)+'"/>'; }
@@ -10092,6 +10104,12 @@ const Atlas = (function(){
   }
   function _aioIsAdvisory(s){ s=String(s||'');
     return /\b(growth plan|business plan|marketing plan|action plan|game plan|\d+[ -]?(day|week|month)[ -]?plan|step[ -]?by[ -]?step|week[ -]?by[ -]?week|road ?map|strateg(y|ies)|playbook|analy[sz]e my|analysis of|full breakdown|comprehensive plan)\b/.test(s)
+      || /\b(give me|make me|build me|lay out|map out|walk me through|show me)\b.{0,16}\b(plan|game ?plan|road ?map|playbook|steps|breakdown)\b/.test(s)   // "give me the plan" -- a concrete plan ask must reach the council, not a canned pitch
+      || /\b(what'?s|whats|what is)\b.{0,14}\b(the|my|a)\b.{0,12}\b(plan|game ?plan|best (move|way|next step)|next (step|move))\b/.test(s)
+      || /\bhow (do|can|should|would|might) i\b.{0,48}\b(grow|scale|get more|book more|fill|increase|double|triple|reach more|win more|land more|raise|boost|make more|more booking|more charter|more rental|more revenue|more money|more client|more customer)\b/.test(s)
+      || /\b(want|wanna|like|need|help me|trying|hoping|looking|my goal|goal is)\b.{0,34}\b(grow|scale|expand|increase|double|triple|boost|more booking|more charter|more rental|more reservation|more revenue|more money|more client|more customer|more deal|\d+\s*(more|booking|charter|rental|reservation))\b/.test(s)   // a concrete growth GOAL -> council plan, not the dream-pitch
+      || /\b(what|how much)\b.{0,32}\b(cost|budget|spend|invest|roi|worth it)\b/.test(s)   // cost / ROI question -> real grounded answer
+      || /\bcheapest (way|path|option|route)\b/.test(s)
       || (s.length > 160 && (s.match(/,/g)||[]).length >= 2 && /\b(plan|include|strategy|ideas|improvements?)\b/.test(s)); }   // a PLAN/STRATEGY/ANALYSIS or a long comma-listed multi-part ask is ADVISORY -> must reach the real council/single answer (proper token budget), NOT the one-action planner that would shortcut it to a narrow 'set pricing' action (billed 0, never answers). Strong signals only, so a simple 'how do I add a car' still uses the free planner.
   function _aioLooksActionable(s){
     if(/\b(tab|tabs|nav|navigation|bottom bar|tab bar)\b/.test(s)) return true;
@@ -10495,12 +10513,12 @@ const Atlas = (function(){
     if(/\b(add|adding|buy|buying|get)\s+(a|an|another|a second|a third|more|my next)\b|\bsecond (car|boat|unit|property|asset|vessel|machine|rv|trailer|yacht|home|apartment)\b|(expand|grow) my fleet|what if i (add|buy|get another)/.test(s)) return _aioExpandReply(s);
     if(s.includes('pric')||/\b(rate|charge)/.test(s)) return `Your base rate is <b>${money(m.baseRate)}/${m.rateModel}</b>, tax ${m.tax}%, and ${m.deposit.mode==='full'?'guests pay in full to reserve':m.deposit.mode==='percent'?('guests pay '+m.deposit.pct+'% upfront'):'guests pay nothing upfront'}. For ${esc(S.fleet.nouns)} I'd set day/week/month tiers (your weekly + monthly discounts already live in Settings), add a delivery fee, and bump peak dates. Want me to open your money rules?`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('settings');try{Atlas.setTab('money')}catch(e){}">Set my pricing</button>`;
-    if(s.includes('idle')||s.includes('utiliz')||/\bfill\b(?!\s+(out|in)\b)/.test(s)||s.includes('slow')){ var _idle=(DATA.assets||[]).filter(function(a){return Number(a.util||0)<50;}).length; return _idle>0 ? `${_idle} of your ${S.fleet.nouns} ${_idle===1?'is':'are'} under 50% utilized. Here's the fix: a time-boxed promo on ${_idle===1?'it':'them'} plus a note to past renters, and I can build a local campaign to fill ${_idle===1?'it':'them'}.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">Draft a promo + campaign</button>` : `All your ${S.fleet.nouns} are booking well right now &mdash; want me to dream up a way to grow instead?<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">See what I dreamed up</button>`; }
+    if(s.includes('idle')||s.includes('utiliz')||/\bfill\b(?!\s+(out|in)\b)/.test(s)||s.includes('slow')){ var _idle=(DATA.assets||[]).filter(function(a){return Number(a.util||0)<50;}).length; return _idle>0 ? `${_idle} of your ${S.fleet.nouns} ${_idle===1?'is':'are'} under 50% utilized. Here's the fix: a time-boxed promo on ${_idle===1?'it':'them'} plus a note to past ${esc(_custNoun(true))}, and I can build a local campaign to fill ${_idle===1?'it':'them'}.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">Draft a promo + campaign</button>` : `All your ${S.fleet.nouns} are booking well right now &mdash; want me to dream up a way to grow instead?<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">See what I dreamed up</button>`; }
     if(/\bdream|campaign|\bads?\b|facebook|instagram|google ad|\bbrokers?\b|\bpartners?\b|contractor|general contractor|\bgcs?\b|reach out|reach more|email (\d|some|the|my|local|more|out)|(more|additional|attract|find|get|land|win|luxury|high[- ]?end|affluent|premium|repeat|steady|new) [a-z' ]{0,16}(client|customer|guest|renter|booking|charter|lead|account)|new client|\bgrow\b|expand|competiti|\bbid\b|win (contract|work|jobs)/.test(s)) return _aioDreamReply(s);
     if(s.includes('market')||s.includes('competitor')||s.includes('opportunit')||s.includes('market gap')||s.includes('local demand')) return _aioMarketReply(s);   // #H1 parity: only market-SPECIFIC intents stay canned; generic words (tip/advice/learn/idea/grow/research/improve) fall through to _aioSingle so Council-OFF answers them live like Council-ON
     if(s.includes('analytic')||s.includes('numbers')||s.includes('revenue')){ var _bkA=(_bookings()||[]).filter(_isCommitted); var _revA=_bkA.reduce(function(t,b){return t+_bkEarned(b);},0); var _idleA=(DATA.assets||[]).filter(function(a){return Number(a.util||0)<50;}).length; return `Your booked revenue right now is <b>${money(_revA)}</b> across ${_bkA.length} ${_fterm(_bkA.length===1?'book':'books')}.${_idleA>0?` Your biggest lever is filling ${_idleA} idle ${S.fleet.nouns}.`:``}`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('analytics')">Open Analytics</button>`; }
-    if(s.includes('win-back')||s.includes('text')||s.includes('draft')||s.includes('message')||s.includes('email')) return `Here's a draft: <i>"Hi {name}, it's ${esc(S.brand.name)} \u2014 we miss you! Enjoy 15% off your next ${S.fleet.noun} rental this month. Reply to book."</i> I can queue it to your past renters (you approve before it sends).`
+    if(s.includes('win-back')||s.includes('text')||s.includes('draft')||s.includes('message')||s.includes('email')) return `Here's a draft: <i>"Hi {name}, it's ${esc(S.brand.name)} \u2014 we miss you! Enjoy 15% off your next ${esc(_fterm('book'))} this month. Reply to book."</i> I can queue it to your past ${esc(_custNoun(true))} (you approve before it sends).`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">Draft + queue outreach</button>`;
     if(s.includes('stripe')||s.includes('connect')||s.includes('payment')){ _aioOffer('Opening your Stripe setup now.', function(){ closeAio(); goSettings('integrations'); }); return `Easy \u2014 go to <b>Settings \u2192 Integrations \u2192 Stripe \u2192 Connect</b>. I'll walk you through it step by step and test a $1 authorization so you know it works. Want me to open it now?<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.goSettings('integrations')">Open Stripe setup</button>`; }
     if(s.includes('help')||s.includes('what can you')) return `I can adjust your pricing &amp; money rules, fill idle ${S.fleet.nouns}, research your local ${S.fleet.noun} market for gaps, draft &amp; send customer messages, explain any number, set up automations, and connect your tools. I adapt to your ${S.fleet.noun}-rental business as we go.`;
@@ -10629,7 +10647,7 @@ const Atlas = (function(){
       var pend=books.filter(function(b){return b&&(b.status==='pending'||b.status==='request');});
       if(pend.length) out.push({ic:'cal',t:pend.length+' '+_fterm(pend.length===1?'book':'books')+' awaiting confirmation',s:'Confirm to put '+(pend.length===1?'it':'them')+' on the calendar.',nav:'bookings'});
       var idle=assets.filter(function(a){return a&&Number(a.util||0)<50;});
-      if(assets.length&&idle.length) out.push({ic:'trend',t:idle.length+' '+S.fleet.nouns+' under 50% '+_fterm('occ'),s:'Ask Atlas.io to draft a promo to fill them.',ai:1});
+      if(assets.length&&idle.length) out.push({ic:'trend',t:idle.length+' '+(idle.length===1?S.fleet.noun:S.fleet.nouns)+' under 50% '+_fterm('occ'),s:'Ask Atlas.io to draft a promo to fill them.',ai:1});
       var _svcOv=[], _svcSn=[]; assets.forEach(function(a){ var d=_serviceDue(a); if(!d||!d.tracked) return; if(d.overdue) _svcOv.push(a); else if(d.soon) _svcSn.push(a); });   // scheduler: real, plan-derived service reminders (silent unless an interval is set)
       if(_svcOv.length) out.push({ic:'clock',t:'Service due: '+_svcOv.slice(0,2).map(function(a){return a.name;}).join(', ')+(_svcOv.length>2?(' +'+(_svcOv.length-2)+' more'):''),s:_svcOv.length+' '+(_svcOv.length===1?S.fleet.noun:S.fleet.nouns)+' overdue for service.',nav:'fleet'});
       if(_svcSn.length) out.push({ic:'clock',t:'Service soon: '+_svcSn.slice(0,2).map(function(a){return a.name;}).join(', ')+(_svcSn.length>2?(' +'+(_svcSn.length-2)+' more'):''),s:_svcSn.length+' '+(_svcSn.length===1?S.fleet.noun:S.fleet.nouns)+' coming due for service.',nav:'fleet'});
@@ -11261,7 +11279,7 @@ const Atlas = (function(){
     var locs=[]; (typeof _locList==='function'?_locList():[]).forEach(function(L){ var n=(L&&L.name)||L; if(n && locs.indexOf(n)<0) locs.push(n); }); DATA.assets.forEach(function(a){ if(a.loc && locs.indexOf(a.loc)<0) locs.push(a.loc); });   // include the owner's AUTHORED locations (Settings > Locations, plan-capped) alongside ad-hoc tags, so a new asset can be grouped under a real location (e.g. a rental property)
     var _multi=_fleetSel().length>1, _pid=_fleetSel()[0];   // #129: pick which of the owner's types this asset is
     var _typeField=_multi? ('<div class="field"><label>Type</label><select class="select" id="vType" onchange="Atlas.vehTypeChange()">'+_fleetSel().map(function(id){ var t=_typeById(id); return '<option value="'+esc(id)+'">'+esc(t.label)+(id===S.fleet.id?' (main)':'')+'</option>'; }).join('')+'</select></div>') : '';
-    openModal('<div class="modal__head"><h3>'+(_multi?'Add to your fleet':('Add '+esc(S.fleet.nouns)))+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+    openModal('<div class="modal__head"><h3>'+(_multi?'Add an asset':('Add '+esc(S.fleet.nouns)))+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +_typeField
       +'<div class="field"><label>'+esc(locLbl)+' <span style="color:var(--muted);font-weight:500">&mdash; group these under (optional)</span></label><input class="input" id="vLoc" list="vLocList" placeholder="e.g. Harbor Lofts" value="'+esc(_fleetLocFilter||'')+'"><datalist id="vLocList">'+locs.map(function(l){return '<option value="'+esc(l)+'"></option>';}).join('')+'</datalist></div>'
       +'<div class="row2"><div class="field"><label>How many</label><input class="input tnum" id="vQty" type="number" min="1" value="1" oninput="Atlas.vehFormHint()"></div>'
@@ -11270,8 +11288,8 @@ const Atlas = (function(){
       +'<div class="row2"><div class="field"><label>Rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="vRate" style="width:auto;flex:1;text-align:left" value="'+_typeRate(_pid)+'"><span>/ '+S.money.rateModel+'</span></div></div>'
       +'<div class="field"><label>Status</label><select class="select" id="vStatus"><option>Available</option><option>Maintenance</option></select></div></div>'
       +'<div class="bk-lenhint" id="vHint" style="margin:0 0 6px"></div>'
-      +'<div style="font-size:12.5px;color:var(--muted);margin-bottom:14px">'+_fleetUnits()+' of '+capT+' units used on '+esc(_curTier().name)+' ('+DATA.assets.length+' '+esc(S.fleet.nouns)+').</div>'
-      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveVehicle()">Add to my '+esc(S.fleet.nouns)+'</button></div>');
+      +'<div style="font-size:12.5px;color:var(--muted);margin-bottom:14px">'+_fleetUnits()+' of '+capT+' units used on '+esc(_curTier().name)+' ('+DATA.assets.length+' '+esc(DATA.assets.length===1?S.fleet.noun:S.fleet.nouns)+').</div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveVehicle()">Add to my '+esc(_multi?'assets':S.fleet.nouns)+'</button></div>');
     vehFormHint();
   }
   function vehFormHint(){ var qty=Math.max(1,parseInt(val('vQty'))||1), start=parseInt(val('vStart'))||101, loc=(val('vLoc')||'').trim(), nw=document.getElementById('vNameWrap'), h=document.getElementById('vHint');
@@ -11894,7 +11912,7 @@ const Atlas = (function(){
       fields:[{key:'heading',label:'Heading',kind:'text'},{key:'body',label:'Body',kind:'textarea',rows:3},{key:'image',label:'Image URL',kind:'text',img:true},{key:'side',label:'Image side',kind:'select',opts:[['left','Image left'],['right','Image right']]},{key:'btnLabel',label:'Button label',kind:'text'},{key:'btnLink',label:'Button link',kind:'text'}] },
     features:{ label:'Features', icon:'FE', def:function(){ return {tone:'light', heading:'Why '+String(S.brand.name||'us'), columns:'3', items:[{title:'Easy online booking',text:'Reserve in minutes, no phone tag.'},{title:'Transparent pricing',text:'The price you see is the price you pay.'},{title:'Well-kept '+String(S.fleet.nouns||'inventory'),text:'Clean, ready and reliable every time.'}]}; },
       fields:[{key:'heading',label:'Heading',kind:'text'},{key:'columns',label:'Columns',kind:'select',opts:[['2','2 columns'],['3','3 columns'],['4','4 columns']]},{key:'items',label:'Features',kind:'list',cap:6,addLabel:'Add feature',sub:[{key:'title',label:'Title',kind:'text'},{key:'text',label:'Text',kind:'textarea'}]}] },
-    fleet:{ label:'Fleet', icon:'FL', def:function(){ return {tone:'light', heading:'Our '+String(S.fleet.nouns||'fleet'), columns:'3', showPrice:true, btnLabel:'Book'}; },
+    fleet:{ label:'Fleet', icon:'FL', def:function(){ return {tone:'light', heading:'Our '+String(S.fleet.nouns||'assets'), columns:'3', showPrice:true, btnLabel:'Book'}; },
       fields:[{key:'heading',label:'Heading',kind:'text'},{key:'columns',label:'Columns',kind:'select',opts:[['2','2 columns'],['3','3 columns'],['4','4 columns']]},{key:'showPrice',label:'Show prices',kind:'toggle'},{key:'btnLabel',label:'Button label',kind:'text'}] },
     cta:{ label:'Call to action', icon:'CTA', def:function(){ return {tone:'brand', heading:'Ready to book?', subtext:'Reserve online in minutes.', btnLabel:'Book now', btnLink:''}; },
       fields:[{key:'heading',label:'Heading',kind:'text'},{key:'subtext',label:'Subtext',kind:'textarea',rows:2},{key:'btnLabel',label:'Button label',kind:'text'},{key:'btnLink',label:'Button link',kind:'text'}] },
@@ -12525,7 +12543,7 @@ const Atlas = (function(){
       case 'features':{ var fHead=String(p.heading||'').trim(); var items=(Array.isArray(p.items)?p.items:[]).filter(function(x){ return x&&(String(x.title||'').trim()||String(x.text||'').trim()); }); if(!fHead&&!items.length) return '';
         var cols=_pgCols(p.columns); var grid=items.slice(0,6).map(function(x){ return '<div class="pg-card"><b>'+esc(String(x.title||'').trim())+'</b>'+(String(x.text||'').trim()?('<div class="muted" style="margin-top:4px">'+esc(String(x.text).trim())+'</div>'):'')+'</div>'; }).join('');
         return '<section class="pg-sec pg-features tone-'+tone+'">'+(fHead?'<h2>'+esc(fHead)+'</h2>':'')+'<div class="pg-grid cols'+cols+'">'+grid+'</div></section>'; }
-      case 'fleet':{ var flHead=String(p.heading||'').trim()||('Our '+String(S.fleet.nouns||'fleet')); var cols=_pgCols(p.columns); var showP=(p.showPrice!==false); var rm=S.money.rateModel[0];
+      case 'fleet':{ var flHead=String(p.heading||'').trim()||('Our '+String(S.fleet.nouns||'assets')); var cols=_pgCols(p.columns); var showP=(p.showPrice!==false); var rm=S.money.rateModel[0];
         var assets=(DATA.assets||[]).filter(function(a){ return a&&a.status!=='Maintenance'; }).slice(0, (parseInt(cols,10)||3)*2);
         if(!assets.length) return '<section class="pg-sec pg-fleet tone-'+tone+'"><h2>'+esc(flHead)+'</h2><div class="muted">Your published '+esc(S.fleet.nouns)+' will appear here.</div></section>';
         var grid=assets.map(function(a){ return '<div class="pg-card">'+(a.photo?('<div class="pg-gimg" style="background-image:url(\''+_cssUrl(a.photo)+'\');background-size:cover;background-position:center"></div>'):'')+'<b style="display:block;margin-top:6px">'+esc(a.name)+'</b>'+(showP?('<div class="muted">'+money(a.rate!=null?a.rate:S.money.baseRate)+'/'+rm+'</div>'):'')+_pgPvBtn(p.btnLabel||'Book')+'</div>'; }).join('');
