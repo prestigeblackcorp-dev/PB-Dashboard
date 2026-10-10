@@ -2255,8 +2255,10 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23j';
+  var APP_VERSION='2026.7.23l';
   var APP_CHANGELOG=[
+    'Multi-location + accuracy: assets can now be assigned to any location you have defined (not just free-typed), your booking site knows which location each one is at, the bookings tab reads &ldquo;Bookings&rdquo; for multi-type accounts, and Atlas always uses your current main type for AI insights and emails even after you switch it',
+    'More multi-type polish: outreach audiences, assistant tips, booking-detail labels and campaign ideas now use your own words everywhere &mdash; &ldquo;customers&rdquo; and your asset tab name instead of &ldquo;renters&rdquo; and &ldquo;Fleet,&rdquo; and the ID-verification prompt reads &ldquo;check their ID&rdquo; for every asset type',
     'Money &amp; per-type fixes from the launch audit: a 12-month lease no longer silently applies the long-term discount (it was quoting 25% off a signed lease), the onboarding security-hold now actually activates, medical &amp; AV gear no longer shows &ldquo;Engine hours,&rdquo; and lifecycle emails call an aircraft an &ldquo;aircraft&rdquo; (not &ldquo;air&rdquo;)',
     'Polish from a deep self-audit: the Unlock dialog shows your asset word (not &ldquo;undefined&rdquo;), the assistant captures &ldquo;set my headline to be X&rdquo; correctly, housing ad drafts carry a fair-housing reminder, custom asset names are hardened against hidden characters, and &ldquo;Reserve a aircraft&rdquo;-style wording now reads right',
     'Rent several kinds of things under one account? Atlas now reads right for multi-type businesses &mdash; the dashboard says &ldquo;assets&rdquo; instead of your main type, each item shows its own type&rsquo;s words (a car is &ldquo;utilized,&rdquo; a boat &ldquo;chartered&rdquo;), and counts use correct singulars (&ldquo;1 vessel,&rdquo; not &ldquo;1 vessels&rdquo;)',
@@ -2731,7 +2733,7 @@ const Atlas = (function(){
     var left='<div>';
     if(!isAuto){ left+='<div class="row2"><div class="field"><label>Send to</label><select class="select" id="ebAudience" onchange="Atlas.previewEmail()">'
       +'<option value="all">All customers ('+_audienceCount('all')+')</option>'
-      +'<option value="active">Active renters ('+_audienceCount('active')+')</option>'
+      +'<option value="active">Active customers ('+_audienceCount('active')+')</option>'
       +'<option value="past">Past customers ('+_audienceCount('past')+')</option>'
       +'<option value="repeat">Repeat customers ('+_audienceCount('repeat')+')</option>'
       +'<option value="vip">Top customers by value ('+_audienceCount('vip')+')</option>'
@@ -2817,7 +2819,7 @@ const Atlas = (function(){
     var doEmail = emailN>0;                                   // email recipients minus opt-outs
     var wantSms = (channel!=='email') && smsN>0;              // SMS only when asked AND at least one consented number exists (channel==='sms'+0 already returned above)
     if(!doEmail && !wantSms){ toast(channel==='email'?'Nothing to send':'No one to send to yet'); return; }
-    var audLabel={all:'All customers',active:'Active renters',past:'Past customers',repeat:'Repeat customers',vip:'Top customers by value',winback:'Win-back (lapsed 60+ days)',verified:'ID-verified customers'}[aud]||aud;
+    var audLabel={all:'All customers',active:'Active customers',past:'Past customers',repeat:'Repeat customers',vip:'Top customers by value',winback:'Win-back (lapsed 60+ days)',verified:'ID-verified customers'}[aud]||aud;
     // EMAIL: count + record only what truly goes out (unchanged send behavior)
     if(doEmail){
       cm.sentThisMonth+=emailN;   // plan-cap meter only -- an estimate is fine here (renews monthly); the campaign LOG below records the worker-confirmed count instead
@@ -4342,7 +4344,7 @@ const Atlas = (function(){
     if(hit) return hit[0];
     hit=_navAllowed().filter(function(n){ return n[0].indexOf(q)>=0 || (n[1]||'').toLowerCase().indexOf(q)>=0 || _navLabelFor(n).toLowerCase().indexOf(q)>=0; })[0];
     return hit?hit[0]:null; }
-  function _navLabelFor(n){ var c=_navCfg(); if(c.labels[n[0]]) return c.labels[n[0]]; return n[0]==='fleet'?cap(_adNouns()):(n[0]==='bookings'?cap(_fterm('books')):n[1]); }
+  function _navLabelFor(n){ var c=_navCfg(); if(c.labels[n[0]]) return c.labels[n[0]]; return n[0]==='fleet'?cap(_adNouns()):(n[0]==='bookings'?(_multiType()?'Bookings':cap(_fterm('books'))):n[1]); }
   function _refreshNavBadges(){ try{ var na=(DATA.assets||[]).length, nb=(DATA.bookings||[]).filter(function(b){return b.status!=='Completed'&&b.status!=='Cancelled'&&b.status!=='Voided';}).length;
     ['fleetBadge','m_fleetBadge'].forEach(function(id){ var e=document.getElementById(id); if(e)e.textContent=na; });
     ['bookBadge','m_bookBadge'].forEach(function(id){ var e=document.getElementById(id); if(e)e.textContent=nb; }); }catch(e){} }
@@ -5084,7 +5086,7 @@ const Atlas = (function(){
     openModal('<div class="modal__head"><h3>'+esc(a.name)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">'+statusChip(a.status)+(a.loc?'<span style="font-size:12.5px;color:var(--muted)">in '+esc(a.loc)+'</span>':'')+'<span style="flex:1"></span><span style="font-size:13px;color:var(--muted)">'+a.util+'% '+_ftermFor(a.type, 'occ')+'</span></div>'
       +'<div class="row2"><div class="field"><label>Name</label><input class="input" id="aName" value="'+esc(a.name)+'"'+dis+'></div>'
-      +'<div class="field"><label>'+esc(locL)+'</label><input class="input" id="aLoc" list="vLocList2" value="'+esc(a.loc||'')+'"'+dis+'><datalist id="vLocList2">'+(function(){var ls=[];DATA.assets.forEach(function(x){if(x.loc&&ls.indexOf(x.loc)<0)ls.push(x.loc);});return ls.map(function(l){return '<option value="'+esc(l)+'"></option>';}).join('');})()+'</datalist></div></div>'
+      +'<div class="field"><label>'+esc(locL)+'</label><input class="input" id="aLoc" list="vLocList2" value="'+esc(a.loc||'')+'"'+dis+'><datalist id="vLocList2">'+(function(){var ls=[];(Array.isArray(S.locations)?S.locations:[]).forEach(function(L){var nm=String((L&&(L.name||L))||'').trim();if(nm&&ls.indexOf(nm)<0)ls.push(nm);});DATA.assets.forEach(function(x){if(x.loc&&ls.indexOf(x.loc)<0)ls.push(x.loc);});return ls.map(function(l){return '<option value="'+esc(l)+'"></option>';}).join('');})()+'</datalist></div></div>'
       +'<div class="row2"><div class="field"><label>City / market <span style="color:var(--muted);font-weight:400;font-size:12px">(where this one rents)</span></label><input class="input" id="aLocCity" value="'+esc(a.locCity||'')+'" placeholder="'+esc((S.brand&&S.brand.city)||'City')+'"'+dis+'></div>'
       +'<div class="field"><label>ZIP</label><input class="input" id="aLocZip" value="'+esc(a.locZip||'')+'" placeholder="'+esc((S.brand&&S.brand.zip)||'')+'"'+dis+'></div></div>'
       +'<div class="row2"><div class="field"><label>Rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="aRate" style="width:auto;flex:1;text-align:left" value="'+a.rate+'"'+dis+'><span>/ '+S.money.rateModel+'</span></div></div>'
@@ -5280,7 +5282,7 @@ const Atlas = (function(){
   function openSignFlow(id){ var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return; var lg=_legal();
     var doc=(a.agreement&&a.agreement.docText)||lg.agreement.text;
     if(!doc){ toast('Build your rental agreement first in Settings > Contracts & Legal'); goSettings('legal'); return; }
-    var t=a.tenant||{}, who=t.name||'the renter';
+    var t=a.tenant||{}, who=t.name||('the '+_custNoun());
     if(a.agreement&&a.agreement.status==='sent'){ a.agreement.status='viewed'; a.agreement.viewedAt=Date.now(); (a.agreement.events=a.agreement.events||[]).push({e:'viewed',at:a.agreement.viewedAt}); _saveAssets(); }
     var head='<div class="modal__head"><h3>Sign: '+esc(a.name)+' rental agreement</h3>'+_xBtn()+'</div>';
     var body='<div class="modal__body">'
@@ -5635,7 +5637,7 @@ const Atlas = (function(){
         var monthlyWk=wk.rev/REVOPT_WINDOW_DAYS*30;
         out.suggestions.push({ id:'weekend', kind:'weekend',
           title:'Add a weekend uplift',
-          text:Math.round(wk.share*100)+'% of your recent '+_fterm('books')+' start on a Friday or Saturday, and your '+_adNouns()+' are running '+out.utilAvg+'% '+_fterm('util').toLowerCase()+' - renters are already choosing weekends without a price nudge. A +'+REVOPT_WEEKEND_PCT+'% weekend rate would follow that real demand.',
+          text:Math.round(wk.share*100)+'% of your recent '+_fterm('books')+' start on a Friday or Saturday, and your '+_adNouns()+' are running '+out.utilAvg+'% '+_fterm('util').toLowerCase()+' - '+esc(_custNoun(true))+' are already choosing weekends without a price nudge. A +'+REVOPT_WEEKEND_PCT+'% weekend rate would follow that real demand.',
           why:Math.round(wk.share*100)+'% of '+win.length+' bookings in the last '+REVOPT_WINDOW_DAYS+' days started Fri/Sat; '+_adNouns()+' '+_fterm('util').toLowerCase()+' '+out.utilAvg+'% is at/above the 40% healthy floor.',
           impact:Math.round(monthlyWk*REVOPT_WEEKEND_PCT/100) }); } }
     // ---- Rule 2: high-demand assets (util >= 75%) -> raise the rate ~10% ----
@@ -5648,7 +5650,7 @@ const Atlas = (function(){
         text:'Raise the '+a.name+' rate about '+REVOPT_RAISE_PCT+'% ('+money(a.rate)+' to '+money(Math.round((Number(a.rate)||0)*(1+REVOPT_RAISE_PCT/100)))+') - it is booked '+a.util+'% of the time, close to as much as it can be.',
         why:a.name+' is at '+a.util+'% '+_fterm('util').toLowerCase()+', at/above the '+REVOPT_HIGH_UTIL+'% demand floor.',
         impact:Math.round(monthlyRev*REVOPT_RAISE_PCT/100) }); });
-    if(hot.length>3) out.suggestions.push({ id:'raise:more', kind:'info', title:(hot.length-3)+' more '+S.fleet.nouns+' also over '+REVOPT_HIGH_UTIL+'%', text:'Review the rest in your Fleet tab.', why:'', impact:0 });
+    if(hot.length>3) out.suggestions.push({ id:'raise:more', kind:'info', title:(hot.length-3)+' more '+S.fleet.nouns+' also over '+REVOPT_HIGH_UTIL+'%', text:'Review the rest in your '+cap(_adNouns())+' tab.', why:'', impact:0 });
     // ---- Rule 3: idle asset / low util -> a last-minute discount to fill otherwise-empty days ----
     var idle=assets.filter(function(a){ return a.status==='Available' && (Number(a.util)||0)<=REVOPT_LOW_UTIL; }).sort(function(x,y){ return (Number(x.util)||0)-(Number(y.util)||0); });
     if(idle.length){ var w=idle[0];
@@ -6109,7 +6111,7 @@ const Atlas = (function(){
         var ip=!v&&!rj&&b.portal&&b.portal.idv&&b.portal.idv.status==='processing';   /* K3: the renter started Stripe Identity and it is processing -- distinct from "never started" */
         var idvOn=!!(S.idv&&S.idv.enabled&&(!S.idv.provider||S.idv.provider==='stripe'));   /* automatic Stripe Identity is turned on for this tenant */
         var chipCls=v?'chip--ok':rj?'chip--danger':'chip--warn', chipTxt=v?'ID verified':rj?'ID rejected':ip?'ID check in progress':'ID not verified';
-        var sub=v?('Verified '+_stamp(b.idVerifiedAt)):rj?('Rejected '+_stamp(b.idRejectedAt)+' \u2014 renter must re-submit'):ip?'Renter started Stripe Identity \u2014 waiting on the result':'Check the renter\u2019s license before pickup';
+        var sub=v?('Verified '+_stamp(b.idVerifiedAt)):rj?('Rejected '+_stamp(b.idRejectedAt)+' \u2014 '+esc(_custNoun())+' must re-submit'):ip?(esc(cap(_custNoun()))+' started Stripe Identity \u2014 waiting on the result'):('Check the '+esc(_custNoun())+'\u2019s ID before pickup');
         var nudge=(idvOn&&!v&&!rj)?('<button class="btn btn--ghost btn--sm" onclick="Atlas.bkIdvNudge(\''+b.id+'\')">'+(ip?'Resend verify link':'Ask to verify')+'</button>'):'';   /* K2: one-click email the renter their portal verify link */
         var btns=v?('<button class="btn btn--ghost btn--sm" onclick="Atlas.bkClearVerify(\''+b.id+'\')">Undo</button>')
           :rj?(nudge+'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkToggleVerify(\''+b.id+'\')">Mark verified</button><button class="btn btn--ghost btn--sm" onclick="Atlas.bkClearVerify(\''+b.id+'\')">Clear</button>')
@@ -6518,7 +6520,7 @@ const Atlas = (function(){
   function bkIdvNudge(id){ if(!_guard('bookEdit','Verifying ID'))return; if(!ATLAS_BACKEND||!_apiCsrf){ toast('Connect your Atlas backend to send a verify link.'); return; }
     toast('Sending verify link\u2026');
     _api('/api/bookings/'+encodeURIComponent(id)+'/idv-nudge',{method:'POST',body:{}}).then(function(res){ var j=res.json||{};
-      if(j.ok&&j.sent){ toast('Verify link emailed to the renter'); }
+      if(j.ok&&j.sent){ toast('Verify link emailed to the '+_custNoun()); }
       else if(j.already==='verified'){ toast('This renter is already verified'); }
       else if(j.reason==='no_mailer'){ toast(j.message||'Connect an email sender first, or copy the portal link and send it yourself.'); }
       else toast(j.error||j.message||'Could not send the verify link'); }).catch(function(){ toast('Network error'); }); }
@@ -6721,7 +6723,7 @@ const Atlas = (function(){
     b.drivers.splice(ix,1);
     if(+d.fee>0){ b.charges=_charges(b).filter(function(c){ return !(c.kind==='driver'&&!c.paidAt&&c.label==='Additional driver: '+d.name&&c.amount===_r2(d.fee)); }); }   // pull the matching UNPAID driver fee back off
     _upsertBooking(b); _logEvent('booking','Authorized driver removed on '+b.id,{booking:b.id}); save(); openBooking(id); toast('Driver removed'); }
-  function _insHtml(b){ var n=b.insurance; if(!n||(!n.carrier&&!n.policy&&!n.waiverAccepted)) return '<div class="bk-lenhint" style="margin:0">Record the renter\'s own coverage, or that they accepted your damage waiver.</div>';
+  function _insHtml(b){ var n=b.insurance; if(!n||(!n.carrier&&!n.policy&&!n.waiverAccepted)) return '<div class="bk-lenhint" style="margin:0">Record the '+esc(_custNoun())+'\'s own coverage, or that they accepted your damage waiver.</div>';
     var bits=[]; if(n.carrier) bits.push('Carrier <b>'+esc(n.carrier)+'</b>'); if(n.policy) bits.push('Policy '+esc(n.policy)); if(n.exp) bits.push('exp '+esc(n.exp)); if(n.waiverAccepted) bits.push('<span style="color:var(--brand)">waiver accepted</span>');
     return '<div style="padding:9px 0;border-top:1px solid var(--line-2);font-size:12.5px;color:var(--ink)">'+bits.join(' &middot; ')+(n.at?('<div style="font-size:11.5px;color:var(--muted)">'+_stamp(n.at)+'</div>'):'')+'</div>'; }
   function bkInsurance(id){ if(!_guard('bookEdit'))return; var b=_getBooking(id); if(!b)return; var n=b.insurance||{};
@@ -9102,7 +9104,7 @@ const Atlas = (function(){
     if(/pric|rate|charg/.test(s)) return {a:'Weigh the downside first &mdash; don\u2019t undercut your brand; anchor high and discount deliberately.', b:'Set clear day / week / month tiers, add a delivery fee, and surcharge peak dates.', c:'Against comparable local rentals, your rates look like they have room to move up.'};
     if(/grow|expand|more\b|scale|market|client/.test(s)) return {a:'Grow where demand is already proven before you add fixed cost &mdash; protect your cash.', b:'A concrete path: fill idle days first, then add one asset, then a second location.', c:'Your local market shows the clearest gap in mid-tier demand right now.'};
     if(/cancel|refund|deposit|damage|risk|late/.test(s)) return {a:'Protect yourself: a clear written policy plus a deposit hold beats chasing money later.', b:'Put the policy in the agreement, the confirmation email, and the portal &mdash; everywhere.', c:'Owners with a stated, consistent policy see materially fewer disputes.'};
-    if(/idle|fill|slow|util/.test(s)) return {a:'A short, time-boxed promo protects your rate better than a permanent price cut.', b:'Discount the specific idle units, notify past renters, and run a small local campaign.', c:'Weekday gaps are your softest demand &mdash; that\u2019s where a nudge pays off most.'};
+    if(/idle|fill|slow|util/.test(s)) return {a:'A short, time-boxed promo protects your rate better than a permanent price cut.', b:'Discount the specific idle '+((S.fleet&&S.fleet.nouns)||'assets')+', notify past '+_custNoun(true)+', and run a small local campaign.', c:'Weekday gaps are your softest demand &mdash; that\u2019s where a nudge pays off most.'};
     return {a:'I\u2019d start with the lowest-risk, highest-certainty move.', b:'Here\u2019s the fastest practical path to a result.', c:'Cross-checked against your own numbers and market.'};
   }
   // A compact, safe grounding of the owner's business for the live models (never other tenants' data).
@@ -9887,7 +9889,7 @@ const Atlas = (function(){
       undo:function(snap){ if(!snap||!snap.bkId) return; var b=_getBooking(snap.bkId); if(!b) return; b.status=snap.prev||'Confirmed'; b._t=Date.now(); _upsertBooking(b); save(); try{ renderBookings(); renderOverview(); }catch(e){} }
     },
     'booking.create':{
-      params:['customer','asset','start','end'], hint:function(){ return 'customer is the renter name. asset is one of your '+esc(S.fleet.nouns)+'. start and end are calendar dates (YYYY-MM-DD). Uses your normal pricing.'; },
+      params:['customer','asset','start','end'], hint:function(){ return 'customer is the '+esc(_custNoun())+' name. asset is one of your '+esc(S.fleet.nouns)+'. start and end are calendar dates (YYYY-MM-DD). Uses your normal pricing.'; },
       cap:'bookEdit', money:true, tier:'confirm',
       label:function(p){ var a=_aioAssetByName(p.asset); return 'Create a booking for '+esc(String(p.customer||'').trim())+' \u2014 '+esc(a?a.name:String(p.asset||''))+', '+esc(_aioNormDate(p.start)||String(p.start||''))+(p.end?(' to '+esc(_aioNormDate(p.end)||String(p.end))):''); },
       summary:function(p){ var a=_aioAssetByName(p.asset), st=_aioDateMs(p.start), en=p.end?_aioDateMs(p.end):NaN; if(isNaN(en)||en<=st) en=st+_periodMs(); var per=isNaN(st)?0:_derivePeriods(st,en); var q=null; try{ q=calcQuote(a?_moneyFor(a.name):S.money,{periods:per,addons:0,extras:[],discount:{type:'none',value:0},startsAt:st}); }catch(e){} return {field:'New booking', before:'(none)', after:(a?a.name:String(p.asset||''))+' \u00b7 '+per+' '+_perUnit()+(q?(' \u00b7 '+money(q.total)):'')}; },
@@ -10245,7 +10247,7 @@ const Atlas = (function(){
       {t:'Sell a protection add-on', d:'A per-rental protection or damage-waiver add-on lifts revenue 8-15% per booking and cuts disputes. Most owners leave it on the table.'},
       {t:'Capture longer stays', d:'Weekly and monthly rates pull higher-value renters competitors under-list. Even a small weekly discount raises revenue per asset.'},
       {t:'Ask for the review now', d:'Request the review the moment a rental ends, while it is fresh. Each review compounds your conversion on the next booking.'},
-      {t:'Fill anything under 50% used', d:'Low utilization is a pricing or marketing gap, not bad luck. A time-boxed promo plus a note to past renters is the fastest fix.'},
+      {t:'Fill anything under 50% used', d:'Low utilization is a pricing or marketing gap, not bad luck. A time-boxed promo plus a note to past customers is the fastest fix.'},
       {t:'Going direct keeps 15-30%', d:'Owners with their own branded booking site keep the 15-30% marketplaces skim. Your member portal and website is how you take that back.'},
       {t:'One referral channel compounds', d:'A single steady referral partner (planner, dealer, related local business) with a simple split quietly compounds bookings as you scale.'},
       {t:'Deposits + verification cut risk', d:'Refundable holds and quick ID verification reduce damage and no-shows without scaring good renters. Kept light, the friction pays for itself.'},
@@ -10293,7 +10295,7 @@ const Atlas = (function(){
     cars:{ campaigns:[
         {ch:'instagram',h:'Rent [assets] this weekend',aud:'Luxury + events, 25-55, within 40 mi of [city]',bud:'$15/day'},
         {ch:'google',h:'exotic car rental [city]',aud:'High-intent local search "near me"',bud:'$25/day'},
-        {ch:'facebook',h:'Weekend exotics -- book direct',aud:'Retarget site visitors + a lookalike of past renters',bud:'$20/day'}],
+        {ch:'facebook',h:'Weekend exotics -- book direct',aud:'Retarget site visitors + a lookalike of past customers',bud:'$20/day'}],
       partners:[
         {who:'Hotel concierges + luxury short-term rentals',why:'Their guests want a standout car for the weekend -- be their go-to.',reach:'instagram'},
         {who:'Event, wedding + photo-shoot planners',why:'Grand exits and shoot cars are a recurring, high-value need.',reach:'email'},
@@ -10388,7 +10390,7 @@ const Atlas = (function(){
   DREAM_BOOK._def={ campaigns:[
       {ch:'instagram',h:'Rent [assets] near [city]',aud:'Local + interest-based, within 40 mi',bud:'$15/day'},
       {ch:'google',h:'[asset] rental [city]',aud:'High-intent local search',bud:'$20/day'},
-      {ch:'facebook',h:'Book direct with us',aud:'Retarget site visitors + lookalikes of past renters',bud:'$18/day'}],
+      {ch:'facebook',h:'Book direct with us',aud:'Retarget site visitors + lookalikes of past customers',bud:'$18/day'}],
     partners:[
       {who:'Local businesses that serve your customers',why:'A steady referral partner compounds bookings quietly as you scale.',reach:'email'},
       {who:'Event + community organizers',why:'Recurring demand you can be the go-to supplier for.',reach:'instagram'}] };
@@ -10567,7 +10569,7 @@ const Atlas = (function(){
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('settings');try{Atlas.setTab('money')}catch(e){}">Set deposit rules</button>`; }
   function _aioCancelReply(s){ return `Cancellations come down to your policy &mdash; and you have not set one yet. Most ${esc(S.fleet.noun)} owners keep the deposit (or 50%) if a guest cancels within a few days of the ${esc(_fterm('book'))}. Want me to set a clear cancellation policy, put it in your agreement + confirmation emails, and draft the guest message?`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('settings')">Set a cancellation policy</button>`; }
-  function _aioIncidentReply(s){ return `Deep breath &mdash; let's protect you. First <b>document it</b>: dated photos + the signed condition report. Then I can help you (1) note it on the ${esc(_fterm('book'))}, (2) <b>keep the security deposit</b> or charge the difference, and (3) draft the message to the renter and your insurer. Don't release the deposit until it's resolved.`
+  function _aioIncidentReply(s){ return `Deep breath &mdash; let's protect you. First <b>document it</b>: dated photos + the signed condition report. Then I can help you (1) note it on the ${esc(_fterm('book'))}, (2) <b>keep the security deposit</b> or charge the difference, and (3) draft the message to the ${esc(_custNoun())} and your insurer. Don't release the deposit until it's resolved.`
       +`<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.closeAio();Atlas.go('bookings')">Open the ${esc(_fterm('book'))}</button>`; }
   function _aioExpandReply(s){ var m=S.money, model=m.rateModel, one=esc(S.fleet.noun), many=esc(S.fleet.nouns);
     var per=(model==='day'?18:model==='week'?2.6:model==='hour'?40:model==='month'?1:3);
@@ -11515,7 +11517,7 @@ const Atlas = (function(){
   function _bookingLink(){ return 'https://atlasrental.io/api/book/'+_bookingSlug(); }   // served by the worker via the existing /api/* route (no extra DNS needed)
   function _publicSiteAssets(){ return (DATA.assets||[]).filter(function(a){return (a.status||'')!=='Maintenance';}).map(function(a){
     var m=(typeof _moneyFor==='function')?_moneyFor(a.name):null; var rate=(m&&m.baseRate)||a.rate||S.money.baseRate;
-    return { id:a.id||undefined, name:a.name, rate:Number(rate)||0, type:a.type||'', photo:a.photo||'', desc:a.desc||'', minLen:Number(a.minLen)||0, maxLen:Number(a.maxLen)||0, blackouts:Array.isArray(a.blackouts)?a.blackouts:[], qty:Math.max(1,parseInt(a.qty,10)||1), extraIds:Array.isArray(a.extraIds)?a.extraIds:undefined, weeklyRate:Number(a.weeklyRate)||0, deposit:Number(a.deposit)||0 }; }); }   // #361: carry the STABLE asset id into the published snapshot so the worker's double-book guard keys on it (survives a rename) with the name as fallback   // X3 FIX: carry qty into the published snapshot -- the worker availability guards read qty from pubSite.assets, so without this every asset stayed capped at 1 unit no matter what the owner set. extraIds too, so per-asset extras filtering is faithful on the live site.
+    return { id:a.id||undefined, name:a.name, rate:Number(rate)||0, type:a.type||'', loc:String(a.loc||''), photo:a.photo||'', desc:a.desc||'', minLen:Number(a.minLen)||0, maxLen:Number(a.maxLen)||0, blackouts:Array.isArray(a.blackouts)?a.blackouts:[], qty:Math.max(1,parseInt(a.qty,10)||1), extraIds:Array.isArray(a.extraIds)?a.extraIds:undefined, weeklyRate:Number(a.weeklyRate)||0, deposit:Number(a.deposit)||0 }; }); }   // loc: per-asset location/branch -> lets the public booking site filter inventory by the customer's chosen location (served at worker public config; form filters additively)   // #361: carry the STABLE asset id into the published snapshot so the worker's double-book guard keys on it (survives a rename) with the name as fallback   // X3 FIX: carry qty into the published snapshot -- the worker availability guards read qty from pubSite.assets, so without this every asset stayed capped at 1 unit no matter what the owner set. extraIds too, so per-asset extras filtering is faithful on the live site.
   function _publicSiteConfig(){ var wk=_webKeys(), w=_web(); return { unit:S.money.rateModel||'day', noun:S.fleet.noun, tax:Number(S.money.tax)||0, currency:(S.money.currency||'usd'),
     collectPhone:true, depositHold:!!(S.money.depositHold), terms:((S.legal&&S.legal.cancelPolicy)|| ''),
     showFleet:w.showFleet!==false, showAbout:w.showAbout!==false, showReviews:w.showReviews!==false, showContact:w.showContact!==false,   // P0-1: owner section toggles now reach the served page (worker _sec() hides a section only on explicit false)
@@ -12307,8 +12309,8 @@ const Atlas = (function(){
       }).join('');
       _fleetEditor='<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--line-2)">'
         +'<label style="display:block;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin-bottom:2px">Fleet &amp; pricing (live)</label>'
-        +'<div class="desc" style="margin:0 0 2px">Edit a price here and it updates the live '+esc(S.fleet.noun||'asset')+' AND your published site instantly. Full editing is in the Fleet tab.</div>'
-        +(_rows||'<div class="desc">No '+esc(S.fleet.nouns||'assets')+' yet -- add them in the Fleet tab.</div>')
+        +'<div class="desc" style="margin:0 0 2px">Edit a price here and it updates the live '+esc(S.fleet.noun||'asset')+' AND your published site instantly. Full editing is in the '+cap(_adNouns())+' tab.</div>'
+        +(_rows||'<div class="desc">No '+esc(S.fleet.nouns||'assets')+' yet -- add them in the '+cap(_adNouns())+' tab.</div>')
         +'</div>';
     }
     return '<div data-sid="'+esc(sec.id)+'" ondragover="Atlas.webSecDragOver(event,\''+esc(sec.id)+'\')" ondragleave="Atlas.webSecDragLeave(event,\''+esc(sec.id)+'\')" ondrop="Atlas.webSecDrop(event,\''+esc(sec.id)+'\')" style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">'
