@@ -5177,5 +5177,24 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/const _DOM_DELIVERED = "status IN \('registered','canceling','canceled','renew_failed','renew_pending'\) AND tenant_id != '__platform_test__'";/.test(_WORKER_SRC), 'money-A/C: COGS includes canceled (delivered) + excludes the platform test-buy tenant (no live-P&L leak)');
 }
 
+// ==== 13AE: tenant AI quality -- asset-generic (no "fleet"), reads-between-lines + confirm-if-unsure, cost-effective growth, planning, aviation ====
+{
+  const _ATLAS_SRC13AE = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRC13AE = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // --- the tenant AI chat persona (AIO_SAFETY_PROMPT) ---
+  ok(/Always call what they rent their ASSETS[\s\S]{0,120}NEVER "fleet", which only fits vehicles\./.test(_WORKER_SRC), 'AI: the persona is asset-generic and explicitly forbids the word "fleet"');
+  ok(/aircraft \/ jets \/ helicopters/.test(_WORKER_SRC) && /tools & equipment/.test(_WORKER_SRC), 'AI: the asset-type list covers aviation (jets/helicopters) + tools, not just cars/property');
+  ok(/GROW their business COST-EFFECTIVELY/.test(_WORKER_SRC) && /lowest-cost, highest-ROI/.test(_WORKER_SRC) && /PROFITABLE business, not just a bigger one/.test(_WORKER_SRC), 'AI: growth is framed cost-effectively (lowest-cost/highest-ROI, profit not just size)');
+  ok(/READ BETWEEN THE LINES:/.test(_WORKER_SRC) && /ask ONE brief clarifying question before answering rather than guessing/.test(_WORKER_SRC), 'AI: reads between the lines + asks ONE clarifying question when genuinely unsure (confirm-if-not-sure)');
+  ok(/lay out a concrete, prioritized PLAN they can act on/.test(_WORKER_SRC) && /how THIS particular business actually runs/.test(_WORKER_SRC), 'AI: once it understands the goal + how the business runs, it builds a concrete sequenced plan');
+  // --- the deterministic "dreaming" output: asset-generic + accurate aviation partner suggestions ---
+  ok(/Your assets are ready -- now fill the calendar/.test(_WORKER_SRC) && !/Your fleet is ready/.test(_WORKER_SRC), 'dreaming: the ready-state insight says "assets", not "fleet"');
+  ok(/helicopter\|\\bheli\\b\|\\bjet\\b\|aircraft[\s\S]{0,80}Luxury concierges, corporate travel desks, FBOs, and charter brokers/.test(_WORKER_SRC), 'dreaming: _partnerChannels has an AVIATION branch (jets/helicopters) distinct from the generic default -- and it runs AFTER the watercraft branch so "jet ski" stays marine');
+  // --- client UI: static "fleet" labels replaced with "assets" (dynamic labels already use the per-asset noun S.fleet.nouns) ---
+  ok(/<p id="greetSub">Here's how your assets are doing today\.<\/p>/.test(_ATLAS_SRC13AE) && /<h2 style="font-size:22px" id="fleetH">Your assets<\/h2>/.test(_ATLAS_SRC13AE), 'UI: the Overview greeting + the assets heading say "assets", not "fleet" (static fallbacks)');
+  ok(/\['fleet','Assets'\]/.test(_ATLAS_SRC13AE), 'UI: the Assets permissions/nav module label is "Assets", not "Fleet & assets"');
+  ok(_ATLAS_SRC13AE === _INDEX_SRC13AE, 'AI-UX: atlas.html and index.html remain byte-identical');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
