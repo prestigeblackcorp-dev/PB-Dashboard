@@ -2256,7 +2256,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23z';
+  var APP_VERSION='2026.7.23aa';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -5513,7 +5513,7 @@ const Atlas = (function(){
   function _offlineCollectedCharges(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+((c&&c.paidAt&&!c.paidOnline)?_r2(c.amount||0):0); },0); }
   // Tax embedded in a gross taxable collected charge (charge.amount is tax-inclusive so it shares the revenue basis). Threads
   // payment-widget + owner charge tax into the tax CSV, accounting CSV + reports, so a payment widget moves EVERY number.
-  function _chargeTax(c){ var t=(S.money.tax||0)/100; if(!c||!c.paidAt||!c.taxable||t<=0)return 0; return Math.round((c.amount||0)*t/(1+t)); }
+  function _chargeTax(c){ var t=(S.money.tax||0)/100; if(!c||!c.paidAt||!c.taxable||t<=0)return 0; return _r2((c.amount||0)*t/(1+t)); }   // audit c5 [16]: round the embedded sales tax to the CENT (amounts are dollars) -- Math.round() rounded to whole DOLLARS, mis-stating collected tax on the Tax CSV / KPIs by up to ~$0.50 per taxable charge
   function _collectedChargeTax(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+_chargeTax(c); },0); }
   // Realized revenue for a committed booking = the rental total (accrual) + any add-on charges collected. Used by every
   // REVENUE/INCOME rollup (Overview KPI, Analytics, Reports, source split, drill-downs, tax/QuickBooks) so they all tie out.
@@ -6430,7 +6430,7 @@ const Atlas = (function(){
     var paidCh=allCh.filter(function(c){ return c&&c.paidAt; });
     payRows+=paidCh.map(function(c){ return '<tr><td>'+when(c.paidAt)+'</td><td>'+E(c.label||(c.kind||'Charge'))+'</td><td>'+(c.paidOnline?'Card':'Manual')+'</td><td class="r">'+mny(c.amount)+'</td></tr>'; }).join('');
     if(!payRows) payRows='<tr><td colspan="4" class="muted">No payment records on file.</td></tr>';
-    var _paidSum=0; if(p.reservePaidAt) _paidSum+=_paidAmt(b,['deposit','reserve'],q.dueNow!=null?q.dueNow:(q.deposit||0)); if(p.balancePaidAt) _paidSum+=_paidAmt(b,['balance'],_r2((Number(q.total)||0)-(q.dueNow!=null?Number(q.dueNow)||0:0))); if(p.depositPaidAt) _paidSum+=_paidAmt(b,['security'],(b.hold&&b.hold.amount)||0); paidCh.forEach(function(c){ _paidSum+=_r2(Number(c.amount)||0); }); _paidSum=_r2(_paidSum);   // Wave3 HIGH: Total received MUST be the sum of payments actually collected (itemized above), never b.revCents -- the server sets revCents to the accrual estimate (=full quote total) for a committed-but-never-paid booking, a false 'money received' claim on a card-network dispute doc
+    var _paidSum=0; if(p.reservePaidAt) _paidSum+=_paidAmt(b,['deposit','reserve'],q.dueNow!=null?q.dueNow:(q.deposit||0)); if(p.balancePaidAt) _paidSum+=_paidAmt(b,['balance'],_r2((Number(q.total)||0)-(q.dueNow!=null?Number(q.dueNow)||0:0))); if(p.depositPaidAt) _paidSum+=_paidAmt(b,['security'],(b.hold&&b.hold.amount)||0); paidCh.forEach(function(c){ if(p.depositPaidAt && /deposit captured/i.test(c.label||'')) return; _paidSum+=_r2(Number(c.amount)||0); }); _paidSum=_r2(_paidSum);   // audit c5 [9]: a charge-mode captured deposit is already counted via the security slot (depositPaidAt) -- skip the reclassifying "Deposit captured" charge so Total received on the chargeback evidence doc isn't double-counted   // Wave3 HIGH: Total received MUST be the sum of payments actually collected (itemized above), never b.revCents -- the server sets revCents to the accrual estimate (=full quote total) for a committed-but-never-paid booking, a false 'money received' claim on a card-network dispute doc
     var totalStr=mny(_paidSum)+((b.revCents!=null && Math.abs(_paidSum-_r2((Number(b.revCents)||0)/100))<0.01)?' <span class="muted">(reconciled)</span>':'');   // assert a processor tie-out only when the collected sum equals the server-reconciled revenue
     var exts=_bkActiveExt(b)||[];
     var extRows=exts.length?exts.map(function(x,i){
@@ -6483,7 +6483,7 @@ const Atlas = (function(){
     var m0=function(n){ return _moneyBase(_r2(Number(n)||0)); };
     var payAt=[]; if(p.reservePaidAt)payAt.push(p.reservePaidAt); if(p.balancePaidAt)payAt.push(p.balancePaidAt); if(p.depositPaidAt)payAt.push(p.depositPaidAt);
     _charges(b).forEach(function(c){ if(c&&c.paidAt)payAt.push(c.paidAt); }); payAt.sort(function(a,c){return a-c;});
-    var paidSum=0; if(p.reservePaidAt)paidSum+=_paidAmt(b,['deposit','reserve'],q.dueNow!=null?q.dueNow:(q.deposit||0)); if(p.balancePaidAt)paidSum+=_paidAmt(b,['balance'],_r2((Number(q.total)||0)-(q.dueNow!=null?Number(q.dueNow)||0:0))); if(p.depositPaidAt)paidSum+=_paidAmt(b,['security'],(b.hold&&b.hold.amount)||0); _charges(b).forEach(function(c){ if(c&&c.paidAt)paidSum+=_r2(Number(c.amount)||0); }); paidSum=_r2(paidSum);
+    var paidSum=0; if(p.reservePaidAt)paidSum+=_paidAmt(b,['deposit','reserve'],q.dueNow!=null?q.dueNow:(q.deposit||0)); if(p.balancePaidAt)paidSum+=_paidAmt(b,['balance'],_r2((Number(q.total)||0)-(q.dueNow!=null?Number(q.dueNow)||0:0))); if(p.depositPaidAt)paidSum+=_paidAmt(b,['security'],(b.hold&&b.hold.amount)||0); _charges(b).forEach(function(c){ if(!(c&&c.paidAt))return; if(p.depositPaidAt && /deposit captured/i.test(c.label||'')) return; paidSum+=_r2(Number(c.amount)||0); }); paidSum=_r2(paidSum);   // audit c5 [9]: skip the reclassifying "Deposit captured" charge when the security slot already counted it (no double-count in the rebuttal letter's Total received)
     var nPhoto=(_condMedia(b)||[]).length, exts=(_bkActiveExt(b)||[]).filter(function(x){return x.signedAt;});
     var L=[]; L.push(biz); L.push(_stamp(Date.now())); L.push('');
     L.push('Re: Response to Disputed Transaction - Reference '+(b.id||'')); L.push('');
@@ -6525,6 +6525,7 @@ const Atlas = (function(){
   function doCancel(id){ var b=_getBooking(id); if(!b)return; var sel=document.querySelector('input[name=cxfee]:checked'), v=sel?sel.value:'0';
     var fee=(v==='custom')?_r2(Math.max(0,parseFloat(val('cxCustom'))||0)):_r2(parseFloat(v)||0);
     b.status='Cancelled'; b.cancelledAt=Date.now(); b.cancelFee=fee;
+    if(b.hold&&b.hold.status==='authorized'){ b.hold.status='released'; b.hold.releasedAt=Date.now(); }   // audit c5 [12]: the cancel full-refund RELEASES the deposit hold server-side -> reflect it locally so the "Deposits held" KPI + drill stop counting a released hold (was left 'authorized' client-side, overstating held deposits). Void intentionally KEEPS the hold (its modal: capture/release after), so only cancel releases here.
     if(fee>0) _charges(b).push({id:_chId(), label:'Cancellation fee', amount:fee, at:Date.now(), paidAt:Date.now()});   // kept from money already collected -> shows as retained revenue (server books it as revenue_cents=keepCents)
     _upsertBooking(b); _logEvent('booking','Booking '+b.id+' cancelled'+(fee?(' -- kept '+money(fee)):' (full refund)'),{booking:b.id}); save(); closeModal();
     renderOverview(); renderBookings(); renderCustomers(); var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled'&&x.status!=='Voided';}).length;   // fix: refresh Customers panel live
@@ -13241,7 +13242,7 @@ const Atlas = (function(){
   function _claimEstimate(b){ return _incidents(b).reduce(function(s,x){ return s+(x.cost||0); },0); }
   function _claimRecovered(b){
     var dep=(b.hold&&b.hold.status==='captured')?(b.hold.captured||b.hold.amount||0):0;
-    var chg=_charges(b).filter(function(c){ return c.paidAt && /incident|damage|deposit captured|cleaning|fuel/i.test(c.label||''); }).reduce(function(s,c){ return s+(c.amount||0); },0);
+    var chg=_charges(b).filter(function(c){ return c.paidAt && /incident|damage|cleaning|fuel/i.test(c.label||'') && !/deposit captured/i.test(c.label||''); }).reduce(function(s,c){ return s+(c.amount||0); },0);   // audit c5 [8]: exclude the auto-generated "Deposit captured" charge -- the captured deposit is already counted via `dep` (b.hold.captured), so counting the charge too double-counted recovery in the insurer claim packet (overstated "Recovered", understated "Net still outstanding").
     return { deposit:dep, charged:chg, total:dep+chg };
   }
   function _claimHtml(b){
