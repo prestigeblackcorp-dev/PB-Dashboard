@@ -2257,7 +2257,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23ap';
+  var APP_VERSION='2026.7.23aq';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -6524,9 +6524,13 @@ const Atlas = (function(){
     var _rnr=!!(S.money&&S.money.reserveNonRefundable)&&dep>0;   // G13: owner set the reserve non-refundable -> default to KEEP the deposit (owner can still pick a full refund for this one)
     var note=_rnr?('Your policy keeps the '+money(dep)+' deposit on a cancellation &mdash; choose a full refund below if you are waiving it this time.'):(late?('This is within '+win+'h of the '+esc(_fterm('book'))+' &mdash; your policy suggests keeping a fee.'):('Plenty of notice &mdash; a full refund is typical.'));
     var rr=function(v,lbl,ck){ return '<label style="display:flex;align-items:center;gap:9px;padding:9px 0;font-size:13.5px;color:var(--ink);border-top:1px solid var(--line-2)"><input type="radio" name="cxfee" value="'+v+'"'+(ck?' checked':'')+'> '+lbl+'</label>'; };
+    var _polSnap=(b.sigTrail&&b.sigTrail.cancelPolicy!=null)?String(b.sigTrail.cancelPolicy):null;   // c15[13]: the cancellation policy SNAPSHOTTED into the signature at signing (worker /sign) -- what the customer actually agreed to. null => no snapshot (unsigned, or signed before this shipped, or in-app sign which does not yet snapshot the policy).
+    var _polSignedTs=(b.sigTrail&&b.sigTrail.signedAt)||(b.portal&&b.portal.signedAt)||0;
+    var _polShow=(_polSnap!=null)?_polSnap:((S.legal&&S.legal.cancelPolicy)||'');
+    var _polLbl=(_polSnap!=null)?('Cancellation policy '+esc(b.cust||'the customer')+' agreed to at signing'+(_polSignedTs?(' ('+esc(new Date(_polSignedTs).toLocaleDateString())+')'):'')):(_polSignedTs?'Your current cancellation policy (signed before policy snapshots -- may not match what was agreed)':'Your current cancellation policy (not yet signed)');
     openModal('<div class="modal__head"><h3>Cancel '+b.id+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="bk-lenhint" style="margin:0 0 12px">'+note+'</div>'
-      +((S.legal&&S.legal.cancelPolicy)?('<div style="margin:0 0 12px;border-left:3px solid var(--brand);background:var(--surface-2);border-radius:6px;padding:8px 11px"><b style="color:var(--ink);font-size:12px">Your disclosed cancellation policy</b><div style="font-size:12px;color:var(--body);margin-top:3px;white-space:pre-wrap;max-height:120px;overflow:auto">'+esc(S.legal.cancelPolicy)+'</div></div>'):'')   // G16 (PB-parity): show the policy the customer actually agreed to, right where the owner decides the fee to keep -- so the retained amount lines up with what was disclosed
+      +(_polShow?('<div style="margin:0 0 12px;border-left:3px solid var(--brand);background:var(--surface-2);border-radius:6px;padding:8px 11px"><b style="color:var(--ink);font-size:12px">'+_polLbl+'</b><div style="font-size:12px;color:var(--body);margin-top:3px;white-space:pre-wrap;max-height:120px;overflow:auto">'+esc(_polShow)+'</div></div>'):'')   // c15[13] (was G16): show the policy the customer ACTUALLY agreed to (the signing snapshot) with an honest label; fall back to the live policy only when there is no snapshot, and label it as CURRENT (never as 'agreed') so the owner is not misled about what was disclosed
       +rr('0','No fee &mdash; full refund',!late&&!_rnr)
       +(dep>0?rr(dep,'Keep the deposit ('+money(dep)+')',late||_rnr):'')
       +rr(half,'Keep 50% ('+money(half)+')',false)
