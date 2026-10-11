@@ -4277,8 +4277,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/rentalPaid = _hasSlot \? _r2\(_paidAmt\(b,\['deposit','reserve'\],reservePaid\?reserve:0\)\+_paidAmt\(b,\['balance'\]/.test(_ATLAS_SRC13c), '#7: _portalMoney "Amount paid" comes from b.paid[kind].amountCents (tips + passed-through fees included), not the quote');
   ok(/else if\(reservePaid\)\{ rentalPaid = _paidAmt\(b,\['deposit','reserve'\],reserve\); \}/.test(_ATLAS_SRC13c), '#7: a reserve-only receipt also sources the real captured reserve amount');
   // #8: both the count and avg KPI drilldowns pass {earned:true} so their footer foots to earned (refund/gift/dispute-netted) revenue, matching the Revenue KPI
-  ok(/which==='count'\)\{[\s\S]*?_bkList\(function\(b\)\{return nc\(b\)&&_inOvRange\(b\);\},\{earned:true\}\)/.test(_ATLAS_SRC13c), '#8: the Total-Bookings drilldown foots to earned revenue');
-  ok(/which==='avg'\)\{[\s\S]*?_bkList\(function\(b\)\{return nc\(b\)&&_inOvRange\(b\);\},\{earned:true\}\)/.test(_ATLAS_SRC13c), '#8: the Average-Booking drilldown foots to earned revenue');
+  ok(/which==='count'\)\{[\s\S]*?_bkList\(function\(b\)\{return nc\(b\)&&_inOvRange\(b\)(?:&&_inOvScope\(b\))?;\},\{earned:true\}\)/.test(_ATLAS_SRC13c), '#8: the Total-Bookings drilldown foots to earned revenue');
+  ok(/which==='avg'\)\{[\s\S]*?_bkList\(function\(b\)\{return nc\(b\)&&_inOvRange\(b\)(?:&&_inOvScope\(b\))?;\},\{earned:true\}\)/.test(_ATLAS_SRC13c), '#8: the Average-Booking drilldown foots to earned revenue');
   ok((_ATLAS_SRC13c.match(/_bkList\(function\(b\)\{return nc\(b\)&&_inOvRange\(b\);\}\)/g) || []).length === 0, '#8: no count/avg drilldown still uses the raw (no-opts) _bkList');
   ok(_ATLAS_SRC13c === _INDEX_SRC13c, '#7/#8: atlas.html and index.html remain byte-identical');
 }
