@@ -5244,7 +5244,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v386';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v387';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -23689,7 +23689,11 @@ function _pbSigProgress(b, opts){
   var _isS=function(s){ return !!(s && String(s).indexOf('data:image/')===0); };
   var drivers=(b.extraDrivers||[]).filter(function(d){ return d && d.name && d.status!=='denied'; });
   var total=1+drivers.length, done=0;
-  if(opts.ext){ var e=opts.ext; if(e && e.signed && _isS(e.sig)) done++; drivers.forEach(function(d,i){ var s=e&&e.driverSigs&&e.driverSigs[i]; if(_isS(s&&s.sig)) done++; }); }
+  if(opts.ext){ var e=opts.ext;
+    var _cs=!!(e && e.signed && _isS(e.sig));
+    if(!_cs && e && typeof _extGroups==='function'){ var _g=_extGroups(b).byId[e.id]; if(_g){ _cs=(_g.parts||[]).some(function(p){ return p&&p.signed&&_isS(p.sig); }); } }   // a split-pair customer sig may sit on any part
+    if(_cs) done++;
+    drivers.forEach(function(d,i){ var s=e&&e.driverSigs&&e.driverSigs[i]; if(_isS(s&&s.sig)) done++; }); }
   else { if(_isS(opts.waiver?b.waiverSig:b.customerSig)) done++; drivers.forEach(function(d){ if(_isS(d.sig)) done++; }); }
   return {done:done, total:total, label:done+'/'+total, complete:(done>=total)};
 }
@@ -24040,6 +24044,7 @@ function _contractShowTab(extIdx){
   _contractActiveExtIdx = extIdx;
   _stopExtWatchdog();
   _updateExtensionTabs();
+  _pbUpdateSigProgressBadge();   // repaint the header "Signatures N/N" badge for the doc now in view (base vs the active extension) -- it was painted only on modal open, so it kept the base's 1/1 on an unsigned extension tab
   var sigArea    = $d('sigEditView');
   var sigLockArea= $d('sigLockView');
   var extSigView = $d('extSigView');
@@ -24298,11 +24303,12 @@ function _renderExtensionView(b, extIdx){
   var editView = $d('extSigEditView');
   var lkDate   = $d('extSigLockDate');
   var lkPrev   = $d('extSigLockPreview');
-  if(ext.signed && ext.sig && ext.sig.startsWith('data:image/')){
+  var _sx = _extSignedPart(b, ext);   // the group part carrying the customer signature (surfaces one stored on a '-p' split part)
+  if(_sx.signed && _sx.sig && _sx.sig.startsWith('data:image/')){
     if(lockView) lockView.style.display = '';
     if(editView) editView.style.display = 'none';
-    if(lkDate)   lkDate.textContent = ext.sigDate || '';
-    if(lkPrev)   lkPrev.src = ext.sig;
+    if(lkDate)   lkDate.textContent = _sx.sigDate || '';
+    if(lkPrev)   lkPrev.src = _sx.sig;
     // Each authorized driver's EXTENSION signature beside the customer's, labeled "Authorized Driver (N)"
     // \u2014 same layout as the main contract's signed lock box. Sources from ext.driverSigs[i].
     var _edr = $d('extSigLockDrivers');
@@ -24374,7 +24380,9 @@ function _fmtSigStamp(sigAt, sigDate){
 function _buildExtensionContractHtml(b, extIdx){
   var exts = _extLive(b);
   var ext  = exts[extIdx];
-  var extNum = extIdx + 1;
+  var _egX=_extGroups(b), _gX=_egX.byId[ext.id];
+  var extNum = _gX ? _gX.num : (extIdx + 1);   // unified group number (matches the tabs/tile), not the raw index
+  var _extTotal = _egX.count;                   // unified group count (a split pair = one logical extension)
   var today  = new Date();
   var todayFmt = (today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
   var origPickup  = fmtDateFull(b.pickupDate || b.date || '');
@@ -24423,7 +24431,7 @@ function _buildExtensionContractHtml(b, extIdx){
   '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">'+
     '<div>'+
       '<h1>RENTAL AGREEMENT EXTENSION</h1>'+
-      '<div style="font-size:13px;color:#555">Extension #'+extNum+' of '+(exts.length)+' &nbsp;|&nbsp; Invoice #PBR-'+b.id.slice(-6).toUpperCase()+'</div>'+
+      '<div style="font-size:13px;color:#555">Extension #'+extNum+' of '+_extTotal+' &nbsp;|&nbsp; Invoice #PBR-'+b.id.slice(-6).toUpperCase()+'</div>'+
     '</div>'+
     '<div style="text-align:right;font-size:12px;color:#555">'+
       '<div style="font-weight:700;font-size:14px;color:#111">Prestige Black Rentals</div>'+
@@ -24510,9 +24518,23 @@ function _buildExtensionContractHtml(b, extIdx){
 // authorized driver on the booking have signed THIS extension.
 function _extSignedCount(b, ext){
   var ds=(b&&b.extraDrivers)||[];
-  var n=(ext&&ext.signed&&ext.sig&&String(ext.sig).indexOf('data:image/')===0)?1:0;
+  // The one customer signature for a split-pair group can sit on ANY part (the pre-unification popup let the
+  // owner sign either tab). Count it signed if the primary OR any group part carries a valid signature, so
+  // folding the split into one tab never reads a truly-signed extension as unsigned.
+  var _cust=!!(ext&&ext.signed&&ext.sig&&String(ext.sig).indexOf('data:image/')===0);
+  if(!_cust && ext){ var _g=(typeof _extGroups==='function')?_extGroups(b).byId[ext.id]:null; if(_g){ _cust=(_g.parts||[]).some(function(p){ return p&&p.signed&&p.sig&&String(p.sig).indexOf('data:image/')===0; }); } }
+  var n=_cust?1:0;
   ds.forEach(function(d,i){ var s=ext&&ext.driverSigs&&ext.driverSigs[i]; if(s&&s.sig&&String(s.sig).indexOf('data:image/')===0) n++; });
   return { signed:n, total:1+ds.length };
+}
+// The group part that actually carries the customer signature (primary if it has one, else any split part
+// that does, else the primary). Used so the signed LOCK VIEW renders a signature stored on a '-p' split part.
+function _extSignedPart(b, ext){
+  if(!ext) return ext;
+  if(ext.signed && ext.sig && String(ext.sig).indexOf('data:image/')===0) return ext;
+  var _g=(typeof _extGroups==='function')?_extGroups(b).byId[ext.id]:null;
+  if(_g){ var s=(_g.parts||[]).filter(function(p){ return p&&p.signed&&p.sig&&String(p.sig).indexOf('data:image/')===0; })[0]; if(s) return s; }
+  return ext;
 }
 function _extFullySigned(b, ext){ var c=_extSignedCount(b,ext); return c.signed>=c.total; }
 // --- Cumulative extension contracts (flag PB_FLAGS.cumulativeContracts); mirror of the portal builders ---
@@ -24539,7 +24561,8 @@ function _buildExtAmendmentHtml(bk, extIdx, opts){
   var panBg=dark?'rgba(201,169,98,.10)':'#fffbe8', panBd=dark?'rgba(201,169,98,.5)':'#d4a017';
   var ruleC=dark?'rgba(255,255,255,.22)':'#aaa', sigBd=dark?'rgba(255,255,255,.4)':'#666', h2bd=dark?'#C9A962':'#111';
   var sigInk=dark?'filter:invert(1)':'', ownerInk=dark?'filter:brightness(0) invert(1)':'filter:brightness(0)';
-  var extNum=extIdx+1, total=exts.length;
+  var _egA=_extGroups(bk), _gA=_egA.byId[ext.id];
+  var extNum=(_gA?_gA.num:(extIdx+1)), total=_egA.count;   // unified group number + count (split pair = one logical extension), not raw
   var origPickup=fmtDateFull(bk.pickupDate||bk.date||'');
   var fromRaw=_extFromComputed(ext)||_originalReturnDate(bk);
   var unit=(ext.extensionUnit==='hours')?('hour'+(Number(ext.extensionDays)!==1?'s':'')):('day'+(Number(ext.extensionDays)!==1?'s':''));
