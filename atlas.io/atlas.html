@@ -2257,7 +2257,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23as';
+  var APP_VERSION='2026.7.23at';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -4407,7 +4407,7 @@ const Atlas = (function(){
     document.getElementById('greetSub').textContent=`Here's how your ${_adNouns()} are doing today.`;
     document.getElementById('utilTitle').textContent=`${cap(_adNouns())} ${_fterm('util').toLowerCase()}`;
     document.getElementById('fleetH').textContent=`Your ${_adNouns()}`;
-    document.getElementById('addAssetLbl').textContent='Add '+S.fleet.noun;
+    document.getElementById('addAssetLbl').textContent='Add '+_adNoun();   // LIVE-TEST fix: multi-type -> "Add asset" (was always the primary type, e.g. "Add vessel")
     document.getElementById('bookH').textContent=_multiType()?'Bookings':cap(_fterm('books'));
     document.getElementById('newBookLbl').textContent='New '+(_multiType()?'booking':_fterm('book'));
     var _na=DATA.assets.length, _nb=DATA.bookings.filter(b=>b.status!=='Completed').length;
@@ -5450,11 +5450,11 @@ const Atlas = (function(){
     var _maintBanner=_mDue.length?('<div style="grid-column:1/-1;background:'+(_mOd.length?'rgba(178,42,32,.09)':'rgba(176,120,20,.10)')+';border:1px solid '+(_mOd.length?'rgba(178,42,32,.30)':'rgba(176,120,20,.30)')+';border-radius:12px;padding:11px 14px;margin-bottom:2px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-weight:800;color:var(--ink)">&#128295; '+(_mOd.length?(_mOd.length+' '+esc(_mOd.length===1?S.fleet.noun:S.fleet.nouns)+' overdue for service'):(_mSn.length+' '+esc(_mSn.length===1?S.fleet.noun:S.fleet.nouns)+' due for service soon'))+'</b>'+((_mOd.length&&_mSn.length)?('<span style="color:var(--muted);font-size:12px">+'+_mSn.length+' due soon</span>'):'')+(S.autoHoldOverdue?'<span class="chip chip--muted" style="font-size:10.5px">auto-hold on</span>':'')+'</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">'+_mDue.slice(0,8).map(function(o){return '<button class="btn btn--ghost btn--sm" onclick="Atlas.openAsset(\''+o.a.id+'\')">'+esc(o.a.name)+' &middot; '+esc(o.d.label||'service')+'</button>';}).join('')+'</div></div>'):'';
     var locs=_assetLocs(), locsEl=document.getElementById('fleetLocs'), grid=document.getElementById('assetGrid');
     if(locs){ var names=Object.keys(locs);
-      document.getElementById('fleetSub').textContent=`${n} ${S.fleet.nouns} \u00b7 ${_fleetUnits()} units across ${names.length} ${_fterm(names.length===1?'loc':'locs')} on ${_curTier().name} \u00b7 ${avail} available now`;
+      document.getElementById('fleetSub').textContent=`${n} ${_adNouns()} \u00b7 ${_fleetUnits()} units across ${names.length} ${_multiType()?(names.length===1?'location':'locations'):_fterm(names.length===1?'loc':'locs')} on ${_curTier().name} \u00b7 ${avail} available now`;   // LIVE-TEST fix: multi-type Assets header reads generic "assets / locations" (was the primary type's "vessels / marinas")
       locsEl.innerHTML='<div class="loc-grid">'+names.map(function(L){ var arr=locs[L], av=arr.filter(function(a){return a.status==='Available';}).length, occ=Math.round(arr.reduce(function(s,a){return s+a.util;},0)/arr.length);
         return `<div class="loc-card ${_fleetLocFilter===L?'on':''}" onclick="Atlas.fleetLoc('${_jsAttr(L)}')">
           <div class="loc-card__top"><b>${esc(L)}</b><span class="chip chip--${av>0?'ok':'warn'}"><span class="dot"></span>${av} open</span></div>
-          <div class="loc-card__stat"><span>${arr.length} ${S.fleet.nouns}</span><span>${occ}% ${_fterm('occ')}</span></div>
+          <div class="loc-card__stat"><span>${arr.length} ${_adNouns()}</span><span>${occ}% ${_multiType()?'utilized':_fterm('occ')}</span></div>
           <div class="bar"><i style="width:${occ}%"></i></div></div>`; }).join('')+'</div>';
       var list=_fleetLocFilter?DATA.assets.filter(function(a){return a.loc===_fleetLocFilter;}):DATA.assets;
       var _q=(_fleetSearch||'').trim().toLowerCase();
@@ -5462,11 +5462,11 @@ const Atlas = (function(){
       if(_fleetStatusF) list=list.filter(function(a){ return (a.status||'')===_fleetStatusF; });
       var _statuses=[]; (_fleetLocFilter?DATA.assets.filter(function(a){return a.loc===_fleetLocFilter;}):DATA.assets).forEach(function(a){ if(a.status&&_statuses.indexOf(a.status)<0)_statuses.push(a.status); }); _statuses.sort();
       var _chip=function(lbl,val){ return '<button class="btn btn--ghost btn--sm'+((_fleetStatusF===val)?' btn--primary':'')+'" onclick="Atlas.fleetStatusFilter(\''+_jsAttr(val)+'\')">'+esc(lbl)+'</button>'; };
-      var _toolbar='<div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:2px 0 6px"><input id="fleetSearchBox" value="'+esc(_fleetSearch||'')+'" oninput="Atlas.fleetSearch(this)" placeholder="Search '+esc(S.fleet.nouns)+'\u2026" aria-label="Search '+esc(S.fleet.nouns)+'" style="flex:1;min-width:170px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;font-size:16px;background:var(--surface);color:var(--ink)">'+_chip('All','')+_statuses.map(function(s){return _chip(s,s);}).join('')+'</div>';
+      var _toolbar='<div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:2px 0 6px"><input id="fleetSearchBox" value="'+esc(_fleetSearch||'')+'" oninput="Atlas.fleetSearch(this)" placeholder="Search '+esc(_adNouns())+'\u2026" aria-label="Search '+esc(_adNouns())+'" style="flex:1;min-width:170px;padding:8px 12px;border:1px solid var(--line);border-radius:9px;font-size:16px;background:var(--surface);color:var(--ink)">'+_chip('All','')+_statuses.map(function(s){return _chip(s,s);}).join('')+'</div>';
       var _PAGE=60, _tot=list.length, shown=_fleetShowAll?list:list.slice(0,_PAGE), more=_tot-shown.length;
-      grid.innerHTML=_lockBanner+_maintBanner+_toolbar+'<div style="grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px"><b style="font-size:14.5px;color:var(--ink)">'+(_fleetLocFilter?esc(_fleetLocFilter):('All '+cap(S.fleet.nouns)))+' <span style="color:var(--muted);font-weight:500;font-size:12.5px">('+_tot+')</span></b>'+(_fleetLocFilter?'<button class="btn btn--ghost btn--sm" onclick="Atlas.fleetLoc(\''+_jsAttr(_fleetLocFilter)+'\')">Show all '+esc(_fterm('locs'))+'</button>':'')+'</div>'
-        +(shown.length?shown.map(_assetCard).join(''):'<div style="grid-column:1/-1;text-align:center;color:var(--muted);font-size:13px;padding:18px">No '+esc(S.fleet.nouns)+' match'+(_q?(' \u201c'+esc(_fleetSearch)+'\u201d'):'')+'.</div>')
-        +(more>0?'<div style="grid-column:1/-1;text-align:center;padding:10px"><button class="btn btn--ghost btn--sm" onclick="Atlas.fleetShowAll()">Show all '+_tot+' '+esc(S.fleet.nouns)+'</button></div>':'');
+      grid.innerHTML=_lockBanner+_maintBanner+_toolbar+'<div style="grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px"><b style="font-size:14.5px;color:var(--ink)">'+(_fleetLocFilter?esc(_fleetLocFilter):('All '+cap(_adNouns())))+' <span style="color:var(--muted);font-weight:500;font-size:12.5px">('+_tot+')</span></b>'+(_fleetLocFilter?'<button class="btn btn--ghost btn--sm" onclick="Atlas.fleetLoc(\''+_jsAttr(_fleetLocFilter)+'\')">Show all '+esc(_multiType()?'locations':_fterm('locs'))+'</button>':'')+'</div>'
+        +(shown.length?shown.map(_assetCard).join(''):'<div style="grid-column:1/-1;text-align:center;color:var(--muted);font-size:13px;padding:18px">No '+esc(_adNouns())+' match'+(_q?(' \u201c'+esc(_fleetSearch)+'\u201d'):'')+'.</div>')
+        +(more>0?'<div style="grid-column:1/-1;text-align:center;padding:10px"><button class="btn btn--ghost btn--sm" onclick="Atlas.fleetShowAll()">Show all '+_tot+' '+esc(_adNouns())+'</button></div>':'');
     } else {
       locsEl.innerHTML='';
       document.getElementById('fleetSub').textContent=`${_fleetUnits()} of ${capTxt} units (${n} ${n===1?_adNoun():_adNouns()}) on ${_curTier().name} \u00b7 ${avail} available now`;
