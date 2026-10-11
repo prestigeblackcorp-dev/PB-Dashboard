@@ -2257,7 +2257,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23aq';
+  var APP_VERSION='2026.7.23ar';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -13100,6 +13100,7 @@ const Atlas = (function(){
       +'<button class="btn btn--primary btn--full btn--lg" id="sigSubmit" style="margin-top:14px" disabled onclick="Atlas.portalSubmitSig()">Agree &amp; sign</button></div>'; }
   function portalSubmitSig(){ var b=_pBk(); if(!b)return; var res=_sigResult(); if(!res){ toast('Add your signature first'); return; } if(!(document.getElementById('sigAgree')||{}).checked){ toast('Please check the agree box'); return; }
     res.device=_signDevice(); var now=Date.now(); var p=_portal(b); p.signedAt=now; p.sig=res; p.signDevice=res.device;
+    p.docText=((_legal()&&_legal().agreement&&_legal().agreement.text)||'');   // c15 legal-snapshot: snapshot the EXACT agreement text shown at this in-app (in-person) signing. An in-app sign writes NO server signatures row, so without this the agreement PDF/view would later re-render from the owner's CURRENT (editable) settings -> bkContractPdf now renders this immutable snapshot. (Portal-link signs get the richer server signatures.doc_text + fingerprint; this covers the in-person channel's record.)
     _upsertBooking(b); _logEvent('contract','Portal: '+b.cust+' signed the agreement for '+b.asset+' ('+b.id+')',{booking:b.id});
     _portalView='home'; _renderPortal(); toast('Signed \u2014 thank you!'); }
   /* ---- Customer reviews (top-tier: stars + text, verified customer) ---- */
@@ -13464,6 +13465,7 @@ const Atlas = (function(){
   async function bkContractPdf(id){ var b=_getBooking(id); if(!b)return; toast('Building the PDF...');
     var _signedDoc=null, _signedHash='';
     if(b.portal&&b.portal.signedAt&&ATLAS_BACKEND&&_apiCsrf){ try{ var _sgr=await _api('/api/bookings/'+encodeURIComponent(id)+'/signature'); var _sgj=(_sgr&&_sgr.json)||{}; if(_sgj.signed&&_sgj.record&&_sgj.record.docText){ _signedDoc=String(_sgj.record.docText); _signedHash=String(_sgj.record.docHash||''); } }catch(e){} }   // audit c5 [4] (legal): a signed agreement PDF must render the IMMUTABLE signed text (signatures.doc_text) under its own fingerprint -- NOT the owner's CURRENT S.legal.agreement.text, which may have been edited after signing (the body would then contradict the hash that certifies it).
+    if(!_signedDoc&&b.portal&&b.portal.signedAt&&b.portal.docText) _signedDoc=String(b.portal.docText);   // c15 legal-snapshot: an IN-APP signature (portalSubmitSig) writes no server signatures row, so the fetch above found none -> fall back to the agreement text SNAPSHOTTED onto b.portal.docText at that signing, NEVER the owner's current (editable) agreement. Portal-link signs already set _signedDoc from signatures.doc_text above; this only fills the in-person gap. (No crypto fingerprint for this channel -> the fingerprint line below stays absent, which is honest.)
     var agr=(_signedDoc)||((S.legal&&S.legal.agreement&&S.legal.agreement.text)||(S.brand.name+' - Rental Agreement.\n\nThe renter agrees to rent the item in this booking, to return it on time and in the same condition, and to pay the quoted rate, applicable taxes, and any documented damage, cleaning, fuel or overage, plus the owner posted cancellation policy. This agreement is governed by the laws of the owner jurisdiction.'));
     if(!_signedDoc&&S.legal&&S.legal.cancelPolicy) agr+='\n\nCANCELLATION POLICY: '+S.legal.cancelPolicy;   // the signed doc_text already embeds the policy that was agreed; only append the CURRENT policy to an unsigned/preview agreement
     var blocks=[{h:S.brand.name},{small:'Rental Agreement - '+(b.id||'')+' - generated '+_stamp(Date.now())},{hr:1},{kv:['Customer',b.cust||'-']},{kv:['Asset',b.asset||'-']},{kv:['Dates',_bkWhen(b)]},{kv:['Total',_moneyBase(((b.quote||{}).total)||0)]},{sp:6},{h:'Agreement'}];
