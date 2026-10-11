@@ -2257,7 +2257,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23ao';
+  var APP_VERSION='2026.7.23ap';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -2626,13 +2626,14 @@ const Atlas = (function(){
       +rows+'<button class="btn btn--ghost btn--sm" onclick="Atlas.protAddPlan()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Add a tier</button>'; }
   function _bkProtSel(){ if(!_bkDraft) return null; return _bkDraft.extras.filter(function(x){return x.protection;})[0]||null; }
   function bkSetProtection(planId){ if(!_bkDraft)return; _bkDraft.extras=_bkDraft.extras.filter(function(x){return !x.protection;});
-    var p=_protPlan(planId); if(p){ var _pp=(p.per||'day'), _ep=(_pp==='day'?'unit':(_pp==='trip'?'flat':_pp)); _bkDraft.extras.push({id:'prot',planId:p.id,name:'Damage protection ('+p.name+')',price:p.price,per:_ep,qty:1,protection:true}); }   // legacy day->per rate-model unit, trip->flat, explicit hour/pday/week/pmonth pass through to calcQuote
+    var p=_protPlan(planId); if(p){ var _pp=(p.per||'day'), _ep=(_pp==='day'?'unit':(_pp==='trip'?'flat':_pp)); _bkDraft.extras.push({id:'prot',planId:p.id,name:'Damage protection ('+p.name+')',price:p.price,per:_ep,qty:1,protection:true,protSnap:{name:p.name,price:p.price,per:(p.per||'day'),covers:(p.covers||''),deductible:(p.deductible||0)}}); }   // legacy day->per rate-model unit, trip->flat, explicit hour/pday/week/pmonth pass through to calcQuote. c12[2] legal-snapshot: protSnap FREEZES the coverage terms (name/price/per/covers/deductible) as shown at purchase so the coverage doc renders what the customer actually bought even after the owner edits or removes the tier; protSnap is doc-render-only (calcQuote still uses the existing price/per fields, untouched).
     _bkRenderExtras(); }
   function _bkProtHtml(){ var P=_protection(); if(!P.on||!P.plans.length) return ''; var cur=_bkProtSel(), curId=cur?cur.planId:'';
     return '<div class="field"><label>Damage protection</label><select class="select" onchange="Atlas.bkSetProtection(this.value)"><option value="">None</option>'
       +P.plans.map(function(p){ return '<option value="'+esc(p.id)+'"'+(curId===p.id?' selected':'')+'>'+esc(p.name)+' - '+money(p.price)+'/'+_protPerLabel(p.per)+'</option>'; }).join('')
       +'</select><div class="bk-lenhint" style="margin:5px 0 0">Optional coverage the customer can add &mdash; it rides the quote and shows in their portal with a coverage summary.</div></div>'; }
   function protectionDoc(planId, portal){ var p=_protPlan(planId);
+    if(portal){ try{ var _psb=_pBk(); var _pex=_psb?(_psb.extras||[]).filter(function(x){return x.protection&&x.planId===planId;})[0]:null; if(_pex&&_pex.protSnap){ var _s=_pex.protSnap; p={ id:planId, name:(_s.name||(p&&p.name)||'Protection'), price:(_s.price!=null?_s.price:((p&&p.price)||0)), per:(_s.per||(p&&p.per)||'day'), covers:(_s.covers!=null?_s.covers:((p&&p.covers)||'')), deductible:(_s.deductible!=null?_s.deductible:((p&&p.deductible)||0)) }; } }catch(e){} }   // c12[2] legal-snapshot: the customer coverage doc renders the terms FROZEN at purchase (protSnap), not the owner's current/removed tier -- frozen wins; the live tier fills any field a legacy (pre-fix) extra did not freeze
     if(!p){ if(portal){ var nm=''; try{ var pb=_pBk(); var ex=pb?(pb.extras||[]).filter(function(x){return x.protection&&x.planId===planId;})[0]:null; nm=(ex&&ex.name)||''; }catch(e){} toast('Your '+(nm?esc(nm)+' ':'')+'protection is on file \u2014 contact us for a copy of the coverage summary.'); return; }   // fix: customer view no longer dead-ends on the owner-facing "Pick a tier first" when the tier was later removed
       toast('Pick a tier first'); return; }
     var biz=(S.brand&&S.brand.name)||'Atlas Rental.io', noun=(S.fleet&&S.fleet.noun)||'asset';
@@ -5992,7 +5993,7 @@ const Atlas = (function(){
   function _bookingForm(existing){
     var assets=(DATA.assets||[]).map(function(a){return a.name;}); var _noAssets=!assets.length; if(_noAssets && _isDemoTenant()) assets=S.fleet.sample.slice();   // real tenant with 0 assets: do NOT inject phantom sample vehicles (would save a booking against a car they don't own)
     var b=existing||{cust:'',custEmail:'',phone:'',asset:assets[0]||'',periods:3,extras:[],discount:{type:'none',value:0},notes:'',status:'Confirmed'};
-    _bkDraft={ extras:(b.extras||[]).map(function(x){return {id:x.id,name:x.name,price:x.price,per:x.per,qty:x.qty||1,custom:x.custom,protection:x.protection,planId:x.planId};}) };   // keep protection+planId so editing a booking never drops/double-charges coverage
+    _bkDraft={ extras:(b.extras||[]).map(function(x){return {id:x.id,name:x.name,price:x.price,per:x.per,qty:x.qty||1,custom:x.custom,protection:x.protection,planId:x.planId,protSnap:x.protSnap};}) };   // keep protection+planId (+ protSnap frozen coverage terms, c12[2]) so editing a booking never drops/double-charges coverage or loses the purchase-time coverage snapshot
     _bkPromo=null;   // clear any promo left over from a previously-abandoned form; without this a code applied then cancelled would bleed onto the next New Booking (stamp promoCode + burn a cap slot with $0 discount). On edit, an existing booking keeps its stored promoCode/quote untouched.
     var disc=b.discount||{type:'none',value:0}, unit=_perUnitOne(), cfg=_bookingCfg();
     var assetField=_noAssets
