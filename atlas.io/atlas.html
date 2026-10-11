@@ -2257,7 +2257,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23au';
+  var APP_VERSION='2026.7.23av';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -4591,14 +4591,16 @@ const Atlas = (function(){
   function _rerenderAll(){ if(!(S&&S.onboarded))return;                                          // re-fill every panel so a currency switch updates ALL numbers at once (mirrors buildApp's render block; keeps the active tab)
     try{renderOverview();}catch(e){} try{renderFleet();}catch(e){} try{renderBookings();}catch(e){} try{renderCustomers();}catch(e){} try{renderAnalytics();}catch(e){} try{renderWebsite();}catch(e){} try{renderTeam();}catch(e){} try{buildSettings();}catch(e){} }
   // Per-type term for the current fleet (KPIs/labels reconfigure to what the client rents).
-  function _fterm(k){ var t=FLEET_TERMS[S.fleet&&S.fleet.id]||FLEET_TERMS.custom; return (t&&t[k])||FLEET_TERMS.cars[k]; }
+  function _fterm(k){ if((k==='book'||k==='books')&&_multiType()) return k==='books'?'bookings':'booking';   // LIVE-TEST fix: a MULTI-type account's dashboard/analytics/KPIs/drills read generic "booking(s)", not the primary type's word ("charters"/"rentals"); single-type accounts are unchanged (fall through to FLEET_TERMS).
+    var t=FLEET_TERMS[S.fleet&&S.fleet.id]||FLEET_TERMS.custom; return (t&&t[k])||FLEET_TERMS.cars[k]; }
   // Per-ASSET term: on a multi-type account each asset carries its own type (a.type), so its card uses THAT type's word
   // (a car reads "utilized", a vessel "chartered") instead of the primary type's. Single-type assets have no a.type and
   // fall back to the primary -- identical to _fterm, so single-type accounts are unchanged.
   function _ftermFor(id,k){ var t=FLEET_TERMS[id]||FLEET_TERMS[S.fleet&&S.fleet.id]||FLEET_TERMS.custom; return (t&&t[k])||FLEET_TERMS.cars[k]; }
   // The word for THIS fleet type's customer (renter / tenant / client / charterer). Falls back to the reservation-vs-rental
   // heuristic for any type that has not declared one. _custNoun(true) => plural.
-  function _custNoun(plural){ var t=_typeById((S.fleet&&S.fleet.id)||'cars')||{};
+  function _custNoun(plural){ if(_multiType()) return plural?'customers':'customer';   // LIVE-TEST fix: a multi-type account has no single customer word (charterer/renter/tenant/client) that fits all verticals -> generic "customer(s)"; single-type accounts unchanged.
+    var t=_typeById((S.fleet&&S.fleet.id)||'cars')||{};
     var one=t.customerNoun||(S.fleet&&S.fleet.customerNoun)||'', many=t.customerNouns||(S.fleet&&S.fleet.customerNouns)||(one?one+'s':'');
     if(!one){ one=(_fterm('book')==='reservation')?'tenant':'renter'; many=one+'s'; }
     return plural?many:one; }
@@ -5085,7 +5087,7 @@ const Atlas = (function(){
     const rows=b=>`<tr style="cursor:pointer" onclick="Atlas.openBooking('${b.id}')"><td><b>${b.id}</b></td><td><div class="cust"><span class="avatar">${esc((b.cust||'?')[0])}</span>${esc(b.cust)}</div></td>
       <td>${esc(b.asset)}</td><td class="tnum">${_fmtWhen(b.startTs,b.time)} &middot; ${b.periods}${_pu}</td>
       <td class="tnum"><b>${money(_bkTotal(b))}</b></td><td>${statusChip(b.status)}</td></tr>`;
-    const head=`<thead><tr><th>Booking</th><th>${cap(_custNoun())}</th><th>${cap(S.fleet.noun)}</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead>`;
+    const head=`<thead><tr><th>Booking</th><th>${cap(_custNoun())}</th><th>${cap(_adNoun())}</th><th>Dates</th><th>Total</th><th>Status</th></tr></thead>`;
     document.getElementById('bookTbl').innerHTML=head+'<tbody>'+(DATA.bookings.length?DATA.bookings.slice(0,5).map(rows).join(''):'<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:22px 8px">No bookings yet &mdash; <span class="link" style="cursor:pointer;font-weight:600" onclick="Atlas.newBooking()">create your first booking</span>.</td></tr>')+'</tbody>';
     document.getElementById('bookTblFull').innerHTML=head+'<tbody>'+DATA.bookings.map(rows).join('')+'</tbody>';
     try{ _autoPriceRun('overview'); }catch(e){}   // Smart Pricing Increment 3: bounded auto-apply -- gated + no-op unless opted in; may nudge a.rate, then _renderRevOpt repaints with the new numbers
@@ -5998,7 +6000,7 @@ const Atlas = (function(){
     var disc=b.discount||{type:'none',value:0}, unit=_perUnitOne(), cfg=_bookingCfg();
     var assetField=_noAssets
       ? '<div class="field"><label>'+cap(S.fleet.noun)+'</label><div class="bk-lenhint" style="margin:0">No '+esc(S.fleet.nouns)+' yet &mdash; <span class="link" style="cursor:pointer;font-weight:600" onclick="Atlas.closeModal();Atlas.go(\'fleet\')">add your first '+esc(S.fleet.noun)+'</span> to take a booking.</div></div>'
-      : '<div class="field"><label>'+cap(S.fleet.noun)+'</label><select class="select" id="bkAsset" onchange="Atlas.bkPreview()">'+assets.slice().sort(function(x,y){return String(x).localeCompare(String(y));}).map(function(a){return '<option'+(a===b.asset?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></div>';   // LIVE-TEST fix: the asset <select> had NO onchange, so picking a different asset never re-ran bkPreview -> the quote kept the default asset's rate while createBooking (6058) saved at the SELECTED asset's per-type/per-asset rate (shown price != charged price on a multi-rate fleet). Now reprices on asset change, matching every other quote input (dates/discount).
+      : '<div class="field"><label>'+cap(_adNoun())+'</label><select class="select" id="bkAsset" onchange="Atlas.bkPreview()">'+assets.slice().sort(function(x,y){return String(x).localeCompare(String(y));}).map(function(a){return '<option'+(a===b.asset?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></div>';   // LIVE-TEST fix: the asset <select> had NO onchange, so picking a different asset never re-ran bkPreview -> the quote kept the default asset's rate while createBooking (6058) saved at the SELECTED asset's per-type/per-asset rate (shown price != charged price on a multi-rate fleet). Now reprices on asset change, matching every other quote input (dates/discount).
     var phoneField=cfg.fields.phone? '<div class="field"><label>Phone <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="bkPhone" value="'+esc(b.phone||'')+'" placeholder="(555) 555-1234"></div>' : '';
     var contactRow=cfg.fields.phone? ('<div class="row2">'+phoneField+assetField+'</div>') : assetField;
     var notesField=cfg.fields.notes? '<div class="field"><label>Notes <span style="color:var(--muted);font-weight:500">(internal)</span></label><textarea class="input" id="bkNotes" rows="2" placeholder="Anything to remember about this booking">'+esc(b.notes||'')+'</textarea></div>' : '';
@@ -11413,8 +11415,10 @@ const Atlas = (function(){
     if(left!==Infinity && qty>left){ closeModal(); promptUpgrade('vehicles'); return; }   // adding this many units would exceed the plan
     var rate=parseFloat(val('vRate')); if(!(rate>=0)) rate=_typeRate(tid);
     var status=val('vStatus')||'Available', names=[];
-    if(qty===1){ names=[(val('vName')||'').trim() || (loc?(loc+' #'+start):(tnoun+' '+start))]; }
-    else { for(var i=0;i<qty;i++){ names.push((loc?(loc+' #'):(tnoun+' '))+(start+i)); } }
+    var _usedNm={}; (DATA.assets||[]).forEach(function(x){ if(x&&x.name) _usedNm[x.name]=1; });   // LIVE-TEST fix: prevent duplicate asset names -- multiple TYPES added to one group from the same "Number from" collided ("Brickell Tower #102" x2, "Gear Room #102" x3), indistinguishable in the owner booking dropdown AND the public site. Auto-bump the number past any existing name so every created asset is uniquely named.
+    var _nameBase=loc?(loc+' #'):(tnoun+' '), _nn=start, _nextFree=function(){ while(_usedNm[_nameBase+_nn]) _nn++; var nm=_nameBase+_nn; _usedNm[nm]=1; _nn++; return nm; };
+    if(qty===1){ names=[(val('vName')||'').trim() || _nextFree()]; }
+    else { for(var i=0;i<qty;i++){ names.push(_nextFree()); } }
     _setTypeRate(tid,rate); save();   // remember this type's rate (persist S.money.byType, not just assets) so the next same-type add prefills it
     names.forEach(function(nm){ var a={ id:_assetId(), name:nm, rate:rate, status:status, util:0, tenant:null }; if(loc) a.loc=loc; if(multi) a.type=tid; if(_vehPhotoData) a.photo=_vehPhotoData; DATA.assets.push(a); });   // LIVE-TEST fix: carry the creation photo onto each new unit
     _saveAssets(); closeModal(); if(loc) _fleetLocFilter=null; renderFleet(); renderOverview();
