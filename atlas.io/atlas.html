@@ -2257,7 +2257,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23ar';
+  var APP_VERSION='2026.7.23as';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -5998,7 +5998,7 @@ const Atlas = (function(){
     var disc=b.discount||{type:'none',value:0}, unit=_perUnitOne(), cfg=_bookingCfg();
     var assetField=_noAssets
       ? '<div class="field"><label>'+cap(S.fleet.noun)+'</label><div class="bk-lenhint" style="margin:0">No '+esc(S.fleet.nouns)+' yet &mdash; <span class="link" style="cursor:pointer;font-weight:600" onclick="Atlas.closeModal();Atlas.go(\'fleet\')">add your first '+esc(S.fleet.noun)+'</span> to take a booking.</div></div>'
-      : '<div class="field"><label>'+cap(S.fleet.noun)+'</label><select class="select" id="bkAsset">'+assets.slice().sort(function(x,y){return String(x).localeCompare(String(y));}).map(function(a){return '<option'+(a===b.asset?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></div>';
+      : '<div class="field"><label>'+cap(S.fleet.noun)+'</label><select class="select" id="bkAsset" onchange="Atlas.bkPreview()">'+assets.slice().sort(function(x,y){return String(x).localeCompare(String(y));}).map(function(a){return '<option'+(a===b.asset?' selected':'')+'>'+esc(a)+'</option>';}).join('')+'</select></div>';   // LIVE-TEST fix: the asset <select> had NO onchange, so picking a different asset never re-ran bkPreview -> the quote kept the default asset's rate while createBooking (6058) saved at the SELECTED asset's per-type/per-asset rate (shown price != charged price on a multi-rate fleet). Now reprices on asset change, matching every other quote input (dates/discount).
     var phoneField=cfg.fields.phone? '<div class="field"><label>Phone <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="bkPhone" value="'+esc(b.phone||'')+'" placeholder="(555) 555-1234"></div>' : '';
     var contactRow=cfg.fields.phone? ('<div class="row2">'+phoneField+assetField+'</div>') : assetField;
     var notesField=cfg.fields.notes? '<div class="field"><label>Notes <span style="color:var(--muted);font-weight:500">(internal)</span></label><textarea class="input" id="bkNotes" rows="2" placeholder="Anything to remember about this booking">'+esc(b.notes||'')+'</textarea></div>' : '';
@@ -11377,7 +11377,8 @@ const Atlas = (function(){
   function _settingsActive(){ var p=document.querySelector('.panel[data-panel="settings"]'); return p&&p.classList.contains('active'); }
   // --- Vehicles: cannot exceed the plan's cap; trying prompts an upgrade ---
   function addVehicle(){ if(!_guard('fleetEdit','Adding '+S.fleet.nouns))return; if(_vehCap()!==Infinity && _fleetUnits() >= _vehCap()){ promptUpgrade('vehicles'); return; } _vehicleForm(); }   // packaging(1): gate on total UNITS (sum of qty), not asset rows
-  function _vehicleForm(){ var capT=(_vehCap()===Infinity?'unlimited':_vehCap()), locLbl=cap(_fterm('loc'));
+  var _vehPhotoData='';   // LIVE-TEST fix (user-flagged): optional photo captured at asset CREATION (was edit-only)
+  function _vehicleForm(){ _vehPhotoData=''; var capT=(_vehCap()===Infinity?'unlimited':_vehCap()), locLbl=cap(_fterm('loc'));
     var locs=[]; (typeof _locList==='function'?_locList():[]).forEach(function(L){ var n=(L&&L.name)||L; if(n && locs.indexOf(n)<0) locs.push(n); }); DATA.assets.forEach(function(a){ if(a.loc && locs.indexOf(a.loc)<0) locs.push(a.loc); });   // include the owner's AUTHORED locations (Settings > Locations, plan-capped) alongside ad-hoc tags, so a new asset can be grouped under a real location (e.g. a rental property)
     var _multi=_fleetSel().length>1, _pid=_fleetSel()[0];   // #129: pick which of the owner's types this asset is
     var _typeField=_multi? ('<div class="field"><label>Type</label><select class="select" id="vType" onchange="Atlas.vehTypeChange()">'+_fleetSel().map(function(id){ var t=_typeById(id); return '<option value="'+esc(id)+'">'+esc(t.label)+(id===S.fleet.id?' (main)':'')+'</option>'; }).join('')+'</select></div>') : '';
@@ -11389,6 +11390,7 @@ const Atlas = (function(){
       +'<div class="field" id="vNameWrap"><label>Name</label><input class="input" id="vName" placeholder="e.g. '+esc(locLbl)+' #101"></div>'
       +'<div class="row2"><div class="field"><label>Rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="vRate" style="width:auto;flex:1;text-align:left" value="'+_typeRate(_pid)+'"><span>/ '+S.money.rateModel+'</span></div></div>'
       +'<div class="field"><label>Status</label><select class="select" id="vStatus"><option>Available</option><option>Maintenance</option></select></div></div>'
+      +'<div class="field"><label>Photo <span style="color:var(--muted);font-weight:400;font-size:12px">(optional &mdash; shown on your portal, website + fleet; applies to all units added)</span></label><div style="display:flex;align-items:center;gap:12px"><div id="vPhotoPrev" style="width:56px;height:42px;border-radius:8px;border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;overflow:hidden">None</div><label class="btn btn--ghost btn--sm" style="cursor:pointer;margin:0">Add photo<input type="file" id="vPhoto" accept="image/*" style="display:none" onchange="Atlas._vehPhotoPick(this)"></label></div></div>'
       +'<div class="bk-lenhint" id="vHint" style="margin:0 0 6px"></div>'
       +'<div style="font-size:12.5px;color:var(--muted);margin-bottom:14px">'+_fleetUnits()+' of '+capT+' units used on '+esc(_curTier().name)+' ('+DATA.assets.length+' '+esc(DATA.assets.length===1?S.fleet.noun:S.fleet.nouns)+').</div>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveVehicle()">Add to my '+esc(_multi?'assets':S.fleet.nouns)+'</button></div>');
@@ -11402,6 +11404,7 @@ const Atlas = (function(){
   // #129: switching the type prefills that type's saved rate + relabels the name placeholder.
   function vehTypeChange(){ var id=val('vType')||_fleetSel()[0], r=document.getElementById('vRate'); if(r) r.value=_typeRate(id);
     var nm=document.getElementById('vName'); if(nm) nm.placeholder='e.g. '+cap(_typeNoun(id))+' #101'; vehFormHint(); }
+  function _vehPhotoPick(inp){ var f=inp&&inp.files&&inp.files[0]; if(!f)return; var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result||''),900,0.72,function(out){ _vehPhotoData=out; var p=document.getElementById('vPhotoPrev'); if(p) p.innerHTML='<img src="'+out+'" alt="photo" style="width:56px;height:42px;object-fit:cover">'; }); }; r.readAsDataURL(f); }   // LIVE-TEST fix (user-flagged): downscale + stash the creation photo (mirrors _suPhoto); saveVehicle puts it on a.photo for every unit added
   function saveVehicle(){
     if(!_guard('fleetEdit'))return;
     var qty=Math.max(1,parseInt(val('vQty'))||1), start=parseInt(val('vStart'))||101, loc=(val('vLoc')||'').trim();
@@ -11413,7 +11416,7 @@ const Atlas = (function(){
     if(qty===1){ names=[(val('vName')||'').trim() || (loc?(loc+' #'+start):(tnoun+' '+start))]; }
     else { for(var i=0;i<qty;i++){ names.push((loc?(loc+' #'):(tnoun+' '))+(start+i)); } }
     _setTypeRate(tid,rate); save();   // remember this type's rate (persist S.money.byType, not just assets) so the next same-type add prefills it
-    names.forEach(function(nm){ var a={ id:_assetId(), name:nm, rate:rate, status:status, util:0, tenant:null }; if(loc) a.loc=loc; if(multi) a.type=tid; DATA.assets.push(a); });
+    names.forEach(function(nm){ var a={ id:_assetId(), name:nm, rate:rate, status:status, util:0, tenant:null }; if(loc) a.loc=loc; if(multi) a.type=tid; if(_vehPhotoData) a.photo=_vehPhotoData; DATA.assets.push(a); });   // LIVE-TEST fix: carry the creation photo onto each new unit
     _saveAssets(); closeModal(); if(loc) _fleetLocFilter=null; renderFleet(); renderOverview();
     var fb=document.getElementById('fleetBadge'); if(fb) fb.textContent=DATA.assets.length;
     toast(qty>1?(qty+' '+_typeNouns(tid)+' added'+(loc?(' to '+loc):'')):(names[0]+' added'));
@@ -14027,7 +14030,7 @@ const Atlas = (function(){
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,liveTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,addLocation,removeLocation,editLocation,saveLocationEdit,
-    addVehicle,saveVehicle,vehFormHint,vehTypeChange,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetPhotoAdd,assetPhotoRmGallery,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
+    addVehicle,saveVehicle,vehFormHint,vehTypeChange,_vehPhotoPick,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetPhotoAdd,assetPhotoRmGallery,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,ovCustomizeKpis,ovCustomizeAna,ovKpiToggle,ovKpiMove,ovKpiSave,ovKpiDragStart,ovKpiDrop,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,pnlRevDrill,pnlNetDrill,pnlExpDrill,assetPnlSetPeriod,renderPnl,
