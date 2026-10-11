@@ -2257,7 +2257,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23an';
+  var APP_VERSION='2026.7.23ao';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -10574,7 +10574,7 @@ const Atlas = (function(){
   function _obAssetPhoto(inp){ var f=inp&&inp.files&&inp.files[0]; if(!f)return; var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result||''),900,0.72,function(out){ if(!S.firstAsset)S.firstAsset={}; S.firstAsset.photo=out; try{save();}catch(_){} var p=document.getElementById('obAssetPrev'); if(p)p.innerHTML='<img src="'+out+'" alt="asset photo">'; }); }; r.readAsDataURL(f); }   // fix: onboarding first-asset photo capture (downscaled, previewed, persisted)
   function setupFinish(){ var city=(val('suCity')||'').trim(), nm=(val('suAsset')||'').trim();
     S.brand=S.brand||{}; if(city) S.brand.city=city; S.setup=S.setup||{}; S.setup.goal=_suGoalV; S.setup.done=true;
-    if(nm){ var a={id:_assetId(),name:nm,rate:_typeRate(_fleetSel()[0]),status:'Available',util:0,tenant:null}; if(_suPhotoData)a.photo=_suPhotoData; if(_fleetSel().length>1)a.type=_fleetSel()[0]; DATA.assets.push(a); _saveAssets(); }
+    if(nm){ var _suVc=_vehCap(); if(_suVc!==Infinity && _fleetUnits()>=_suVc){ try{ promptUpgrade('vehicles'); }catch(e){} nm=''; }   /* c15[11]: enforce the plan unit-cap here too -- setupFinish (AI setup assistant) was the ONLY asset-create path with no cap check, letting an over-cap asset be pushed past the paid plan (mirror addVehicle / _aioAddAsset: _fleetUnits()>=_vehCap()) */ else { var a={id:_assetId(),name:nm,rate:_typeRate(_fleetSel()[0]),status:'Available',util:0,tenant:null}; if(_suPhotoData)a.photo=_suPhotoData; if(_fleetSel().length>1)a.type=_fleetSel()[0]; DATA.assets.push(a); _saveAssets(); } }
     save(); try{_logEvent('ai','Setup assistant: city='+(city||'-')+', goal='+_suGoalV+(nm?(', added '+nm):''));}catch(e){}
     _suPhotoData=''; closeModal(); try{ buildApp(); go('overview'); }catch(e){}
     try{ openAio(); aioMsg('bot','Done - your dashboard is tuned for <b>'+esc(S.fleet.nouns)+'</b>'+(city?(' in <b>'+esc(city)+'</b>'):'')+', aimed at <b>'+esc(_suGoalV.toLowerCase())+'</b>'+(nm?(', and I added <b>'+esc(nm)+'</b>'):'')+'. I will start dreaming up local campaigns and partners for you.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openDreaming()">See what I dreamed up</button>'); }catch(e){}
@@ -12798,7 +12798,7 @@ const Atlas = (function(){
     _sitePromo=p.code; if(msg){ msg.style.color='var(--brand)'; msg.textContent=(p.type==='pct'?(p.value+'% off applied'):(money(p.value)+' off applied')); } }
   function webBookNow(assetName){   // public site: open a real self-service booking form so the CUSTOMER enters their details + dates (not a generic "Website Visitor" lead)
     var assets=(DATA.assets||[]).filter(function(a){return a.status!=='Maintenance';});
-    var first=assetName||(assets[0]&&assets[0].name)||(S.fleet.sample&&S.fleet.sample[0])||'';
+    var first=assetName||(assets[0]&&assets[0].name)||(_isDemoTenant()?((S.fleet.sample&&S.fleet.sample[0])||''):'')||'';   // c15[10]: only a DEMO tenant gets a sample fallback -- a real 0-asset tenant must not be offered a bookable phantom sample (its save is also blocked in webSubmitBooking)
     var noun=S.fleet.noun, unit=_perUnitOne(), cfg=_bookingCfg();
     var opts=assets.length? assets.map(function(a){ return '<option value="'+esc(a.name)+'"'+(a.name===first?' selected':'')+'>'+esc(a.name)+' \u2014 '+money(a.rate!=null?a.rate:S.money.baseRate)+'/'+unit+'</option>'; }).join('') : '<option value="'+esc(first)+'">'+esc(first)+'</option>';
     var d2=_ymd(new Date(Date.now()+2*86400000));
@@ -12850,6 +12850,7 @@ const Atlas = (function(){
     var b={ id:_nextBkId(), createdAt:Date.now(), cust:name, custEmail:email, custPhone:phone,
       asset:asset, rate:mEff.baseRate, periods:per, startTs:_wst, endTs:_wen, time:!!cfg.time,
       extras:[], discount:disc, addons:0, status:'Pending', quote:q, source:'website', promoCode:code };
+    if(!(DATA.assets||[]).some(function(x){return x.name===asset;}) && !_isDemoTenant()){ toast('Add your first '+S.fleet.noun+' before taking a booking'); return; }   // c15[10]: never save a (website-preview) booking against a phantom SAMPLE asset for a real tenant -- mirrors createBooking's 0-asset guard (line 6053)
     _upsertBooking(b);
     if(code&&promo){ promo.used=(promo.used||0)+1; _logEvent('promo','Promo '+code+' redeemed on your website ('+b.id+')',{code:code,booking:b.id}); }
     _logEvent('booking','Website booking '+b.id+': '+name+' / '+asset+(code?(' -- promo '+code):''),{booking:b.id,total:_r2(q.total)});
