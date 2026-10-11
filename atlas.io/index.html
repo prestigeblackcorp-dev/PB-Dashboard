@@ -2256,7 +2256,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23aj';
+  var APP_VERSION='2026.7.23ak';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -13438,17 +13438,18 @@ const Atlas = (function(){
       s.onload=function(){ window.PDFLib?resolve():reject(new Error('noPDFLib')); }; s.onerror=function(){ reject(new Error('js')); }; document.head.appendChild(s); });
     _pdfLibPromise.catch(function(){ _pdfLibPromise=null; }); return _pdfLibPromise; }
   function _pdfDownload(fname,bytes){ try{ var blob=new Blob([bytes],{type:'application/pdf'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download=fname; document.body.appendChild(a); a.click(); setTimeout(function(){ try{ document.body.removeChild(a); URL.revokeObjectURL(url); }catch(e){} },2000); }catch(e){ toast('Could not save the PDF'); } }
+  function _pdfSafe(s){ s=String(s==null?'':s); try{ s=s.normalize('NFKD').replace(/[\u0300-\u036f]/g,''); }catch(e){} return s.replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g,'?'); }   // c12[9]: pdf-lib WinAnsi StandardFonts THROW on an un-encodable code point -> a non-Latin-1 customer/asset/signer name would ABORT the whole contract/receipt PDF. Transliterate accents to ASCII (NFKD + strip combining marks); map any remaining non-WinAnsi char to '?'.
   async function _buildPdf(title,blocks){ var P=window.PDFLib; var doc=await P.PDFDocument.create(); try{ doc.setTitle(title); }catch(e){}
     var font=await doc.embedFont(P.StandardFonts.Helvetica), bold=await doc.embedFont(P.StandardFonts.HelveticaBold);
     var W=612,H=792,M=54,y=H-M,page=doc.addPage([W,H]); var ink=P.rgb(0.07,0.09,0.12), mut=P.rgb(0.42,0.45,0.5), line=P.rgb(0.82,0.84,0.87);
     function np(){ page=doc.addPage([W,H]); y=H-M; } function room(h){ if(y-h<M) np(); }
     function wrap(text,f,size,maxW){ var words=String(text==null?'':text).split(/\s+/),lines=[],cur=''; for(var i=0;i<words.length;i++){ var w=words[i]; var tryc=cur?(cur+' '+w):w; if(f.widthOfTextAtSize(tryc,size)>maxW && cur){ lines.push(cur); cur=w; } else cur=tryc; } if(cur)lines.push(cur); return lines.length?lines:['']; }
-    function para(text,f,size,color,lead){ var ls=wrap(text,f,size,W-2*M); for(var i=0;i<ls.length;i++){ room(lead); page.drawText(ls[i],{x:M,y:y,size:size,font:f,color:color}); y-=lead; } }
+    function para(text,f,size,color,lead){ var ls=wrap(_pdfSafe(text),f,size,W-2*M); for(var i=0;i<ls.length;i++){ room(lead); page.drawText(ls[i],{x:M,y:y,size:size,font:f,color:color}); y-=lead; } }
     for(var i=0;i<blocks.length;i++){ var bl=blocks[i];
-      if(bl.h){ y-=6; room(20); page.drawText(String(bl.h),{x:M,y:y,size:13,font:bold,color:ink}); y-=18; }
+      if(bl.h){ y-=6; room(20); page.drawText(_pdfSafe(bl.h),{x:M,y:y,size:13,font:bold,color:ink}); y-=18; }
       else if(bl.p!=null){ para(bl.p,font,10.5,ink,15); }
       else if(bl.small!=null){ para(bl.small,font,8.5,mut,12); }
-      else if(bl.kv){ room(16); page.drawText(String(bl.kv[0]),{x:M,y:y,size:10,font:font,color:mut}); var vs=String(bl.kv[1]==null?'':bl.kv[1]); var vw=bold.widthOfTextAtSize(vs,10); page.drawText(vs,{x:Math.max(M,W-M-vw),y:y,size:10,font:bold,color:ink}); y-=16; }
+      else if(bl.kv){ room(16); page.drawText(_pdfSafe(bl.kv[0]),{x:M,y:y,size:10,font:font,color:mut}); var vs=_pdfSafe(bl.kv[1]==null?'':bl.kv[1]); var vw=bold.widthOfTextAtSize(vs,10); page.drawText(vs,{x:Math.max(M,W-M-vw),y:y,size:10,font:bold,color:ink}); y-=16; }
       else if(bl.hr){ room(12); page.drawLine({start:{x:M,y:y+4},end:{x:W-M,y:y+4},thickness:0.8,color:line}); y-=12; }
       else if(bl.sp){ y-=(bl.sp||8); } }
     return await doc.save(); }
