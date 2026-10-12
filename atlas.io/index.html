@@ -2123,14 +2123,25 @@ const Atlas = (function(){
   function _hidePolicyBanner(){ var b=document.getElementById('policyBanner'); if(b&&b.parentNode) b.parentNode.removeChild(b); }
   function policyAccept(){ if(!(ATLAS_BACKEND&&_apiCsrf)){ _hidePolicyBanner(); return; }
     _api('/api/policy/accept',{method:'POST',body:{}}).then(function(res){ if(res.json&&res.json.ok){ _hidePolicyBanner(); try{ var tid=store.session()&&store.session().tenantId; var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb){ _tb.tosVersion=res.json.version; _lsSet('atlas_tenant_'+tid,_tb); } }catch(e){} toast('Thank you -- your acceptance is recorded'); } else { toast('Could not record acceptance'); } }).catch(function(){ toast('Network error - please try again'); }); }
+  function _graftSrvPay(loc,srv){ if(!loc||!srv) return;   // S1: client mirror of the worker _graftServerPay -- when a LOCAL booking wins the newest-wins merge, still graft back the SERVER-authoritative payment/upload/idv/charge state the owner's device may not have synced yet (else a paid booking reads UNPAID, stickily)
+    if(srv.paid && typeof srv.paid==='object'){ if(!loc.paid||typeof loc.paid!=='object') loc.paid={}; for(var k in srv.paid) loc.paid[k]=srv.paid[k]; }   // webhook-written slots win
+    ['refundIds','refundedPIs'].forEach(function(f){ if(Array.isArray(srv[f])){ var arr=Array.isArray(loc[f])?loc[f]:[]; srv[f].forEach(function(x){ if(arr.indexOf(x)<0)arr.push(x); }); loc[f]=arr; } });
+    if(srv.portal && typeof srv.portal==='object'){ if(!loc.portal||typeof loc.portal!=='object') loc.portal={};
+      ['reservePaidAt','balancePaidAt','depositPaidAt'].forEach(function(f){ if(srv.portal[f]!=null) loc.portal[f]=srv.portal[f]; });
+      if(srv.portal.idv && (!loc.portal.idv || (srv.portal.idv.done && !loc.portal.idv.done))) loc.portal.idv=srv.portal.idv;
+      if(Array.isArray(srv.portal.uploads)){ var _uk=function(u){ return String((u&&u.id)||(String(u&&u.key)+'|'+(u&&u.at))); }; var _cu=Array.isArray(loc.portal.uploads)?loc.portal.uploads:[]; var _us={}; _cu.forEach(function(u){ _us[_uk(u)]=1; }); srv.portal.uploads.forEach(function(u){ if(!_us[_uk(u)]) _cu.push(u); }); loc.portal.uploads=_cu; } }
+    if(Array.isArray(srv.charges)){ if(!Array.isArray(loc.charges)) loc.charges=[]; var _byId={}; srv.charges.forEach(function(sc){ if(sc&&sc.id!=null) _byId[String(sc.id)]=sc; }); var _cs={}; loc.charges.forEach(function(cc){ if(cc&&cc.id!=null) _cs[String(cc.id)]=1; }); srv.charges.forEach(function(sc){ if(sc&&sc.id!=null&&!_cs[String(sc.id)]) loc.charges.push(sc); }); loc.charges.forEach(function(cc){ if(cc&&cc.id!=null&&_byId[String(cc.id)]){ var _sc=_byId[String(cc.id)]; if(_sc.paidOnline||_sc.paidAt!=null){ if(_sc.paidOnline)cc.paidOnline=_sc.paidOnline; if(_sc.paidAt!=null)cc.paidAt=_sc.paidAt; if(_sc.paidVia!=null)cc.paidVia=_sc.paidVia; } } }); } }
   function _srvMergeColl(lsKey,kind,rows,canPrune){ if(!rows) return; var local=_lsGet(lsKey,[])||[]; var byId={}, order=[], _srvIds={};
     local.forEach(function(x){ if(x&&x.id&&!byId[x.id]){ byId[x.id]=x; order.push(x.id); if(x._t) _seenT(x._t); } });
     rows.forEach(function(row){ var srv=_srvUnshape(kind,row); if(!srv||!srv.id) return; _srvIds[String(srv.id)]=1; _seenT(srv._t); var loc=byId[srv.id];   // #294: feed the monotonic clock so our next local stamp is after the server's newest; #19: record the COMPLETE server id set (rows come from _apiAll -> all pages) for the pb-mirror prune below
       if(!loc){ byId[srv.id]=srv; order.push(srv.id); _pushedHash[kind+':'+srv.id]=JSON.stringify(srv); }   // audit HIGH #16: adopted from server -> matches server, mark synced
       else if((srv._t||0)>(loc._t||0)){ byId[srv.id]=srv; _pushedHash[kind+':'+srv.id]=JSON.stringify(srv); }   // server newer -> adopt + mark synced
-      else if(kind==='bookings' && Array.isArray(srv.extensions) && Array.isArray(loc.extensions)){   // #extfix: local booking wins by _t, but never drop a server-recorded extension SIGNATURE (mirrors the worker _graftServerPay)
-        var _sx={}; srv.extensions.forEach(function(e){ if(e&&e.id!=null&&e.signedAt) _sx[String(e.id)]=e; });
-        loc.extensions.forEach(function(e){ if(e&&e.id!=null){ var s=_sx[String(e.id)]; if(s&&!e.signedAt){ e.signedAt=s.signedAt; if(s.signerName!=null)e.signerName=s.signerName; if(s.sigId!=null)e.sigId=s.sigId; } } }); }
+      else if(kind==='bookings'){   // S1: LOCAL booking wins by _t -- graft back the SERVER-authoritative PAYMENT + signature state the owner's device may not have synced (was: only the extension signature, so a paid booking could read UNPAID stickily after an unsynced edit)
+        _graftSrvPay(loc, srv);
+        if(Array.isArray(srv.extensions) && Array.isArray(loc.extensions)){
+          var _sx={}; srv.extensions.forEach(function(e){ if(e&&e.id!=null&&e.signedAt) _sx[String(e.id)]=e; });
+          loc.extensions.forEach(function(e){ if(e&&e.id!=null){ var s=_sx[String(e.id)]; if(s&&!e.signedAt){ e.signedAt=s.signedAt; if(s.signerName!=null)e.signerName=s.signerName; if(s.sigId!=null)e.sigId=s.sigId; } } });
+        } }
       });   // audit HIGH #16: when LOCAL wins, do NOT touch _pushedHash -> the local edit stays dirty and the next _srvSyncPush actually sends it (was set unconditionally to the LOCAL blob -> the edit was marked already-synced and silently never reached the server = cross-device data loss)
     // audit #19: PB-sync PRUNES stale pb-mirror rows server-side (DELETE), but this merge is a pure UNION, so a pruned
     // pb-mirror booking/asset lingered locally as a PHANTOM (calendar / KPIs / reports). Drop ONLY a server-origin
@@ -2261,7 +2272,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23bk';
+  var APP_VERSION='2026.7.23bl';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -2926,7 +2937,7 @@ const Atlas = (function(){
   function calcQuote(m, periods, addons, extras, discount, startsAt){
     m=m||{};
     if(periods && typeof periods==='object'){ var o=periods; periods=o.periods; addons=o.addons; extras=o.extras; discount=o.discount; startsAt=o.startsAt; }
-    periods=Math.max(1,periods||1); addons=addons||0; extras=extras||[];
+    periods=Math.max(1,Math.min(3650,periods||1)); addons=addons||0; extras=extras||[];
     var _bkMs=periods*_periodMsOf((m&&m.rateModel)||(S.money&&S.money.rateModel)||'day');   // booking length in ms, from rate-model periods
     var exLines=extras.map(function(x){ var each=(x.price||0)*(x.qty||1), amt;
       if(x.per==='unit') amt=each*periods;                                                              // legacy: per rate-model period
@@ -4522,9 +4533,9 @@ const Atlas = (function(){
   function _isDemoTenant(){ var s=store.session(); return !!(s && (s.tenantId==='demo'||s.tenantId==='demobig')); }
   // Real customers are derived from real bookings, so the Customers tab is always truthful (empty until they book).
   function _customersFromBookings(){ var map={}, now=Date.now();
-    (DATA.bookings||[]).forEach(function(b){ if(b.status==='Cancelled')return; var k=b.cust||'Guest';
-      if(!map[k]) map[k]={name:k,trips:0,spent:0,email:b.custEmail||'',_t:0};
-      map[k].trips++; map[k].spent+=_r2((b.quote&&b.quote.total)||0);   /* re-audit LOW: was Math.round (whole dollars) -> latent cents drift in per-customer spend; _r2 keeps cents (other spend surfaces already use exact totals) */
+    (DATA.bookings||[]).forEach(function(b){ if(b.status==='Cancelled')return; var _em=(b.custEmail||'').trim().toLowerCase(); var k=_em?('e:'+_em):('n:'+(b.cust||'Guest'));   // A5/P3: key by EMAIL when present so two DIFFERENT customers who share a name (different emails) no longer merge into one profile with each other's bookings; an email-less booking falls back to its name
+      if(!map[k]) map[k]={name:(b.cust||'Guest'),trips:0,spent:0,email:b.custEmail||'',_t:0};
+      map[k].trips++; map[k].spent+=_r2(_bkEarnedRev(b));   /* P4: "Spent" = what the customer has actually PAID (collected revenue), matching Analytics LTV + the Revenue KPI -- was gross quote.total (accrual incl tax, even unpaid), which disagreed with every cash surface. _r2 keeps cents. */
       var t=b.createdAt||b.startTs||0; if(t>map[k]._t){ map[k]._t=t; if(b.custEmail)map[k].email=b.custEmail; } });
     // X2: graft hydrated SERVER customers -- fill phone/id on email matches; surface server-only customers (created on another device or by a public booking that hasn't synced its booking row here yet).
     // PERF: index the map by lowercased email ONCE (O(m)) then look each server customer up in O(1) -- was a full map
@@ -5115,7 +5126,7 @@ const Atlas = (function(){
     const active=_bk.filter(b=>b.status==='On rent').filter(_inOvScope).length;   // On rent only -- Confirmed belongs to Upcoming (was double-counted in both KPIs)
     const util=(function(){var _ua=_scopeAssets();var _uw=_ua.reduce(function(s,a){return s+Math.max(1,Number(a.qty)||1);},0)||1;return Math.round(_ua.reduce(function(s,a){return s+(Number(a.util)||0)*Math.max(1,Number(a.qty)||1);},0)/_uw);})();   // A4: unit-weight the fleet utilization (see renderOverview)
     var _rb=document.getElementById('ovRangeBar'); if(_rb) _rb.innerHTML=
-      (_ovScope.dim!=='all'?'<span style="margin-right:auto;font-size:12px;color:var(--muted);align-self:center">Showing <b style="color:var(--ink)">'+esc(_ovScopeLabel())+'</b> &middot; revenue, utilization, bookings &amp; deposits reflect this filter; account ledger totals stay account-wide</span>':'')
+      (function(){ var _parts=[]; if(_ovScope.dim!=='all') _parts.push('<b style="color:var(--ink)">'+esc(_ovScopeLabel())+'</b>'); if(_ovRange!=='all') _parts.push('<b style="color:var(--ink)">'+esc((_ovRangeBounds(_ovRange)||{}).short||'date range')+'</b> (by '+esc(_fterm('book'))+' start date)'); return _parts.length?('<span style="margin-right:auto;font-size:12px;color:var(--muted);align-self:center">Showing '+_parts.join(' &middot; ')+' &middot; revenue, utilization, bookings &amp; deposits reflect this; account-ledger totals (expenses, other income, net, payout, balances, cancel losses, add-ons) stay account-wide &amp; all-time</span>'):''; })()   /* A2/A3: disclose that the date range buckets by BOOKING START DATE (not cash-collected date), and that the account-ledger KPIs ignore both the range and the scope -- the caption now shows whenever EITHER a scope OR a range is active (was scope-only, so a range silently applied to some KPIs with no note) */
       +'<select class="select" style="width:auto;font-size:13px;max-width:210px;margin-right:8px" onchange="Atlas.setOvScope(this.value)" title="Filter the KPIs by location, type or '+esc(_adNoun())+'">'+_ovScopeOptions()+'</select>'
       +'<select class="select" style="width:auto;font-size:13px" onchange="Atlas.setOvRange(this.value)" title="Revenue date range">'+OV_RANGES.map(function(r){return '<option value="'+r[0]+'"'+(_ovRange===r[0]?' selected':'')+'>'+r[1]+'</option>';}).join('')+'</select>';
     _renderOvKpis(rev,active,util);
@@ -6116,7 +6127,7 @@ const Atlas = (function(){
       if(_ao.maxLen>0 && w.periods>_ao.maxLen && !confirm(esc(asset)+' has a '+_ao.maxLen+'-'+_u+' maximum. Book '+w.periods+' anyway?')) return; }
     var _cf=_availabilityConflict(asset, w.startTs, w.endTs, editId);   // warn on double-book / blackout; owner can knowingly override
     if(_cf && !confirm(esc(asset)+' is '+(_cf.type==='blackout'?('blocked off for those dates ('+_cf.reason+')'):(_cf.type==='maintenance'?('marked out of service ('+_cf.reason+')'):('already booked for those dates ('+_cf.reason+')')))+'.\n\nBook it anyway?')) return;
-    var _blE=val('bkEmail'); if(_blE && _isBlacklisted(_blE)){ var _bm=_custMeta(String(_blE).toLowerCase()); if(!confirm('\u26d4 '+(cust||_blE)+' is on your blacklist'+(_bm.blacklistReason?(' -- '+_bm.blacklistReason):'')+'.\n\nBook anyway?')) return; }   // #blacklist: warn (owner can override), never hard-block
+    var _blE=val('bkEmail'), _blP=(document.getElementById('bkPhone')?val('bkPhone'):''); var _blHit=(_blE && _isBlacklisted(_blE))?_custMeta(String(_blE).toLowerCase()):_blPhoneHit(_blP); if(_blHit){ if(!confirm('\u26d4 '+(cust||_blE||'This customer')+' is on your blacklist'+(_blHit.blacklistReason?(' -- '+_blHit.blacklistReason):'')+'.\n\nBook anyway?')) return; }   // #blacklist / P5: warn on an EMAIL or PHONE match (server /book matches both); owner can override, never hard-block
     var q=calcQuote(mEff,{periods:w.periods,addons:0,extras:extras,discount:disc,startsAt:w.startTs});
     var b= editId? _getBooking(editId) : {id:_nextBkId(), createdAt:Date.now()};
     b.cust=cust; b.custEmail=val('bkEmail'); b.asset=asset; b.assetId=(_ao&&_ao.id)||b.assetId||undefined; b.rate=mEff.baseRate;   // #367: stamp the STABLE asset id so the conflict check survives a rename (name kept as the fallback)
@@ -6367,6 +6378,7 @@ const Atlas = (function(){
   function _normName(n){ try{ return String(n==null?'':n).toLowerCase().replace(/\s+/g,' ').trim(); }catch(e){ return ''; } }
   function _blacklistAdd(email,name,reason,phone){ try{ var key=String(email||'').toLowerCase(); if(!key) return false; var m=_custMeta(key); m.blacklisted=true; m.blacklistedAt=Date.now(); m.blacklistReason=String(reason||'').slice(0,300); if(name) m.blacklistName=name; var _p=_normPhone(phone); if(_p) m.blPhone=_p; var _nm=_normName(name); if(_nm) m.blName=_nm; return true; }catch(e){ return false; } }
   function _isBlacklisted(email){ try{ var key=String(email||'').toLowerCase(); return !!(key&&S.custMeta&&S.custMeta[key]&&S.custMeta[key].blacklisted); }catch(e){ return false; } }
+  function _blPhoneHit(phone){ try{ var p=_normPhone(phone); if(!p||!S.custMeta) return null; for(var k in S.custMeta){ var m=S.custMeta[k]; if(m&&m.blacklisted&&m.blPhone&&m.blPhone===p) return m; } return null; }catch(e){ return null; } }   // P5: match a blacklisted person rebooking under a NEW email but the SAME phone (mirrors the server /book blPhone match, which the owner's manual-booking warning was missing)
   function _blacklistRemove(email){ try{ var key=String(email||'').toLowerCase(); if(key&&S.custMeta&&S.custMeta[key]){ delete S.custMeta[key].blacklisted; delete S.custMeta[key].blacklistedAt; delete S.custMeta[key].blacklistReason; } return true; }catch(e){ return false; } }
   // Blacklist sync policy (tenant-wide): default is WARN-only (owner is flagged on every booking incl. website ones, but nothing is
   // blocked). Turning this ON makes the worker politely auto-decline PUBLIC-site bookings from any blacklisted email (settings.flags is
@@ -6652,8 +6664,8 @@ const Atlas = (function(){
   function doRepeat(id){ var b=_getBooking(id); if(!b)return; var everyRaw=val('rpEvery')||'month', count=parseInt(val('rpCount'))||3;
     var base=Number(b.startTs)||Date.now(), span=(Number(b.endTs)&&Number(b.endTs)>base)?(Number(b.endTs)-base):0, made=0, skipped=0;
     var _adv=function(n){ if(everyRaw==='month'){ var d=new Date(base); d.setMonth(d.getMonth()+n); return d.getTime(); } return base+(parseInt(everyRaw,10)||7)*86400000*n; };   // real calendar month for the monthly cadence (was a flat 30 days that drifted off-calendar); day-math for weekly/biweekly
-    for(var i=1;i<=count;i++){ var _st=_adv(i), _en=span?(_st+span):0;
-      if(span && typeof _availabilityConflict==='function' && _availabilityConflict(b.asset, _st, _en, null)){ skipped++; continue; }   // never silently stack an overlapping / blacked-out occurrence (the one recurring path that skipped the availability check)
+    for(var i=1;i<=count;i++){ var _st=_adv(i), _en=span?(_st+span):(_st+_periodMs()*Math.max(1,Number(b.periods)||1));
+      if(typeof _availabilityConflict==='function' && _availabilityConflict(b.asset, _st, _en, null)){ skipped++; continue; }   // never silently stack an overlapping / blacked-out occurrence (the one recurring path that skipped the availability check)
       var nb={}; for(var k in b) nb[k]=b[k];
       nb.id=_nextBkId(); nb.startTs=_st; nb.endTs=_en; nb.status='Confirmed'; nb.createdAt=Date.now(); nb.recurringOf=b.id;   // _nextBkId() = max id + 1 over ALL current bookings -> collision-proof
       nb.extras=b.extras?JSON.parse(JSON.stringify(b.extras)):[]; nb.discount=b.discount?JSON.parse(JSON.stringify(b.discount)):{type:'none',value:0};   // deep-clone so editing one occurrence never mutates the source or its siblings
@@ -7021,7 +7033,7 @@ const Atlas = (function(){
   function _bkActiveExt(b){ return (b&&b.extensions?b.extensions:[]).filter(function(e){ return e && !e._deleted; }); }
   function _bkExtPeriods(b){ return _bkActiveExt(b).reduce(function(s,e){ return s+(Number(e.addedPeriods)||0); },0); }
   function _bkBaseEndTs(b){ return Number(b.endTs)||((Number(b.startTs)||0)+(Math.max(1,Number(b.periods)||1))*_periodMs()); }
-  function _bkEffectiveEndTs(b){ if(!b) return 0; var base=_bkBaseEndTs(b), exts=_bkActiveExt(b).filter(function(e){ return (Number(e.addedPeriods)||0)>0; }); if(!exts.length) return base; var maxNew=0, allHaveNew=true; exts.forEach(function(e){ var ne=Number(e.newEndTs)||0; if(ne>maxNew)maxNew=ne; if(!(ne>0))allHaveNew=false; }); return allHaveNew ? Math.max(base,maxNew) : (base + exts.reduce(function(s,e){ return s+(Number(e.addedPeriods)||0); },0)*_periodMs()); }   // #avail-crit: an extension's effective end is its FROZEN signed newEndTs (captured at extend time), NOT addedPeriods * the LIVE rate model -- a later Pricing-model change must never retroactively move a signed extension's end (over-block / double-book). Mirrors worker _bkEffEndServer.
+  function _bkEffectiveEndTs(b){ if(!b) return 0; var base=_bkBaseEndTs(b), exts=_bkActiveExt(b).filter(function(e){ return (Number(e.addedPeriods)||0)>0; }); if(!exts.length) return base; var maxNew=0, allHaveNew=true, allHavePrev=true; exts.forEach(function(e){ var ne=Number(e.newEndTs)||0; if(ne>maxNew)maxNew=ne; if(!(ne>0))allHaveNew=false; if(!(Number(e.prevEndTs)>0))allHavePrev=false; }); return (allHaveNew&&allHavePrev) ? (base + exts.reduce(function(s,e){ return s+Math.max(0,(Number(e.newEndTs)||0)-(Number(e.prevEndTs)||0)); },0)) : allHaveNew ? Math.max(base,maxNew) : (base + exts.reduce(function(s,e){ return s+(Number(e.addedPeriods)||0); },0)*_periodMs()); }   // #avail-crit: effective end = base + the sum of each ACTIVE extension's FROZEN added duration (newEndTs - prevEndTs), when every active ext carries both stamps. Frozen => a later Pricing-model change never moves a signed extension's end; SUMMED per active ext (B2 fix) => removing a non-LAST extension no longer leaves a stale absolute maxNew that baked in the removed one (was over-holding + under-billing). A legacy ext lacking prevEndTs falls back to the old max(newEndTs). Mirrors worker _bkEffEndServer.
   function _extRate(b){ var r=(b&&b.rate!=null)?b.rate:((_moneyFor(b&&b.asset)||S.money).baseRate||S.money.baseRate||0); return Number(r)||0; }   // the booking's LOCKED rate (falls back to the asset's current rate)
   function _extSuggest(b,n){ n=Math.max(1,parseInt(n,10)||1); var m=_moneyFor(b&&b.asset)||S.money; var mult=_smartRateMult(m,_bkEffectiveEndTs(b),n,m.rateModel||S.money.rateModel); var pre=_r2(_extRate(b)*n*mult); var t=(S.money.tax||0)/100; return {pre:pre, tax:_r2(pre*t), total:_r2(pre*(1+t))}; }   // pre-tax rental for the added periods + tax -> tax-inclusive total (charges store the tax-inclusive amount, tax is extracted for reporting)
   var _extAmtEdited=false;
@@ -7723,7 +7735,7 @@ const Atlas = (function(){
     var _byCust={}; _nc.forEach(b=>{ _byCust[b.cust]=(_byCust[b.cust]||0)+1; });
     var _cu=Object.keys(_byCust), _rep=_cu.filter(c=>_byCust[c]>=2).length, _repPct=_cu.length?Math.round(_rep/_cu.length*100):0;
     _renderAnaKpis();   // customizable Analytics KPI grid (same registry as the Overview, own S.anaKpis order)
-    var _perAsset={}; _nc.forEach(b=>{ _perAsset[b.asset]=(_perAsset[b.asset]||0)+((b.quote&&b.quote.total)||0); });
+    var _perAsset={}; _nc.forEach(b=>{ _perAsset[b.asset]=(_perAsset[b.asset]||0)+_bkEarnedRev(b); });   // A6: realized/collected revenue (matches the Revenue KPI + cohort LTV), not gross quote.total
     var _tlEl=document.getElementById('topList'); if(_tlEl) _tlEl.innerHTML=(DATA.assets||[]).map(a=>({a:a,rev:Math.round(_perAsset[a.name]||0)})).sort((x,y)=>(y.rev-x.rev)||(y.a.util-x.a.util)).slice(0,5).map((o,i)=>`<div class="util-row" style="cursor:pointer" onclick="Atlas.openAsset('${o.a.id}')">
       <div class="util-row__t"><b>${i+1}. ${esc(o.a.name)}</b><small>${money(o.rev)} booked &middot; ${o.a.util}% ${_fterm('occ')}</small><div class="bar"><i style="width:${o.a.util}%"></i></div></div>
       <span class="util-row__pct tnum">${o.a.util}%</span></div>`).join('');
@@ -9432,6 +9444,7 @@ const Atlas = (function(){
     var _tmpl=null, _wantsSingle=false;
     if(!_aioCouncilOn && !_wantsPlan){ if(!_aioIsAdvisory(_low)) _tmpl=aioReply(q); if(_tmpl===null && ATLAS_BACKEND && _apiCsrf) _wantsSingle=true; }   // call aioReply ONCE (side-effects fire once); null = unrecognized -> escalate. #tokens: a big ADVISORY ask (plan/strategy/analysis) skips the canned recognizer too -> escalates to a real single-model answer (proper tokens), never a narrow canned 'set pricing'
     var _srvEnforced=(ATLAS_BACKEND && _apiCsrf && (_aioCouncilOn || _wantsPlan || _wantsSingle));   // the live council/planner/single spend + enforce credits SERVER-side and return the balance
+    if(ATLAS_BACKEND && !_apiCsrf && (_wantsPlan || _aioCouncilOn)){ _aioSignedOut(); return; }   // AI4: a message that WOULD route to the live planner/council has no live session (expired CSRF) -> show the signed-out notice WITHOUT burning a local credit (the live path shows _aioSignedOut anyway, but only AFTER _spendCredit)
     if(!_srvEnforced && !_spendCredit(1)){
       setTimeout(function(){ aioMsg('bot','You are out of Atlas.io credits for this week. Your free '+_curTier().credits.toLocaleString()+' refill Monday &mdash; or grab more now.<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.openCredits()">Buy credits</button>'); }, 300);
       return;
@@ -9471,7 +9484,7 @@ const Atlas = (function(){
       { ok:!!pay.provider, key:'pay', label:'Connect payments', detail:pay.provider?('Connected'):('Connect Stripe so you actually get paid, not just quoted.') },
       { ok:sitePub, key:'site', label:'Publish your booking site', detail:sitePub?('Live'):('Your public booking link is not live yet -- publish to start taking bookings.') }
     ]; }
-  function aioFix(k){ try{ closeAio(); }catch(e){} _aioEmit('applied','diagnose.'+String(k||''),'good');   // #288: owner acted on a diagnosed gap = a good outcome
+  function aioFix(k){ try{ closeAio(); }catch(e){} _aioEmit('diagnose','diagnose.'+String(k||''),'neutral');   // #288: owner acted on a diagnosed gap = a good outcome
     if(k==='fleet'){ try{ go('fleet'); }catch(e){} }
     else if(k==='site'){ try{ if(typeof openWebsite==='function') openWebsite(); else go('website'); }catch(e){} }
     else if(k==='brand'){ try{ goSettings('brand'); }catch(e){} }
@@ -10758,7 +10771,7 @@ const Atlas = (function(){
   // Email defaults ON (they gave one at signup); SMS defaults OFF -- no number, no consent, so it is never assumed.
   function _notifyCfg(){ if(!S.notify||typeof S.notify!=='object') S.notify={email:true,sms:false,phone:''}; if(S.notify.email==null) S.notify.email=true; return S.notify; }
   function _notifyPhone(){ try{ return String(_notifyCfg().phone||'').replace(/[^0-9+]/g,''); }catch(e){ return ''; } }
-  function setNotify(k,v){ if(!_isOwnerAcct()&&!_canCap('settings')){ toast('Notification settings are not in your access'); return; } var n=_notifyCfg();
+  function setNotify(k,v){ if(!_isOwnerAcct()&&!_canMod('settings')){ toast('Notification settings are not in your access'); return; } var n=_notifyCfg();
     if(k==='phone'){ n.phone=String(v||'').slice(0,24); if(n.phone&&!/[0-9]{7}/.test(n.phone.replace(/[^0-9]/g,''))){ toast('That does not look like a full mobile number'); } }
     else n[k]=!!v;
     if(k==='sms'&&v&&!_notifyPhone()) toast('Add your mobile number below so texts can send');
@@ -14107,10 +14120,10 @@ const Atlas = (function(){
     t.appendChild(document.createTextNode(_ts));   // #sec: msg becomes a TEXT node -- a decoded "<" OR a raw public-form customer name shows literally and can NEVER execute (stored XSS stays closed)
     w.appendChild(t); setTimeout(()=>{t.style.opacity='0';t.style.transform='translateY(8px)';setTimeout(()=>t.remove(),300);},2400); }
   function copyPortal(){ const u=S.brand.subdomain+'.atlasrental.io/portal'; try{navigator.clipboard.writeText('https://'+u);}catch(e){} toast('Portal link copied'); }
-  function setBrandName(v){S.brand.name=v;S.brand.initial=(v.trim()[0]||'Y').toUpperCase();save();buildApp();buildSettings();toast('Brand updated');}
-  function setBrandColor(c){S.brand.color=c;save();applyBrand();renderSet();buildApp();}
-  function setBrandColorHex(v){var h=_normHex(v);if(h){S.brand.color=h;save();applyBrand();buildApp();}}   // no renderSet() -> keeps the hex field focused while typing
-  function setLogo(inp){const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{S.brand.logo=e.target.result;save();buildApp();renderSet();toast('Logo updated');};r.readAsDataURL(f);}
+  function setBrandName(v){if(!_canMod('settings'))return;S.brand.name=v;S.brand.initial=(v.trim()[0]||'Y').toUpperCase();save();buildApp();buildSettings();toast('Brand updated');}
+  function setBrandColor(c){if(!_canMod('settings'))return;S.brand.color=c;save();applyBrand();renderSet();buildApp();}
+  function setBrandColorHex(v){if(!_canMod('settings'))return;var h=_normHex(v);if(h){S.brand.color=h;save();applyBrand();buildApp();}}   // no renderSet() -> keeps the hex field focused while typing
+  function setLogo(inp){if(!_canMod('settings'))return;const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{S.brand.logo=e.target.result;save();buildApp();renderSet();toast('Logo updated');};r.readAsDataURL(f);}
   // Business hours / phone / contact email -- no dedicated Settings field exists for these yet, so these three
   // tiny setters exist mainly so Atlas.io (AIO_ACTIONS profile.setHours/setPhone/setEmail) has a real setter to
   // call, matching the setBrandName pattern. Self-gated (RBAC) since nothing else guards them today.
