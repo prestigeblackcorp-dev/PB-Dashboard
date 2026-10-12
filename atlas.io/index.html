@@ -2015,7 +2015,7 @@ const Atlas = (function(){
   // stamps a newer _t on every dirty record) BEFORE hydrating, so the newest-wins merge can never strand/clobber a local
   // edit; it skips a hidden tab and any open modal (never yanks the UI mid-edit); and it re-renders ONLY when the booking
   // COUNT actually grew (a genuinely new booking), so it is silent otherwise. Toggling the owner flag takes effect next tick.
-  var _livePolling=false;
+  var _livePolling=false, _livePollDeferredBuild=false;   // defer a live-poll re-render if a modal opened during the async hydrate -> buildApp on the next closeModal instead of yanking the modal out mid-edit
   function _livePollTick(){
     try{
       if(_livePolling||document.hidden) return;
@@ -2029,7 +2029,8 @@ const Atlas = (function(){
       try{ _srvSyncPush(); }catch(e){}
       _srvHydrate(tid).then(function(){
         var after=(typeof _bookings==='function'?_bookings():[]).length;
-        if(after>before){ try{ if(typeof buildApp==='function') buildApp(); }catch(e){} try{ toast((after-before)+' new booking'+((after-before)>1?'s':'')); }catch(e){} }
+        if(after>before){ var _sc2=document.getElementById('modalScrim'); if(_sc2&&_sc2.classList.contains('on')){ _livePollDeferredBuild=true; }   // a modal opened DURING the async hydrate -> don't rebuild under it; refresh when it closes (data is already hydrated into _bookings())
+          else { try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } try{ toast((after-before)+' new booking'+((after-before)>1?'s':'')); }catch(e){} }
       }).catch(function(){}).then(function(){ _livePolling=false; });
     }catch(e){ _livePolling=false; }
   }
@@ -2258,7 +2259,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23be';
+  var APP_VERSION='2026.7.23bf';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -11230,7 +11231,7 @@ const Atlas = (function(){
   }
   function copyEmbed(){ var t=document.getElementById('embedCode'); if(t){ try{ t.select(); navigator.clipboard.writeText(t.value); }catch(e){} } toast('Embed snippet copied'); }
   function openModal(html){ openModal._lastFocus=document.activeElement; var _m=document.getElementById('modal'); _m.innerHTML=html; try{ var _h=_m.querySelector('h3'); if(_h) _m.setAttribute('aria-label',(_h.textContent||'').trim().slice(0,80)); }catch(e){} document.getElementById('modalScrim').classList.add('on'); try{ _m.setAttribute('tabindex','-1'); _m.focus(); }catch(e){} if(!openModal._escBound){ openModal._escBound=1; document.addEventListener('keydown',function(e){ var _s=document.getElementById('modalScrim'); if(!_s||!_s.classList.contains('on')) return; if(e.key==='Escape'){ closeModal(); return; } if(e.key==='Tab'){ var _md=document.getElementById('modal'); var _f=Array.prototype.slice.call(_md.querySelectorAll('a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type=hidden]),select:not([disabled]),[tabindex]:not([tabindex="-1"])')).filter(function(el){ return el.offsetWidth>0||el.offsetHeight>0||el===document.activeElement; }); if(!_f.length){ e.preventDefault(); try{_md.focus();}catch(_e){} return; } var _first=_f[0],_last=_f[_f.length-1],_a=document.activeElement; if(!_md.contains(_a)){ e.preventDefault(); _first.focus(); return; } if(e.shiftKey&&_a===_first){ e.preventDefault(); _last.focus(); } else if(!e.shiftKey&&_a===_last){ e.preventDefault(); _first.focus(); } } }); } }   // #a11y WCAG 2.4.3: trap Tab within the open modal (was: Tab escaped to the page behind); Escape still closes
-  function closeModal(){ document.getElementById('modalScrim').classList.remove('on'); try{ if(openModal._lastFocus&&openModal._lastFocus.focus) openModal._lastFocus.focus(); }catch(e){} }
+  function closeModal(){ document.getElementById('modalScrim').classList.remove('on'); try{ if(openModal._lastFocus&&openModal._lastFocus.focus) openModal._lastFocus.focus(); }catch(e){} if(_livePollDeferredBuild){ _livePollDeferredBuild=false; try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } }   // flush a live-poll refresh that was held back while this modal was open
 
   /* ============================== misc ============================== */
   function finish(){ _captureOB(); S.onboarded=true; S.onboardStarted=false;
