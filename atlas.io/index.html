@@ -2274,7 +2274,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23bq';
+  var APP_VERSION='2026.7.23br';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -4674,7 +4674,7 @@ const Atlas = (function(){
   function _bkAddons(b){ var ex=(b&&b.extras)||[]; if(!ex.length)return 0; var per=Math.max(1,Number(b.periods)||1); var rm=(S.money&&S.money.rateModel)||'day'; var _bkMs=per*_periodMsOf(rm);
     return ex.reduce(function(s,x){ var each=(Number(x.price)||0)*(Number(x.qty)||1), amt; if(x.per==='unit') amt=each*per; else if(x.per==='hour'||x.per==='pday'||x.per==='week'||x.per==='pmonth') amt=each*Math.max(1,Math.ceil(_bkMs/_periodMsOf(x.per))); else amt=each; return s+amt; },0); }   // per-booking add-on $ -- mirrors calcQuote exLines
   function _addonRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkAddons(b);},0); }
-  function _remainingBalance(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ if(b.status==='Voided') return s; return s+Math.max(0,_r2(_bkTotal(b)-_bkEarned(b)-_bkRefunded(b)-_giftApplied(b))); },0); }   // audit c9 [11]: add back refunds (GROSS collected) so a refunded booking shows $0 owed, not a phantom receivable = the refund   // total not yet collected (Voided=cancelled-kept-DL: trip never happened, nothing owed). cycle-3 #8: subtract gift-card credit -- revenue_cents only reflects card captures, so a gift-settled balance is NOT still owed (server _portalDue nets it; the KPI must match or it chases an already-paid customer)
+  function _remainingBalance(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ if(b.status==='Voided') return s; return s+Math.max(0,_r2(_bkTotal(b)-_bkOwedEarned(b)-_bkRefunded(b)-_giftApplied(b))); },0); }   // audit c9 [11]: add back refunds (GROSS collected) so a refunded booking shows $0 owed, not a phantom receivable = the refund   // total not yet collected (Voided=cancelled-kept-DL: trip never happened, nothing owed). cycle-3 #8: subtract gift-card credit -- revenue_cents only reflects card captures, so a gift-settled balance is NOT still owed (server _portalDue nets it; the KPI must match or it chases an already-paid customer)
   function _cancelLoss(){ return (DATA.bookings||[]).filter(function(b){return b&&b.status==='Cancelled';}).reduce(function(s,b){ return s+Math.max(0,_r2(_bkTotal(b)-_collectedCharges(b))); },0); }   // lost revenue on cancelled, net of kept fee   // take-home subtracts partner payouts AND remitted sales tax (a pass-through liability, not income)
   // Generic drill-down modal: lists the line items behind any number, each optionally clickable.
   function _drill(title, sub, rows, opts){ opts=opts||{};
@@ -5090,7 +5090,7 @@ const Atlas = (function(){
     else { title='Deposits held'; note='Refundable security deposits currently authorized (held, not captured) - released at $0 fee when the '+esc(_fterm('book'))+' closes clean.'; pred=function(b){var _h=_depHoldView(b);return _h&&_h.status==='authorized'&&(Number(_h.amount)||0)>0;}; amt=function(b){var _h=_depHoldView(b);return Number(_h&&_h.amount)||0;}; }
     var rows=(DATA.bookings||[]).filter(_inOvScope).filter(pred).map(function(b){return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:amt(b),onClick:"Atlas.openBooking('"+b.id+"')"};});
     _drill(title,(note||'')+(_ovScope.dim!=='all'?(' &middot; '+esc(_ovScopeLabel())):''),rows,{empty:'Nothing here right now.'}); }
-  function drillUnpaid(){ var rows=(DATA.bookings||[]).filter(_isCommitted).map(function(b){ var o=Math.max(0,_r2(_bkTotal(b)-_bkEarned(b)-_bkRefunded(b)-_giftApplied(b))); return o>0.005?{label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:o,onClick:"Atlas.openBooking('"+b.id+"')"}:null; }).filter(Boolean);   /* audit c9 [11]: GROSS collected (add back refunds) so drill matches _remainingBalance -- a refund is not a receivable */   /* cycle-3 #8: net gift-card credit (match _remainingBalance + the server) so a fully gift-settled booking is not listed as still owing */
+  function drillUnpaid(){ var rows=(DATA.bookings||[]).filter(_isCommitted).map(function(b){ var o=Math.max(0,_r2(_bkTotal(b)-_bkOwedEarned(b)-_bkRefunded(b)-_giftApplied(b))); return o>0.005?{label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:o,onClick:"Atlas.openBooking('"+b.id+"')"}:null; }).filter(Boolean);   /* audit c9 [11]: GROSS collected (add back refunds) so drill matches _remainingBalance -- a refund is not a receivable */   /* cycle-3 #8: net gift-card credit (match _remainingBalance + the server) so a fully gift-settled booking is not listed as still owing */
     _drill('Balance owed','Outstanding balance across your committed '+esc(_fterm('books'))+' - value not yet collected.',rows,{empty:'Everything is paid up.'}); }
   function drillCancelLoss(){ var rows=(DATA.bookings||[]).filter(function(b){return b&&b.status==='Cancelled';}).map(function(b){ var l=Math.max(0,_r2(_bkTotal(b)-_collectedCharges(b))); return l>0.005?{label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||''),amt:l,onClick:"Atlas.openBooking('"+b.id+"')"}:null; }).filter(Boolean);
     _drill('Cancellation losses','Revenue lost to cancelled '+esc(_fterm('books'))+', net of any kept fee.',rows,{empty:'No cancellation losses.'}); }
@@ -5590,6 +5590,13 @@ const Atlas = (function(){
   // REVENUE/INCOME rollup (Overview KPI, Analytics, Reports, source split, drill-downs, tax/QuickBooks) so they all tie out.
   // NOTE: customer "spend" + loyalty deliberately stay on _bkTotal (rental only) -- you don't reward points on a damage fee.
   function _bkEarned(b){ if(b && typeof b.revCents==='number') return _r2(b.revCents/100 + _offlineCollectedCharges(b)); return _bkTotal(b) + _collectedCharges(b); }
+  // RECEIVABLES ("Balance owed"/"Uncollected"/record-payment): a COMMITTED-but-unpaid booking carries the quote TOTAL in revenue_cents
+  // as a G5 accrual ESTIMATE (worker _offSessionCreditBooking) -> _bkEarned reads ~full-total and the booking wrongly shows $0 owed. The
+  // estimate is REPLACED with real cash on the FIRST core payment, so trust _bkEarned only once a real payment exists; before that rental-
+  // earned is 0 (just any offline charge). Leaves every PAID booking's receivables math identical; only an unpaid committed booking changes
+  // (0 owed -> full owed). _bkEarned itself (the accrual REVENUE rollup) is untouched, so revenue KPIs stay accrual.
+  function _bkHasCorePayment(b){ var P=(b&&b.paid)||{}; for(var k in P){ var pp=P[k]; if(pp && !pp.hold && k!=='security' && String(k).indexOf('#')<0 && String(k).indexOf('charge:')!==0 && (Number(pp.amountCents)||0)>0) return true; } return false; }   // mirrors worker _hadCorePrior: a real reserve/balance/installment/manual/partial payment slot exists
+  function _bkOwedEarned(b){ return _bkHasCorePayment(b) ? _bkEarned(b) : _offlineCollectedCharges(b); }   // earned-for-RECEIVABLES: real cash once paid, else 0 rental (ignore the unreplaced G5 estimate)
   // audit c9 [11]: total refunded back to the customer on this booking (sum of the per-slot server refund stamps). revCents is NET of
   // refunds, so "Balance owed" (total - earned) wrongly re-counted a refund as a receivable (a goodwill/dispute refund is money the
   // owner CHOSE to return, not money the customer owes again). Adding this back makes balance = total - GROSS-collected -> a refunded
@@ -6348,14 +6355,14 @@ const Atlas = (function(){
   function bkSaveCard(id){ var b=_getBooking(id); if(!b)return; toast('Opening secure card setup...'); _api('/api/booking/setup-card',{method:'POST',body:{bookingId:id}}).then(function(r){ var j=(r&&r.json)||{}; if(j.ok&&j.url){ try{ window.open(j.url,'_blank'); }catch(e){ location.href=j.url; } toast('Secure card page opened \u2014 the saved card shows here once entered.'); } else { toast(j.message||'Could not start card setup.'); } }).catch(function(){ toast('Could not reach the payment server.'); }); }
   // G3 (PB parity): offline / owner-collected payment recording (cash, check, Zelle, Venmo). Always available -- no processor needed.
   function _recordPayHtml(b){
-    var due=0; try{ due=Math.max(0,_r2(_bkTotal(b)-_bkEarned(b)-_bkRefunded(b)-_giftApplied(b))); }catch(e){}
+    var due=0; try{ due=Math.max(0,_r2(_bkTotal(b)-_bkOwedEarned(b)-_bkRefunded(b)-_giftApplied(b))); }catch(e){}
     var man=[]; try{ var P=(b.paid)||{}; for(var k in P){ if(k.indexOf('manual:')===0){ var s=P[k]; man.push('<div style="font-size:11.5px;color:var(--muted)">'+_stamp(s.at)+' &middot; '+money((Number(s.amountCents)||0)/100)+' &middot; '+esc(String(s.method||'other'))+(s.note?(' &middot; '+esc(s.note)):'')+'</div>'); } } }catch(e){}
     return '<div class="cond-sub">Took cash, a check, Zelle or Venmo? Record it so the booking shows paid and your books stay accurate.'+(due>0?(' Still owed: <b>'+money(due)+'</b>.'):' Fully collected.')+'</div>'
       +(man.length?('<div style="margin-top:6px">'+man.join('')+'</div>'):'')
       +'<div style="margin-top:8px"><button class="btn btn--brand btn--sm" onclick="Atlas.bkRecordPayment(\''+b.id+'\')">Record a payment</button></div>';
   }
   function bkRecordPayment(id){ if(!_guard('billing','Recording payments'))return; var b=_getBooking(id); if(!b)return;   // G3: a proper modal form (was window.prompt() x3, which is blocked in sandboxed iframes + some native webviews)
-    var due=0; try{ due=Math.max(0,_r2(_bkTotal(b)-_bkEarned(b)-_bkRefunded(b)-_giftApplied(b))); }catch(e){}
+    var due=0; try{ due=Math.max(0,_r2(_bkTotal(b)-_bkOwedEarned(b)-_bkRefunded(b)-_giftApplied(b))); }catch(e){}
     openModal('<div class="modal__head"><h3>Record a payment</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="bk-lenhint" style="margin:0 0 10px">Cash, check, Zelle, Venmo or any off-card payment you collected'+(due>0?(' &mdash; still owed <b>'+money(due)+'</b>'):'')+'. It is added to the booking and your books.</div>'
       +'<div class="row2"><div class="field"><label>Amount received</label><input class="input tnum" id="rpAmt" type="number" min="0" step="0.01" value="'+(due>0?due.toFixed(2):'')+'" placeholder="0.00"></div>'
