@@ -2274,7 +2274,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23bs';
+  var APP_VERSION='2026.7.23bt';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -11799,6 +11799,10 @@ const Atlas = (function(){
       +'<div class="field"><label>Show only</label><select class="select" id="siteScope">'+_scopedLinkOptions(scVal)+'</select></div>'
       +'<div class="field"><label>Headline <span style="color:var(--muted);font-weight:400;font-size:12px">(optional &mdash; the big line on this site)</span></label><input class="input" id="siteHeadline" value="'+esc(s.headline||'')+'" placeholder="'+esc('Rent with '+((S.brand&&S.brand.name)||'us'))+'" maxlength="120"></div>'
       +'<div class="field"><label>About <span style="color:var(--muted);font-weight:400;font-size:12px">(optional)</span></label><textarea class="input" id="siteAbout" rows="3" maxlength="600" placeholder="A short intro shown on this site">'+esc(s.about||'')+'</textarea></div>'
+      +'<div class="field"><label>Design <span style="color:var(--muted);font-weight:400;font-size:12px">(optional &mdash; give this site its own look; blank = match your main site)</span></label>'
+        +'<div class="row2"><select class="select" id="siteStyle"><option value="">Style &mdash; match main site</option>'+WEB_TEMPLATES.map(function(_t){ return '<option value="'+_t[0]+'"'+(((s.theme&&s.theme.style)===_t[0])?' selected':'')+'>'+esc(_t[1])+'</option>'; }).join('')+'</select>'
+        +'<select class="select" id="siteFont"><option value="">Font &mdash; match main site</option>'+WEB_FONTS.map(function(_f){ return '<option value="'+_f[0]+'"'+(((s.theme&&s.theme.font)===_f[0])?' selected':'')+'>'+esc(_f[1])+'</option>'; }).join('')+'</select></div>'
+        +'<div class="row2" style="margin-top:6px"><input class="input" id="siteAccent" value="'+esc((s.theme&&s.theme.accent)||'')+'" placeholder="Accent #hex (e.g. #0A3D62)" maxlength="9"><input class="input" id="siteAccent2" value="'+esc((s.theme&&s.theme.accent2)||'')+'" placeholder="2nd accent #hex (optional)" maxlength="9"></div></div>'
       +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px"><button class="btn btn--ghost" onclick="Atlas.closeModal()">Cancel</button><button class="btn btn--primary" onclick="Atlas.webSiteSave(\''+esc(s.id||'')+'\')">'+(isEdit?'Save':'Create site')+'</button></div></div>'); }
   function webSiteCreate(){ if(!_guard('webEdit','Creating a site'))return; var capN=_siteCap(); if(capN!==Infinity && _publicSites().length>=capN){ toast('You have reached your plan site limit'); return; } _siteFormModal(null); }
   function webSiteEdit(id){ var s=_publicSites().filter(function(x){return x&&x.id===id;})[0]; if(s) _siteFormModal(s); }
@@ -11806,8 +11810,14 @@ const Atlas = (function(){
     var name=(val('siteName')||'').trim(); if(!name){ toast('Give your site a name'); return; }
     var scv=val('siteScope')||'all', scope; if(scv==='all'){ scope={dim:'all',val:''}; } else { var i=scv.indexOf(':'); scope={dim:scv.slice(0,i),val:scv.slice(i+1)}; }
     var headline=(val('siteHeadline')||'').trim(), about=(val('siteAbout')||'').trim(), arr=_publicSites();
-    if(id){ var s=arr.filter(function(x){return x&&x.id===id;})[0]; if(!s){ toast('Site not found'); return; } s.name=name; s.scope=scope; s.headline=headline; s.about=about; }
-    else { arr.push({ id:'st_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), name:name, slug:_siteSlugUniq(name), scope:scope, headline:headline, about:about, published:true, createdAt:Date.now() }); }
+    var _thStyle=(val('siteStyle')||'').trim(), _thFont=(val('siteFont')||'').trim();
+    var _thA1r=(val('siteAccent')||'').trim(), _thA2r=(val('siteAccent2')||'').trim();
+    var _thA1=_thA1r?_aioHex(_thA1r):'', _thA2=_thA2r?_aioHex(_thA2r):'';
+    if(_thA1r && !_thA1){ toast('Accent must be a hex like #0A3D62'); return; }
+    if(_thA2r && !_thA2){ toast('2nd accent must be a hex like #10161C'); return; }
+    var _theme=undefined; if(_thStyle||_thFont||_thA1||_thA2){ _theme={}; if(_thStyle)_theme.style=_thStyle; if(_thFont)_theme.font=_thFont; if(_thA1)_theme.accent=_thA1; if(_thA2)_theme.accent2=_thA2; }   // per-site DESIGN -> worker _serveNamedSite re-themes this site (public + portals); blank = inherit main site
+    if(id){ var s=arr.filter(function(x){return x&&x.id===id;})[0]; if(!s){ toast('Site not found'); return; } s.name=name; s.scope=scope; s.headline=headline; s.about=about; s.theme=_theme; }
+    else { arr.push({ id:'st_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), name:name, slug:_siteSlugUniq(name), scope:scope, headline:headline, about:about, theme:_theme, published:true, createdAt:Date.now() }); }
     closeModal(); _persistSites(function(ok){ try{ renderWebsite(); }catch(e){} toast(ok?(id?'Site saved':'Site created \u2014 link is live'):'Saved \u2014 will sync when online'); }); }
   function webSitePubToggle(id){ if(!_guard('webEdit','Publishing a site'))return; var s=_publicSites().filter(function(x){return x&&x.id===id;})[0]; if(!s)return; s.published=(s.published===false); _persistSites(function(){ try{ renderWebsite(); }catch(e){} toast(s.published?'Site published':'Site unpublished'); }); }
   function webSiteDelete(id){ if(!_guard('webEdit','Deleting a site'))return; var s=_publicSites().filter(function(x){return x&&x.id===id;})[0]; if(!s)return; if(!confirm('Delete the site "'+(s.name||s.slug)+'"? Its link will stop working.'))return; S.publicSites=_publicSites().filter(function(x){return x&&x.id!==id;}); _persistSites(function(){ try{ renderWebsite(); }catch(e){} toast('Site deleted'); }); }
