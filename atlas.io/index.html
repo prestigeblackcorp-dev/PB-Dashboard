@@ -2274,7 +2274,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23bw';
+  var APP_VERSION='2026.7.23bx';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -12185,13 +12185,42 @@ const Atlas = (function(){
     if(a1){ setBrandColor(a1); }   // primary accent = brand color; setBrandColor re-themes + re-renders (incl. this tab)
     else { save(); renderWebsite(); }
     toast('Accent colors updated'); }
-  function _webDesignHtml(){ var w=_web();
-    return '<div class="field"><label>Font</label><select class="select" onchange="Atlas.setWebFont(this.value)">'+WEB_FONTS.map(function(f){ return '<option value="'+f[0]+'"'+(((w.font||'system')===f[0])?' selected':'')+'>'+esc(f[1])+'</option>'; }).join('')+'</select></div>'
-      +'<div class="field"><label>Template</label><select class="select" onchange="Atlas.setWebTemplate(this.value)">'+WEB_TEMPLATES.map(function(t){ return '<option value="'+t[0]+'"'+(((w.template||'classic')===t[0])?' selected':'')+'>'+esc(t[1])+'</option>'; }).join('')+'</select></div>'
+  // A tiny live preview of one template's look (hero band + two fleet cards + CTA, in that template's treatment), rendered
+  // in the owner's own brand color (var(--brand)) so the gallery shows the real differences -- gradient vs solid vs
+  // outline, radius, dark mode, serif. Clicking it selects the template. Mirrors the worker _siteThemeStyle signatures.
+  function _tplSwatch(key,label,sel){
+    var B='var(--brand)';
+    var M={
+      classic:{g:'#f6f7f9',hero:'#fff;border:1px solid #e6e6e6;color:#111',cr:'5px',cbd:'#eaeaea',btn:B,bcr:'7px'},
+      luxury:{g:'#faf9f7',hero:'linear-gradient(135deg,'+B+',#10161c);color:#fff',cr:'9px',cbd:'#efece6',btn:'#10161c',bcr:'20px',ff:"Georgia,serif"},
+      bold:{g:'#fff',hero:B+';color:#fff',cr:'4px',cbd:'#141414',cbw:'2px',btn:'#141414',bcr:'4px',up:1},
+      minimal:{g:'#fff',hero:'#fff;border:1px solid #eee;color:'+B,cr:'3px',cbd:'#ededed',btn:'transparent;border:1.5px solid '+B,bcr:'3px'},
+      coastal:{g:'#f1f6f8',hero:B+';color:#fff',hcr:'10px',cr:'12px',cbd:'#e3edf1',btn:B,bcr:'20px'},
+      editorial:{g:'#fbfbf8',hero:'#fff;border-bottom:3px solid '+B+';color:#141414',cr:'2px',cbd:'#e3e1d9',btn:B,bcr:'0',ff:"Georgia,serif"},
+      noir:{g:'#0e1116',hero:'linear-gradient(135deg,'+B+',#0e1116);color:#fff',cr:'7px',cc:'#1d222b',cbd:'rgba(255,255,255,.14)',btn:B,bcr:'6px',dark:1},
+      vibrant:{g:'#fff',hero:'linear-gradient(120deg,'+B+',#7a3fd6);color:#fff',cr:'9px',cbd:'#eee',btn:'linear-gradient(120deg,'+B+',#7a3fd6)',bcr:'20px'}
+    };
+    var m=M[key]||M.classic, cardbg=m.cc||'#fff';
+    var mcard='height:13px;border-radius:'+m.cr+';background:'+cardbg+';border:'+(m.cbw||'1px')+' solid '+m.cbd+';flex:1';
+    return '<button type="button" onclick="Atlas.setWebTemplate(\''+key+'\')" title="'+esc(label)+'" aria-pressed="'+(sel?'true':'false')+'" style="all:unset;cursor:pointer;display:block;width:98px;box-sizing:border-box;border-radius:11px;padding:6px;background:'+m.g+';border:2px solid '+(sel?B:'rgba(0,0,0,.09)')+';'+(m.ff?('font-family:'+m.ff+';'):'')+'">'
+      +'<div style="height:20px;border-radius:'+(m.hcr||'5px')+';background:'+m.hero+';display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;'+(m.up?'text-transform:uppercase;letter-spacing:.5px':'')+'">Aa</div>'
+      +'<div style="display:flex;gap:4px;margin-top:5px"><div style="'+mcard+'"></div><div style="'+mcard+'"></div></div>'
+      +'<div style="height:8px;margin-top:5px;border-radius:'+m.bcr+';background:'+m.btn+'"></div>'
+      +'<div style="font-size:10.5px;font-weight:600;text-align:center;margin-top:5px;color:'+(m.dark?'#9aa1ac':'#444')+';line-height:1.2">'+esc(label)+(sel?' \u2713':'')+'</div>'
+      +'</button>';
+  }
+  function _webDesignHtml(){ var w=_web(); var cur=w.template||'classic';
+    return '<div class="field"><label>Template <span style="color:var(--muted);font-weight:500;font-size:12px">(tap a look &mdash; your whole site restyles to match)</span></label>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:5px">'+WEB_TEMPLATES.map(function(t){ return _tplSwatch(t[0],t[1],cur===t[0]); }).join('')+'</div></div>'
+      +'<div class="field"><label>Font</label><select class="select" onchange="Atlas.setWebFont(this.value)">'+WEB_FONTS.map(function(f){ return '<option value="'+f[0]+'"'+(((w.font||'system')===f[0])?' selected':'')+'>'+esc(f[1])+'</option>'; }).join('')+'</select></div>'
       +'<div class="row2"><div class="field"><label>Accent color</label><input class="input" id="webAccent1" placeholder="#C6A15B" value="'+esc(S.brand.color||'')+'"></div>'
       +'<div class="field"><label>Second accent <span style="color:var(--muted);font-weight:500">(optional)</span></label><input class="input" id="webAccent2" placeholder="#10161C" value="'+esc(w.accent2||'')+'"></div></div>'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.setWebAccent()">Apply colors</button>'
-      +'<div class="bk-lenhint" style="margin:8px 0 0">Accents take a hex like <b>#C6A15B</b> or <b>#FFF</b>. The first sets your brand color across the dashboard, site and emails.</div>'; }
+      +'<div class="bk-lenhint" style="margin:8px 0 0">Accents take a hex like <b>#C6A15B</b> or <b>#FFF</b>. The first sets your brand color across the dashboard, site and emails.</div>'
+      +'<div style="border-top:1px solid var(--line);margin:14px 0 0;padding-top:12px"><div style="font-weight:600;font-size:13px">Want something completely different?</div>'
+      +'<div class="desc" style="margin:2px 0 8px">None of the eight fit? Have Atlas design a <b>one-of-one</b> site &mdash; a unique, custom-built multi-section page shaped around your brand and '+esc(_adNouns())+', beyond the templates.</div>'
+      +'<button class="btn btn--primary btn--sm" id="aiDesignSiteBtn" onclick="Atlas.aiDesignSite()">Design a one-of-one site with Atlas</button>'
+      +(_webUndo?'<button class="btn btn--ghost btn--sm" style="margin-left:6px" onclick="Atlas.webUndoDesign()">&#8630; Undo</button>':'')+'</div>'; }
   function _webFaqHtml(){ return '<div id="webFaqBox">'+_webFaqInner()+'</div>'; }
   function _webRefreshFaq(){ var el=document.getElementById('webFaqBox'); if(el) el.innerHTML=_webFaqInner(); }
   function _webFaqInner(){ var w=_web(), faq=Array.isArray(w.faq)?w.faq:[];
@@ -12964,10 +12993,7 @@ const Atlas = (function(){
       +'</div>'
       +'<div class="set-block"><h3>FAQ</h3><div class="desc">Answer common questions right on your site.</div>'+_webFaqHtml()+'</div>'
       +'<div class="set-block"><h3>Blog / Content</h3><div class="desc">Publish posts, news and guides &mdash; each becomes a page on your site, great for SEO and returning customers. Atlas.io can also draft one from chat.</div>'+_webPostsHtml()+'</div>'
-      +'<div class="set-block"><h3>Pages</h3><div class="desc">Build freeform pages from sections &mdash; a landing page, about, services, anything. Reorder with the arrows; each gets its own <b>/p/</b> link. Atlas.io can also make one from chat.</div>'
-        +'<button class="btn btn--primary btn--full" id="aiDesignSiteBtn" onclick="Atlas.aiDesignSite()">Design my site with Atlas</button>'
-        +(_webUndo?'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:6px" onclick="Atlas.webUndoDesign()">&#8630; Undo last change</button>':'')
-        +'<div class="bk-lenhint" style="margin:8px 0 12px">Atlas composes a full, on-brand multi-section page from your real fleet and details -- then you edit anything.</div>'
+      +'<div class="set-block"><h3>Pages</h3><div class="desc">Build freeform pages from sections &mdash; a landing page, about, services, anything. Reorder with the arrows; each gets its own <b>/p/</b> link. Use <b>Design a one-of-one site</b> under Design &amp; brand to have Atlas compose a full custom page, or add one from chat.</div>'
         +_webPagesHtml()+'</div>'
       +'<div class="set-block"><h3>Sections</h3><div class="desc">Show or hide parts of your site.</div>'
         +'<label class="cfg-check"><input type="checkbox" '+(w.showFleet?'checked':'')+' onchange="Atlas.toggleWebSection(\'showFleet\',this.checked)">Fleet listings ('+DATA.assets.length+' '+esc(_adNouns())+')</label>'
