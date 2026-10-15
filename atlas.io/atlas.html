@@ -2279,7 +2279,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23cb';
+  var APP_VERSION='2026.7.23cc';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -5225,6 +5225,9 @@ const Atlas = (function(){
     };
     return D[String(type||'').toLowerCase()]||[];
   }
+  // Phase 5b: an asset's specs as display-ready [{l:label, v:value}] (built from the type's field defs) for the published
+  // snapshot -> the booking page shows "Length 42 ft / Max guests 12" etc. undefined when none set (snapshot byte-identical).
+  function _assetSpecsLabeled(a){ try{ var sd=_assetSpecDefs(a&&a.type), sp=(a&&a.specs)||{}; if(!sd.length) return undefined; var out=[]; sd.forEach(function(d){ var v=sp[d[0]]; if(v!=null && String(v).trim()) out.push({l:String(d[1]).slice(0,28), v:String(v).slice(0,60)}); }); return out.length?out:undefined; }catch(e){ return undefined; } }
   // Unit detail: edit the unit + its current tenant/renter. Read-only for workers without fleetEdit.
   function openAsset(id){ var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return; var t=a.tenant||{}, ro=!_canCap('fleetEdit'), dis=ro?' disabled':'';
     var rl=(_fterm('book')==='reservation')?'tenant':'renter', locL=cap(_fterm('loc'));
@@ -11811,7 +11814,7 @@ const Atlas = (function(){
   function _publicSiteAssets(){ return (DATA.assets||[]).filter(function(a){return (a.status||'')!=='Maintenance';}).map(function(a){
     var m=(typeof _moneyFor==='function')?_moneyFor(a.name):null; var rate=(m&&m.baseRate!=null&&m.baseRate!=='')?m.baseRate:((a.rate!=null&&a.rate!=='')?a.rate:S.money.baseRate);   // audit c8 [14]: preserve a deliberate $0 asset rate (comp/loaner/promotional) -- the || chain coalesced a real 0 to the base rate so a free asset could never publish free (paired with the worker priceQuote fix). Only an ABSENT rate (null/empty) falls back to base.
     var _secFix=((m&&m!==S.money&&m.hold&&m.hold.type==='fixed')?(Number(m.hold.value)||0):(Number(a.deposit)||0));   // PARITY: resolved FIXED security -> the legacy `deposit` field (worker priceQuote ~2773 converts it to the refundable hold). Kept so an OLD worker still honors fixed security during the deploy window; the new worker prefers secType/secValue below.
-    var o={ id:a.id||undefined, name:a.name, rate:Number(rate)||0, type:a.type||'', loc:String(a.loc||''), photo:a.photo||'', desc:a.desc||'', minLen:Number(a.minLen)||0, maxLen:Number(a.maxLen)||0, blackouts:Array.isArray(a.blackouts)?a.blackouts:[], qty:Math.max(1,parseInt(a.qty,10)||1), turnaround:(a.turnaround!=null&&String(a.turnaround)!=='')?Math.max(0,parseInt(a.turnaround,10)||0):undefined, extraIds:Array.isArray(a.extraIds)?a.extraIds:undefined, weeklyRate:Number(a.weeklyRate)||0, deposit:_secFix };
+    var o={ id:a.id||undefined, name:a.name, rate:Number(rate)||0, type:a.type||'', loc:String(a.loc||''), photo:a.photo||'', desc:a.desc||'', minLen:Number(a.minLen)||0, maxLen:Number(a.maxLen)||0, blackouts:Array.isArray(a.blackouts)?a.blackouts:[], qty:Math.max(1,parseInt(a.qty,10)||1), turnaround:(a.turnaround!=null&&String(a.turnaround)!=='')?Math.max(0,parseInt(a.turnaround,10)||0):undefined, extraIds:Array.isArray(a.extraIds)?a.extraIds:undefined, weeklyRate:Number(a.weeklyRate)||0, deposit:_secFix, specs:_assetSpecsLabeled(a) };   // Phase 5b: per-type specs (labeled [{l,v}]) ride the published snapshot so the booking page can show them
     if(m && m!==S.money){ var _g=S.money||{};   // FULL per-type money -> public channel: stamp the RESOLVED per-type/per-asset money (discounts/reserve/security) the new worker priceQuote reads, ONLY when it differs from the global defaults so a no-override asset's snapshot stays byte-identical
       if(m.weeklyDisc!=null && Number(m.weeklyDisc)!==(Number(_g.weeklyDisc)||0)) o.wkDisc=Number(m.weeklyDisc)||0;
       if(m.monthlyDisc!=null && Number(m.monthlyDisc)!==(Number(_g.monthlyDisc)||0)) o.moDisc=Number(m.monthlyDisc)||0;
