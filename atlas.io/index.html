@@ -2279,7 +2279,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23cc';
+  var APP_VERSION='2026.7.23cd';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -11862,9 +11862,10 @@ const Atlas = (function(){
   function _siteSlugUniq(name){ var base=_postSlug(name)||'site'; var ex={}; _publicSites().forEach(function(s){ if(s&&s.slug) ex[s.slug]=1; }); if(!ex[base]) return base; var n=2; while(ex[base+'-'+n]) n++; return base+'-'+n; }
   function _subSiteLink(slug){ return _bookingLink()+'/s/'+slug; }
   function _siteScopeLabel(sc){ if(!sc||!sc.dim||sc.dim==='all') return 'Everything (full fleet)'; if(sc.dim==='type'){ var t=_typeById(sc.val); return 'Type: '+((t&&t.label)||sc.val); } return (sc.dim==='loc'?'Location: ':(cap(_adNoun())+': '))+sc.val; }
-  function _persistSites(cb){ try{ save(); }catch(e){} try{ renderWebsite(); }catch(e){}   // local-first: reflect the change in the UI instantly, then confirm via the server PUT below
+  function _persistSites(cb){ var _ktv=_monoNow(); try{ if(!S._kt||typeof S._kt!=='object')S._kt={}; S._kt.publicSites=_ktv; }catch(e){}   // #SYNC future-clobber fix: stamp with the MONOTONIC clock, NOT raw Date.now(). _monoNow()=max(Date.now(),_lastSyncT+1), and _lastSyncT has absorbed the server's stored _kt.publicSites on hydrate (_srvMergeProfile _seenT), so this explicit save ALWAYS clears the server's _its>=_cts newest-wins test -- raw Date.now() could sit BELOW a future/ratcheted server stamp (clock skew or rapid churn) and silently lose, making the owner's site edit PUT 200 but never persist. Also set S._kt.publicSites locally so the state stays self-consistent and a queued/offline retry carries the winning stamp.
+    try{ save(); }catch(e){} try{ renderWebsite(); }catch(e){}   // local-first: reflect the change in the UI instantly, then confirm via the server PUT below
     if(!ATLAS_BACKEND || !_apiCsrf){ if(cb)cb(true); return; }
-    _api('/api/tenant/profile',{method:'PUT',body:{ settings:{ publicSites:_publicSites(), _kt:{publicSites:Date.now()} } }}).then(function(res){ if(cb)cb(res.status>=200&&res.status<300&&res.json&&res.json.ok); }).catch(function(){ if(cb)cb(false); }); }
+    _api('/api/tenant/profile',{method:'PUT',body:{ settings:{ publicSites:_publicSites(), _kt:{publicSites:_ktv} } }}).then(function(res){ if(cb)cb(res.status>=200&&res.status<300&&res.json&&res.json.ok); }).catch(function(){ if(cb)cb(false); }); }
   function _webSitesHtml(){ if(!_bookingSitePublished()) return '';
     var sites=_publicSites();
     var rows = sites.length ? sites.map(function(s){ var link=_subSiteLink(s.slug), pub=s.published!==false;
@@ -11980,7 +11981,7 @@ const Atlas = (function(){
     var payload={ subdomain:slug, name:S.brand.name,
       brand:{ color:S.brand.color, logo:S.brand.logo, initial:S.brand.initial, name:S.brand.name },
       money:S.money,   /* audit: send the FULL money, NOT a reduced legacy subset -- the server REPLACES the money column wholesale (worker ~12604, no per-key merge), so a reduced publish payload transiently wiped byType/byTypeCfg/hold/rules/discounts/payout server-side until the next full save() restored them (fragile: a failed post-publish save left them lost). save() already sends money:S.money, so this is identical + robust. */
-      settings:{ comms:_comms(), publicSite:{ published:true, headline:_web().headline||('Rent with '+S.brand.name), about:_web().about||'', assets:_publicSiteAssets(), config:_publicSiteConfig() }, _kt:{publicSite:Date.now()} } };   // LIVE-TEST fix: stamp _kt.publicSite=now so this DELIBERATE publish wins the server's #294 per-key newest-wins settings merge (worker ~12465); without it the publicSite write lost to a newer server _kt stamp and the publish silently no-op'd -> added inventory never reached the live booking site.
+      settings:{ comms:_comms(), publicSite:{ published:true, headline:_web().headline||('Rent with '+S.brand.name), about:_web().about||'', assets:_publicSiteAssets(), config:_publicSiteConfig() }, _kt:{publicSite:_monoNow()} } };   // LIVE-TEST fix: stamp _kt.publicSite so this DELIBERATE publish wins the server's #294 per-key newest-wins settings merge (worker ~12465); without it the publicSite write lost to a newer server _kt stamp and the publish silently no-op'd -> added inventory never reached the live booking site. #SYNC: use _monoNow() not raw Date.now() -- a future/ratcheted server _kt.publicSite would otherwise still beat a raw present-time stamp; _monoNow()=max(Date.now(),_lastSyncT+1) rides above the server stamp absorbed on hydrate, so publish never silently loses.
     toast('Publishing\u2026');
     _api('/api/tenant/profile',{method:'PUT',body:payload}).then(function(res){
       if(res.status>=200&&res.status<300&&res.json&&res.json.ok){ var w=_web(); w.published=true; w.publishedSlug=res.json.subdomain||slug; w.pubSig=_sitePubSig(); save(); renderWebsite(); toast('Booking site published \u2014 your link is live'); }
@@ -12005,7 +12006,7 @@ const Atlas = (function(){
       var payload={ subdomain:w.publishedSlug, name:S.brand.name,
         brand:{ color:S.brand.color, logo:S.brand.logo, initial:S.brand.initial, name:S.brand.name },
         money:S.money,   /* audit: send the FULL money, NOT a reduced legacy subset -- the server REPLACES the money column wholesale (worker ~12604, no per-key merge), so a reduced publish payload transiently wiped byType/byTypeCfg/hold/rules/discounts/payout server-side until the next full save() restored them (fragile: a failed post-publish save left them lost). save() already sends money:S.money, so this is identical + robust. */
-        settings:{ comms:_comms(), publicSite:{ published:true, headline:(last.h||''), about:(last.ab||''), assets:fresh, config:last.c }, _kt:{publicSite:Date.now()} } };   // LIVE-TEST fix: stamp _kt.publicSite=now so the auto-sync's publicSite write wins the server #294 merge (same bug as publishBookingSite) -- otherwise added inventory silently never auto-published.
+        settings:{ comms:_comms(), publicSite:{ published:true, headline:(last.h||''), about:(last.ab||''), assets:fresh, config:last.c }, _kt:{publicSite:_monoNow()} } };   // LIVE-TEST fix: stamp _kt.publicSite so the auto-sync's publicSite write wins the server #294 merge (same bug as publishBookingSite) -- otherwise added inventory silently never auto-published. #SYNC: _monoNow() not raw Date.now() so a future/ratcheted server stamp can't silently defeat the auto-publish.
       _api('/api/tenant/profile',{method:'PUT',body:payload}).then(function(res){
         if(res && res.status>=200 && res.status<300 && res.json && res.json.ok){
           var w2=_web(); w2.pubSig=JSON.stringify({a:fresh,c:last.c,h:(last.h||''),ab:(last.ab||'')}); save();   // re-stamp so the auto-synced assets are NOT flagged as "unpublished changes" (design edits still are)
