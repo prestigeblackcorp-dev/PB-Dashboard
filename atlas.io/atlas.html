@@ -1562,6 +1562,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
             </div>
           </div>
           <div id="fleetLocs"></div>
+          <div class="card" id="maintModuleCard" style="margin-bottom:18px"><div class="card__head"><h3>Maintenance &amp; blocked days</h3><button class="btn btn--primary btn--sm" onclick="Atlas.blockDaysQuick()">+ Block days</button></div><div class="card__body" id="maintModuleBody"></div></div>
           <div class="asset-grid" id="assetGrid"></div>
         </section>
 
@@ -1607,6 +1608,10 @@ body.trk-fs-on .trk-fs-exit{display:grid}
           <div class="card" style="margin-top:18px">
             <div class="card__head"><h3>Income &amp; Expenses</h3><span style="font-size:11px;color:var(--muted)">tap any figure to drill in</span></div>
             <div class="card__body" id="ledgerBody"></div>
+          </div>
+          <div class="card" style="margin-top:18px">
+            <div class="card__head"><h3>Expenses</h3><button class="btn btn--primary btn--sm" onclick="Atlas.logExpense()">+ Add expense</button></div>
+            <div class="card__body" id="expModuleBody"></div>
           </div>
           <div class="card" style="margin-top:18px">
             <div class="card__head"><h3>Profit &amp; Loss</h3><div id="pnlControls" style="display:flex;gap:6px;flex-wrap:wrap"></div></div>
@@ -2274,7 +2279,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23ca';
+  var APP_VERSION='2026.7.23cb';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -4924,6 +4929,21 @@ const Atlas = (function(){
       {totalLabel:'Total expenses', empty:'No expenses in this period.', foot:'<button class="btn btn--primary btn--full btn--sm" style="margin-top:12px" onclick="Atlas.logLedger(\'expense\')">+ Log an expense</button>'}); }
   function logIncome(){ logLedger('income'); }
   function logExpense(){ logLedger('expense'); }
+  // Expenses MODULE (Analytics): a real, scannable expenses surface -- this-month total, top-category bars, and a recent
+  // list -- on top of the existing rich logging (categories, receipts, recurring, per-asset). "+ Add expense" lives in the
+  // card head. Everything flows into the Profit & Loss. Theme-safe tokens.
+  function _expensesModuleHtml(){
+    var exps=_activeExpenses();
+    if(!exps.length){ return '<div class="bk-lenhint" style="margin:0">No expenses yet. Track fuel, insurance, maintenance, cleaning, fees, payroll and more &mdash; each one flows into your Profit &amp; Loss automatically, can repeat monthly, and takes a receipt photo. Tap <b>+ Add expense</b> to log your first.</div>'; }
+    var byCat=_monthExpenseByCat(), monthTotal=0; Object.keys(byCat).forEach(function(c){ monthTotal+=Number(byCat[c])||0; });
+    var cats=Object.keys(byCat).sort(function(a,b){ return byCat[b]-byCat[a]; }).slice(0,5);
+    var maxV=cats.length?(byCat[cats[0]]||1):1;
+    var bars=cats.length?('<div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">'+cats.map(function(c){ var pct=Math.max(5,Math.round((byCat[c]||0)/maxV*100)); return '<div style="display:flex;align-items:center;gap:10px"><span style="flex:0 0 132px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(c)+'</span><div style="flex:1;height:8px;background:var(--surface-2);border-radius:5px;overflow:hidden"><div style="width:'+pct+'%;height:100%;background:var(--brand);border-radius:5px"></div></div><b class="tnum" style="flex:0 0 auto;font-size:12.5px;min-width:64px;text-align:right">'+money(byCat[c])+'</b></div>'; }).join('')+'</div>'):'<div class="bk-lenhint" style="margin:10px 0 0">Nothing logged yet this month.</div>';
+    var recent=exps.slice().sort(function(a,b){ return (Number(b.date)||0)-(Number(a.date)||0); }).slice(0,6);
+    var list='<div style="margin-top:14px">'+recent.map(function(x){ var d=new Date(Number(x.date)||0), ds=isNaN(d.getTime())?'':d.toLocaleDateString(undefined,{month:'short',day:'numeric'}); return '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line)"><div style="flex:1;min-width:0"><div style="font-size:13.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(x.label||x.category||'Expense')+(x.recurring?' <span class="chip chip--muted" style="font-size:10px;padding:0 6px;vertical-align:1px">recurs</span>':'')+'</div><div style="font-size:11.5px;color:var(--muted)">'+esc(ds)+(x.category?(' &middot; '+esc(x.category)):'')+'</div></div><b class="tnum" style="color:var(--danger);white-space:nowrap">'+money(x.amount)+'</b></div>'; }).join('')+'</div>';
+    return '<div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap"><div><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">This month</div><div class="tnum" style="font-size:26px;font-weight:800">'+money(monthTotal)+'</div></div><span style="flex:1"></span><button class="btn btn--ghost btn--sm" onclick="Atlas.drillLedger(\'expense\')">View all ('+exps.length+')</button></div>'+bars+list;
+  }
+  function _renderExpensesModule(){ var el=document.getElementById('expModuleBody'); if(el) el.innerHTML=_expensesModuleHtml(); }
   // ---- Budgets: per-category MONTHLY spending ceiling vs this-month actual (from the expense ledger). Additive display + set-modal. ----
   function _budgets(){ if(!S.budgets||typeof S.budgets!=='object') S.budgets={}; return S.budgets; }
   function _monthStart(){ var d=new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).getTime(); }
@@ -4982,6 +5002,22 @@ const Atlas = (function(){
       +'<div class="mp-row mp-total" style="cursor:pointer" onclick="Atlas.drillKpi(\'net\')"><span>Net Profit</span><b class="tnum">'+money(_netProfit())+'</b></div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.logIncome()">+ Log income</button><button class="btn btn--ghost btn--sm" onclick="Atlas.logExpense()">+ Log expense</button></div>'; }
   /* ---- Blocked / unavailable days per asset ---- */
+  // Maintenance & day-blocker MODULE: a fleet-wide view of what needs service + what is blocked off the calendar, plus a
+  // one-tap "Block days" that works for any asset. Built on the existing per-asset service plan + blackout primitives.
+  function _maintModuleHtml(){
+    var as=(DATA.assets||[]); var today=new Date(); today.setHours(0,0,0,0); var t0=today.getTime();
+    var due=as.filter(function(a){ var d=_serviceDue(a); return d.tracked && (d.overdue||d.soon); }).sort(function(a,b){ return (_serviceDue(b).overdue?1:0)-(_serviceDue(a).overdue?1:0); });
+    var blocked=[]; as.forEach(function(a){ _blackouts(a).forEach(function(x){ if((Number(x.to)||0)>=t0) blocked.push({a:a,x:x}); }); });
+    blocked.sort(function(p,q){ return (Number(p.x.from)||0)-(Number(q.x.from)||0); });
+    var svcH=due.length?('<div style="display:flex;flex-direction:column;margin-top:2px">'+due.map(function(a){ return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)"><div style="flex:1;min-width:0"><div style="font-size:13.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(a.name)+'</div><div style="margin-top:3px">'+_serviceDueBadge(a)+'</div></div><button class="btn btn--ghost btn--sm" onclick="Atlas.assetLogService(\''+esc(a.id)+'\')">Log service</button></div>'; }).join('')+'</div>'):'<div class="bk-lenhint" style="margin:6px 0 0">Every '+esc(_adNoun())+' with a service plan is up to date.</div>';
+    var blkH=blocked.length?('<div style="display:flex;flex-direction:column;margin-top:2px">'+blocked.slice(0,12).map(function(p){ return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)"><div style="flex:1;min-width:0"><div style="font-size:13.5px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+esc(p.a.name)+'</div><div style="font-size:11.5px;color:var(--muted)">'+_csvDate(p.x.from)+' &rarr; '+_csvDate(p.x.to)+(p.x.reason?(' &middot; '+esc(p.x.reason)):'')+'</div></div><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.maintUnblock(\''+esc(p.a.id)+'\',\''+esc(p.x.id)+'\')">Remove</button></div>'; }).join('')+'</div>'):'<div class="bk-lenhint" style="margin:6px 0 0">Nothing blocked. Use <b>+ Block days</b> for maintenance, off-season or personal use &mdash; blocked days can\'t be booked.</div>';
+    return '<div style="font-size:11.5px;font-weight:750;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Service due'+(due.length?(' &middot; '+due.length):'')+'</div>'+svcH
+      +'<div style="font-size:11.5px;font-weight:750;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:16px">Blocked days'+(blocked.length?(' &middot; '+blocked.length):'')+'</div>'+blkH;
+  }
+  function _renderMaintModule(){ var el=document.getElementById('maintModuleBody'); if(el) el.innerHTML=_maintModuleHtml(); }
+  function maintUnblock(aid,bid){ if(!_guard('fleetEdit','Unblocking days'))return; var a=(DATA.assets||[]).filter(function(x){return x.id===aid;})[0]; if(!a)return; a.blackouts=(_blackouts(a)||[]).filter(function(x){return x.id!==bid;}); try{ if(typeof _saveAssets==='function')_saveAssets(); }catch(e){} save(); _renderMaintModule(); toast('Block removed'); }
+  function blockDaysQuick(){ if(!_guard('fleetEdit','Blocking days'))return; var as=(DATA.assets||[]); if(!as.length){ toast('Add '+_adNouns()+' first'); return; }
+    openModal('<div class="modal__head"><h3>Block days</h3>'+_xBtn()+'</div><div class="modal__body"><div class="desc" style="margin-bottom:12px">Pick a '+esc(_adNoun())+', then choose the dates to keep off the calendar (maintenance, personal use, off-season).</div><div class="field"><label>Which '+esc(_adNoun())+'?</label><select class="select" id="blkPick">'+as.map(function(a){ return '<option value="'+esc(a.id)+'">'+esc(a.name)+'</option>'; }).join('')+'</select></div><button class="btn btn--primary btn--full" onclick="var _id=document.getElementById(\'blkPick\').value; Atlas.closeModal(); Atlas.assetBlock(_id);">Next: pick dates</button></div>'); }
   function _blackouts(a){ if(!a.blackouts) a.blackouts=[]; return a.blackouts; }
   function _blackoutHtml(a){ var bs=_blackouts(a); if(!bs.length) return '<div class="bk-lenhint" style="margin:0">No blocked days. Block a range to keep it off the calendar (maintenance, personal use, off-season).</div>';
     return '<div style="display:flex;flex-direction:column;gap:6px">'+bs.slice().sort(function(x,y){return (x.from||0)-(y.from||0);}).map(function(x){ return '<div class="mp-row"><span>'+_csvDate(x.from)+' &rarr; '+_csvDate(x.to)+(x.reason?' <span style="font-size:11.5px;color:var(--muted)">'+esc(x.reason)+'</span>':'')+'</span><button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:2px 7px" onclick="Atlas.assetUnblock(\''+a.id+'\',\''+x.id+'\')">Remove</button></div>'; }).join('')+'</div>'; }
@@ -5541,6 +5577,7 @@ const Atlas = (function(){
     var _mOd=_mDue.filter(function(o){return o.d.overdue;}), _mSn=_mDue.filter(function(o){return o.d.soon;});
     var _maintBanner=_mDue.length?('<div style="grid-column:1/-1;background:'+(_mOd.length?'rgba(178,42,32,.09)':'rgba(176,120,20,.10)')+';border:1px solid '+(_mOd.length?'rgba(178,42,32,.30)':'rgba(176,120,20,.30)')+';border-radius:12px;padding:11px 14px;margin-bottom:2px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-weight:800;color:var(--ink)">&#128295; '+(_mOd.length?(_mOd.length+' '+esc(_mOd.length===1?S.fleet.noun:S.fleet.nouns)+' overdue for service'):(_mSn.length+' '+esc(_mSn.length===1?S.fleet.noun:S.fleet.nouns)+' due for service soon'))+'</b>'+((_mOd.length&&_mSn.length)?('<span style="color:var(--muted);font-size:12px">+'+_mSn.length+' due soon</span>'):'')+(S.autoHoldOverdue?'<span class="chip chip--muted" style="font-size:10.5px">auto-hold on</span>':'')+'</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">'+_mDue.slice(0,8).map(function(o){return '<button class="btn btn--ghost btn--sm" onclick="Atlas.openAsset(\''+o.a.id+'\')">'+esc(o.a.name)+' &middot; '+esc(o.d.label||'service')+'</button>';}).join('')+'</div></div>'):'';
     var locs=_assetLocs(), locsEl=document.getElementById('fleetLocs'), grid=document.getElementById('assetGrid');
+    try{ _renderMaintModule(); }catch(e){}   // fleet-wide maintenance + blocked-days module above the grid
     if(locs){ var names=Object.keys(locs);
       document.getElementById('fleetSub').textContent=`${n} ${_adNouns()} \u00b7 ${_fleetUnits()} units across ${names.length} ${_multiType()?(names.length===1?'location':'locations'):_fterm(names.length===1?'loc':'locs')} on ${_curTier().name} \u00b7 ${avail} available now`;   // LIVE-TEST fix: multi-type Assets header reads generic "assets / locations" (was the primary type's "vessels / marinas")
       locsEl.innerHTML='<div class="loc-grid">'+names.map(function(L){ var arr=locs[L], av=arr.filter(function(a){return a.status==='Available';}).length, occ=Math.round(arr.reduce(function(s,a){return s+a.util;},0)/arr.length);
@@ -7800,6 +7837,7 @@ const Atlas = (function(){
       <div class="util-row__t"><b>${i+1}. ${esc(o.a.name)}</b><small>${money(o.rev)} booked &middot; ${o.a.util}% ${_fterm('occ')}</small><div class="bar"><i style="width:${o.a.util}%"></i></div></div>
       <span class="util-row__pct tnum">${o.a.util}%</span></div>`).join('');
     var _lb=document.getElementById('ledgerBody'); if(_lb) _lb.innerHTML=_ledgerCardHtml();
+    _renderExpensesModule();
     try{ _loadMoney(); }catch(e){}
     _renderBudgetCard();
     renderPnl();
@@ -14364,7 +14402,7 @@ const Atlas = (function(){
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,addLocation,removeLocation,editLocation,saveLocationEdit,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,_vehPhotoPick,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetPhotoAdd,assetPhotoRmGallery,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
-    drillKpi,ovCustomizeKpis,ovCustomizeAna,ovKpiToggle,ovKpiMove,ovKpiSave,ovKpiDragStart,ovKpiDrop,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,setOvScope,_anaDrillSet,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,
+    drillKpi,ovCustomizeKpis,ovCustomizeAna,ovKpiToggle,ovKpiMove,ovKpiSave,ovKpiDragStart,ovKpiDrop,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,setOvScope,_anaDrillSet,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,blockDaysQuick,maintUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,pnlRevDrill,pnlNetDrill,pnlExpDrill,assetPnlSetPeriod,renderPnl,
     renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,webScopedLinkPick,copyScopedLink,webSiteCreate,webAutoSites,webSiteEdit,webSiteSave,webSitePubToggle,webSiteDelete,webSiteCopy,webSiteDomainModal,webSiteDomainConnect,webSiteDomainVerify,webSiteDomainDisconnect,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,webMetaImageUpload,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
