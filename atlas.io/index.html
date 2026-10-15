@@ -2274,7 +2274,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23bz';
+  var APP_VERSION='2026.7.23ca';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -5568,8 +5568,31 @@ const Atlas = (function(){
   /* ---- Bookings module (persisted per-tenant collection, priced by the money engine) ---- */
   const BK_STATUSES=['Pending','Confirmed','On rent','Returned','Completed','Cancelled','Voided'];   // G3: 'Returned' = came back, awaiting close-out (inspect / resolve deposit / final charges). Asset stays RESERVED (availability excludes only Completed+Cancelled+Voided) until you mark Completed, which frees it. #void: 'Voided' = early-terminated, KEEPS revenue, frees the asset same-day, reversible.
   var _bkFilter='all';
-  var _bkView='list', _bkCalOff=0;
-  function bkSetView(m){ _bkView=(m==='calendar'?'calendar':'list'); renderBookings(); }
+  var _bkView=(function(){ try{ var v=localStorage.getItem('atlas_bkview'); return (v==='calendar'||v==='cards')?v:'list'; }catch(e){ return 'list'; } })(), _bkCalOff=0;   // booking-view PREFERENCE (list / trip cards / calendar), remembered per device
+  function bkSetView(m){ _bkView=(m==='calendar'?'calendar':(m==='cards'?'cards':'list')); try{ localStorage.setItem('atlas_bkview',_bkView); }catch(e){} renderBookings(); }
+  // Trip-cards booking view: each booking as a rich card (status stripe, customer, asset photo, dates, total) in a
+  // responsive grid -- an alternative to the dense List table + the Calendar. Theme-safe (var tokens). Click -> openBooking.
+  function _renderBkCards(list){
+    var tbl=document.getElementById('bookTblFull'); var card=tbl&&tbl.closest('.card'); if(!card) return;
+    var wrap=document.getElementById('bkCards'); if(!wrap){ wrap=document.createElement('div'); wrap.id='bkCards'; card.appendChild(wrap); }
+    wrap.style.display='';
+    var pu=S.money.rateModel==='hour'?'h':(S.money.rateModel==='week'?'w':(S.money.rateModel==='month'?'mo':'d'));
+    if(!list.length){ wrap.innerHTML=''; return; }
+    var _sc={ 'Confirmed':'#2f6feb','Active':'#12813f','In progress':'#12813f','Completed':'#6b7280','Pending':'#c79a2e','Cancelled':'#c0392b','Voided':'#c0392b' };
+    wrap.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(258px,1fr));gap:12px;margin-top:4px">'+list.map(function(b){
+      var col=_sc[b.status]||'var(--brand)';
+      var ph=(DATA.assets.filter(function(a){return a&&a.name===b.asset;})[0]||{}).photo||'';
+      return '<div onclick="Atlas.openBooking(\''+esc(b.id)+'\')" role="button" tabindex="0" style="cursor:pointer;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--surface);display:flex;flex-direction:column">'
+        +'<div style="height:4px;background:'+col+'"></div>'
+        +(/^(https?:|data:)/.test(ph)?('<div style="height:92px;background:#eef0f3 center/cover no-repeat url(&quot;'+esc(ph)+'&quot;)"></div>'):'')
+        +'<div style="padding:12px;display:flex;flex-direction:column;gap:7px">'
+        +'<div style="display:flex;align-items:center;gap:6px"><b style="font-size:12.5px">'+esc(b.id)+'</b>'+(_bkHasReq(b)?'<span class="chip chip--warn" style="padding:1px 6px;font-size:10px">Request</span>':'')+'<span style="flex:1"></span>'+statusChip(b.status)+'</div>'
+        +'<div style="display:flex;align-items:center;gap:7px;font-size:13.5px;color:var(--ink)"><span class="avatar">'+esc(String(b.cust||'?')[0])+'</span><b>'+esc(b.cust||'Guest')+'</b></div>'
+        +'<div style="font-size:12.5px;color:var(--muted)">'+esc(b.asset||'')+'</div>'
+        +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;border-top:1px solid var(--line);padding-top:7px"><span style="font-size:12px;color:var(--muted)">'+_fmtWhen(b.startTs,b.time)+' &middot; '+b.periods+pu+'</span><b style="font-size:14px;color:var(--ink)">'+money(_bkTotal(b))+'</b></div>'
+        +'</div></div>';
+    }).join('')+'</div>';
+  }
   function bkCalNav(d){ if(d===0)_bkCalOff=0; else _bkCalOff+=d; _renderBkCal(); }
   var _bkStColor={'Pending':'#B57912','Confirmed':'#2A6F97','On rent':'#1E6E4E','Returned':'#C77D0A','Completed':'#6B7660','Cancelled':'#B0342A','Voided':'#7A0000'};
   function _renderBkCal(){ var tbl=document.getElementById('bookTblFull'); var card=tbl&&tbl.closest('.card'); if(!card)return;
@@ -6023,12 +6046,15 @@ const Atlas = (function(){
   function renderBookings(){
     DATA.bookings=_bookings();
     var el=document.getElementById('bookTblFull'), empty=document.getElementById('bkEmpty'), chips=document.getElementById('bkFilters'); if(!el) return;
-    var tog='<div class="bk-viewtog"><button class="'+(_bkView!=='calendar'?'on':'')+'" onclick="Atlas.bkSetView(\'list\')">List</button><button class="'+(_bkView==='calendar'?'on':'')+'" onclick="Atlas.bkSetView(\'calendar\')">Calendar</button></div>'+(DATA.bookings.length?'<button class="btn btn--ghost btn--sm" style="margin-left:8px" onclick="Atlas.exportBkIcs()" title="Download an .ics to import into Google or Apple Calendar">Export .ics</button>':'');
+    var tog='<div class="bk-viewtog"><button class="'+(_bkView==='list'?'on':'')+'" onclick="Atlas.bkSetView(\'list\')">List</button><button class="'+(_bkView==='cards'?'on':'')+'" onclick="Atlas.bkSetView(\'cards\')">Cards</button><button class="'+(_bkView==='calendar'?'on':'')+'" onclick="Atlas.bkSetView(\'calendar\')">Calendar</button></div>'+(DATA.bookings.length?'<button class="btn btn--ghost btn--sm" style="margin-left:8px" onclick="Atlas.exportBkIcs()" title="Download an .ics to import into Google or Apple Calendar">Export .ics</button>':'');
     if(chips) chips.innerHTML=tog+(_bkView==='calendar'?'':['all'].concat(BK_STATUSES).map(function(s){ var n=s==='all'?DATA.bookings.length:DATA.bookings.filter(function(b){return b.status===s;}).length;
       return '<button class="bk-chip'+(_bkFilter===s?' active':'')+'" onclick="Atlas.bkFilter(\''+s+'\')">'+(s==='all'?'All':s)+' '+n+'</button>'; }).join('')+((S.team&&S.team.length)?('<button class="bk-chip'+(_bkFilter==='mine'?' active':'')+'" onclick="Atlas.bkFilter(\'mine\')">Mine '+DATA.bookings.filter(_bkMine).length+'</button>'):''));
-    if(_bkView==='calendar'){ el.style.display='none'; if(empty)empty.style.display='none'; _renderBkCal(); return; }
-    var _cal=document.getElementById('bkCal'); if(_cal)_cal.style.display='none'; el.style.display='';
+    var _cal=document.getElementById('bkCal'), _cds=document.getElementById('bkCards');
+    if(_bkView==='calendar'){ el.style.display='none'; if(_cds)_cds.style.display='none'; if(empty)empty.style.display='none'; _renderBkCal(); return; }
+    if(_cal)_cal.style.display='none';
     var list=DATA.bookings.filter(function(b){ return _bkFilter==='mine'?_bkMine(b):(_bkFilter==='all'||b.status===_bkFilter); });
+    if(_bkView==='cards'){ el.style.display='none'; if(!list.length){ if(_cds)_cds.style.display='none'; if(empty)empty.style.display='block'; return; } if(empty)empty.style.display='none'; _renderBkCards(list); return; }
+    if(_cds)_cds.style.display='none'; el.style.display='';
     if(!list.length){ el.innerHTML=''; if(empty)empty.style.display='block'; return; }
     if(empty)empty.style.display='none';
     var pu=S.money.rateModel==='hour'?'h':(S.money.rateModel==='week'?'w':(S.money.rateModel==='month'?'mo':'d'));
