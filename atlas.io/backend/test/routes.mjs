@@ -1213,6 +1213,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(Array\.isArray\(_abl\) && _abl\.some\(function \(bl\) \{ var w = _blkWin\(bl\); return w && w\.s < Number\(endTs\) && w\.e > Number\(startTs\); \}\)\) return true;/.test(_WORKER_SRC), 'confirm-blackout #11: a confirm whose window overlaps a maintenance/blackout window is blocked (same _blkWin overlap as /book) across every confirm path via _confirmSlotFull');
 }
 
+// ---- RIGHT-TO-ERASURE pagination (privacy MED #21): the customer-erase handler scanned bookings with a flat LIMIT 5000 and no
+// pagination, so a data subject with >5000 bookings kept full live PII past the 5000th while the handler STILL returned erased:true
+// (and that PII kept flowing into exports). Now it cursors by id (stable across redaction) until a short page, and reports
+// erased:_erComplete (false only if an impossible 2M-booking safety cap is hit) so success is never silent-but-partial. ----
+{
+  ok(/SELECT id FROM bookings WHERE tenant_id=\? AND id > \? AND customer_id=\? ORDER BY id LIMIT 5000/.test(_WORKER_SRC), 'erasure #21: the right-to-erasure booking scan paginates with a stable id cursor (id > last, ORDER BY id) instead of a flat LIMIT 5000 that left PII live past the 5000th booking');
+  ok(/return json\(\{ ok: true, erased: _erComplete, customer: _cid/.test(_WORKER_SRC), 'erasure #21: the response reports erased:_erComplete (false if the safety cap was ever hit) -- no more unconditional erased:true while PII persists');
+  ok(!/customer_id=\? LIMIT 5000/.test(_WORKER_SRC), 'erasure #21: the old un-paginated flat LIMIT-5000 erase scan is gone');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
