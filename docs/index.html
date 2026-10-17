@@ -3003,8 +3003,12 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
         <div class="flabel">Odometer at Pickup</div>
         <input type="number" class="finput" id="ciOdomIn" min="0" step="1" placeholder="Miles">
       </div>
-      <div class="fsec ffull">Fuel Level</div>
-      <div class="fgroup ffull">
+      <div class="fsec ffull" id="ciFuelSec">Fuel Level</div>
+      <div class="fgroup ffull" id="ciBatteryWrap" style="display:none">
+        <div class="flabel">Battery % at Pickup</div>
+        <input type="number" class="finput" id="ciBatteryIn" min="0" max="100" step="1" placeholder="e.g. 90">
+      </div>
+      <div class="fgroup ffull" id="ciFuelWrap">
         <div class="flabel">Fuel at Pickup</div>
         <select class="finput" id="ciFuelIn">
           <option value="">Not recorded</option>
@@ -3139,8 +3143,12 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
       </div>
       <div class="ffull" id="coOverageRow" style="display:none;background:rgba(255,92,92,.07);border:1px solid rgba(255,92,92,.3);border-radius:10px;padding:10px 14px;font-size:13px;gap:6px;flex-direction:column;flex-wrap:wrap"></div>
 
-      <div class="fsec ffull">Fuel Level</div>
-      <div class="fgroup ffull">
+      <div class="fsec ffull" id="coFuelSec">Fuel Level</div>
+      <div class="fgroup ffull" id="coBatteryWrap" style="display:none">
+        <div class="flabel">Battery % at Drop-off</div>
+        <input type="number" class="finput" id="coBatteryOut" min="0" max="100" step="1" placeholder="e.g. 70" oninput="coCalcFuel()">
+      </div>
+      <div class="fgroup ffull" id="coFuelWrap">
         <div class="flabel">Fuel at Drop-off</div>
         <select class="finput" id="coFuelOut" oninput="coCalcFuel()">
           <option value="">Not recorded</option>
@@ -3855,6 +3863,12 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
         <input type="text" class="finput" id="vVin" maxlength="17" placeholder="17-character VIN" style="text-transform:uppercase;letter-spacing:.04em">
       </div>
       <div class="fgroup ffull">
+        <label style="display:flex;align-items:flex-start;gap:9px;cursor:pointer;font-size:12.5px;color:var(--text);line-height:1.5;padding:4px 0">
+          <input type="checkbox" id="vEV" style="width:18px;height:18px;flex-shrink:0;margin-top:1px;accent-color:var(--gold)">
+          <span><b>Electric vehicle</b> &#8212; check-in &amp; check-out record <b>battery %</b> instead of fuel, and a low return is charged <b>$1.20 per %</b> below the pickup level ($30 per quarter-charge).</span>
+        </label>
+      </div>
+      <div class="fgroup ffull">
         <div class="flabel">Vehicle Image</div>
         <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
           <div id="vImagePreview" style="display:none;width:80px;height:80px;border-radius:10px;overflow:hidden;border:1px solid var(--gold-dim);flex-shrink:0">
@@ -4167,7 +4181,7 @@ var VEHICLE_COSTS = {
   "Corvette":           { rate:450,  deposit:750,  weekly:1900, monthly:5700 },
   "Corvette Z51":       { rate:450,  deposit:750,  weekly:1900, monthly:5700 },
   "BMW M3":             { rate:450,  deposit:750,  weekly:2200, monthly:5700 },
-  "BMW i4":             { rate:150,  deposit:300,  weekly:950, monthly:3000  },
+  "BMW i4":             { rate:150,  deposit:500,  weekly:950, monthly:3000  },
   "Macan":              { rate:275,  deposit:500,  weekly:1750, monthly:4000 },
   "Porsche Boxster S":  { rate:225,  deposit:500,  weekly:1250, monthly:3750 },
   "C300":               { rate:200,  deposit:500,  weekly:1250, monthly:3750 },
@@ -4441,7 +4455,7 @@ var VEHICLE_INFO = {
   "Corvette":           { year:'2023', make:'Chevrolet',    model:'Corvette C8',            color:'White', vin:'1G1YB2D47P5120874' },
   "Corvette Z51":       { year:'2023', make:'Chevrolet',    model:'Corvette C8 Z51',        color:'Black', vin:'161YB3D40P5103078' },
   "BMW M3":             { year:'2026', make:'BMW',          model:'M3 Competition xDrive',  color:'Black', vin:'WBS33HJ00TFV48138'  },
-  "BMW i4":             { year:'2022', make:'BMW',          model:'i4',                     color:'White', vin:'WBY73AW05NFN04209'  },
+  "BMW i4":             { year:'2022', make:'BMW',          model:'i4',                     color:'White', vin:'WBY73AW05NFN04209', ev:true  },
   "Macan":              { year:'2025', make:'Porsche',      model:'Macan',                  color:'Black', vin:'WP1AA2A50SLB08321'  },
   "Porsche Boxster S":  { year:'2013', make:'Porsche',      model:'Boxster S',              color:'White', vin:'WP0CB2A85DS133371'  },
   "C300":               { year:'2022', make:'Mercedes-Benz',model:'C300 AMG',               color:'Gray',  vin:'W1KAF4HB5NR044083'  },
@@ -5309,7 +5323,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v391';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v392';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -6454,7 +6468,7 @@ function resetVehForm(){
   $d('vRate').value=''; $d('vDeposit').value=''; $d('vWeekly').value='';
   $d('vServiceMiles').value='';
   $d('vMiles').value=''; $d('vOverage').value='';
-  $d('vYear').value=''; $d('vMake').value=''; $d('vModel').value=''; $d('vColor').value=''; $d('vVin').value='';
+  $d('vYear').value=''; $d('vMake').value=''; $d('vModel').value=''; $d('vColor').value=''; $d('vVin').value=''; if($d('vEV'))$d('vEV').checked=false;
   $d('vImage').value='';
   _vImageData=null;
   _setVehicleImagePreview(null);
@@ -6546,6 +6560,7 @@ function editVehicle(name){
   $d('vModel').value = vi.model || '';
   $d('vColor').value = vi.color || '';
   $d('vVin').value   = vi.vin   || '';
+  if($d('vEV')) $d('vEV').checked = !!vi.ev;
   var img = vc.image || '';
   if(img.startsWith('data:')){
     _vImageData = img;
@@ -6564,6 +6579,13 @@ function editVehicle(name){
   $d('vName').focus();
 }
 
+// EV helpers: a vehicle flagged ev:true in VEHICLE_INFO captures BATTERY % (not fuel) at check-in/out, and a
+// return BELOW the pickup % is charged $1.20 per % ($30 per 25% quarter-charge), exact per percent.
+function _vehIsEV(name){ try{ return !!(VEHICLE_INFO[name] && VEHICLE_INFO[name].ev); }catch(e){ return false; } }
+function _bkIsEV(b){ return !!(b && _vehIsEV(b.vehicle)); }
+var PB_EV_RATE_PER_PCT = 1.20;   // $30 / 25% = $1.20 per percentage point short
+function _evPct(v){ var n=parseFloat(String(v==null?'':v).replace(/[^0-9.]/g,'')); return isFinite(n)?Math.max(0,Math.min(100,n)):null; }   // parse a battery % (0-100) from a field value
+function _evFuelCharge(startPct, endPct){ var s=_evPct(startPct), e=_evPct(endPct); if(s==null||e==null) return 0; return Math.round(Math.max(0, s-e)*PB_EV_RATE_PER_PCT*100)/100; }   // charge ONLY when returned lower than sent
 function saveVehicle(){
   var newName = $d('vName').value.trim();
   var isCh    = $d('vType').value==='chauffeur';
@@ -6588,7 +6610,8 @@ function saveVehicle(){
     make:  (($d('vMake')  &&$d('vMake').value)  ||'').trim(),
     model: (($d('vModel') &&$d('vModel').value) ||'').trim(),
     color: (($d('vColor') &&$d('vColor').value) ||'').trim(),
-    vin:   (($d('vVin')   &&$d('vVin').value)   ||'').trim().toUpperCase()
+    vin:   (($d('vVin')   &&$d('vVin').value)   ||'').trim().toUpperCase(),
+    ev:    !!($d('vEV') && $d('vEV').checked)   // EV -> check-in/out capture battery % + $1.20/% low-return charge
   };
 
   // Per-vehicle mileage terms: included miles/day + $ per mile over. These drive the booking-form
@@ -13257,7 +13280,7 @@ function openBookingDetail(id){
           '<span class="detail-val">'+fmtDateFull(ext.fromDate)+' &rarr; <strong>'+fmtDateFull(ext.toDate)+'</strong>'+
           ' <span style="color:var(--muted);font-size:10px">+'+ext.extensionDays+' day'+(ext.extensionDays!==1?'s':'')+'</span>'+
           _chargeCell+
-          ((ext.unlimited||Number(ext.milesPerDay)>0)?' <span style="color:#7cc4ff;font-size:10px;font-weight:700">'+(ext.unlimited?'\u221E Unltd mi':((ext.doubleMiles?'2× ':'')+Number(ext.milesPerDay).toLocaleString()+' mi/day'+(Number(ext.startOdom)>0?(' \u00B7 odo '+Number(ext.startOdom).toLocaleString()):'')))+'</span>':'')+
+          ((ext.unlimited||Number(ext.milesPerDay)>0)?' <span style="color:#7cc4ff;font-size:10px;font-weight:700">'+(ext.unlimited?'\u221E Unltd mi':((ext.doubleMiles?'2\u00D7 ':'')+Number(ext.milesPerDay).toLocaleString()+' mi/day'+(Number(ext.startOdom)>0?(' \u00B7 odo '+Number(ext.startOdom).toLocaleString()):'')))+'</span>':'')+
           (signed?' <span style="color:var(--muted);font-size:10px">Signed '+esc(ext.sigDate||'')+'</span>':' <span style="color:#fb923c;font-size:10px">Pending signature</span>')+
           ' <button class="btn btn-sm" onclick="closeBookingDetail();openContract(\''+b.id+'\');setTimeout(function(){_contractShowTab('+i+');_updateExtensionTabs();},200)" style="padding:2px 8px;font-size:10px;margin-left:4px">View</button>'+
           '</span></div>';
@@ -13267,7 +13290,7 @@ function openBookingDetail(id){
     (b.odomIn||b.fuelIn||b.condIn||b.checkInNotes||(b.checkInPhotoIds&&b.checkInPhotoIds.length)?
       '<div class="fsec">Check-In</div>'+
       (b.odomIn?'<div class="detail-row"><span class="detail-label">Odometer (Pickup)</span><span class="detail-val">'+Number(b.odomIn).toLocaleString()+' mi</span></div>':'')+
-      (b.fuelIn?'<div class="detail-row"><span class="detail-label">Fuel at Pickup</span><span class="detail-val">'+esc(b.fuelIn)+'</span></div>':'')+
+      (b.fuelIn?'<div class="detail-row"><span class="detail-label">'+(_bkIsEV(b)?'Battery':'Fuel')+' at Pickup</span><span class="detail-val">'+esc(b.fuelIn)+'</span></div>':'')+
       (b.condIn?'<div class="detail-row"><span class="detail-label">Condition at Pickup</span><span class="detail-val">'+esc(b.condIn)+'</span></div>':'')+
       (b.checkInNotes?'<div class="detail-row"><span class="detail-label">Pre-Trip Notes</span><span class="detail-val">'+esc(b.checkInNotes)+'</span></div>':'')+
       (b.checkInPhotoIds&&b.checkInPhotoIds.length?'<div class="detail-row"><span class="detail-label">Photos ('+b.checkInPhotoIds.length+')</span><span class="detail-val"><div id="bdCiPhotos" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px"></div></span></div>':'')
@@ -13292,10 +13315,10 @@ function openBookingDetail(id){
       '<div class="fsec">Close-Out</div>'+
       (b.cost?'<div class="detail-row"><span class="detail-label">Booking Cost</span><span class="detail-val">'+$$(b.cost)+'</span></div>':'')+
       (b.odomOut?'<div class="detail-row"><span class="detail-label">Odometer (Drop-off)</span><span class="detail-val">'+Number(b.odomOut).toLocaleString()+' mi'+(b.odomIn&&b.odomOut>b.odomIn?' \u2014 '+((b.odomOut-b.odomIn).toLocaleString())+' driven':'')+'</span></div>':'')+
-      (b.fuelOut?'<div class="detail-row"><span class="detail-label">Fuel at Drop-off</span><span class="detail-val">'+(b.fuelIn?esc(b.fuelIn)+' \u2192 ':'')+esc(b.fuelOut)+'</span></div>':'')+
+      (b.fuelOut?'<div class="detail-row"><span class="detail-label">'+(_bkIsEV(b)?'Battery':'Fuel')+' at Drop-off</span><span class="detail-val">'+(b.fuelIn?esc(b.fuelIn)+' \u2192 ':'')+esc(b.fuelOut)+'</span></div>':'')+
       (b.condOut?'<div class="detail-row"><span class="detail-label">Condition at Drop-off</span><span class="detail-val">'+(b.condIn?esc(b.condIn)+' \u2192 ':'')+esc(b.condOut)+'</span></div>':'')+
       (b.closeOutNotes?'<div class="detail-row"><span class="detail-label">Notes</span><span class="detail-val">'+esc(b.closeOutNotes)+'</span></div>':'')+
-      (b.fuelCharge>0?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">\u26FD Fuel Charge</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.fuelCharge)+'</span></div>':'')+
+      (b.fuelCharge>0?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">'+(_bkIsEV(b)?'\u26A1 Battery':'\u26FD Fuel')+' Charge</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.fuelCharge)+'</span></div>':'')+
       (b.mileageCharge>0?'<div class="detail-row"><span class="detail-label" style="color:var(--red)">\uD83D\uDEE3 Mileage Overage</span><span class="detail-val" style="color:var(--red);font-weight:700">'+$$(b.mileageCharge)+'</span></div>':'')+
       (b.refundSent?'<div class="detail-row"><span class="detail-label">Refund</span><span class="detail-val" style="color:var(--green)">\u2705 Sent'+(b.refundDate?' on '+fmtDate(b.refundDate):'')+(b.refundMethod?' via '+esc(b.refundMethod):'')+'</span></div>':'')+
       (b.claimStatus?'<div class="detail-row"><span class="detail-label">Claim Status</span><span class="detail-val">'+esc(b.claimStatus)+(b.claimRecovered?' \u00B7 Recovered: '+$$(b.claimRecovered):'')+(b.claimNotes?' \u00B7 '+esc(b.claimNotes):'')+'</span></div>':'')+
@@ -15128,6 +15151,12 @@ function openCheckIn(id){
   checkInId=id;
   $d('ciOdomIn').value = b.odomIn||'';
   $d('ciFuelIn').value = b.fuelIn||'';
+  (function(){ var ev=_bkIsEV(b);   // EV -> battery % field in place of the fuel dropdown
+    if($d('ciFuelWrap'))    $d('ciFuelWrap').style.display    = ev?'none':'';
+    if($d('ciBatteryWrap')) $d('ciBatteryWrap').style.display = ev?'':'none';
+    if($d('ciFuelSec'))     $d('ciFuelSec').textContent       = ev?'Battery Charge':'Fuel Level';
+    if(ev && $d('ciBatteryIn')){ var _p=_evPct(b.fuelIn); $d('ciBatteryIn').value=(_p==null?'':_p); }
+  })();
   $d('ciCondIn').value = b.condIn||'';
   $d('ciNotes').value  = b.checkInNotes||'';
   ciOriginalPhotos=(b.checkInPhotoIds||[]).slice();
@@ -15172,7 +15201,8 @@ function saveCheckIn(){
   ciOriginalPhotos.filter(function(id){return ciWorkingPhotos.indexOf(id)===-1;})
     .forEach(function(id){dbDeletePhoto(id);});
   bookings[idx].odomIn          = parseFloat($d('ciOdomIn').value)||0;
-  bookings[idx].fuelIn          = $d('ciFuelIn').value;
+  var _ciEV=_bkIsEV(bookings[idx]), _ciBat=_ciEV?_evPct($d('ciBatteryIn')?$d('ciBatteryIn').value:''):null;
+  bookings[idx].fuelIn          = _ciEV ? (_ciBat==null?'':(_ciBat+'%')) : $d('ciFuelIn').value;   // EV: store the pickup battery %
   bookings[idx].condIn          = $d('ciCondIn').value;
   bookings[idx].checkInNotes    = $d('ciNotes').value.trim();
   bookings[idx].checkInPhotoIds = ciWorkingPhotos.slice();
@@ -15211,6 +15241,12 @@ function openCloseOut(id){
   $d('coCost').value = Number(b.cost)||0;
   $d('coOdomOut').value = b.odomOut||'';
   $d('coFuelOut').value = b.fuelOut||'';
+  (function(){ var ev=_bkIsEV(b);   // EV -> battery % field in place of the fuel dropdown
+    if($d('coFuelWrap'))    $d('coFuelWrap').style.display    = ev?'none':'';
+    if($d('coBatteryWrap')) $d('coBatteryWrap').style.display = ev?'':'none';
+    if($d('coFuelSec'))     $d('coFuelSec').textContent       = ev?'Battery Charge':'Fuel Level';
+    if(ev && $d('coBatteryOut')){ var _p=_evPct(b.fuelOut); $d('coBatteryOut').value=(_p==null?'':_p); }
+  })();
   $d('coClaimStatus').value    = b.claimStatus||'';
   $d('coClaimRecovered').value = b.claimRecovered||'';
   $d('coClaimNotes').value     = b.claimNotes||'';
@@ -15235,7 +15271,7 @@ function openCloseOut(id){
     '<div style="background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.3);border-radius:10px;padding:10px 14px;font-size:12px;line-height:2">'+
     '<div style="font-weight:700;color:#60a5fa;margin-bottom:2px">\uD83D\uDE97 Check-In Recorded</div>'+
     (b.odomIn?'<span style="color:var(--muted)">Odometer:</span> <strong>'+Number(b.odomIn).toLocaleString()+' mi</strong> &nbsp; ':'')+
-    (b.fuelIn?'<span style="color:var(--muted)">Fuel:</span> <strong>'+esc(b.fuelIn)+'</strong> &nbsp; ':'')+
+    (b.fuelIn?'<span style="color:var(--muted)">'+(_bkIsEV(b)?'Battery':'Fuel')+':</span> <strong>'+esc(b.fuelIn)+'</strong> &nbsp; ':'')+
     (b.condIn?'<span style="color:var(--muted)">Condition:</span> <strong>'+esc(b.condIn)+'</strong>':'')+
     (b.checkInNotes?'<div style="margin-top:2px;color:var(--muted)">Notes: <span style="color:var(--text)">'+esc(b.checkInNotes)+'</span></div>':'')+
     '</div>' :
@@ -15409,9 +15445,31 @@ function fuelToNum(val){
   return map.hasOwnProperty(val) ? map[val] : -1;
 }
 function fuelLabel(val){ return val||'\u2014'; }
+// EV battery charge at close-out: $1.20 per % below the pickup level ($30 per 25% quarter), EXACT per percent,
+// and ONLY when returned lower than sent. Mirrors the gas fuel row but with battery % + the per-% rate.
+function _coCalcBattery(b){
+  var startP=_evPct(b.fuelIn), endP=_evPct($d('coBatteryOut')?$d('coBatteryOut').value:'');
+  var hint=$d('coFuelHint'), row=$d('coFuelRow'), chg=$d('coFuelCharge');
+  if(hint) hint.textContent = (startP==null) ? '\u26A0 No pickup battery % recorded \u2014 charge cannot be calculated' : ('Sent out at: '+startP+'%'+(endP==null?'':' \u2192 Returned: '+endP+'%'));
+  if(!row) return;
+  if(startP==null){ row.style.display='flex'; row.style.background='rgba(249,115,22,.07)'; row.style.borderColor='rgba(249,115,22,.3)'; row.innerHTML='<span style="color:#f97316">\u26A0 Pickup battery % was not recorded. Open Check In to log it before closing out.</span>'; if(chg)chg.value='0'; coUpdateProfitSummary(); return; }
+  if(endP==null){ row.style.display='none'; if(chg)chg.value='0'; coUpdateProfitSummary(); return; }
+  var shortP=Math.max(0, startP-endP), charge=_evFuelCharge(startP, endP);
+  if(shortP<=0){
+    row.style.display='flex'; row.style.background='rgba(124,252,152,.07)'; row.style.borderColor='rgba(124,252,152,.3)';
+    row.innerHTML='<span style="color:var(--green)">\u2705 Battery OK</span><span>Returned '+endP+'% (sent out '+startP+'%) \u2014 no charge</span>';
+    if(chg) chg.value='0';
+  } else {
+    row.style.display='flex'; row.style.background='rgba(255,92,92,.07)'; row.style.borderColor='rgba(255,92,92,.3)';
+    row.innerHTML='<span>Sent out: <b>'+startP+'%</b></span><span>Returned: <b style="color:var(--red)">'+endP+'%</b></span><span>Short by: <b style="color:var(--red)">'+shortP+'%</b></span><span>Battery charge: <b style="color:var(--red)">'+$$(charge)+'</b> @ $1.20/%</span>';
+    if(chg) chg.value=String(charge);
+  }
+  coUpdateProfitSummary();
+}
 function coCalcFuel(){
   var b=bookings.find(function(x){return x.id===closeOutId;});
   if(!b) return;
+  if(_bkIsEV(b)){ _coCalcBattery(b); return; }   // EV -> battery % charge instead of fuel
   var inVal=b.fuelIn||'';
   var outVal=$d('coFuelOut').value||'';
   var hint=$d('coFuelHint');
@@ -15512,7 +15570,8 @@ function saveCloseOut(){
   bookings[idx].cost             = parseFloat($d('coCost').value)||0;
   bookings[idx].closeOutNotes    = $d('coNotes').value.trim();
   bookings[idx].odomOut          = parseFloat($d('coOdomOut').value)||0;
-  bookings[idx].fuelOut          = $d('coFuelOut').value;
+  var _coEV=_bkIsEV(bookings[idx]), _coBat=_coEV?_evPct($d('coBatteryOut')?$d('coBatteryOut').value:''):null;
+  bookings[idx].fuelOut          = _coEV ? (_coBat==null?'':(_coBat+'%')) : $d('coFuelOut').value;   // EV: store drop-off battery %
   bookings[idx].claimStatus      = $d('coClaimStatus').value;
   bookings[idx].claimRecovered   = parseFloat($d('coClaimRecovered').value)||0;
   bookings[idx].claimNotes       = $d('coClaimNotes').value.trim();
@@ -15521,9 +15580,14 @@ function saveCloseOut(){
   bookings[idx].refundDate       = $d('coRefundDate').value;
   bookings[idx].refundMethod     = $d('coRefundMethod').value;
   bookings[idx].checkOutPhotoIds = coWorkingPhotos.slice();
-  // Calculate and persist fuel charge + mileage overage for reporting
-  var _fIn=fuelToNum(bookings[idx].fuelIn||''), _fOut=fuelToNum($d('coFuelOut').value||'');
-  bookings[idx].fuelCharge = (_fIn>=0&&_fOut>=0&&_fIn>_fOut) ? Math.ceil((_fIn-_fOut)/2)*30 : 0;
+  // Calculate and persist fuel/battery charge + mileage overage for reporting
+  if(_coEV){
+    // EV: $1.20 per % below pickup battery (only when returned lower) -- matches _coCalcBattery display
+    bookings[idx].fuelCharge = _evFuelCharge(bookings[idx].fuelIn||'', bookings[idx].fuelOut||'');
+  } else {
+    var _fIn=fuelToNum(bookings[idx].fuelIn||''), _fOut=fuelToNum($d('coFuelOut').value||'');
+    bookings[idx].fuelCharge = (_fIn>=0&&_fOut>=0&&_fIn>_fOut) ? Math.ceil((_fIn-_fOut)/2)*30 : 0;
+  }
   var _oOut=parseFloat($d('coOdomOut').value)||0;
   // Mileage overage via the per-segment model: each extension's miles ADD to the allowance, each
   // extension can be unlimited, and a MIXED rental charges only the standard period (via its start
@@ -23659,6 +23723,9 @@ function _renderContractContent(){
     .replace(/\{\{delivery_fee\}\}/gi,       sr(deliveryFee))
     .replace(/\{\{pet_fee\}\}/gi,            sr(petFee))
     .replace(/\{\{odometer_in\}\}/gi,        sr(odomIn))
+    .replace(/\{\{odometer_out\}\}/gi,       sr(b.odomOut?Number(b.odomOut).toLocaleString()+' mi':''))
+    .replace(/\{\{fuel_in\}\}/gi,            sr(b.fuelIn||''))
+    .replace(/\{\{fuel_out\}\}/gi,           sr(b.fuelOut||''))
     .replace(/\{\{date_lock\}\}/gi,          sr(b.dateLock!=null?'$'+(Number(b.dateLock)||0):'$100'))
     .replace(/\{\{owner_signature\}\}/gi,      (OWNER_SIGNATURE && String(OWNER_SIGNATURE).indexOf('data:image/')===0)?'<img class="pb-sig" src="'+OWNER_SIGNATURE+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom;filter:'+(_contractIsWaiver?'brightness(0)':'brightness(0) invert(1)')+'">'  :'<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+(_contractIsWaiver?'#111':'#fff')+';line-height:1">Edwin P. Watson Jr.</span>')
     .replace(/\{\{customer_signature\}\}/gi,   (function(){ var _sg=(_contractIsWaiver && b.waiverSig && String(b.waiverSig).indexOf('data:image/')===0)?b.waiverSig:b.customerSig; return (_sg&&String(_sg).startsWith('data:image/'))?'<img class="pb-sig" src="'+_sg+'" style="max-height:80px;max-width:300px;width:auto;height:auto;object-fit:contain;display:block;margin:0;vertical-align:bottom'+(_contractIsWaiver?'':';filter:invert(1)')+'">':'_______________________________'; })())
@@ -26471,6 +26538,9 @@ function _initSigningMode(bookingId, driverIdx){
       .replace(/\{\{pet_fee\}\}/gi,_sr(Number(bk.pet)?'$'+bk.pet:'N/A'))
       .replace(/\{\{loyalty_discount\}\}/gi,_sr(''))
       .replace(/\{\{odometer_in\}\}/gi,_sr(bk.odomIn?Number(bk.odomIn).toLocaleString()+' mi':''))
+      .replace(/\{\{odometer_out\}\}/gi,_sr(bk.odomOut?Number(bk.odomOut).toLocaleString()+' mi':''))
+      .replace(/\{\{fuel_in\}\}/gi,_sr(bk.fuelIn||''))
+      .replace(/\{\{fuel_out\}\}/gi,_sr(bk.fuelOut||''))
       .replace(/\{\{mileage_policy\}\}/gi,_sr(_sMilagePol))
       .replace(/\{\{fuel_policy\}\}/gi,'Fuel: The vehicle will be delivered at the fuel level noted at pickup. Renter agrees to return the vehicle at or above that level. Any fuel shortfall will be charged at $30.00 per quarter tank.')
       .replace(/\{\{net_revenue\}\}/gi,_sr('$'+(_sbd.subtotal-brokerFeeTotal(bk)).toFixed(2)))
