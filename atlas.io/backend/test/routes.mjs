@@ -1315,6 +1315,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/const _reSign = !!\(d\.portal && d\.portal\.signedAt\) && _bkTermsDrifted\(/.test(_WORKER_SRC), '#14: /sign computes _reSign from post-signature term drift');
   ok(/if \(d\.portal && d\.portal\.signedAt && !_reSign\) return json\(\{ ok: true, signedAt: d\.portal\.signedAt, already: true \}\)/.test(_WORKER_SRC), '#14: /sign stays idempotent ONLY when terms did not drift (a drifted signature is re-collected)');
   ok(/j\.signed&&j\.sigStale/.test(_WORKER_SRC), '#14: the customer portal surfaces sigStale -> shows the updated agreement + a re-sign prompt');
+  ok(/data\.channelContract = _bookingChannelContract\(prof, data\)/.test(_WORKER_SRC) && /if \(d && typeof d\.channelContract === 'string'\) return d\.channelContract;/.test(_WORKER_SRC), 'audit HIGH (#multisite-channels): the per-channel rental agreement is PINNED at /book (data.channelContract) + read back by _bookingChannelContract, so a later publicSites edit cannot retroactively change the contract a paid renter already reviewed + signed');
 
   // ---- CYCLE-5 regression guards (build 12d): incomplete-fix follow-ons the cycle-4 remediation left behind, each caught by the verification cycle. ----
   // A: the dispute revenue-decrement dedup sentinel is deleted on a THROWN _bkRMW too (not only a clean CAS non-commit), mirroring the refund path -- else a Stripe retry finds the sentinel, skips the decrement, and the chargeback revenue loss is permanent.
