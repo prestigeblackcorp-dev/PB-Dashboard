@@ -1838,6 +1838,11 @@ const Atlas = (function(){
         // surface a mid-session lock (e.g. a card declined while the tab was already open); the worker is the real
         // gate, this just reflects it. Login/signup/billing/etc. are server-side allow-listed and never 402 here.
         if(r.status===402 && j && j.error==='payment_required'){ try{ showPaywall(j.billing_state); }catch(e){} }
+        // #auth C: a mid-session authenticated WRITE that 401s means the server session died while the tab stayed open --
+        // surface the resign screen (background syncs + user edits otherwise fail SILENTLY, the mid-use twin of the boot
+        // #falseCache gate). Guarded by _apiCsrf so GET probes + the signup/login flow (no _apiCsrf yet) are excluded, and
+        // _sessionExpired() nulls _apiCsrf -> this fires exactly once per expiry and self-re-arms when the owner signs back in.
+        if(r.status===401 && _apiCsrf && opts.method && opts.method!=='GET'){ try{ _sessionExpired(); }catch(e){} }
         return {status:r.status,json:j}; }); }); }
   // ---- TENANT REFERRAL PROGRAM (client). Server (platform_config.referral_enabled) is the real gate; _refEnabled is
   // hydrated from /api/auth/me + /api/tenant/profile so the "Refer & earn" card in Settings hides entirely while OFF.
@@ -2179,7 +2184,15 @@ const Atlas = (function(){
     try{ if(loc.comms&&loc.comms.resendKey){ if(!merged.comms||typeof merged.comms!=='object') merged.comms={}; if(!merged.comms.resendKey) merged.comms.resendKey=loc.comms.resendKey; } }catch(e){}
     _lsSet('atlas_tenant_'+tid, merged);
     // refresh the per-key push snapshot so the freshly-merged state is not immediately echoed back as a local change
-    try{ _pushedKeys={}; var pp={brand:merged.brand,money:merged.money}; for(var x in merged){ if(x!=='brand'&&x!=='money'&&x!=='_kt'&&x!=='_t') pp[x]=merged[x]; } for(var q in pp) _pushedKeys[q]=JSON.stringify(pp[q]===undefined?null:pp[q]); }catch(e){} }
+    try{ _pushedKeys={}; var pp={brand:merged.brand,money:merged.money}; for(var x in merged){ if(x!=='brand'&&x!=='money'&&x!=='_kt'&&x!=='_t') pp[x]=merged[x]; } for(var q in pp) _pushedKeys[q]=JSON.stringify(pp[q]===undefined?null:pp[q]); }catch(e){}
+    // audit HIGH (#sync): refresh the in-memory S to the merged state too. The merge wrote localStorage + _pushedKeys from the
+    // newer merged profile but NOT the global S, so after a NON-boot hydrate (the 45s live-poll, _reHydrateSoon) S stayed STALE:
+    // the next edit diffed stale-S vs newer-_pushedKeys, stamped a FRESH _kt on every hydrated key, and re-pushed the STALE
+    // value -> the fresh stamp beat the server's per-key newest-wins and silently reverted another device's edit to ANY profile
+    // key (money/tax/locations/flags/promos/legal/blacklist). Only the CURRENT session tenant (loadTenant enforces the _tid
+    // isolation stamp); merged already respects local newest-wins, so a not-yet-pushed local edit on THIS device still wins.
+    try{ var _csT=store.session(); if(_csT && _csT.tenantId===tid){ var _sm=load(); if(_sm) S=_sm; } }catch(e){}
+  }
   const FLEET_TYPES=[
     {id:'cars',emoji:'\u{1F697}',label:'Cars & Exotics',noun:'vehicle',nouns:'vehicles',customerNoun:'renter',customerNouns:'renters',sample:['2023 Corvette C8','BMW M3 Competition','Porsche Macan','Range Rover Sport','Tesla Model S','Mercedes G-Wagon']},
     {id:'property',emoji:'\u{1F3E0}',label:'Rental Properties',noun:'property',nouns:'properties',customerNoun:'tenant',customerNouns:'tenants',sample:['Beachfront Villa','Downtown Loft','Mountain Cabin','Lakeside Cottage','City Penthouse','Desert Retreat']},
@@ -2279,7 +2292,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23ci';
+  var APP_VERSION='2026.7.23cj';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -6850,6 +6863,7 @@ const Atlas = (function(){
       delete nb.promoCode; delete nb.referredByCode; delete nb.refAwarded;   // a recurring occurrence must not re-consume a promo cap slot or re-award a referral on each completion
       delete nb.conditionMedia; delete nb.claim; delete nb.hold; delete nb.meter; delete nb.plan; delete nb.giftRedemptions; delete nb.idVerified; delete nb.idVerifiedAt; delete nb.idRejected; delete nb.idRejectedAt;   // fix: a clone must not inherit the prior rental's photos/claim/hold/meter/plan/gift/ID-verification
       delete nb.paid; delete nb.revCents; delete nb.sigTrail; delete nb.agreement; delete nb.paidOffline;   // audit c1 [1]: each recurring occurrence starts financially + legally CLEAN -- not the source's captured payment slots (else the portal reads "settled", due=$0, the owner can never collect, AND the P&L counts revenue never received), nor its reconciled revenue, signature or agreement (the customer re-signs + re-pays each occurrence)
+      delete nb.extensions; delete nb._effEndTs;   // audit HIGH: a recurring occurrence must NOT carry the source's ACTIVE extensions -- the shallow copy shares the SAME array object, so _bkEffEndServer/_bkEffectiveEndTs add each active ext's (newEndTs-prevEndTs) delta onto the clone's fresh base end (phantom over-hold enforced tenant-wide by the confirm-time double-book guard), _bkExtPeriods inflates the included-usage + late-fee cap at close-out, and a later add/remove of an extension on any one occurrence mutates the source + every sibling. A fresh occurrence starts clean at its own dates.
       _upsertBooking(nb); made++; }
     _logEvent('booking','Created '+made+' recurring bookings from '+b.id+(skipped?(' ('+skipped+' skipped -- dates unavailable)'):''),{booking:b.id}); save(); closeModal(); renderOverview(); renderBookings();
     var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled'&&x.status!=='Voided';}).length; toast(made+' recurring bookings created'+(skipped?(' \u2014 '+skipped+' skipped (dates unavailable)'):'')); }
