@@ -1203,6 +1203,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/_confirmSlotHeal\(env, tenantId, bookingId, _d, _s, _e\)/.test(_WORKER_SRC), 'gift-confirm #14: the gift confirm runs _confirmSlotHeal (first-confirm-wins demote on overbook), same as every money-credit path');
 }
 
+// ---- CONFIRM-TIME blackout re-check (availability MED #11): _confirmSlotFull counted overlapping CONFIRMED bookings but never
+// re-checked blackout/maintenance windows -- those were enforced only at /book + self-extend. A PENDING booking holds no slot and
+// can be created before a blackout exists, so confirming it (incl. a customer merely paying their balance) could land ON a blocked
+// window. _confirmSlotFull now reads the asset's blackouts column and treats an overlap as slot-unavailable; because _confirmSlotHeal
+// wraps _confirmSlotFull, this covers every confirm path (money-credit heals + the /api/data confirm guards). ----
+{
+  ok(/SELECT info, blackouts FROM assets WHERE tenant_id=\? AND id=\?/.test(_WORKER_SRC), 'confirm-blackout #11: _confirmSlotFull selects the asset blackouts column (was SELECT info only)');
+  ok(/if \(Array\.isArray\(_abl\) && _abl\.some\(function \(bl\) \{ var w = _blkWin\(bl\); return w && w\.s < Number\(endTs\) && w\.e > Number\(startTs\); \}\)\) return true;/.test(_WORKER_SRC), 'confirm-blackout #11: a confirm whose window overlaps a maintenance/blackout window is blocked (same _blkWin overlap as /book) across every confirm path via _confirmSlotFull');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
