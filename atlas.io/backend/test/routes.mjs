@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1142,6 +1142,34 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const second = _collectGiftReturns(dd);
   ok(second.length === 0, 'gift-cancel #3: a SECOND cancel returns nothing (idempotent -> never double-releases the gift balance)');
   ok(_collectGiftReturns({ giftRedemptions: [{ code: 'x', amt: 0 }] }).length === 0 && _collectGiftReturns({}).length === 0, 'gift-cancel #3: a zero-amount redemption and a booking with none both yield an empty list (no-op)');
+}
+
+// ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
+// a slot (promo_uses.n++) at request time while still Pending/unpaid; the slot was released ONLY on /book failure, never when a
+// saved booking later cancelled or auto-expired -> every abandoned/cancelled public redemption permanently consumed a slot and
+// the code bricked. _collectPromoReturn mirrors _collectGiftReturns (release once, idempotent via promoReturnedAt). ----
+{
+  const dd = { promoClaimedCode: 'SUMMER' };
+  const first = _collectPromoReturn(dd);
+  ok(first === 'SUMMER' && dd.promoReturnedAt > 0, 'promo-cancel #13: the capped promo slot is returned once (code) and stamped promoReturnedAt');
+  const second = _collectPromoReturn(dd);
+  ok(second === '', 'promo-cancel #13: a SECOND cancel/expire returns \'\' (idempotent -> never double-releases the cap slot)');
+  ok(_collectPromoReturn({}) === '' && _collectPromoReturn({ promoCode: 'X' }) === '', 'promo-cancel #13: a booking with no capped claim (or only an uncapped promoCode) releases nothing');
+  // source-guards: both termination paths release the slot, and /book persists the claimed code.
+  ok(/function _collectPromoReturn\(dd\)/.test(_WORKER_SRC), 'promo-cancel #13: _collectPromoReturn exists (twin of _collectGiftReturns)');
+  ok((_WORKER_SRC.match(/_promoToReturn = _collectPromoReturn\(dd\)|_pr2 = _collectPromoReturn\(fd\)/g) || []).length >= 2, 'promo-cancel #13: BOTH /cancel and the auto-expire sweep collect the capped promo slot to release (parity with the gift release on the same two paths)');
+  ok(/promoClaimedCode: _promoClaimedCode \|\| undefined/.test(_WORKER_SRC), 'promo-cancel #13: /book persists the CAPPED promo code claimed so cancel/expire release the exact slot (uncapped promos are absent -> never unclaimed)');
+  ok((_WORKER_SRC.match(/_promoUnclaim\(env, (ctx\.tenant_id|b\.tenant_id), _promo(ToReturn|)/g) || []).length >= 1 && /if \(_promoToReturn\)/.test(_WORKER_SRC) && /if \(_pr2\)/.test(_WORKER_SRC), 'promo-cancel #13: both paths call _promoUnclaim only when a slot was actually collected (idempotent)');
+}
+
+// ---- WEB-PUSH prune only on 404/410 Gone (correctness MED #19): a NON-gone failure (401/403/413/429/5xx/network/timeout) is
+// transient or a server-side issue, not proof the subscription is dead. The old fail_count>=8 auto-DELETE permanently dropped
+// still-valid subs after 8 transient misses (reset only on a 2xx) and the browser never re-registers. Deletion is Gone-only now;
+// the POST is bounded by _fetchTimeout so one hung endpoint cannot stall the fanout. ----
+{
+  ok(!/DELETE FROM push_subscriptions WHERE id=\? AND fail_count>=8/.test(_WORKER_SRC), 'push #19: the fail_count>=8 auto-DELETE is REMOVED -- a transient push failure no longer prunes a valid subscription (only 404/410 Gone does)');
+  ok(/return \{ ok: \(r\.status >= 200 && r\.status < 300\), status: r\.status, gone: \(r\.status === 404 \|\| r\.status === 410\) \}/.test(_WORKER_SRC), 'push #19: _webPushSend still marks gone ONLY on 404/410 (the sole prune signal)');
+  ok(/_fetchTimeout\(endpoint, \{ method: 'POST'/.test(_WORKER_SRC), 'push #19: the web-push POST is bounded by _fetchTimeout (was an unbounded fetch that could hang the fanout)');
 }
 
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
