@@ -15021,6 +15021,43 @@ function _playVideoOverlay(blobUrl){
   ov.appendChild(v); document.body.appendChild(ov);
 }
 // Upload an owner check-in/out video for the currently-open modal booking (phase 'pre'|'post').
+// Compose a readable upload error, surfacing the worker's detail (R2/size reason) instead of a bare "Upload failed".
+function _vidErr(d, xhr){ var m=(d&&d.error)||'Upload failed'; if(d&&d.detail) m+=': '+String(d.detail).slice(0,140); else if(xhr&&xhr.status) m+=' ('+xhr.status+')'; return m; }
+// Record a finished upload's metadata on the booking + refresh the grid (shared by the single + chunked paths).
+function _ownerVideoRecorded(d, file, bookingId, phase){
+  var _vk=(d.meta&&d.meta.key)||d.key||''; var _vm=_vk?Object.assign({name:(file.name||'video.mp4'),size:file.size,at:Date.now(),by:'owner'},(d.meta||{}),{key:_vk}):null;
+  var bk=bookings.find(function(x){return x.id===bookingId;});
+  if(bk&&_vm){ var f=phase==='post'?'checkOutVideos':'checkInVideos'; bk[f]=(bk[f]||[]).filter(Boolean).concat([_vm]); bk._t=Date.now(); if(typeof flushCloudSave==='function') flushCloudSave(); }
+  _ownerRenderVideoGrid(bookingId,phase); showToast(_vm?'Video uploaded':'Video uploaded - reopen to view');
+}
+// LARGE videos (> ~80MB) exceed Cloudflare's request-body limit, so upload to R2 in uniform <100MB parts via the
+// worker multipart endpoints (start -> part* -> complete). Clear message if the worker is not updated yet; aborts on failure.
+async function _ownerHandleVideoChunked(file, bookingId, phase, prog, fill){
+  var CHUNK=50*1024*1024; var ah=_authHeader(); var hdr=ah.Authorization?{'Authorization':ah.Authorization}:{};
+  var key='', uploadId=''; function _done(){ if(prog) prog.style.display='none'; }
+  try{
+    var sres=await fetch(WORKER_URL+'/video/mpu/start?bookingId='+encodeURIComponent(bookingId)+'&role=owner&phase='+phase+'&name='+encodeURIComponent(file.name||'video.mp4')+'&contentType='+encodeURIComponent(file.type||'video/mp4'),{method:'POST',headers:hdr});
+    var sd={}; try{sd=await sres.json();}catch(_){}
+    if(!sres.ok||!sd.ok){ _done(); showToast(sres.status===404?'Large-video upload needs the updated worker deployed':_vidErr(sd,sres)); return; }
+    key=sd.key; uploadId=sd.uploadId;
+    var total=file.size, parts=[], n=Math.ceil(total/CHUNK);
+    for(var i=0;i<n;i++){
+      var from=i*CHUNK, to=Math.min(from+CHUNK,total), blob=file.slice(from,to), pn=i+1;
+      var pres=await fetch(WORKER_URL+'/video/mpu/part?key='+encodeURIComponent(key)+'&uploadId='+encodeURIComponent(uploadId)+'&partNumber='+pn,{method:'POST',headers:Object.assign({'Content-Type':file.type||'video/mp4'},hdr),body:blob});
+      var pd={}; try{pd=await pres.json();}catch(_){}
+      if(!pres.ok||!pd.ok) throw new Error(_vidErr(pd,pres));
+      parts.push({partNumber:pd.partNumber,etag:pd.etag});
+      if(fill) fill.style.width=Math.round(to/total*100)+'%';
+    }
+    var cres=await fetch(WORKER_URL+'/video/mpu/complete',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},hdr),body:JSON.stringify({bookingId:bookingId,role:'owner',phase:phase,key:key,uploadId:uploadId,parts:parts,name:(file.name||'video.mp4'),size:file.size})});
+    var cd={}; try{cd=await cres.json();}catch(_){}
+    if(!cres.ok||!cd.ok) throw new Error(_vidErr(cd,cres));
+    _done(); _ownerVideoRecorded(cd, file, bookingId, phase);
+  }catch(e){
+    if(key&&uploadId){ try{ await fetch(WORKER_URL+'/video/mpu/abort',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},hdr),body:JSON.stringify({key:key,uploadId:uploadId})}); }catch(_){} }
+    _done(); showToast(String((e&&e.message)||e)||'Upload failed');
+  }
+}
 function _ownerHandleVideo(input, phase){
   var file=input.files&&input.files[0]; var bookingId=phase==='post'?closeOutId:checkInId; if(input) input.value='';
   if(!file||!bookingId) return;
@@ -15028,6 +15065,7 @@ function _ownerHandleVideo(input, phase){
   if(file.size>1024*1024*1024){ showToast('Video too large (max 1GB)'); return; }
   var prog=$d(phase==='post'?'coVideoProg':'ciVideoProg'), fill=$d(phase==='post'?'coVideoProgFill':'ciVideoProgFill');
   if(prog) prog.style.display='block'; if(fill) fill.style.width='0';
+  if(file.size>80*1024*1024){ _ownerHandleVideoChunked(file, bookingId, phase, prog, fill); return; }   // large videos -> chunked R2 upload (bypasses CF 100MB limit)
   var url=WORKER_URL+'/video/upload?bookingId='+encodeURIComponent(bookingId)+'&role=owner&phase='+phase+'&name='+encodeURIComponent(file.name||'video.mp4');
   var xhr=new XMLHttpRequest(); xhr.open('POST',url);
   var ah=_authHeader(); if(ah.Authorization) xhr.setRequestHeader('Authorization',ah.Authorization);
@@ -15042,8 +15080,8 @@ function _ownerHandleVideo(input, phase){
       var bk=bookings.find(function(x){return x.id===bookingId;});
       if(bk&&_vm){ var f=phase==='post'?'checkOutVideos':'checkInVideos'; bk[f]=(bk[f]||[]).filter(Boolean).concat([_vm]); bk._t=Date.now(); if(typeof flushCloudSave==='function') flushCloudSave(); }
       _ownerRenderVideoGrid(bookingId,phase); showToast(_vm?'Video uploaded':'Video uploaded - reopen to view'); }
-    else showToast((d&&d.error)||'Upload failed'); };
-  xhr.onerror=function(){ if(prog) prog.style.display='none'; showToast('Upload failed'); };
+    else showToast(_vidErr(d,xhr)); };
+  xhr.onerror=function(){ if(prog) prog.style.display='none'; showToast('Upload failed - check your connection'); };
   xhr.send(file);
 }
 async function _ownerDeleteVideo(bookingId, key, phase){
