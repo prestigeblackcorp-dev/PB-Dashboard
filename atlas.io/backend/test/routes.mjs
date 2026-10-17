@@ -1191,6 +1191,18 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/rateLimit\(env, 'aunlock:' \+ ctx\.tenant_id \+ ':' \+ _an, 1, 90000\)/.test(_WORKER_SRC), 'asset-unlock #17: a 90s per-ASSET lock gates asset_unlock checkout creation (after the coverage check) so two concurrent checkouts for the same asset cannot both open -> no duplicate recurring sub');
 }
 
+// ---- GIFT full-settlement confirms + secures the slot (availability MED #14): every real-money credit flips a fully-paid booking
+// to Confirmed and runs _confirmSlotFull/_confirmSlotHeal to hold the slot + block overbooking. The gift-redeem endpoints only
+// _bkPatch'd giftRedemptions (data blob, not the status column), so a booking paid off ENTIRELY by gift card stayed 'pending' --
+// and pending bookings hold no slot -- leaving it unsecured/overbookable, unlike a card-paid one. _giftMaybeConfirm mirrors the
+// money-credit confirm+heal and is called from BOTH gift-redeem endpoints. ----
+{
+  ok(/async function _giftMaybeConfirm\(env, tenantId, bookingId, req\)/.test(_WORKER_SRC), 'gift-confirm #14: _giftMaybeConfirm exists -- a gift card that fully settles a booking confirms it + runs the double-book guard');
+  ok((_WORKER_SRC.match(/_giftMaybeConfirm\(env, (_mctx\.tenant_id|brow\.tenant_id), _?brow\.id, req\)/g) || []).length >= 2, 'gift-confirm #14: BOTH the owner /gift-redeem and the portal self-redeem call _giftMaybeConfirm after applying the credit');
+  ok(/UPDATE bookings SET data=\?, status='Confirmed', updated_at=\? WHERE id=\? AND tenant_id=\? AND LOWER\(status\)='pending' AND updated_at IS \?/.test(_WORKER_SRC), 'gift-confirm #14: the confirm is a CAS guarded on pending + updated_at (never resurrects a terminal booking, never clobbers a concurrent write)');
+  ok(/_confirmSlotHeal\(env, tenantId, bookingId, _d, _s, _e\)/.test(_WORKER_SRC), 'gift-confirm #14: the gift confirm runs _confirmSlotHeal (first-confirm-wins demote on overbook), same as every money-credit path');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
