@@ -1242,6 +1242,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!/By signing below as a co-signer, I agree to be jointly/.test(_WORKER_SRC), 'cosign #9: the old generic-only co-signer default (no asset/channel resolution) is gone');
 }
 
+// ---- CO-SIGNER E-SIGN/UETA consent + tenant-purge completeness (LOW #4, #11/#12). #4: /cosign stored no consent statement
+// (the base /sign records signatures.consent); the co-signer carries joint liability, so give the same electronic-consent trail.
+// #11/#12: the tenant purge omitted tenant_visit_uniques (per-tenant visitor IP hashes) + site_domains (custom-domain map, a
+// left-behind row dangles a domain at a purged tenant). ----
+{
+  ok(/var _csEsign = \(typeof _csBody\.esignConsent !== 'undefined'\)/.test(_WORKER_SRC), 'cosign ESIGN #L4: the co-signer must give a SEPARATE intent-to-sign consent (fallback to the agree checkbox for a pre-update page, like the base signer)');
+  ok(/INSERT INTO signatures \(id,tenant_id,booking_id,doc_hash,doc_text,signer_name,sig,ip,ua,signed_at,terms_hash,consent\) VALUES \(\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?\)'\)\.bind\(_csSigId/.test(_WORKER_SRC), 'cosign ESIGN #L4: the co-signer signature row stores the E-SIGN/UETA consent statement (consent column), matching the base /sign');
+  ok(/'api_keys','tenant_visit_uniques','site_domains'\]/.test(_WORKER_SRC), 'purge #L11/#12: the tenant purge also removes tenant_visit_uniques (visitor IP hashes) + site_domains (custom-domain map) -- no PII or dangling domain left behind for a purged tenant');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
