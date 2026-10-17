@@ -1104,6 +1104,18 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_deliberateRefundNonce('refund', null) === '', 'refund #10691: a missing body is safely stable-keyed (never throws)');
 }
 
+// ---- REFUND ACCUMULATION (money MED #5/#22 + #6): a partial refund OVERWROTE the per-slot refunded total instead of
+// accumulating, so a 2nd partial refund under-counted the clawback (settled/owed over-stated) AND cancel SKIPPED a
+// partially-refunded slot whole, stranding its remaining captured money. Now the in-app /api/pay refund and the cancel
+// loops accumulate the remainder (the charge.refunded webhook already did at ~8717), dedup-safe + idempotent. ----
+{
+  ok(/_thisRefAmt = \(op === 'refund'[^;]*p\.refunded\.amountCents/.test(_WORKER_SRC), 'audit MED #5/#22: the in-app /api/pay refund captures THIS op amount (_thisRefAmt) to accumulate the slot refunded total');
+  ok((_WORKER_SRC.match(/amountCents: _pr[AB] \+ \(_dupRef \? 0 : _thisRefAmt\)/g) || []).length >= 2, 'audit MED #5/#22: BOTH in-app refund branches (Square/PayPal + Stripe) ACCUMULATE pp.refunded (prior + this op) instead of overwriting; dedup via _dupRef mirrors the revenue move so a re-click never double-adds');
+  ok((_WORKER_SRC.match(/if \(_rem[SN] > 0\) (caps|_npc)\.push/g) || []).length >= 2, 'audit MED #6: cancel refund loops (Stripe + Square/PayPal) include a PARTIALLY-refunded slot by its REMAINDER (amountCents - already-refunded), not skip it whole');
+  ok((_WORKER_SRC.match(/c\.p\.currency, 'cxl'\)/g) || []).length >= 2, 'audit MED #6: cancel Square+PayPal remainder refunds pass a stable cxl nonce so the idem key never collides with a prior in-app partial refund of the same payment+amount');
+  ok(/_priorRef \+ \(Number\(pt\.refunded\.amountCents\) \|\| 0\)/.test(_WORKER_SRC), 'audit MED #6: the cancel CAS ACCUMULATES onto the slot pre-cancel refunded (read from the original d -> deterministic + idempotent across CAS retries)');
+}
+
 // ---- EXTENSION effective-end must be rateModel-INDEPENDENT (CRITICAL availability/money): the occupied-until end of a signed
 // extension was computed as addedPeriods * the tenant's CURRENT rateModel period, so a later Settings>Money>Pricing-model change
 // retroactively moved every signed extension's end -> over-block (day->week) or a real DOUBLE-BOOKING (week->day). Now the FROZEN
