@@ -1183,6 +1183,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!/idem: 'cof_' \+ _brow\.id \+ '_' \+ _charged/.test(_WORKER_SRC), 'billing #2: the off-session idem key no longer keys on _charged (which varies with the zeroed owed ledger -> would double-charge on retry)');
 }
 
+// ---- PER-ASSET UNLOCK idempotency (money MED #17): plan/website/domain checkouts each hard-block a 2nd purchase on a PERSISTENT
+// column (stripe_sub / website_sub / domains_sold); asset_unlock had only the per-tenant 6s bco1 lock + a coverage check read from
+// a ledger the webhook updates only AFTER payment -> two checkouts opened >6s apart for the SAME asset, both completing before
+// either checkout.session.completed lands, each minted a separate $11.99/mo sub. A 90s per-asset lock closes that window. ----
+{
+  ok(/rateLimit\(env, 'aunlock:' \+ ctx\.tenant_id \+ ':' \+ _an, 1, 90000\)/.test(_WORKER_SRC), 'asset-unlock #17: a 90s per-ASSET lock gates asset_unlock checkout creation (after the coverage check) so two concurrent checkouts for the same asset cannot both open -> no duplicate recurring sub');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
