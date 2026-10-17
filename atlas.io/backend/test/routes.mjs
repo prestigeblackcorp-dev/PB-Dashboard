@@ -1232,6 +1232,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(!\(_cc\.key && _cc\.webhookSecret\)\) return err\(400, 'Crypto payments are not enabled yet\.'\)/.test(_WORKER_SRC), 'crypto #3: /api/billing/crypto-charge refuses unless BOTH the Coinbase key AND webhook secret are set');
 }
 
+// ---- CO-SIGNER signs the GOVERNING contract (legal MED #9): /api/cosign built _csAgr from the generic tenant agreement only --
+// never the booked asset's per-asset contract, the channel contract, or noun-adaptation -- so the party declared "jointly &
+// severally responsible" assented to materially different terms than the primary renter. _resolveBookingAgreement mirrors the
+// primary /sign precedence (asset > channel > tenant > default + noun-adapt) and now backs the co-signer's agreement. ----
+{
+  ok(/async function _resolveBookingAgreement\(env, pr, d, tenantId\)/.test(_WORKER_SRC), 'cosign #9: _resolveBookingAgreement mirrors the primary /sign resolution (asset > channel > tenant > default + noun-adapt)');
+  ok(/const _csAgrBase = await _resolveBookingAgreement\(env, _csPr, _csD, _csB\.tenant_id\)/.test(_WORKER_SRC), 'cosign #9: the co-signer agreement is resolved from the BOOKING (per-asset/channel), not just the generic tenant text, so the jointly-liable co-signer sees the governing contract');
+  ok(!/By signing below as a co-signer, I agree to be jointly/.test(_WORKER_SRC), 'cosign #9: the old generic-only co-signer default (no asset/channel resolution) is gone');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
