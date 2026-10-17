@@ -1046,6 +1046,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const dUnpaid = { quote: { total: 100 }, portal: {}, paid: {}, charges: [{ id: 'ext1', label: 'Extension', amount: 50, at: 2000 }] };
   const dueUnpaid = _portalDue(dUnpaid, { starts: FAR });
   ok(dueUnpaid.preCharges.some(c => c.id === 'ext1') && dueUnpaid.dueCents === 15000, 'money #17: before the balance is paid, a pre-trip charge still folds into the balance (total 10000 + charge 5000), unchanged');
+  ok((_WORKER_SRC.match(/!_cut7 \|\| \(Number\(_bc\.at\) \|\| 0\) <= _cut7/g) || []).length >= 4, 'audit HIGH #7: all FOUR non-platform settle helpers (PayPal/Square/Coinbase/BYO-Stripe) fold ONLY pre-trip charges with at <= balCut (the checkout-open cutoff), mirroring the platform webhook -- a charge added mid-checkout is never marked paid-for-free');
+  ok(/fd\.balCuts\[String\((co\.id|co\.orderId|ch\.code)\)\] = Date\.now\(\)/.test(_WORKER_SRC), 'audit HIGH #7: the non-platform /pay branches PIN balCut (keyed by the provider order id) in d.balCuts for the settle-time fold cutoff');
 }
 
 // ---- AI COST-CAP race (money/COGS #11737): the old flow checked the committed daily cost, then made the call, then added the
