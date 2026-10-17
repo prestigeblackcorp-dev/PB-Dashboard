@@ -1252,6 +1252,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/'api_keys','tenant_visit_uniques','site_domains'\]/.test(_WORKER_SRC), 'purge #L11/#12: the tenant purge also removes tenant_visit_uniques (visitor IP hashes) + site_domains (custom-domain map) -- no PII or dangling domain left behind for a purged tenant');
 }
 
+// ---- ToS-accept RBAC + push-unsubscribe auth (LOW #6, #10). #6: /api/policy/accept recorded a tenant-wide ToS acceptance for
+// any authenticated user (no viewer floor, no cap) -- a legal act binding the business. #10: /api/push/unsubscribe was
+// unauthenticated (no session/CSRF, unlike its subscribe twin) -- anyone who learned a high-entropy endpoint could delete that sub. ----
+{
+  ok(/if \(!_can\(_pctx, 'settings'\)\) return err\(403, 'Only an owner or a teammate with Settings access can accept the Terms/.test(_WORKER_SRC), 'policy-accept #L6: ToS acceptance requires the settings cap (+ a viewer read-only floor) -- a tenant-wide legal act is no longer any-authenticated-user');
+  ok(/DELETE FROM push_subscriptions WHERE endpoint=\? AND tenant_id=\?/.test(_WORKER_SRC), 'push-unsub #L10: /api/push/unsubscribe requires a session + CSRF and scopes the delete to the caller tenant');
+  ok(!/'DELETE FROM push_subscriptions WHERE endpoint=\?'\)/.test(_WORKER_SRC), 'push-unsub #L10: the old unscoped endpoint-only delete (any party with the endpoint) is gone');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
