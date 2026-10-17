@@ -1172,6 +1172,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/_fetchTimeout\(endpoint, \{ method: 'POST'/.test(_WORKER_SRC), 'push #19: the web-push POST is bounded by _fetchTimeout (was an unbounded fetch that could hang the fanout)');
 }
 
+// ---- BILLING dunning + card-on-file idempotency (money MED #16 + #2). #16: _reconcileStuckTrials flipped a trial to past_due
+// stamping ONLY delinquent_since, not the dunning fields -- so _runDunning (WHERE dunning_invoice IS NOT NULL) never auto-retried
+// and /api/billing/retry-now returned 'nothing_due'; the tenant was 402-locked forever. Mirror _reconcileActiveSubs. #2: the
+// off-session card-on-file idem key keyed on _charged (= _amt + _fee, and _fee folds the owed ledger that _atlasOwedClaim zeroes
+// on the first try) -> a status-0 timeout retry got a smaller _charged -> a different key -> a SECOND PaymentIntent. Key on _amt. ----
+{
+  ok(/plan='past_due', delinquent_since=COALESCE\(delinquent_since,\?\), dunning_invoice=\?, dunning_next=\?, dunning_attempts=0, dunning_last=NULL, stripe_customer=\?, stripe_sub=\?, updated_at=\? WHERE id=\? AND plan='trial'/.test(_WORKER_SRC), 'billing #16: _reconcileStuckTrials past_due flip ALSO stamps dunning_invoice/dunning_next/dunning_attempts/dunning_last (mirror _reconcileActiveSubs) so _runDunning + Retry-Now fire instead of a permanent 402 lock');
+  ok(/idem: 'cof_' \+ _brow\.id \+ '_' \+ _amt \+ '_' \+ String\(_note/.test(_WORKER_SRC), 'billing #2: the card-on-file off-session idem key uses the stable owner _amt (matches _cid) so a network-timeout retry REPLAYS the original PaymentIntent');
+  ok(!/idem: 'cof_' \+ _brow\.id \+ '_' \+ _charged/.test(_WORKER_SRC), 'billing #2: the off-session idem key no longer keys on _charged (which varies with the zeroed owed ledger -> would double-charge on retry)');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
