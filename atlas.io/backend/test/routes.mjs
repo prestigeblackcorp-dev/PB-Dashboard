@@ -778,8 +778,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           return null;
         },
         all: async () => {
-          if (/FROM bookings WHERE tenant_id=\? AND \(customer_id/.test(sql)) return { results: [{ id: 'B1' }] };   // email-inclusive query -> matches the dashboard booking
-          if (/FROM bookings WHERE tenant_id=\? AND customer_id=\? LIMIT/.test(sql)) return { results: [] };          // old customer_id-only query -> would MISS it
+          if (/FROM bookings WHERE tenant_id=\? AND id > \? AND \(customer_id/.test(sql)) return { results: a[1] ? [] : [{ id: 'B1' }] };   // MED #21 cursor: email-inclusive query -> the FIRST page (cursor a[1]='') returns the dashboard booking; a 2nd page (cursor 'B1') returns [] so the paginated loop terminates
+          if (/FROM bookings WHERE tenant_id=\? AND id > \? AND customer_id=\? ORDER BY/.test(sql)) return { results: [] };          // the customer_id-only cursor fallback (json functions unavailable) -> empty here
           return { results: [] };
         },
         run: async () => { if (/UPDATE bookings SET data=/.test(sql)) redacted = a[0]; return { success: true, meta: { changes: 1 } }; },
