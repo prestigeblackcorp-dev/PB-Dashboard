@@ -2279,7 +2279,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23ch';
+  var APP_VERSION='2026.7.23ci';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -3226,6 +3226,17 @@ const Atlas = (function(){
     _authErr('');
   }
   function _authErr(m){ var el=document.getElementById('authErr'); if(!el)return; if(m){ el.textContent=m; el.style.display='block'; } else { el.style.display='none'; } }
+  // #falseCache FIX: the app boots LOCAL-FIRST (paints the cached dashboard from a persisted local session) and only then
+  // confirms auth. A dead SERVER session (HTTP 401/403) used to be ignored, so the stale dashboard stayed up while every
+  // write silently 401'd -- the "false cache" the owner can mistake for being signed in. _sessionExpired() is the honest
+  // gate: drop the CSRF token + any queued write and show the sign-in screen with a clear notice. Local data is preserved
+  // (IndexedDB), so it reappears on re-login and any unsynced edit flushes on the next boot. Called from the boot auth probe
+  // on a definitive 401/403 ONLY -- a NETWORK error (offline) rejects to .catch and correctly keeps the offline cache.
+  function _sessionExpired(){
+    try{ _apiCsrf=null; if(typeof _syncTimer!=='undefined' && _syncTimer){ clearTimeout(_syncTimer); _syncTimer=null; } }catch(e){}   // stop a queued profile/record write that would just 401
+    _authMode='login'; try{ renderAuth(); }catch(e){} try{ show('auth'); }catch(e){}
+    try{ _authErr('Your session expired - please sign back in. Your data is safe and reappears once you do.'); }catch(e){}
+  }
   // Show/hide the password so a non-technical user can confirm what they typed (a top cause of "wrong password" on sign-in).
   function authTogglePass(){ var p=document.getElementById('authPass'), b=document.getElementById('authPassEye'); if(!p) return; var show=(p.type==='password'); p.type=show?'text':'password'; if(b) b.textContent=show?'Hide':'Show'; }
   // ---- Enterprise SSO (login only). Buttons render only when the owner has configured a provider (SSO_*_ID/SECRET). ----
@@ -14455,11 +14466,13 @@ const Atlas = (function(){
       // another device) and other devices' changes never pull in. Local-first paint below stays instant; this refreshes
       // to server truth a moment later. Profile PUSH is held (_bootSync) until the hydrate merge lands, then the app
       // re-renders with the merged data.
-      if(ATLAS_BACKEND && store.session()){ _bootSync=true; var _bootTid=store.session().tenantId;
+      if(ATLAS_BACKEND && store.session()){ _bootSync=true; var _bootTid=store.session().tenantId; var _sessDead=false;
         _api('/api/auth/me',{method:'GET'}).then(function(res){
           if(res&&res.json&&res.json.user) _applySelfRole(res.json.user);   // adopt/clear teammate gating on every boot (server role is authoritative)
           if(res && res.json && res.json.csrf){ _apiCsrf=res.json.csrf; if(res.json.ip)_clientIp=res.json.ip; return _srvHydrate(_bootTid); }
+          if(res && (res.status===401 || res.status===403)) _sessDead=true;   // #falseCache: server REACHABLE but session INVALID -> do NOT leave the stale cached dashboard up (writes silently 401); gate to the resign screen in the finalizer. A network error rejects to .catch (below) and keeps the offline cache.
         }).catch(function(){}).then(function(){ _bootSync=false;
+          if(_sessDead){ try{ _sessionExpired(); }catch(e){} return; }   // #falseCache: dead session -> show the sign-in screen; do NOT re-render the cached app or flush a write that will just 401
           try{ var _s2=load(); if(_s2){ S=_s2; var _ap=document.getElementById('app'); if(S.onboarded && _ap && _ap.classList.contains('on')){ applyBrand(); buildApp(); } } }catch(e){}
           try{ _srvSyncPush(); }catch(e){}   // audit #5: after the boot hydrate merge lands (and _bootSync is cleared so the profile push is allowed), flush any STRANDED local edit -- one made in a prior session whose 1.5s debounced sync never fired before the tab closed. Safe: the hydrate merge already set _pushedHash, so ONLY a local-newer record is still dirty and gets pushed (no clobber of newer server data, no churn). Mirrors the flush-before-hydrate the live-poll/refresh paths already do.
         });
