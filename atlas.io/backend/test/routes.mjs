@@ -1223,6 +1223,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!/customer_id=\? LIMIT 5000/.test(_WORKER_SRC), 'erasure #21: the old un-paginated flat LIMIT-5000 erase scan is gone');
 }
 
+// ---- PLATFORM crypto billing requires BOTH secrets (money MED #3): the crypto pay buttons + /api/billing/crypto-charge were
+// gated on COINBASE_COMMERCE_KEY alone, but crediting happens ONLY in /api/coinbase-webhook -- which no-ops with a 200 (so Coinbase
+// never retries) when COINBASE_COMMERCE_WEBHOOK_SECRET is missing -- and platform billing has NO pending_payments row + NO reconcile
+// sweep. So key-but-no-secret let an owner pay on-chain and never be credited, permanently. Fail-closed: require both together. ----
+{
+  ok((_WORKER_SRC.match(/cryptoEnabled: !!\(env && env\.COINBASE_COMMERCE_KEY && env\.COINBASE_COMMERCE_WEBHOOK_SECRET\)/g) || []).length >= 2, 'crypto #3: the platform cryptoEnabled flag (/auth/me + /tenant/profile) requires the webhook SECRET too, not just the key -> the pay buttons never render into a path that cannot credit');
+  ok(/if \(!\(_cc\.key && _cc\.webhookSecret\)\) return err\(400, 'Crypto payments are not enabled yet\.'\)/.test(_WORKER_SRC), 'crypto #3: /api/billing/crypto-charge refuses unless BOTH the Coinbase key AND webhook secret are set');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
@@ -5107,7 +5116,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/ALTER TABLE tenants ADD COLUMN crypto_until INTEGER/.test(_WORKER_SRC), 'crypto: the crypto_until column');
   ok(/async function _runCryptoExpiry\(env, now\) \{/.test(_WORKER_SRC) && /try \{ await _runCryptoExpiry\(env, Date\.now\(\)\); \}/.test(_WORKER_SRC), 'crypto: the prepaid-plan expiry cron is wired into scheduled()');
   ok(/plan='past_due', delinquent_since=COALESCE\(delinquent_since,\?\)[\s\S]{0,200}\(stripe_sub IS NULL OR stripe_sub=''\) AND crypto_until/.test(_WORKER_SRC), 'crypto: expiry flips ONLY a pure-crypto lapsed plan (no stripe_sub) active->past_due -- a Stripe tenant is never touched');
-  ok((_WORKER_SRC.match(/cryptoEnabled: !!\(env && env\.COINBASE_COMMERCE_KEY\)/g) || []).length === 2, 'crypto: /api/auth/me AND /api/tenant/profile both tell the client whether crypto is enabled');
+  ok((_WORKER_SRC.match(/cryptoEnabled: !!\(env && env\.COINBASE_COMMERCE_KEY && env\.COINBASE_COMMERCE_WEBHOOK_SECRET\)/g) || []).length === 2, 'crypto: /api/auth/me AND /api/tenant/profile both tell the client whether crypto is enabled (MED #3: gated on key AND webhook secret)');
   // --- worker: the G27 + abandoned-nudge paid-gate fix uses _actuallyPaidCents (not _qbPaidCents) ---
   ok(/if \(_actuallyPaidCents\(fd\) > 0 \|\| \(fd\.portal && fd\.portal\.signedAt\)/.test(_WORKER_SRC), 'G27-fix: the auto-expire guard uses _actuallyPaidCents (captured-only, not _qbPaidCents) + the signature as paid/held signals, so a never-paid website pending actually expires');
   ok(/Array\.isArray\(fd\.giftRedemptions\) && fd\.giftRedemptions\.length && \(Number\(\(_portalDue\(fd, row\) \|\| \{\}\)\.dueCents\) \|\| 0\) <= 0\)\) break;/.test(_WORKER_SRC), 'audit HIGH (#giftcards): the auto-expire guard ALSO exempts a pending fully settled by a gift card (giftRedemptions set + _portalDue.dueCents<=0), so an "All settled" booking is never auto-cancelled');
