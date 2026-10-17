@@ -1270,6 +1270,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(!await _creditAdd\(env, _ctenant, parseInt\(_cmd\.pack, 10\) \|\| 0\)\) throw new Error\('credit grant did not commit'\)/.test(_WORKER_SRC), 'crypto-credits #L2: the crypto webhook credits grant throws on a failed _creditAdd so the sentinel-delete + 500 + Coinbase retry fires (no silently-lost paid credits)');
 }
 
+// ---- LEGAL-SIGNATURE integrity cluster (MED #7, #12, #15) + KYC auto-carry (#24). #7: each 'cs' backing row backs <=1 co-signer
+// (a reused row fabricated joint liability). #12: each 'sx' row backs <=1 extension via two passes (lenient no-sigId / extra
+// fabricated extension stripped). #15: a non-manual 'Stripe Identity' method label must be backed by a real server Stripe
+// completion (verified_customers -- Stripe-only -- or portal.idv.status===verified), else downgraded to 'manual' on chargeback
+// evidence. #24: the /book returning-customer ID auto-carry (name+email, knowable PII) is owner-opt-in, default off (strict re-verify).
+{
+  ok(/if \(!\(_cSid && _csids\[_cSid\]\) \|\| _csClaimed\[_cSid\]\) \{ _cstrip\(_c\); \} else \{ _csClaimed\[_cSid\] = 1; \}/.test(_WORKER_SRC), 'cosign #7: each cs backing row backs at most ONE co-signer (a reused sigId = a fabricated 2nd co-signer -> stripped); legitimate distinct-sigId co-signers are never stripped');
+  ok(/var _sxClaimed = \{\};/.test(_WORKER_SRC) && /if \(_free\) \{ _sxClaimed\[_free\] = 1; \} else \{ _strip\(_x2\); \}/.test(_WORKER_SRC), 'extsig #12: each sx row backs at most ONE extension (two-pass 1:1); a reused sigId or a fabricated EXTRA (beyond the real-row count) is stripped, every legit extension keeps its own row');
+  ok(/if \(!_methodBacked && data\.idVerifyMethod !== 'manual'\) data\.idVerifyMethod = 'manual';/.test(_WORKER_SRC), 'idv-method #15: a non-manual (Stripe Identity) method label unbacked by a real server Stripe completion is downgraded to manual -- no manual check can be relabeled a Stripe document+liveness check on chargeback evidence');
+  ok(/if \(_sd && _sd\.portal && _sd\.portal\.idv && String\(_sd\.portal\.idv\.status\) === 'verified'\) _methodBacked = true;/.test(_WORKER_SRC), 'idv-method #15: THIS booking portal.idv.status===verified (or a verified_customers row, Stripe-only) is the sole backing for a Stripe-Identity method label');
+  ok(/const _vcOk = _acAllow && !!\(_vc/.test(_WORKER_SRC), 'kyc #24: /book returning-customer ID auto-carry (name+email) is owner-opt-in (settings.idv.autoCarryReturning), default OFF -> strict re-verify closes the name+email impersonation vector');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
@@ -1564,8 +1577,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // source: the sig row stores ext_terms_hash and _stripUnbackedSig verifies the CURRENT terms against it (legacy rows w/o a hash fall back to the existence-only check).
   ok(/ALTER TABLE signatures ADD COLUMN ext_terms_hash TEXT/.test(_WORKER_SRC), '#7: signatures.ext_terms_hash column added');
   ok(/signed_at,ext_terms_hash\) VALUES \(\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?\)/.test(_WORKER_SRC), '#7: /extsign stores the extension terms hash on the sx row');
-  ok(/if \(_curTH !== _row\.th\) _strip\(_x\)/.test(_WORKER_SRC), '#7: _stripUnbackedSig strips an extension whose current terms do not match its sig row (reused/forged sigId)');
-  ok(/if \(_row\.th\)/.test(_WORKER_SRC), '#7: a legacy sig row with no terms hash falls back to the existence-only check (no existing signature is stripped)');
+  ok(/if \(_curTH !== _rowTh\) \{ _strip\(_x\); continue; \}/.test(_WORKER_SRC), '#7/MED #12: _stripUnbackedSig strips an extension whose current terms do not match its sig row (reused/forged sigId)');
+  ok(/if \(_rowTh\)/.test(_WORKER_SRC), '#7/MED #12: a legacy sig row with no terms hash falls back to the existence check (still 1:1-bound), so no legitimate signature is stripped');
 
   // ---- FULL-SYSTEM AUDIT batch 12l (build 12l): invite-token expiry (#2). ----
   ok(/ALTER TABLE users ADD COLUMN invite_expires INTEGER/.test(_WORKER_SRC), '#2: users.invite_expires column added');
