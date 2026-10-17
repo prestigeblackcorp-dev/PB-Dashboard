@@ -4066,7 +4066,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // ---- source-guards: the heal is wired into all 3 confirm write paths + fail-safe ----
   ok(/async function _confirmSlotHeal\(env, tenantId, bookingId, bd, startTs, endTs\)/.test(_WORKER_SRC), 'F7: _confirmSlotHeal exists');
   ok((_WORKER_SRC.match(/await _confirmSlotHeal\(env, ctx\.tenant_id, (rid|id), body\.data, _hs[UPN], _he[UPN]\)\) return err\(409,/g) || []).length === 3, 'F7: the heal runs after the write on ALL 3 confirm paths (PUT + POST-as-update + fresh INSERT) and answers 409 when it reverted');
-  ok(/if \(!await _confirmSlotFull\(env, tenantId, bookingId, bd, startTs, endTs\)\) return false;/.test(_WORKER_SRC), 'F7: the heal only reverts when a re-check confirms an overbook (fail-safe: no overbook -> keep the confirm)');
+  ok(/if \(!await _confirmSlotFull\(env, tenantId, bookingId, bd, _s, _e\)\) return false;/.test(_WORKER_SRC), 'F7: the heal only reverts when a re-check confirms an overbook (fail-safe: no overbook -> keep the confirm)');
+  ok(/SELECT starts, ends FROM bookings WHERE id=\? AND tenant_id=\?/.test(_WORKER_SRC), '#CRITICAL double-book: the heal resolves the slot window from the starts/ends COLUMNS (public /book rows have no startTs in the data blob), so the payment-confirm guard actually runs on website bookings');
+  ok(/body\.money && typeof body\.money === 'object' && _mbWins\('money'\)/.test(_WORKER_SRC) && /_mbWins\('brand'\)/.test(_WORKER_SRC), '#CRITICAL sync-clobber: the money + brand profile columns are gated by _mbWins (per-key newest-wins), not blind-overwritten by a stale device');
 
   // ---- behavioral (mock D1): the heal reverts an overbooking confirm, keeps a clean one ----
   function _mkHealEnv(overlapRows, booking) {
