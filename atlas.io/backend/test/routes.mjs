@@ -1261,6 +1261,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!/'DELETE FROM push_subscriptions WHERE endpoint=\?'\)/.test(_WORKER_SRC), 'push-unsub #L10: the old unscoped endpoint-only delete (any party with the endpoint) is gone');
 }
 
+// ---- CRYPTO credit-pack grant self-heal (money LOW #2): the crypto webhook's plan/website branches throw on a DB failure (-> the
+// catch deletes the recordTxn sentinel + returns 500 so Coinbase retries + re-grants), but the credits branch called _creditAdd,
+// which wrapped its UPDATE in try/catch and swallowed EVERY error without throwing -> a failed add left _granted=true, the sentinel
+// claimed, no 500, no retry: paid credits silently never added. _creditAdd now returns success; the webhook throws on failure. ----
+{
+  ok(/\.run\(\); return true; \} catch \(e\) \{ return false; \}/.test(_WORKER_SRC), 'crypto-credits #L2: _creditAdd returns true/false (was: swallowed every error and returned nothing, defeating the webhook self-heal)');
+  ok(/if \(!await _creditAdd\(env, _ctenant, parseInt\(_cmd\.pack, 10\) \|\| 0\)\) throw new Error\('credit grant did not commit'\)/.test(_WORKER_SRC), 'crypto-credits #L2: the crypto webhook credits grant throws on a failed _creditAdd so the sentinel-delete + 500 + Coinbase retry fires (no silently-lost paid credits)');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
