@@ -2292,7 +2292,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23cj';
+  var APP_VERSION='2026.7.23ck';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -4778,7 +4778,8 @@ const Atlas = (function(){
     label:'<b>'+esc(b.cust||b.id)+'</b>', sub:esc(b.asset)+' &middot; '+b.id, chip:(opts.chip?statusChip(b.status):''),
     amt:opts.noAmt?null:(opts.earned?_bkEarnedRev(b):_bkTotal(b)), onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')" }; }); }
   function drillKpi(which){ var nc=_isCommitted;   // realized bookings only (excludes pending pipeline + cancelled) -- ties to every revenue surface
-    if(which==='rev'||which==='anaRev'){ _drill('Revenue', 'Every '+_fterm('book')+' behind your revenue (rental + collected add-on charges) &mdash; tap one to open it', _bkList(function(b){return nc(b)&&(which==='anaRev'||(_inOvRange(b)&&_inOvScope(b)));},{earned:true}).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total revenue'}); }
+    if(which==='rev'||which==='anaRev'){ _drill('Revenue', 'Every '+_fterm('book')+' behind your booked/earned revenue (rental + collected add-on charges) &mdash; tap one to open it. Cash actually received is the separate Collected KPI.', _bkList(function(b){return nc(b)&&(which==='anaRev'||(_inOvRange(b)&&_inOvScope(b)));},{earned:true}).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total revenue'}); }
+    if(which==='collected'){ _drill('Collected', 'CASH actually received per '+_fterm('book')+' (0 rental until a real payment lands, net of refunds) &mdash; Revenue minus this is roughly Balance owed', (DATA.bookings||[]).filter(function(b){return nc(b)&&_inOvRange(b)&&_inOvScope(b);}).map(function(b){ return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset||'')+' &middot; '+b.id, amt:_bkOwedEarned(b), onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')"}; }).filter(function(x){return x.amt>0.005;}).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total collected'}); }   // gold-standard cash/booked split (companion to the Revenue drill); _inOvRange/_inOvScope neutralized under _anaDrillAll so the Analytics card is all-time/account-wide
     else if(which==='active'){ _drill(cap(_multiType()?'Out on rent':_fterm('active')), 'Out on rent right now', _bkList(function(b){return b.status==='On rent'&&_inOvScope(b);},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing active right now.'}); }   // KPI value (_ovKpiDefs, ~L4779) counts On rent ONLY -- Confirmed belongs to the Upcoming KPI -> the drill must match the card, else the count and the listed rows disagree
     else if(which==='util'){ _drill(cap(_fterm('util')), 'Utilization per '+esc(_multiType()?_adNoun():S.fleet.noun)+(_ovScope.dim!=='all'?(' &middot; '+esc(_ovScopeLabel())):''), _scopeAssets().slice().sort(function(a,b){return b.util-a.util;}).map(function(a){return {label:'<b>'+esc(a.name)+'</b>',sub:esc(a.status),chip:'<b class="tnum">'+a.util+'%</b>',onClick:"Atlas.closeModal();Atlas.openAsset('"+a.id+"')"};}), {showTotal:false}); }
     else if(which==='upcoming'){ _drill('Upcoming', 'Confirmed and pending '+_fterm('books'), _bkList(function(b){return (b.status==='Confirmed'||b.status==='Pending')&&_inOvScope(b);},{chip:1,noAmt:1}), {showTotal:false,empty:'Nothing upcoming.'}); }
@@ -5151,6 +5152,7 @@ const Atlas = (function(){
     var _rep=(function(){var by={};_com.forEach(function(b){by[b.cust]=(by[b.cust]||0)+1;});return Object.keys(by).filter(function(c){return by[c]>1;}).length;})();
     var defs=[
       {id:'rev',label:'Revenue'+(_ovRange!=='all'?(' '+'\u00b7'+' '+_ovRangeBounds(_ovRange).short):''),ic:'M10 2v16M6 6h6a2 2 0 010 4H6a2 2 0 000 4h7',v:money(rev),c:"Atlas.drillKpi('rev')"},
+      {id:'collected',label:'Collected'+(_ovRange!=='all'?(' '+'\u00b7'+' '+_ovRangeBounds(_ovRange).short):''),ic:'M10 3v9m0 0l-3-3m3 3l3-3M4 15h12',v:money(_com.reduce(function(s,b){return s+_bkOwedEarned(b);},0)),c:"Atlas.drillKpi('collected')"},   // gold-standard cash/booked split: Revenue = booked/earned (accrual, _bkEarnedRev); Collected = CASH actually received (_bkOwedEarned -- 0 rental until a real payment lands, net of refunds). The gap (Revenue - Collected) is roughly Balance owed. Mirrors PB's earned-vs-collected separation.
       {id:'net',label:(_net<0?'Net Loss':'Net Profit'),ic:'M3 16l4-5 3 3 7-9',v:money(_net),c:"Atlas.drillKpi('net')"},
       {id:'active',label:_multiType()?'Out on rent':_fterm('active'),ic:'M4 4h12v12H4zM4 8h12',v:active,c:"Atlas.drillKpi('active')"},
       {id:'util',label:_fterm('util'),ic:'M4 16V8M9 16V4M14 16v-6',v:util+'%',c:"Atlas.drillKpi('util')"},
@@ -5179,9 +5181,9 @@ const Atlas = (function(){
     }
     return defs;
   }
-  var OV_KPI_DEFAULT=['rev','active','util','upcoming'];
+  var OV_KPI_DEFAULT=['rev','collected','active','util','upcoming'];   // gold-standard: show Revenue (booked) AND Collected (cash) side by side by default; a tenant who already customized keeps their own set
   function _ovKpiOrder(){ var o=(S&&Array.isArray(S.ovKpis)&&S.ovKpis.length)?S.ovKpis:OV_KPI_DEFAULT; return o.slice(0,8); }   // cap 8 shown
-  var ANA_KPI_DEFAULT=['rev','count','avg','repeat','net'];
+  var ANA_KPI_DEFAULT=['rev','collected','count','avg','repeat','net'];
   function _anaKpiOrder(){ var o=(S&&Array.isArray(S.anaKpis)&&S.anaKpis.length)?S.anaKpis:ANA_KPI_DEFAULT; return o.slice(0,8); }
   function _renderAnaKpis(){ var el=document.getElementById('anaKpis'); if(!el)return;
     var _savedOvRange=_ovRange; _ovRange='all'; var _savedOvScope=_ovScope; _ovScope={dim:'all',val:''};   /* audit c9[13]: the Analytics KPI grid is all-time + whole-account -- the date-range AND the per-location/type/asset scope selectors both live on the Overview tab, so applying either here would silently disagree with the all-time, account-wide P&L + cohorts on this same tab */
