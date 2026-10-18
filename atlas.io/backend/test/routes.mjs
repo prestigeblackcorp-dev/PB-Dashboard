@@ -1283,6 +1283,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/const _vcOk = _acAllow && !!\(_vc/.test(_WORKER_SRC), 'kyc #24: /book returning-customer ID auto-carry (name+email) is owner-opt-in (settings.idv.autoCarryReturning), default OFF -> strict re-verify closes the name+email impersonation vector');
 }
 
+// ---- REMAINING LOWS batch (#1 sandbox re-check, #3 async-crypto double-charge, #7 fraud-fp idempotency, #8 council-refund
+// inflation, #9 tip itemization). ----
+{
+  ok((_WORKER_SRC.match(/if \(creds\.meta && creds\.meta\.sandbox\) return json\(\{ ok: false, reason: 'sandbox'/g) || []).length >= 2, 'sandbox #L1: the DIRECT PayPal + Square portal pay endpoints re-apply the LIVE-only test (a sandbox connection can never take real money)');
+  ok(/processor='coinbase' AND settled_at IS NULL AND created_at >= \?/.test(_WORKER_SRC), 'crypto #L3: the portal crypto pay dedups on an existing UNSETTLED coinbase pending_payments row -- async confirm leaves no d.paid slot to guard on, so a 2nd full-balance crypto charge is blocked');
+  ok(/if \(_ffpTxn && _ffpTxn\.new\)/.test(_WORKER_SRC), 'fraud-fp #L7: the cross-tenant fingerprint increment is per-dispute idempotent (a redelivered charge.dispute.created cannot re-increment the shared counter)');
+  ok(/if \(_spF8 \+ _spP8 > 0\)/.test(_WORKER_SRC), 'council-refund #L8: the partial-outage refund only refunds from the ACTUAL spent buckets -- a _creditOp fail-open (no spent keys) refunds nothing, no credit inflation');
+  ok((_WORKER_SRC.match(/tipCents: Math\.max\(0, Number\(opts\.tip\) \|\| 0\)/g) || []).length >= 4, 'tip #L9: all FOUR credit functions persist tipCents (from opts.tip) so the receipt/portal itemize a tip instead of showing Paid > Rental total unexplained (mirrors the platform webhook)');
+  ok(/tip: Number\(_smd\.tip\) \|\| 0/.test(_WORKER_SRC), 'tip #L9: the Stripe confirm-on-return caller threads the tip from the session metadata into the credit (tipping is Stripe-only, so the other processors stay 0)');
+}
+
 // ---- IP-BAN gate must still cover /api/auth/login (security #10): the ban carve-out reused _PAYMENT_OPEN, which exempts ALL of
 // auth/ (so a past-due owner can sign in) -- but that also skipped the ban on /api/auth/login, letting a banned IP credential-
 // stuff it forever. _BAN_EXEMPT exempts only genuine recovery routes, keeping login/signup/mfa under the ban. ----
