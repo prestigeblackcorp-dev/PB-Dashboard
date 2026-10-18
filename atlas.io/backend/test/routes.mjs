@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _smartRateMult, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _smartRateMult, _assetKtRestore, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -907,6 +907,39 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   r = await worker.fetch(putReq({ id: 'BK1', status: 'confirmed', starts: 1, ends: 2, data: { _t: 200, cust: 'SameEdit' } }), env, ctx);
   j = await r.json();
   ok(r.status === 200 && !j.stale, 'sync stale-push: an EQUAL-_t re-push is not flagged stale (strict <, so idempotent re-push still saves)');
+}
+
+// ---- #23 ASSET field-level _kt restore (money/availability): assets had no stale guard (bookings do), and the client
+// re-stamps info._t on EVERY push -> a device editing a COSMETIC field while STALE on rate/status pushed a newer _t with a
+// stale rate/status, and the blind UPDATE reverted it (rate feeds public pricing, status feeds availability). _assetKtRestore
+// keeps the SERVER's rate/status (+ the denormalized day_rate_cents/status columns) when the server's per-field info._kt is
+// strictly newer than the incoming push's. FAIL-SAFE: absent _kt on either side -> no restore -> byte-identical blind update. ----
+{
+  const _mkEnv23 = (stored) => ({ DB: { prepare: (sql) => { let a = []; const api = { bind: (...x) => { a = x; return api; }, first: async () => (/FROM assets WHERE id=\? AND tenant_id=\?/.test(sql) ? stored : null) }; return api; } } });
+  const _stored = { info: JSON.stringify({ id: 'A1', rate: 350, status: 'Available', _kt: { rate: 50, rateV: 350, status: 10, statusV: 'Available' } }), day_rate_cents: 35000, status: 'Available' };
+  // (a) STALE rate push: incoming _kt.rate=10 < stored 50 -> keep the server rate 350 + its denormalized column
+  const _b1 = { id: 'A1', info: { id: 'A1', rate: 250, status: 'Available', _kt: { rate: 10, rateV: 250, status: 10, statusV: 'Available' } }, day_rate_cents: 25000, status: 'Available' };
+  await _assetKtRestore(_mkEnv23(_stored), 'T1', 'A1', _b1);
+  ok(_b1.info.rate === 350 && _b1.day_rate_cents === 35000, '#23: a STALE rate push (incoming _kt<stored) keeps the server rate 350 + day_rate_cents 35000 -- the public-pricing revert is blocked (got rate=' + _b1.info.rate + ' drc=' + _b1.day_rate_cents + ')');
+  ok(_b1.info._kt.rate === 50 && _b1.info._kt.rateV === 350, '#23: the restored rate carries the server per-field _kt.rate + rateV companion');
+  // (b) FRESH rate push: incoming _kt.rate=90 > stored 50 -> apply the new rate 400
+  const _b2 = { id: 'A1', info: { id: 'A1', rate: 400, status: 'Available', _kt: { rate: 90, rateV: 400, status: 10, statusV: 'Available' } }, day_rate_cents: 40000, status: 'Available' };
+  await _assetKtRestore(_mkEnv23(_stored), 'T1', 'A1', _b2);
+  ok(_b2.info.rate === 400 && _b2.day_rate_cents === 40000, '#23: a FRESH rate push (incoming _kt>stored) applies the new rate 400 (a genuine owner rate change is never dropped)');
+  // (c) FAIL-SAFE: no incoming _kt -> no restore -> byte-identical blind update
+  const _b3 = { id: 'A1', info: { id: 'A1', rate: 250, status: 'Available' }, day_rate_cents: 25000 };
+  await _assetKtRestore(_mkEnv23(_stored), 'T1', 'A1', _b3);
+  ok(_b3.info.rate === 250 && _b3.day_rate_cents === 25000, '#23 FAIL-SAFE: an incoming push with NO _kt -> blind update unchanged (byte-identical to pre-fix for every legacy/un-edited asset)');
+  // (d) STALE status push: incoming status _kt=5 < stored 80 -> keep the server status Maintenance (availability not reverted)
+  const _stored2 = { info: JSON.stringify({ id: 'A2', rate: 200, status: 'Maintenance', _kt: { rate: 10, rateV: 200, status: 80, statusV: 'Maintenance' } }), day_rate_cents: 20000, status: 'Maintenance' };
+  const _b4 = { id: 'A2', info: { id: 'A2', rate: 200, status: 'Available', _kt: { rate: 10, rateV: 200, status: 5, statusV: 'Available' } }, status: 'Available', day_rate_cents: 20000 };
+  await _assetKtRestore(_mkEnv23(_stored2), 'T1', 'A2', _b4);
+  ok(_b4.info.status === 'Maintenance' && _b4.status === 'Maintenance', '#23: a STALE status push keeps the server status Maintenance (a maintenance asset is not re-opened as bookable)');
+  // source-guards: the restore helper + its strictly-greater per-field compare + the denormalized-column lockstep + BOTH write branches call it
+  ok(/async function _assetKtRestore\(env, tenantId, id, body\)/.test(_WORKER_SRC), '#23: the server _assetKtRestore helper exists');
+  ok(/Number\(_ck\.rate\) > Number\(_ik\.rate\)/.test(_WORKER_SRC) && /Number\(_ck\.status\) > Number\(_ik\.status\)/.test(_WORKER_SRC), '#23: per-field restore uses STRICT > (server field strictly newer) so an equal/newer incoming push still applies -- idempotent re-push + genuine owner edits never dropped');
+  ok(/body\.day_rate_cents = _cur\.day_rate_cents/.test(_WORKER_SRC) && /body\.status = _cur\.status/.test(_WORKER_SRC), '#23: a restore keeps the DENORMALIZED day_rate_cents + status columns in lockstep with the blob (public pricing reads day_rate_cents; availability reads the status column)');
+  ok((_WORKER_SRC.match(/_assetKtRestore\(env, ctx\.tenant_id,/g) || []).length === 2, '#23: BOTH asset write branches (the PUT live vector + the POST-as-update) apply the field-level restore');
 }
 
 // ---- SSO pre-hijacking RECLAIM decision (auth-takeover defense): binding an SSO identity to a PRE-EXISTING local account

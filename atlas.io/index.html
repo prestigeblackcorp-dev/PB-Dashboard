@@ -1965,6 +1965,24 @@ const Atlas = (function(){
     if(kind==='bookings'&&item){ if(_hasExt&&_effE>0) item._effEndTs=Math.round(_effE); else if(item._effEndTs!=null) delete item._effEndTs; }   // readiness HIGH (extension-tail): stash absolute effective end (base + active extensions) so the denormalized ends column + server overlap gates see the extension tail
     return { id:item.id, status:String(item.status||'pending'), starts:(Number.isFinite(item.startTs)?Math.round(item.startTs):undefined), ends:((_hasExt&&_effE>0)?Math.round(_effE):(Number.isFinite(item.endTs)?Math.round(item.endTs):undefined)), data:item };
   }
+  // audit MED #23 (asset field-level _kt): assets carry info._t (whole-blob) but the client re-stamps _t on
+  // EVERY push, so a device editing a COSMETIC field while STALE on rate/status pushes a NEWER _t with a stale
+  // rate/status and the blind server UPDATE + whole-blob newest-wins reverts the money/availability field. These
+  // two helpers add a per-FIELD stamp (info._kt.{rate,status}) with a companion value (rateV/statusV) so a change
+  // is detected self-containedly (survives reload/hydrate). FAIL-SAFE: the field path runs ONLY when BOTH sides
+  // carry _kt[field]; _kt is brand-new -> every existing asset is DORMANT (byte-identical to today) until a
+  // post-deploy rate/status edit stamps it. Mirrors the proven settings _kt merge (_srvMergeProfile).
+  function _assetKtStamp(it){ if(!it||typeof it!=='object') return; if(!it._kt||typeof it._kt!=='object') it._kt={};
+    var _r=(Number(it.rate)||0), _s=String(it.status||'');
+    if(it._kt.rate==null || Number(it._kt.rateV)!==_r){ it._kt.rate=it._t; it._kt.rateV=_r; }                       // advance ONLY on a real value change (or first-ever stamp); never fabricate a change on a carried _kt
+    if(it._kt.status==null || String(it._kt.statusV||'')!==_s){ it._kt.status=it._t; it._kt.statusV=_s; } }
+  function _assetFieldMerge(chosen,loc,srv){ if(!chosen||!loc||!srv) return;
+    ['rate','status'].forEach(function(f){ var lk=loc._kt&&loc._kt[f], sk=srv._kt&&srv._kt[f];
+      if(lk==null||sk==null) return;                                                                                // FAIL-SAFE: both sides must carry the field stamp, else keep the whole-blob winner (current behavior)
+      var src=(Number(sk)>Number(lk))?srv:loc;                                                                      // per-field newest-wins (tie -> loc, matching the settings >lt rule) in BOTH whole-blob directions
+      if(!chosen._kt||typeof chosen._kt!=='object') chosen._kt={};
+      chosen[f]=src[f]; chosen._kt[f]=src._kt[f]; chosen._kt[f+'V']=src._kt[f+'V'];                                  // graft the value + its stamp + companion together so a later push won't re-stamp it
+      _seenT(src._kt[f]); }); }
   function _srvUnshape(kind,row){ try{
     if(kind==='assets'){ var i=row.info; var o=i?(typeof i==='string'?JSON.parse(i):i):null; return o||{id:row.id,name:row.name,type:row.type,status:row.status,rate:(row.day_rate_cents||0)/100}; }
     var d=row.data; var b=d?(typeof d==='string'?JSON.parse(d):d):null; if(!b||typeof b!=='object') b={id:row.id,status:row.status};
@@ -2010,7 +2028,7 @@ const Atlas = (function(){
     var cols={ bookings:(typeof _bookings==='function'?_bookings():[]), assets:(typeof DATA!=='undefined'&&DATA.assets)||[] };
     var seen={};
     Object.keys(cols).forEach(function(kind){ (cols[kind]||[]).forEach(function(it){ if(!it||!it.id) return; var key=kind+':'+it.id; seen[key]=1;
-      if(_pushedHash[key]!==JSON.stringify(it)){ it._t=_monoNow(); _srvMirror(kind,it,key,JSON.stringify(it)); } }); });   // #294: monotonic stamp; _pushedHash set on server-accept inside _srvMirror
+      if(_pushedHash[key]!==JSON.stringify(it)){ it._t=_monoNow(); if(kind==='assets') _assetKtStamp(it); _srvMirror(kind,it,key,JSON.stringify(it)); } }); });   // #294: monotonic stamp; _pushedHash set on server-accept inside _srvMirror.   // #23: per-field rate/status stamp so a cosmetic edit on a stale device can't revert the money/availability field
     Object.keys(_pushedHash).forEach(function(key){ if(key==='__profile'||seen[key]) return; var p=key.indexOf(':'); if(p<0) return; var kind=key.slice(0,p); if(cols[kind] && cols[kind].length) _srvDelete(kind,key.slice(p+1)); });   // audit HIGH #17: fail-CLOSED -- never reconcile-delete when the local collection is EMPTY (transient/unhydrated/logout-race must not mass-delete server rows; explicit delAsset/booking-delete still call _srvDelete directly)
     // #294 Gap 6: don't push the profile until the server's copy is verified this session (or the user genuinely onboarded
     // locally) -> a fresh device that hasn't hydrated can never overwrite the real server profile with an empty one.
@@ -2154,6 +2172,7 @@ const Atlas = (function(){
           var _sx={}; srv.extensions.forEach(function(e){ if(e&&e.id!=null&&e.signedAt) _sx[String(e.id)]=e; });
           loc.extensions.forEach(function(e){ if(e&&e.id!=null){ var s=_sx[String(e.id)]; if(s&&!e.signedAt){ e.signedAt=s.signedAt; if(s.signerName!=null)e.signerName=s.signerName; if(s.sigId!=null)e.sigId=s.sigId; } } });
         } }
+      if(kind==='assets'&&loc) _assetFieldMerge(byId[srv.id],loc,srv);   // audit MED #23: per-field rate/status newest-wins graft, applied AFTER the whole-blob pick in BOTH directions (server-won: keep a locally-newer rate; local-won: adopt the server's newer rate = the finding's fix). Dormant until both sides carry info._kt -> byte-identical to the whole-blob merge for every existing asset.
       });   // audit HIGH #16: when LOCAL wins, do NOT touch _pushedHash -> the local edit stays dirty and the next _srvSyncPush actually sends it (was set unconditionally to the LOCAL blob -> the edit was marked already-synced and silently never reached the server = cross-device data loss)
     // audit #19: PB-sync PRUNES stale pb-mirror rows server-side (DELETE), but this merge is a pure UNION, so a pruned
     // pb-mirror booking/asset lingered locally as a PHANTOM (calendar / KPIs / reports). Drop ONLY a server-origin
@@ -2292,7 +2311,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23cn';
+  var APP_VERSION='2026.7.23co';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
