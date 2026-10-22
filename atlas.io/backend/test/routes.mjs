@@ -4788,6 +4788,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     ok(r.cancelled === true && m.rev === 0 && m.status === 'cancelled' && m.data.paid.balance.pi === 'pi_C', 'G1-A: a payment on a CANCELLED booking is recorded (slot) but adds NO revenue and never un-cancels'); }
   // (6) source: it is the additive twin of _squareCreditBooking (the live webhook block stays UNTOUCHED -> zero risk to the proven path)
   ok(/async function _stripeCreditBooking\(env, tenantId, bookingId, kind, pi, stripeId, amountCents, opts\)/.test(_WORKER_SRC), 'G1-A: _stripeCreditBooking exists as the reusable twin of _squareCreditBooking/_paypalCreditBooking');
+  // audit400 A050: when the Atlas fee was passed to the customer (passFee), revenue nets the fee (amount_total - fee), matching the platform webhook (8194). Without passFee, revenue is the full amount (byte-identical to before).
+  { let m = _mkStripeEnv({ id: 'S6', data: { paid: {}, status: 'Confirmed' }, revenue_cents: 0, status: 'confirmed' });
+    let r = await _stripeCreditBooking(m.env, 'T', 'S6', 'balance', 'pi_F', 'cs_F', 20600, { passFee: true, feeCents: 600 });
+    ok(r.credited === true && m.rev === 20000, 'audit400 A050: a passFee balance payment ($206 = $200 rental + $6 Atlas fee) books revenue at $200 (amount_total - fee), not the inflated $206 (got rev=' + m.rev + ')'); }
+  { let m = _mkStripeEnv({ id: 'S7', data: { paid: {}, status: 'Confirmed' }, revenue_cents: 0, status: 'confirmed' });
+    let r = await _stripeCreditBooking(m.env, 'T', 'S7', 'balance', 'pi_G', 'cs_G', 20000, {});
+    ok(r.credited === true && m.rev === 20000, 'audit400 A050: NO passFee -> revenue is the full amount (byte-identical to pre-fix)'); }
+  ok(/Math\.max\(0, amt - \(\(opts && opts\.passFee\) \? \(Number\(opts\.feeCents\) \|\| 0\) : 0\)\)/.test(_WORKER_SRC) && (_WORKER_SRC.match(/passFee: \(_smd\.passFee === '1'\), feeCents: Number\(_smd\.feeCents\)|passFee: \(_mdS\.passFee === '1'\), feeCents: Number\(_mdS\.feeCents\)/g) || []).length === 2, 'audit400 A050 (source): _stripeCreditBooking nets the fee AND both callers (confirm-on-return + sweep) forward passFee/feeCents');
 }
 
 // ==== 13p: PB-parity G1-B -- confirm-on-return credits a BYO-Stripe payment the tenant-signed webhook can't verify ====
