@@ -3888,6 +3888,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(Array\.isArray\(d\.coSigners\) && d\.coSigners\.length\) return true;/.test(_WORKER_SRC), 'audit400 A040: _pbmHasNativeState treats a co-signer signature as native state so the stale-mirror prune never hard-deletes a booking carrying a cs signature');
   ok(/&& !_ssoReclaim\(_isNew, String\(\(_u && _u\.sso_sub\) \|\| ''\), _sub\)\)/.test(_WORKER_SRC), 'audit400 A051: the SSO MFA gate is skipped on a pre-hijacking reclaim (untrusted pre-existing MFA can no longer block the IdP-proven owner from reclaiming)');
   ok(/function _overUnitsInListAll\(/.test(_WORKER_SRC) && /\? _overUnitsInListAll\(_snap, _an, _cap\)/.test(_WORKER_SRC), 'audit400 A048: the per-asset unlock checkout demand aggregates over-cap units across ALL same-named published rows (matches the public serve gate + coverage ledger) so the owner can pay to un-hide multi-row inventory');
+  ok(/const _pkDep = \(!_sqpp && p\.gmv && env\.PLATFORM_STRIPE_KEY\) \? env\.PLATFORM_STRIPE_KEY : sk;/.test(_WORKER_SRC) && /!\(p\.gmv && env\.PLATFORM_STRIPE_KEY\)\) return json\(\{ ok: false, reason: 'no_stripe'/.test(_WORKER_SRC), 'audit400 A030: /api/pay capture/release/refund of a Connect/gmv security deposit uses the PLATFORM key (was hard-blocked when the tenant had no BYO Stripe key, so a Connect deposit could never be released or captured)');
 
   // ---- behavioral (mock D1): the reversal math + idempotency + redelivery-safety are exercised end-to-end ----
   function _mkDisputeEnv(bk) {
