@@ -1261,6 +1261,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/SELECT id FROM bookings WHERE tenant_id=\? AND id > \? AND customer_id=\? ORDER BY id LIMIT 5000/.test(_WORKER_SRC), 'erasure #21: the right-to-erasure booking scan paginates with a stable id cursor (id > last, ORDER BY id) instead of a flat LIMIT 5000 that left PII live past the 5000th booking');
   ok(/return json\(\{ ok: true, erased: _erComplete, customer: _cid/.test(_WORKER_SRC), 'erasure #21: the response reports erased:_erComplete (false if the safety cap was ever hit) -- no more unconditional erased:true while PII persists');
   ok(!/customer_id=\? LIMIT 5000/.test(_WORKER_SRC), 'erasure #21: the old un-paginated flat LIMIT-5000 erase scan is gone');
+  ok(/else if \(!_alreadyErased\) _erComplete = false;/.test(_WORKER_SRC) && /\} catch \(e\) \{ _erComplete = false; \}/.test(_WORKER_SRC), 'audit400 A042: a per-booking erase FAILURE (CAS exhaustion / thrown D1 error, distinct from the idempotent already-erased skip) sets _erComplete=false -> the endpoint never reports erased/complete:true while live PII persists; the R2 purge is gated on the blob redaction persisting');
 }
 
 // ---- PLATFORM crypto billing requires BOTH secrets (money MED #3): the crypto pay buttons + /api/billing/crypto-charge were
@@ -1606,6 +1607,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     const _fd = { cust: 'Jane Doe', custEmail: 'j@x.com', custPhone: '555', custName: 'Jane', deliveryAddr: '1 Main', notes: 'vip', idName: 'Jane Q', idLast4: '1234', smsConsentIp: '1.2.3.4',
       portal: { email: 'j@x.com', signerName: 'Jane', sig: 'data:...', signDevice: { ip: '1.2.3.4', ua: 'UA' }, uploads: [{ key: 'k1' }] },
       sigTrail: { ip: '1.2.3.4', ua: 'UA', signer: 'Jane', signedAt: 111, docHash: 'h' },
+      location: '42 Pickup Rd', review: { by: 'Jane Doe', text: 'loved it', comment: 'c', reply: 'thanks Jane', rating: 5 },
+      coSigners: [{ name: 'Bob Roe', email: 'bob@x.com', signerName: 'Bob Roe', sigIp: '9.9.9.9', sigId: 'cs1' }],
       extensions: [{ signerName: 'Jane', sigIp: '1.2.3.4', addedPeriods: 1 }] };
     _applyErasure(_fd);
     ok(_fd.custEmail === '' && _fd.custPhone === '' && _fd.cust === '[erased]', '#12 erase: top-level customer PII redacted');
@@ -1613,6 +1616,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     ok(_fd.portal.email === '' && _fd.portal.sig === '' && _fd.portal.signDevice.ip === '' && _fd.portal.uploads.length === 0, '#12 erase: portal PII + uploads cleared');
     ok(_fd.sigTrail.ip === '' && _fd.sigTrail.signer === '[erased]' && _fd.sigTrail.signedAt === 111, '#12 erase: sigTrail PII redacted, non-PII audit fields kept');
     ok(_fd.extensions[0].sigIp === '' && _fd.extensions[0].signerName === '[erased]' && _fd.extensions[0].addedPeriods === 1, '#12 erase: extension signer PII redacted, terms kept');
+    ok(_fd.location === '', 'audit400 A039 erase: the pickup/return address (fd.location) is redacted (was resurrected on every PB-mirror sync)');
+    ok(_fd.review.by === '[erased]' && _fd.review.text === '' && _fd.review.reply === '' && _fd.review.rating === 5, 'audit400 A043 erase: the review name + free text + reply are redacted, the non-PII rating kept');
+    ok(_fd.coSigners[0].name === '[erased]' && _fd.coSigners[0].email === '' && _fd.coSigners[0].sigIp === '' && _fd.coSigners[0].sigId === 'cs1', 'audit400 A044 erase: the co-signer name/email/sigIp (third-party PII) are redacted, the sigId binding kept');
     // idempotent + safe on junk
     const _fd2 = JSON.parse(JSON.stringify(_fd)); _applyErasure(_fd2); ok(_fd2.custEmail === '', '#12 erase: idempotent');
     _applyErasure(null); _applyErasure('x'); ok(true, '#12 erase: never throws on null/non-object');
