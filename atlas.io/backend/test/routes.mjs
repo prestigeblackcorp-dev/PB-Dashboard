@@ -752,7 +752,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(c2 && c2.caps && c2.caps.pricing === 1 && c2.caps.customers === 1 && !c2.caps.settings && !c2.caps.webEdit && !c2.caps.bookEdit, 'RBAC clamp: manager preset intersected to the granter caps {pricing,customers}');
   ok(_clampRoleCapsToGranter({ user: { role: 'owner', caps: null }, isOwner: true }, 'manager') === null, 'RBAC clamp: owner granter is unrestricted (null -> full preset applies)');
   const cv = _clampRoleCapsToGranter(nonOwner({ bookEdit: 1 }), 'viewer');
-  ok(cv && cv.caps && Object.keys(cv.caps).length === 0, 'RBAC clamp: viewer preset is empty regardless of granter');
+  ok(cv && cv.caps && cv.caps.customersEdit === 0 && !cv.caps.bookEdit && !cv.caps.customers && !cv.caps.pricing && !cv.caps.settings, 'RBAC clamp: viewer preset grants no caps (only the explicit customersEdit:0 marker) regardless of granter');
+  // audit400 A013/A014: a non-owner delegate holding customers VIEW but EXPLICITLY DENIED customersEdit must NOT mint a teammate that inherits customer-EDIT
+  const _denied = { user: { role: 'manager', caps: JSON.stringify({ caps: { customers: 1, customersEdit: 0, teamManage: 1 } }) }, isOwner: false };
+  const _cd = _clampRoleCapsToGranter(_denied, 'manager');
+  ok(_cd && _cd.caps && _cd.caps.customersEdit === 0 && _cd.caps.customers === 1, 'audit400 A013/A014: a granter EXPLICITLY denied customersEdit materializes customersEdit:0 (EXPLICIT) on the teammate -> _can no longer inherits customer-EDIT (gov-ID/KYC/export/erase) from the coarse customers key');
+  const _hasEdit = { user: { role: 'manager', caps: JSON.stringify({ caps: { customers: 1, customersEdit: 1, teamManage: 1 } }) }, isOwner: false };
+  const _ce = _clampRoleCapsToGranter(_hasEdit, 'manager');
+  ok(_ce && _ce.caps && _ce.caps.customersEdit === 1, 'audit400 A013/A014: a granter who truly holds customersEdit still delegates it (customersEdit:1) -- no loss of legitimate delegation');
+  ok(/caps\.customersEdit = _can\(ctx, 'customersEdit'\) \? 1 : 0;/.test(_WORKER_SRC), 'audit400 A005/A006/A015 + A013/A014 (source): the clamp emits an explicit customersEdit');
+  ok(/UPDATE tenants SET settings = json_patch\(COALESCE\(settings,'\{\}'\), \?\) WHERE id=\?/.test(_WORKER_SRC) && /\(_mbMoneyW \|\| _mbBrandW\) && !_mbSettingsBr/.test(_WORKER_SRC), 'audit400 A005/A006/A015 (source): money/brand written without the settings branch surgically bumps settings._kt via json_patch so a stale device cannot revert the live pricing/brand');
 }
 
 // ---- RTBF (right-to-erasure) must reach dashboard/phone-in bookings. Those store the customer by EMAIL in the data blob
