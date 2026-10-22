@@ -3879,6 +3879,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/delete b\.portal_token;/g) || []).length >= 2, 'audit400 A047: BOTH the tenant self-export and the admin export-tenant routes strip the live portal_token bearer credential from exported booking rows');
   ok(/reason: 'crypto_active'/.test(_WORKER_SRC) && /SELECT stripe_sub, plan, dunning_invoice, crypto_until/.test(_WORKER_SRC), 'audit400 A049: /api/billing/change-plan reads crypto_until and 409s the !sub card-subscription fallback for a crypto-prepaid tenant (no double-charge)');
   ok(/audit400 A052:/.test(_WORKER_SRC) && /\\bstop\\b\\s\+to\\s\+\(opt\[\\s-\]\?out/.test(_WORKER_SRC), 'audit400 A052: the STOP opt-out detector requires the canonical "stop to <verb>" instruction, not a loose stop...word proximity -> the required STOP line is never silently dropped (TCPA)');
+  ok(/if \(_cbRes\.credited \|\| _reconcileCreditTerminal\(_cbRes\)\) \{ try \{ await _pendSettle\(env, _cbCode\)/.test(_WORKER_SRC), 'audit400 A017/A019/A020: the Coinbase webhook settles the pending_payments row ONLY on a real outcome (credited or terminal), so a bare CAS-loss leaves it pending for the reconcile cron instead of permanently orphaning a confirmed crypto payment');
 
   // ---- behavioral (mock D1): the reversal math + idempotency + redelivery-safety are exercised end-to-end ----
   function _mkDisputeEnv(bk) {
