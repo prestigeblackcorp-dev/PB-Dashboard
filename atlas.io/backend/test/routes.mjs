@@ -5486,5 +5486,18 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13AE === _INDEX_SRC13AE, 'AI-UX: atlas.html and index.html remain byte-identical');
 }
 
+// ==== audit400 build ct: confirm-slot name fallback (A081), resign clamp (A083), erasure gaps (A092/A093), de-identification (A055/A056) ====
+{
+  ok(/if \(!_ainfo && _aname\) \{ try \{ const _ar2 = await env\.DB\.prepare\('SELECT info, blackouts FROM assets WHERE tenant_id=\? AND name=\? LIMIT 1'\)/.test(_WORKER_SRC) && !/else if \(_aname\) \{ try \{ const _ar2/.test(_WORKER_SRC), 'audit400 A081: _confirmSlotFull fires the name lookup when the id lookup resolved NO row (!_ainfo), not only when assetId is absent -- a stale/deleted assetId no longer leaves qty=1 + blackouts unchecked');
+  ok(/var _rrq = Math\.min\(Number\(data\.resignRequestedAt\) \|\| 0, Date\.now\(\)\);/.test(_WORKER_SRC), 'audit400 A083: the re-sign invalidation threshold is CLAMPED to now, so a forged future resignRequestedAt cannot permanently invalidate the base signature + every genuine re-sign after it');
+  ok(/DELETE FROM push_subscriptions WHERE tenant_id=\? AND booking_id=\? AND audience='renter'/.test(_WORKER_SRC), 'audit400 A092: per-booking RTBF erase purges the renter web-push subscription (user_email + booking_id) alongside the blob + signatures redaction');
+  ok(/if \(fd\.commsPref && typeof fd\.commsPref === 'object' && fd\.commsPref\.smsConsentIp != null\) fd\.commsPref\.smsConsentIp = '';/.test(_WORKER_SRC), 'audit400 A093: _applyErasure clears the NESTED commsPref.smsConsentIp (the field that actually persists), not only the legacy top-level alias');
+  ok(/t\.replace\(\/\\d\{3,\}\/g, '\[figure\]'\)/.test(_WORKER_SRC) && !/t\.replace\(\/\\b\\d\{3,\}\\b\/g/.test(_WORKER_SRC), 'audit400 A055: the de-identify integer fallback drops word-boundaries so a digit-run glued to letters is still neutralized');
+  ok(/\(\?:USD\|EUR\|GBP\|CAD\|AUD/.test(_WORKER_SRC), 'audit400 A055: _deIdentifyPlaybook has a currency-code rule (ISO codes glued/spaced to a figure, both orders), not just the $ symbol');
+  ok(/_deIdentifyPlaybook\(_pbGeneric\(String\(pbrow\.playbook\)\)\)/.test(_WORKER_SRC), 'audit400 A056: a served cross-tenant playbook is re-run through _deIdentifyPlaybook at serve time (belt-and-suspenders over the distill-time scrub)');
+  // behavioral: _deIdentifyPlaybook still masks names + now a glued-currency amount, and leaves "customer service" alone
+  ok(/Guest \[name\]/.test(_deIdentifyPlaybook('Guest Rodriguez pays late')) && !/\d/.test(_deIdentifyPlaybook('owed USD1540 and 2300EUR last month')), 'audit400 A055 (behavioral): glued-currency amounts ("USD1540","2300EUR") are neutralized; name masking unaffected');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
