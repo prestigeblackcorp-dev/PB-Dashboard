@@ -1162,6 +1162,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_bkEffEndServer(2000000, { endTs: 1000000 }, dayPms) === 2000000, 'ext-end #crit: no extensions -> max(colEnds, base), unchanged');
   const del = { endTs: 1000000, extensions: [{ addedPeriods: 2, newEndTs: 5000000, _deleted: true }] };  // a deleted extension does not extend
   ok(_bkEffEndServer(0, del, weekPms) === 1000000, 'ext-end #crit: a _deleted extension is ignored (effective end stays at base)');
+  // audit400 A003 (CRITICAL): a website/legacy booking whose data blob carries NO startTs/endTs -> base collapses to ~0; the
+  // extension branch must FLOOR on the signed newEndTs so the occupied window does not shrink to ~1970 and double-book.
+  const _noDates = { periods: 1, extensions: [{ addedPeriods: 2, newEndTs: 1780000000000, prevEndTs: 1779000000000, _deleted: false }] };   // real 2026-scale signed ends; blob has NO startTs/endTs so base collapses to ~86400000 (~1970)
+  ok(_bkEffEndServer(0, _noDates, dayPms) === 1780000000000, 'audit400 A003: a no-startTs/endTs blob floors the effective end on the frozen signed newEndTs (1780000000000), not the ~1970 base+delta (~1.09e9) -> no double-book (got ' + _bkEffEndServer(0, _noDates, dayPms) + ')');
+  const _normalExt = { startTs: 1778000000000, endTs: 1779000000000, periods: 2, extensions: [{ addedPeriods: 2, newEndTs: 1780000000000, prevEndTs: 1779000000000, _deleted: false }] };
+  ok(_bkEffEndServer(0, _normalExt, dayPms) === 1780000000000, 'audit400 A003: a normal booking still resolves base+delta correctly after the maxNew floor (1780000000000) (got ' + _bkEffEndServer(0, _normalExt, dayPms) + ')');
+  ok(/if \(allHaveNew && allHavePrev\) return Math\.max\(maxNew, base \+ exts\.reduce/.test(_WORKER_SRC), 'audit400 A003 (source): the ext-end branch floors on maxNew (frozen signed end) so a collapsed base cannot shrink the occupied window and double-book');
 }
 
 // ---- GIFT-CARD value returned on cancel (money #3): cancelling a booking refunded real payments but never released the
@@ -2884,7 +2891,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
           if (/FROM platform_config WHERE k=\?/.test(sql)) return (a[0] === 'feature_gate_enabled' && opts.gateOn) ? { v: '1' } : null;
           if (/SELECT id,tier,website_addon,settings FROM tenants WHERE id=\?/.test(sql)) return tenantRow;
           if (/SELECT id,tier,website_addon,custom_domain FROM tenants WHERE id=\?/.test(sql)) return tenantRow;
-          if (/SELECT id FROM tenants WHERE custom_domain=\? AND id<>\?/.test(sql)) return null;   // never a clash in these tests
+          if (/SELECT id FROM tenants WHERE custom_domain=\? AND id<>\?/.test(sql)) return null;   // never a tenants clash in these tests
+          if (/SELECT tenant_id FROM site_domains WHERE domain=\?/.test(sql)) return opts.sdClashTenant ? { tenant_id: opts.sdClashTenant } : null;   // audit400 A001: the PRIMARY /connect now also checks site_domains for a cross-tenant clash
           if (/FROM rate_limits/.test(sql)) return null;
           if (/sqlite_master/.test(sql)) return { n: 30 };
           return null;
@@ -2956,6 +2964,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   cfg = wgEnvFor({ scn: 'dom_entitled', gateOn: true, tier: 'starter', website_addon: 'mo', custom_domain: null });
   r = await worker.fetch(wgReq('POST', '/api/domain/connect', cfg, { domain: 'example.com' }), cfg.env, ctx);
   ok(r.status === 200, '#278 flag ON: entitled tenant custom-domain connect (no prior domain) -> 200 (got ' + r.status + ')');
+
+  // audit400 A001 (CRITICAL): a domain ANOTHER tenant holds live in site_domains must be BLOCKED on the primary route too
+  cfg = wgEnvFor({ scn: 'dom_sdclash', gateOn: true, tier: 'starter', website_addon: 'mo', custom_domain: null, sdClashTenant: 'OTHER_TENANT' });
+  r = await worker.fetch(wgReq('POST', '/api/domain/connect', cfg, { domain: 'taken.com' }), cfg.env, ctx);
+  ok(r.status === 409, 'audit400 A001: the PRIMARY /api/domain/connect now 409s a domain another tenant holds in site_domains (was: only the tenants table was checked -> cross-tenant domain + payment takeover) (got ' + r.status + ')');
+  ok(/const _sdClash = await env\.DB\.prepare\('SELECT tenant_id FROM site_domains WHERE domain=\?'\)\.bind\(dom\)\.first\(\);/.test(_WORKER_SRC) && /if \(_sdClash && _sdClash\.tenant_id !== ctx\.tenant_id\) return err\(409/.test(_WORKER_SRC), 'audit400 A001 (source): the primary /api/domain/connect clash check consults site_domains cross-table (symmetric with the sub-site route)');
 
 // ---- #279 LIVE-SITE CRITICAL: PUT /api/tenant/profile settings=? must MERGE, never blind-replace. Two real
 // callers PUT partial settings objects (publishBookingSite sends only {comms,publicSite}; the generic auto-mirror
