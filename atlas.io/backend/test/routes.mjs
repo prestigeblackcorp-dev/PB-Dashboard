@@ -3873,6 +3873,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/_dv\.amountCents > 0 && _dv\.adverse\) await _extDisputeReverse/g) || []).length === 2, 'audit400 A033: BOTH the Square + PayPal dispute reversals gate on _dv.adverse (funds actually withdrawn) -- an inquiry / seller-win no longer falsely claws back revenue (mirrors the Stripe _dispAdverse gate)');
   ok(/adverse: \/\^\(EVIDENCE_REQUIRED\|PROCESSING\|LOST\|ACCEPTED\)\$\//.test(_WORKER_SRC) && /_ppStage !== 'INQUIRY' && !\/SELLER\/\.test\(_ppOut\)/.test(_WORKER_SRC), 'audit400 A033: _squareGetDispute + _paypalGetDispute return a conservative adverse determination');
   ok(/\['refundIds', 'refundedPIs', 'capturedRev'\]\.forEach/.test(_WORKER_SRC), 'audit400 A053: _graftServerPay union-grafts capturedRev (the captured-deposit revenue idempotency ledger) so a stale push cannot drop it and defeat a later dispute clawback');
+  ok(/audit400 A007:/.test(_WORKER_SRC) && /\(\?:\[ '\\-\]\+\[A-Z\]\[a-z\]\+\)\*/.test(_WORKER_SRC), 'audit400 A007: the name scrubber consumes the WHOLE Title-case run after a role word (surname no longer leaks)');
+  ok(/=== '1'\) return env\.PLATFORM_STRIPE_TEST_KEY \|\| '';/.test(_WORKER_SRC), 'audit400 A016: _platStripe in test mode returns the TEST key or empty -- NEVER the live key');
+  ok(/u\.kind = 'id_purged';/.test(_WORKER_SRC), 'audit400 A046: the retention purge tombstones the upload kind so a fully-purged booking drops out of the LIMIT-100 LIKE window (>100-booking tenants now fully sweep)');
+  ok((_WORKER_SRC.match(/delete b\.portal_token;/g) || []).length >= 2, 'audit400 A047: BOTH the tenant self-export and the admin export-tenant routes strip the live portal_token bearer credential from exported booking rows');
+  ok(/reason: 'crypto_active'/.test(_WORKER_SRC) && /SELECT stripe_sub, plan, dunning_invoice, crypto_until/.test(_WORKER_SRC), 'audit400 A049: /api/billing/change-plan reads crypto_until and 409s the !sub card-subscription fallback for a crypto-prepaid tenant (no double-charge)');
+  ok(/audit400 A052:/.test(_WORKER_SRC) && /\\bstop\\b\\s\+to\\s\+\(opt\[\\s-\]\?out/.test(_WORKER_SRC), 'audit400 A052: the STOP opt-out detector requires the canonical "stop to <verb>" instruction, not a loose stop...word proximity -> the required STOP line is never silently dropped (TCPA)');
 
   // ---- behavioral (mock D1): the reversal math + idempotency + redelivery-safety are exercised end-to-end ----
   function _mkDisputeEnv(bk) {
