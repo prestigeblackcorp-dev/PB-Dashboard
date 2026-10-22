@@ -3561,6 +3561,12 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
       <button class="btn btn-sm" onclick="openAuditLog()" style="border-color:rgba(34,197,94,.4);color:var(--green)">View Audit Log</button>
     </div>
 
+    <div style="background:rgba(201,169,98,.07);border:1px solid rgba(201,169,98,.3);border-radius:10px;padding:14px 16px;margin-top:14px">
+      <div style="font-size:12px;font-weight:800;color:var(--gold);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">&#128269; Revenue Audit</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Finds clients who have been collected MORE than their booking bills &#8212; duplicate charges, overpayments, or a revenue set too low. Tap any row to open and reconcile.</div>
+      <button class="btn btn-sm" onclick="openRevenueAudit()" style="border-color:rgba(201,169,98,.4);color:var(--gold)">Run Revenue Audit</button>
+    </div>
+
     <div style="background:rgba(100,180,255,.07);border:1px solid rgba(100,180,255,.3);border-radius:10px;padding:14px 16px;margin-top:14px">
       <div style="font-size:12px;font-weight:800;color:rgba(100,180,255,.9);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">&#127949; Contract Templates</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Edit the rental agreement and Slingshot liability waiver templates used in contracts.</div>
@@ -5323,7 +5329,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v394';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v395';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -9283,7 +9289,7 @@ function _addlIncomeAmt(b){ return (b&&b.addlIncome&&Number(b.addlIncome.amount)
 // totalRevenue so it counts in EVERY accrual KPI/chart/per-vehicle/table/filter; the Today cash-basis KPI
 // adds it separately by paidAt. It is a distinct field (not in b.revenue/charges) -> counted exactly once.
 function _authDriverPaidTotal(b){ return ((b&&Array.isArray(b.extraDrivers))?b.extraDrivers:[]).reduce(function(s,d){ return (d&&d.paid&&Number(d.payAmount)>0)?s+Number(d.payAmount):s; },0); }
-function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(b.refundSent?0:(Number(b.depositKept)||0))+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b)+_addlIncomeAmt(b)+_authDriverPaidTotal(b)-(Number(b._refundedTotal)||0); }  // NET of Stripe refunds issued (b._refundedTotal); a RETURNED deposit (refundSent) is not revenue -- mirror the Deposits Kept card + close-out invariant
+function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(b.refundSent?0:(Number(b.depositKept)||0))+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b)+_addlIncomeAmt(b)+_authDriverPaidTotal(b); }  // EARNED revenue = what the booking BILLS (rate + charges), independent of refunds. A refund is BREAKEVEN at worst: it reverses COLLECTED cash (often an overpayment) and already nets out in Total Collected, so it must NEVER subtract from earned revenue -- doing so drove a refunded overpayment NEGATIVE. To lower what was earned (goodwill/partial cancel), reduce b.revenue directly. A RETURNED deposit (refundSent) is not revenue -- mirror the Deposits Kept card + close-out invariant
 // Days the per-day broker rate covers \u2014 the ORIGINAL rental only. Extensions each carry
 // their own broker fee (entered per extension), so extending never auto-scales the rate.
 function brokerRateDays(b){ var x=_extLive(b).reduce(function(s,e){return s+(Number(e&&e.extensionDays)||0);},0); return Math.max(1,(Number(b.days)||1)-x); }
@@ -9835,6 +9841,34 @@ function openKpiDetail(key){
     (D.note?'<div style="font-size:12px;color:var(--muted);line-height:1.5;margin:-6px 0 6px">'+esc(D.note)+'</div>':'')+
     gh+
     '<div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center;border-top:2px solid var(--gold-dim);padding-top:10px"><span style="font-size:13px;font-weight:800">Total \u2014 '+esc(D.title.replace(/^[^A-Za-z]+/,''))+'</span><span style="font-size:16px;font-weight:900;font-variant-numeric:tabular-nums;color:'+((Number(D.total)||0)<0?'var(--red)':'var(--gold)')+'">'+totFmt+'</span></div>';
+  var m=document.getElementById('kpiDetailModal');
+  if(!m){ m=document.createElement('div'); m.id='kpiDetailModal'; m.className='modal'; document.body.appendChild(m); }
+  m.innerHTML=html; m.classList.add('open');
+}
+// Revenue Audit -- flags bookings where NET CASH COLLECTED (incl. card fees, after refunds) is materially
+// MORE than the booking BILLS (revenue + deposit, grossed 13.25% for the card fee). A positive gap means a
+// duplicate charge / overpayment OR a revenue field set too low vs what was actually collected -- either way
+// it needs a look. READ-ONLY: computes from existing fields, changes nothing. Reuses the KPI-detail modal.
+function openRevenueAudit(){
+  var list=(typeof bookings!=='undefined'&&bookings)?bookings.filter(function(b){ return b&&!b._deleted&&b.status!=='cancelled'&&b.status!=='voided'; }):[];
+  var rows=[];
+  list.forEach(function(b){
+    var rev=totalRevenue(b), dep=Number(b.deposit)||0;
+    var collected=_paymentsReceived(b).reduce(function(s,p){ return s+(Number(p.gross!=null?p.gross:p.amount)||0); },0);
+    var expected=(rev+dep)*1.1325;   // everything billed, grossed for the card fee -- a conservative upper bound (P2P/cash carry no fee, so this never over-flags)
+    var gap=collected-expected;
+    if(gap>50) rows.push({ nm:(b.name||'(no name)'), sub:(b.vehicle||'Vehicle')+' &#183; '+(b.pickupDate||b.date||'')+'  &#183;  bills '+_kdMoney(rev+dep)+'  &#183;  collected '+_kdMoney(collected), gap:gap, id:b.id });
+  });
+  rows.sort(function(a,b){ return b.gap-a.gap; });
+  var total=rows.reduce(function(s,r){ return s+r.gap; },0);
+  var body=rows.length?rows.map(function(r){
+    return '<div onclick="closeKpiDetail();openBookingDetail(\''+_jsAttr(r.id)+'\')" style="padding:10px 2px;border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="min-width:0;flex:1"><div style="font-size:13px;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis">'+esc(r.nm)+'</div><div style="font-size:10.5px;color:var(--muted);margin-top:1px">'+esc(r.sub)+'</div></div><div style="font-weight:800;color:var(--red);font-variant-numeric:tabular-nums;white-space:nowrap">+'+_kdMoney(r.gap)+'</div></div>';
+  }).join(''):'<div style="padding:16px 2px;color:var(--muted);font-size:13px">No booking collected materially more than it bills. &#9989;</div>';
+  var html='<div class="modal-bg" onclick="closeKpiDetail()"></div><div class="modal-card" style="max-width:560px">'+
+    '<div class="modal-title" style="align-items:flex-start"><div><div style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em">Revenue Audit &#183; collected vs billed</div><div style="font-size:18px;font-weight:800;margin-top:1px">Spent more than shows</div><div style="font-size:26px;font-weight:900;letter-spacing:-.5px;margin-top:4px;color:var(--red)">+'+_kdMoney(total)+'</div></div><button class="modal-close" onclick="closeKpiDetail()">&#10005;</button></div>'+
+    '<div style="font-size:12px;color:var(--muted);line-height:1.5;margin:-6px 0 8px">Net cash collected (incl. card fees, after refunds) minus what the booking bills (revenue + deposit, grossed 13.25%). A positive gap = a duplicate / overpayment OR a revenue set too low. Tap a row to open the booking and reconcile.</div>'+
+    body+
+    (rows.length?'<div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center;border-top:2px solid var(--gold-dim);padding-top:10px"><span style="font-size:13px;font-weight:800">'+rows.length+' flagged</span><span style="font-size:16px;font-weight:900;font-variant-numeric:tabular-nums;color:var(--red)">+'+_kdMoney(total)+' over</span></div>':'');
   var m=document.getElementById('kpiDetailModal');
   if(!m){ m=document.createElement('div'); m.id='kpiDetailModal'; m.className='modal'; document.body.appendChild(m); }
   m.innerHTML=html; m.classList.add('open');
@@ -13195,7 +13229,7 @@ function openBookingDetail(id){
 
     // Revenue
     '<div class="fsec">Revenue</div>'+
-    '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(totalRevenue(b)+(Number(b._refundedTotal)||0))+(function(){ var _ao=getAddons(b), _pc=portalChargesRevenue(b); if(!_ao&&!_pc) return ''; var _p=['base '+$$(Math.max(0,(Number(b.revenue)||0)-_ao))]; if(_ao) _p.push('add-ons '+$$(_ao)); if(_pc){ var _n=(b.portalCharges||[]).filter(function(c){return c&&c.paidAt&&Number(c.amount)>0&&!_isDepositCharge(c)&&!_isBalanceCharge(c)&&!c._extPayment&&!c._extId&&!c._extRecorded&&!c._dlApplied&&!c._foldedIntoRevenue;}).length; _p.push('Portal Charge'+(_n!==1?'s':'')+' '+$$(_pc)); } return '<span style="font-size:10px;opacity:.7"> ('+_p.join(' + ')+')</span>'; })()+'</span></div>'+(Number(b._refundedTotal)>0?'<div class="detail-row"><span class="detail-label">Refunds Issued</span><span class="detail-val" style="color:var(--red);font-weight:700">-'+$$(Number(b._refundedTotal)||0)+'</span></div>':'')+
+    '<div class="detail-row"><span class="detail-label">Total Revenue</span><span class="detail-val" style="color:var(--gold);font-weight:800">'+$$(totalRevenue(b))+(function(){ var _ao=getAddons(b), _pc=portalChargesRevenue(b); if(!_ao&&!_pc) return ''; var _p=['base '+$$(Math.max(0,(Number(b.revenue)||0)-_ao))]; if(_ao) _p.push('add-ons '+$$(_ao)); if(_pc){ var _n=(b.portalCharges||[]).filter(function(c){return c&&c.paidAt&&Number(c.amount)>0&&!_isDepositCharge(c)&&!_isBalanceCharge(c)&&!c._extPayment&&!c._extId&&!c._extRecorded&&!c._dlApplied&&!c._foldedIntoRevenue;}).length; _p.push('Portal Charge'+(_n!==1?'s':'')+' '+$$(_pc)); } return '<span style="font-size:10px;opacity:.7"> ('+_p.join(' + ')+')</span>'; })()+'</span></div>'+(Number(b._refundedTotal)>0?'<div class="detail-row"><span class="detail-label">Refunds Issued</span><span class="detail-val" style="color:var(--red);font-weight:700">-'+$$(Number(b._refundedTotal)||0)+'</span></div>':'')+
     (b.brokerFee||extensionBrokerTotal(b)?'<div class="detail-row"><span class="detail-label">Broker Fee</span><span class="detail-val" style="color:var(--red)">\u2212'+$$(brokerFeeTotal(b))+'<span style="font-size:10px;opacity:.7"> ('+$$(b.brokerFee)+'/'+_durUnit(b)+' \u00D7 '+brokerRateDays(b)+(extensionBrokerTotal(b)?' + '+$$(extensionBrokerTotal(b))+' ext':'')+')</span></span></div>':'')+
     (b.loyaltyDiscount?'<div class="detail-row"><span class="detail-label">Loyalty Discount</span><span class="detail-val" style="color:var(--blue)">\u2212'+$$(b.loyaltyDiscount)+'</span></div>':'')+
     ((b.brokerFee||b.loyaltyDiscount)?'<div class="detail-row"><span class="detail-label">Net to PBR</span><span class="detail-val" style="color:var(--green);font-weight:700">'+$$(netRevenue(b))+'</span></div>':'')+
