@@ -3894,6 +3894,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/dl_expiry=MAX\(verified_customers\.dl_expiry, excluded\.dl_expiry\)/g) || []).length === 1, 'audit400 A035: only the TRUSTED Stripe-Identity carry ratchets dl_expiry; the untrusted repeat-booking carry no longer writes a client-blob expiry (annual KYC re-verify cap can no longer be defeated by a forged idExpiry)');
   ok(/if \(serverD\.portal\.signedAt && \(!clientD\.portal\.signedAt \|\| Number\(serverD\.portal\.signedAt\) > Number\(clientD\.portal\.signedAt\)\)\)/.test(_WORKER_SRC), 'audit400 A026: _graftServerPay grafts the server-authoritative base renter signature (portal.signedAt + sigTrail) so a stale owner edit cannot erase an executed signature');
   ok(/_bkEffEndServer\(0, jparse\(_seFreshR\.data, \{\}\), _sePms\)/.test(_WORKER_SRC), 'audit400 A025: self-extend denormalizes the ends column from the FRESH post-_bkPatch blob effective end (sums concurrent extensions) so the overlap-gate prefilter never misses a week/month tail');
+  ok(/'square\.paid\.duplicate_checkout'/.test(_WORKER_SRC) && (_WORKER_SRC.match(/dupArchive: \(_committed \? _dupArch : null\)/g) || []).length >= 2, 'audit400 A018: _squareCreditBooking surfaces dupArchive (like _stripeCreditBooking) and the Square return-path fires the owner double-charge alert (the sweep caller is already processor-agnostic)');
 
   // ---- behavioral (mock D1): the reversal math + idempotency + redelivery-safety are exercised end-to-end ----
   function _mkDisputeEnv(bk) {
@@ -4920,9 +4921,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/_dupArch = \{ oldPi: _oldRef, newPi: String\(pi\)\.slice\(0, 40\), kind: _pkKey, amt: amt \};/.test(_WORKER_SRC), 'audit-fix F1: _stripeCreditBooking captures the dual-checkout archive (both payment refs + amount) for the caller to alert on');
   ok(/dupArchive: \(_committed \? _dupArch : null\)/.test(_WORKER_SRC), 'audit-fix F1: _stripeCreditBooking returns ONLY the committed iteration\'s archive (null otherwise) so the alert fires once');
   ok((_WORKER_SRC.match(/if \(_crC && _crC\.dupArchive\) \{/g) || []).length === 1, 'audit-fix F1: the confirm-on-return path fires the owner double-charge alert off the returned dupArchive');
-  ok((_WORKER_SRC.match(/if \(_res && _res\.dupArchive\) \{/g) || []).length === 1, 'audit-fix F1: the reconcile-sweep path fires the owner double-charge alert off the returned dupArchive');
+  ok((_WORKER_SRC.match(/if \(_res && _res\.dupArchive\) \{/g) || []).length === 2, 'audit-fix F1 + audit400 A018: the reconcile-sweep path AND the Square return-path both fire the owner double-charge alert off the returned dupArchive (both use _res)');
   ok((_WORKER_SRC.match(/stripe\.paid\.duplicate_checkout/g) || []).length === 3, 'audit-fix F1: the duplicate-checkout audit now fires from ALL THREE credit paths (webhook + confirm-on-return + sweep), not just the webhook');
-  ok((_WORKER_SRC.match(/Possible double charge on a booking/g) || []).length === 3, 'audit-fix F1: a durable owner alert fires from all three credit paths');
+  ok((_WORKER_SRC.match(/Possible double charge on a booking/g) || []).length === 4, 'audit-fix F1 + audit400 A018: a durable owner double-charge alert fires from the webhook + confirm-on-return + sweep (Stripe) AND now the Square return-path');
   // Finding 2 (MED notifications): pending must be excluded from the operational reminders (handled by guard 13w above, now asserting pending).
   // Finding 3 (HIGH notifications): signed-only effective end (handled by guard 13w above).
   // Finding 4 (HIGH legal-display): the per-booking dispute banner must classify a WON chargeback (restored via the byId ledger) as won, not under review.
