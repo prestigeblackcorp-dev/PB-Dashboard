@@ -5598,5 +5598,11 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(!\(_byoM && _byoM\.secret && _byoM\.meta && _byoM\.meta\.from\)\) await suppress\(env, '__platform__', _to, 'email', _supReason\)/.test(_WORKER_SRC), 'audit400 A107: a hard bounce/complaint on the SHARED mailer is suppressed platform-wide (stops every shared-domain tenant mailing a dead address); a BYO-mailer tenant stays per-tenant');
 }
 
+// ==== audit400 build db: confirm-on-return owed-clear (A068), /book limiter anti-starvation (A108) ====
+{
+  ok(/if \(String\(_smd\.gmv\) === '1' && _owC > 0\) await _atlasOwedClear\(env, brow\.tenant_id, _owC\);/.test(_WORKER_SRC), 'audit400 A068: confirm-on-return clears the Atlas owed-fee ledger on a new GMV credit (mirrors the webhook) so the carried fee is not re-collected on the next checkout');
+  ok(/rateLimit\(env, 'pubbookTI:' \+ prof\.id \+ ':' \+ ip, 10, 3600000\)/.test(_WORKER_SRC) && /rateLimit\(env, 'pubbookT:' \+ prof\.id, 600, 3600000\)/.test(_WORKER_SRC) && !/rateLimit\(env, 'pubbookT:' \+ prof\.id, 120, 3600000\)/.test(_WORKER_SRC), 'audit400 A108: /book abuse control is per-(tenant,IP) with the per-tenant aggregate raised to a 600/hr DoS backstop, so a few IPs cannot starve a tenant booking page');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
