@@ -951,6 +951,39 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/_assetKtRestore\(env, ctx\.tenant_id,/g) || []).length === 2, '#23: BOTH asset write branches (the PUT live vector + the POST-as-update) apply the field-level restore');
 }
 
+// ---- audit400 A041 BOOKING field-level _kt restore (availability/double-book): the _t stale guard (~13425) is DEFEATED by
+// the client re-stamping data._t to "now" on every push, so a stale device that synced when the booking was pending reverts a
+// Confirmed booking back to pending (or moves its window), FREEING a held slot -> double-book. _bookingKtRestore keeps the
+// SERVER's status/starts/ends (+ the denormalized columns the overlap gate reads) when the server's per-field data._kt is
+// strictly newer than the push's. FAIL-SAFE: absent data._kt on either side -> no restore. A091: the scalar-only (no body.data)
+// write path bypassed the G22 terminal protection -> the no-data branch of _bookingMirrorWrite now applies it. ----
+{
+  const _mkEnvBk = (stored) => ({ DB: { prepare: (sql) => { let a = []; const api = { bind: (...x) => { a = x; return api; }, first: async () => (/FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql) ? stored : null) }; return api; } } });
+  const _storedBk = { data: JSON.stringify({ id: 'BK-1', status: 'confirmed', startTs: 1000, endTs: 2000, _effEndTs: 2000, _kt: { status: 200, statusV: 'confirmed', starts: 200, startsV: 1000, ends: 200, endsV: 2000 } }), status: 'confirmed', starts: 1000, ends: 2000 };
+  // (a) STALE status push: incoming _kt.status=100 < stored 200 -> keep the server 'confirmed' + the status COLUMN (held slot not freed)
+  const _bb1 = { id: 'BK-1', data: { id: 'BK-1', status: 'pending', startTs: 1000, endTs: 2000, _kt: { status: 100, statusV: 'pending', starts: 200, startsV: 1000, ends: 200, endsV: 2000 } }, status: 'pending' };
+  await _bookingKtRestore(_mkEnvBk(_storedBk), 'T1', 'BK-1', _bb1);
+  ok(_bb1.data.status === 'confirmed' && _bb1.status === 'confirmed', 'A041: a STALE status push (incoming _kt<stored) keeps the server status confirmed + the status column -- the held slot is not freed (got blob=' + _bb1.data.status + ' col=' + _bb1.status + ')');
+  ok(_bb1.data._kt.status === 200 && _bb1.data._kt.statusV === 'confirmed', 'A041: the restored status carries the server per-field _kt.status + statusV companion');
+  // (b) FRESH status push: incoming _kt.status=300 > stored 200 -> apply the genuine owner demotion to pending
+  const _bb2 = { id: 'BK-1', data: { id: 'BK-1', status: 'pending', startTs: 1000, endTs: 2000, _kt: { status: 300, statusV: 'pending', starts: 200, startsV: 1000, ends: 200, endsV: 2000 } }, status: 'pending' };
+  await _bookingKtRestore(_mkEnvBk(_storedBk), 'T1', 'BK-1', _bb2);
+  ok(_bb2.data.status === 'pending' && _bb2.status === 'pending', 'A041: a FRESH status push (incoming _kt>stored) applies the demotion -- a genuine owner un-confirm is never dropped');
+  // (c) FAIL-SAFE: no incoming _kt -> no restore (byte-identical to the _t-guard-only behavior for every legacy booking)
+  const _bb3 = { id: 'BK-1', data: { id: 'BK-1', status: 'pending', startTs: 1000, endTs: 2000 }, status: 'pending' };
+  await _bookingKtRestore(_mkEnvBk(_storedBk), 'T1', 'BK-1', _bb3);
+  ok(_bb3.data.status === 'pending' && _bb3.status === 'pending', 'A041 FAIL-SAFE: a push with NO data._kt -> unchanged (dormant until the client ships _bookingKtStamp)');
+  // (d) STALE window push: incoming _kt.starts/ends=100 < stored 200 -> keep the server window + the starts/ends COLUMNS
+  const _bb4 = { id: 'BK-1', data: { id: 'BK-1', status: 'confirmed', startTs: 5000, endTs: 9000, _kt: { status: 200, statusV: 'confirmed', starts: 100, startsV: 5000, ends: 100, endsV: 9000 } }, status: 'confirmed', starts: 5000, ends: 9000 };
+  await _bookingKtRestore(_mkEnvBk(_storedBk), 'T1', 'BK-1', _bb4);
+  ok(_bb4.data.startTs === 1000 && _bb4.starts === 1000 && _bb4.data.endTs === 2000 && _bb4.ends === 2000, 'A041: a STALE window push keeps the server starts/ends window + columns -- a stale device cannot move a confirmed booking off its slot');
+  // source guards
+  ok(/async function _bookingKtRestore\(env, tenantId, id, body\)/.test(_WORKER_SRC), 'A041: the server _bookingKtRestore helper exists');
+  ok(/Number\(_ck\.status\) > Number\(_ik\.status\)/.test(_WORKER_SRC) && /Number\(_ck\.starts\) > Number\(_ik\.starts\)/.test(_WORKER_SRC) && /Number\(_ck\.ends\) > Number\(_ik\.ends\)/.test(_WORKER_SRC), 'A041: per-field restore uses STRICT > for status/starts/ends (idempotent re-push + genuine owner edits never dropped)');
+  ok((_WORKER_SRC.match(/_bookingKtRestore\(env, ctx\.tenant_id,/g) || []).length === 2, 'A041: BOTH booking write branches (the PUT live vector + the POST-as-update) apply the field-level restore');
+  ok(/audit400 A091: a scalar-only booking write/.test(_WORKER_SRC) && /_isTerminalNoRevive\(_tr091\.status/.test(_WORKER_SRC), 'A091: the no-data branch of _bookingMirrorWrite applies the G22 terminal-revival protection a scalar-only push previously bypassed');
+}
+
 // ---- SSO pre-hijacking RECLAIM decision (auth-takeover defense): binding an SSO identity to a PRE-EXISTING local account
 // by verified-email alone lets a pre-registration attacker (who made a password account on the victim's email -- login does
 // NOT gate on email_verified) share the account once the real owner signs in via the IdP. On the FIRST link (no bound sub) or
