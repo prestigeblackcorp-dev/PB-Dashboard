@@ -1944,19 +1944,22 @@ const Atlas = (function(){
   var _OFFLOAD_MIN=60000, _offloading=false;   // ~45KB binary; smaller stays inline (icons / tiny thumbnails)
   function _isBigDataUri(v){ return typeof v==='string' && v.length>_OFFLOAD_MIN && /^data:(image\/(jpe?g|png|webp|gif)|application\/(pdf|msword|vnd\.openxmlformats-officedocument\.[a-z]+ml\.[a-z]+)|video\/(mp4|webm|quicktime|ogg|x-msvideo|x-matroska));base64,/i.test(v); }   // #18: video now offloads to R2 like photos -> full-size video no longer bloats the D1 row
   function _uploadBlob(dataUri,name){ return _api('/api/files',{method:'POST',body:{data:dataUri,name:(name||'file')}}).then(function(res){ return (res&&res.json&&res.json.ok&&res.json.url)?res.json.url:null; }).catch(function(){ return null; }); }
-  async function _offloadObj(obj){ var changed=false;
+  async function _offloadObj(obj,repl){ var changed=false;   // audit400 A011: `repl` (optional) collects every data:->URL replacement {originalDataUri: r2Url} so the caller can RE-APPLY just those blob swaps onto the CURRENT (possibly concurrently-edited) record, instead of wholesale-replacing it
     async function walk(o){ if(!o||typeof o!=='object') return; var keys=Object.keys(o);
       for(var i=0;i<keys.length;i++){ var k=keys[i], v=o[k];
-        if(_isBigDataUri(v)){ var u=await _uploadBlob(v,String(k)); if(u){ o[k]=u; changed=true; } }
+        if(_isBigDataUri(v)){ var u=await _uploadBlob(v,String(k)); if(u){ o[k]=u; if(repl) repl[v]=u; changed=true; } }
         else if(v&&typeof v==='object'){ await walk(v); } } }
     await walk(obj); return changed; }
   async function _offloadThenPush(){ if(!(ATLAS_BACKEND&&_apiCsrf)) return; if(_offloading){ try{_srvSyncPush();}catch(e){} return; } _offloading=true;
     try{
-      var bs=(typeof _bookings==='function'?_bookings():[])||[]; var as=(typeof DATA!=='undefined'&&DATA.assets)||[]; var chg=false;
-      for(var i=0;i<bs.length;i++){ if(await _offloadObj(bs[i])) chg=true; }
-      for(var j=0;j<as.length;j++){ if(await _offloadObj(as[j])) chg=true; }
+      var bs=(typeof _bookings==='function'?_bookings():[])||[]; var as=(typeof DATA!=='undefined'&&DATA.assets)||[]; var chg=false; var _repl={};   // audit400 A011: collect data:->URL swaps so we re-apply ONLY those onto the current records
+      for(var i=0;i<bs.length;i++){ if(await _offloadObj(bs[i],_repl)) chg=true; }
+      for(var j=0;j<as.length;j++){ if(await _offloadObj(as[j],_repl)) chg=true; }
       if(S&&S.brand&&_isBigDataUri(S.brand.logo)){ var lu=await _uploadBlob(S.brand.logo,'logo'); if(lu){ S.brand.logo=lu; chg=true; } }
-      if(chg){ var s=store.session(); if(s){ if(bs.length){ var _slimB={}; bs.forEach(function(x){ if(x&&x.id!=null)_slimB[x.id]=x; }); var _curB=(typeof _bookings==='function'?_bookings():[])||[]; if(_curB.length)_lsSet('atlas_bookings_'+s.tenantId,_curB.map(function(x){ var sl=(x&&x.id!=null)?_slimB[x.id]:null; return (sl&&Number(x._t||0)<=Number(sl._t||0))?sl:x; })); } if(as.length){ var _slimA={}; as.forEach(function(x){ if(x&&x.id!=null)_slimA[x.id]=x; }); var _curA=((typeof DATA!=='undefined'&&DATA.assets)||[]); if(_curA.length)_lsSet('atlas_assets_'+s.tenantId,_curA.map(function(x){ var sl=(x&&x.id!=null)?_slimA[x.id]:null; return (sl&&Number(x._t||0)<=Number(sl._t||0))?sl:x; })); } if(S)_lsSet('atlas_tenant_'+s.tenantId,S); } }   // sync data-loss fix: merge slimmed (offloaded-URL) rows BY ID into the CURRENT arrays (re-read AFTER the awaits) instead of blind-writing the pre-await snapshot bs/as -- a booking added/edited during the R2 uploads is otherwise dropped from localStorage, and the reconcile sweep then DELETEs the live server row. The _t guard keeps a concurrently-edited record's newer version (its offload just retries next sync).
+      if(chg){ var s=store.session(); if(s){ var _applyRepl=function(o){ if(!o||typeof o!=='object') return; var ks=Object.keys(o); for(var _ri=0;_ri<ks.length;_ri++){ var _rv=o[ks[_ri]]; if(typeof _rv==='string'){ if(_repl[_rv]!==undefined) o[ks[_ri]]=_repl[_rv]; } else if(_rv&&typeof _rv==='object'){ _applyRepl(_rv); } } };   // audit400 A011: re-apply ONLY the data:->URL blob swaps onto the CURRENT record, leaving every other (possibly concurrently-edited) field intact
+        var _curB=(typeof _bookings==='function'?_bookings():[])||[]; if(_curB.length){ _curB.forEach(_applyRepl); _lsSet('atlas_bookings_'+s.tenantId,_curB); }
+        var _curA=((typeof DATA!=='undefined'&&DATA.assets)||[]); if(_curA.length){ _curA.forEach(_applyRepl); _lsSet('atlas_assets_'+s.tenantId,_curA); }
+        if(S)_lsSet('atlas_tenant_'+s.tenantId,S); } }   // audit400 A011 (sync data-loss): merge the offload BY GRAFTING the data:->URL swaps (tracked in _repl) onto the re-read CURRENT arrays, NOT by wholesale-replacing each record with its pre-await slim snapshot. The old `_t<=` guard could NOT protect a concurrently-edited record because common edit paths never bump _t -- so an edit made DURING the R2 uploads (status/notes/price change) was silently reverted. Grafting only the uploaded-blob keys preserves every concurrent edit; a record with no offloaded blob is left exactly as-is (S/brand.logo was offloaded on the live object above, so it writes as-is).
     }catch(e){}
     _offloading=false; try{ _srvSyncPush(); }catch(e){}
   }
@@ -2144,7 +2147,7 @@ const Atlas = (function(){
   }
   // Login/refresh: pull server rows + MERGE newest-wins into local (never overwrite a newer/local-only record).
   function _srvHydrate(tid){ if(!ATLAS_BACKEND||!_apiCsrf) return Promise.resolve();
-    return Promise.all([_apiAll('/api/data/bookings'),_apiAll('/api/data/assets'),_api('/api/tenant/profile'),_apiAll('/api/data/customers')]).then(function(r){
+    return Promise.all([_apiAll('/api/data/bookings'),_apiAll('/api/data/assets'),_api('/api/tenant/profile').catch(function(){return {json:null};}),_apiAll('/api/data/customers')]).then(function(r){   // audit400 A012: degrade a DROPPED profile request to {json:null} (the _apiAll siblings already self-degrade) so one failed sub-request no longer REJECTS the whole Promise.all and discards the ENTIRE bookings/assets/customers merge -> prof undefined just skips _srvMergeProfile.
       _srvMergeColl('atlas_bookings_'+tid,'bookings', r[0].json&&r[0].json.items, r[0].complete!==false);   // cycle-4 #8: only allow the pb-mirror prune when _apiAll confirms the FULL bookings set was fetched cleanly
       _srvMergeColl('atlas_assets_'+tid,'assets', r[1].json&&r[1].json.items, r[1].complete!==false);
       var prof=r[2].json&&r[2].json.profile; if(prof) _srvMergeProfile(tid,prof);
@@ -2164,7 +2167,8 @@ const Atlas = (function(){
       if(r[2].json && ('founder' in r[2].json)){ try{ _founderInfo.mine=!!r[2].json.founder; if('founderProgram' in r[2].json) _founderInfo.program=!!r[2].json.founderProgram; if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.founder=!!r[2].json.founder; } }catch(e){} }   // FOUNDER: adopt server-authoritative founder flag + program state on hydrate
       try{ var _pc=r[2].json&&r[2].json.policyCurrent, _pa=r[2].json&&r[2].json.policyAccepted; if(_pc && _pa!==_pc){ _showPolicyBanner(_pc); } else { _hidePolicyBanner(); } }catch(e){}   // #254: re-prompt acceptance whenever the published policy version moved past what this tenant last accepted
       try{ _loadOrphans(); }catch(e){}   // G32: refresh the unmatched-dispute list (throttled to 5 min) so the bell can surface any chargeback that could not be auto-linked
-    }).catch(function(){}); }
+      return true;   // audit400 A012: signal callers that the hydrate MERGE actually completed
+    }).catch(function(){ return false; }); }   // audit400 A012: a failed/dropped hydrate resolves FALSE (not undefined) so the boot flush is SKIPPED -- never push a stale, un-merged local cache over newer server rows (cross-device data loss). Was .catch(function(){}) -> resolved undefined on BOTH success and failure, so the boot finalizer could not tell them apart.
   // #254 Compliance: dismissible re-accept banner shown when the tenant's accepted ToS/Privacy version != the current one.
   function _showPolicyBanner(){ if(document.getElementById('policyBanner')) return; var b=document.createElement('div'); b.id='policyBanner';
     b.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:9997;background:#141C17;color:#fff;padding:12px 16px;display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap;box-shadow:0 -6px 24px rgba(0,0,0,.28);font-size:13.5px;line-height:1.5';
@@ -2333,7 +2337,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23cs';
+  var APP_VERSION='2026.7.23ct';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -14548,10 +14552,10 @@ const Atlas = (function(){
           if(res&&res.json&&res.json.user) _applySelfRole(res.json.user);   // adopt/clear teammate gating on every boot (server role is authoritative)
           if(res && res.json && res.json.csrf){ _apiCsrf=res.json.csrf; if(res.json.ip)_clientIp=res.json.ip; return _srvHydrate(_bootTid); }
           if(res && (res.status===401 || res.status===403)) _sessDead=true;   // #falseCache: server REACHABLE but session INVALID -> do NOT leave the stale cached dashboard up (writes silently 401); gate to the resign screen in the finalizer. A network error rejects to .catch (below) and keeps the offline cache.
-        }).catch(function(){}).then(function(){ _bootSync=false;
+        }).catch(function(){}).then(function(_hyOk){ _bootSync=false;   // audit400 A012: _hyOk = did _srvHydrate's MERGE actually complete (true) vs fail/drop (false/undefined)
           if(_sessDead){ try{ _sessionExpired(); }catch(e){} return; }   // #falseCache: dead session -> show the sign-in screen; do NOT re-render the cached app or flush a write that will just 401
           try{ var _s2=load(); if(_s2){ S=_s2; var _ap=document.getElementById('app'); if(S.onboarded && _ap && _ap.classList.contains('on')){ applyBrand(); buildApp(); } } }catch(e){}
-          try{ _srvSyncPush(); }catch(e){}   // audit #5: after the boot hydrate merge lands (and _bootSync is cleared so the profile push is allowed), flush any STRANDED local edit -- one made in a prior session whose 1.5s debounced sync never fired before the tab closed. Safe: the hydrate merge already set _pushedHash, so ONLY a local-newer record is still dirty and gets pushed (no clobber of newer server data, no churn). Mirrors the flush-before-hydrate the live-poll/refresh paths already do.
+          if(_hyOk) { try{ _srvSyncPush(); }catch(e){} }   // audit #5 + audit400 A012: flush a STRANDED local edit (prior session whose debounced sync never fired) ONLY when the boot hydrate MERGE actually completed. The old code flushed whenever !_sessDead, so a single DROPPED hydrate request left the local cache UN-merged and then pushed the ENTIRE stale cache over newer server rows (silent cross-device data loss). A failed hydrate now keeps the offline cache + retries next sync; a true-path flush only sends a genuinely local-newer record (the merge already set _pushedHash, so no clobber).
         });
       }
       if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); _billingReturn(); _kickLiveTour(); }

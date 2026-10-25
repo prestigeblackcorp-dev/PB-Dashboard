@@ -5625,5 +5625,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(storedTerms\.s0 !== undefined \|\| storedTerms\.e0 !== undefined\)/.test(_WORKER_SRC), 'A029: the window drift check is gated on the stored snapshot carrying s0/e0 (legacy snapshots skip it)');
 }
 
+// ==== audit400 A011 (offload merge) + A012 (boot/hydrate flush) -- client sync data-loss ====
+{
+  const _CSRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  // A011: the post-upload offload merge grafts ONLY the data:->URL swaps onto the CURRENT records (never wholesale-replaces by the unreliable _t guard)
+  ok(/async function _offloadObj\(obj,repl\)/.test(_CSRC) && /if\(repl\) repl\[v\]=u;/.test(_CSRC), 'audit400 A011: _offloadObj records each data:->URL replacement in `repl`');
+  ok(/_curB\.forEach\(_applyRepl\)/.test(_CSRC) && /_curA\.forEach\(_applyRepl\)/.test(_CSRC) && !/return \(sl&&Number\(x\._t\|\|0\)<=Number\(sl\._t\|\|0\)\)\?sl:x;/.test(_CSRC), 'audit400 A011: the merge re-applies only the blob swaps onto the current arrays (grafts), NOT a wholesale _t<= replace that reverted a concurrent edit');
+  // A012: a dropped sub-request no longer discards the whole hydrate merge, and the boot flush is gated on the merge actually completing
+  ok(/_api\('\/api\/tenant\/profile'\)\.catch\(function\(\)\{return \{json:null\};\}\)/.test(_CSRC), 'audit400 A012: a dropped profile request degrades to {json:null} instead of rejecting the whole hydrate Promise.all');
+  ok(/\}\)\.catch\(function\(\)\{ return false; \}\); \}/.test(_CSRC), 'audit400 A012: _srvHydrate resolves true on merge / false on failure (not undefined on both)');
+  ok(/if\(_hyOk\) \{ try\{ _srvSyncPush\(\); \}catch\(e\)\{\} \}/.test(_CSRC), 'audit400 A012: the boot flush runs ONLY when the hydrate merge completed (never pushes a stale un-merged cache over newer server rows)');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
