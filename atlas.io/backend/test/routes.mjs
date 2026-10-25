@@ -1394,6 +1394,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/WHERE stripe_id=\? OR stripe_id=\?"\)\.bind\('cb:' \+ _code, 'cb:' \+ _code \+ ':under'\)/.test(_WORKER_SRC), 're-audit #14: both backstops skip a charge already granted (cb:<code>) or flagged underpaid (cb:<code>:under) -> idempotent, no double grant, and retire the marker');
 }
 
+// ---- re-audit #33/#34/#48 (GDPR erasure completeness): _applyErasure now drops portal.idv (the Stripe Identity session pointer); a
+// failed R2 scan delete flips complete:false (no more "complete" with an orphaned gov-ID scan); an email-keyed renter web-push sub is purged. ----
+{
+  const _er = { portal: { idv: { session: 'vs_1', status: 'verified' }, email: 'a@b.co', sig: 'xxx', signerName: 'Jo', uploads: [{ key: 'r2/k' }] }, custEmail: 'a@b.co', custPhone: '555-1', phone: '555-1' };
+  _applyErasure(_er);
+  ok(!('idv' in _er.portal), 're-audit #33: _applyErasure drops portal.idv (the Stripe Identity session pointer)');
+  ok(_er.portal.email === '' && _er.portal.uploads.length === 0 && _er.custPhone === '', 're-audit #33: the rest of the portal + phone PII is still redacted alongside idv (no regression)');
+  ok(/await _erR2\.delete\(_uk\); _files\+\+; \} catch \(e\) \{ _erComplete = false; \}/.test(_WORKER_SRC), 're-audit #34: a failed R2 scan delete flips _erComplete=false (erasure no longer reports complete while a gov-ID scan is orphaned in R2)');
+  ok(/DELETE FROM push_subscriptions WHERE tenant_id=\? AND LOWER\(user_email\)=\? AND audience='renter'/.test(_WORKER_SRC), 're-audit #48: an email-keyed renter web-push subscription (NULL/unmatched booking_id) is purged on erasure');
+}
+
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
 // a slot (promo_uses.n++) at request time while still Pending/unpaid; the slot was released ONLY on /book failure, never when a
 // saved booking later cancelled or auto-expired -> every abandoned/cancelled public redemption permanently consumed a slot and
