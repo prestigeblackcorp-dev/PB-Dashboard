@@ -5686,5 +5686,11 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/var _priorClawed = !!\(_slotHad && d\.paid\[_pkKey\] && _slotFullyClawed\(d\.paid\[_pkKey\]\)\);/.test(_WORKER_SRC) && /\(!_slotHad \|\| _priorClawed\) && !_piRefunded/.test(_WORKER_SRC), 're-audit #6: a re-collection displacing a FULLY-clawed prior slot re-books revenue (its revenue was already removed), instead of being suppressed as a double-count');
 }
 
+// ==== re-audit build di: #8 _peakUnits turnaround, #7/#9 scalar-only double-book guard ====
+{
+  ok((_WORKER_SRC.match(/_bkEffEndServer\(r\.ends,[^)]*\) \+ _(buf|seBuf) \}/g) || []).length === 5, 're-audit #8: all 5 _peakUnits call sites build intervals with the turnaround-EXTENDED end (e + buffer), so two bookings whose gap < buffer count as concurrent on a multi-unit asset');
+  ok(/var _stW7 = \(_wc091\.indexOf\('status'\) >= 0\)/.test(_WORKER_SRC) && /await _confirmSlotHeal\(env, tenantId, id, _bd7, _s7, _e7\)/.test(_WORKER_SRC), 're-audit #7/#9: a scalar-only (no body.data) write that lands a blocking status / moves the window runs the confirm-time double-book heal inside _bookingMirrorWrite (was bypassed -- the route-handler guards are gated on body.data)');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
