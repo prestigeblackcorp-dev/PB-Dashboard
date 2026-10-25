@@ -1437,6 +1437,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/UPDATE dispute_orphans SET resolved_at=\?, booking_id=COALESCE\(booking_id,'\(won\)'\) WHERE tenant_id=\? AND dispute_id=\? AND resolved_at IS NULL/.test(_WORKER_SRC), 're-audit #29: a WON dispute resolves its orphan row so a later manual link cannot decrement revenue for a reinstated chargeback (double-count)');
 }
 
+// ---- re-audit #38/#50/#51 (webhooks-outbound): Twilio STOP digit-match (+ BYO integration resolve) + platform START; platform email suppression tag. ----
+{
+  ok(/SELECT tenant_id FROM integrations WHERE provider='twilio' AND REPLACE\(/.test(_WORKER_SRC) && /SELECT id FROM tenants WHERE REPLACE\(REPLACE\(REPLACE\(REPLACE\(REPLACE\(REPLACE\(COALESCE\(json_extract\(settings,'\$\.comms\.sms\.fromNumber'\)/.test(_WORKER_SRC), 're-audit #38: inbound Twilio STOP resolves the tenant by a digit-normalized from-number across BOTH settings.comms.sms.fromNumber AND the BYO integration meta.from (no exact-string miss)');
+  ok(/await unsuppress\(env, '__platform__', fromPhone\);/.test(_WORKER_SRC), 're-audit #51: a platform-wide STOP has a matching platform-wide START (unsuppress __platform__) so a text opt-out is reversible');
+  ok(/var _supT = msg\.tenant \|\| '__platform__';/.test(_WORKER_SRC) && /_emailBlocked\(await isSuppressed\(env, _supT, to\), msg\.transactional\)/.test(_WORKER_SRC), 're-audit #50: sendEmail checks suppression under __platform__ for a no-tenant platform send (verify/reset/receipt/alert) and tags every send so the bounce webhook can attribute it');
+  ok(/: ''\) \|\| '__platform__' \}\] \}\)/.test(_WORKER_SRC), 're-audit #50: every Resend send carries a tenant tag (__platform__ when no tenant)');
+}
+
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
 // a slot (promo_uses.n++) at request time while still Pending/unpaid; the slot was released ONLY on /book failure, never when a
 // saved booking later cancelled or auto-expired -> every abandoned/cancelled public redemption permanently consumed a slot and
