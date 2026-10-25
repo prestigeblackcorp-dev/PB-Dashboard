@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _smartRateMult, _assetKtRestore, _bookingKtRestore, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _smartRateMult, _assetKtRestore, _bookingKtRestore, _rtbfRecord, _rtbfMatch, _rtbfLift, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -982,6 +982,31 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/Number\(_ck\.status\) > Number\(_ik\.status\)/.test(_WORKER_SRC) && /Number\(_ck\.starts\) > Number\(_ik\.starts\)/.test(_WORKER_SRC) && /Number\(_ck\.ends\) > Number\(_ik\.ends\)/.test(_WORKER_SRC), 'A041: per-field restore uses STRICT > for status/starts/ends (idempotent re-push + genuine owner edits never dropped)');
   ok((_WORKER_SRC.match(/_bookingKtRestore\(env, ctx\.tenant_id,/g) || []).length === 2, 'A041: BOTH booking write branches (the PUT live vector + the POST-as-update) apply the field-level restore');
   ok(/audit400 A091: a scalar-only booking write/.test(_WORKER_SRC) && /_isTerminalNoRevive\(_tr091\.status/.test(_WORKER_SRC), 'A091: the no-data branch of _bookingMirrorWrite applies the G22 terminal-revival protection a scalar-only push previously bypassed');
+}
+
+// ---- audit400 A045 RTBF suppression tombstone (GDPR/CCPA HIGH): the PB-mirror customer id is EMAIL-derived, so when the
+// upstream email changes a re-sync resurrects the erased person's PII under a NEW id the old by-id erased guard misses.
+// _rtbfRecord tombstones the identity at erase; _rtbfMatch (email OR phone, never name alone) SKIPS the automated resurrection
+// in _pbSyncWrite; a VOLUNTARY re-booking calls _rtbfLift to restore the person as a live customer. ----
+{
+  const _store = new Set();
+  const _mkEnvR = () => ({ DB: { prepare: (sql) => { let a = []; const api = { bind: (...x) => { a = x; return api; },
+    run: async () => { if (/INSERT INTO rtbf_suppressions/.test(sql)) _store.add(a[0] + '|' + a[1] + '|' + a[2]); else if (/DELETE FROM rtbf_suppressions/.test(sql)) { const m = /kind='(\w+)'/.exec(sql); if (m) _store.delete(a[0] + '|' + m[1] + '|' + a[1]); } return { meta: { changes: 1 } }; },
+    first: async () => { if (/SELECT 1 AS hit FROM rtbf_suppressions/.test(sql)) return (_store.has(a[0] + '|email|' + a[1]) || _store.has(a[0] + '|phone|' + a[2])) ? { hit: 1 } : null; return null; },
+    all: async () => ({ results: [] }) }; return api; } } });
+  const _envR = _mkEnvR();
+  _store.add('T1|email|jane@x.com'); _store.add('T1|phone|5551234567'); _store.add('T1|name|jane doe');   // simulate a prior erase tombstone (as _rtbfRecord would write)
+  ok(await _rtbfMatch(_envR, 'T1', { email: 'JANE@x.com ', phone: '', name: '' }) === true, 'A045: an erased identity is matched by case/space-normalized email');
+  ok(await _rtbfMatch(_envR, 'T1', { email: 'jane.new@y.com', phone: '(555) 123-4567', name: 'Jane Doe' }) === true, 'A045: a CHANGED email with the SAME phone is still matched -- the exact email-swap resurrection vector');
+  ok(await _rtbfMatch(_envR, 'T1', { email: 'other@z.com', phone: '555-999-0000', name: 'Jane Doe' }) === false, 'A045: a different person sharing only the NAME is NOT suppressed (name is never a standalone match key)');
+  ok(await _rtbfMatch(_envR, 'T2', { email: 'jane@x.com', phone: '5551234567', name: '' }) === false, 'A045: tombstones are tenant-scoped');
+  await _rtbfLift(_envR, 'T1', { email: 'jane@x.com', phone: '555-123-4567', name: 'Jane Doe' });
+  ok(await _rtbfMatch(_envR, 'T1', { email: 'jane@x.com', phone: '5551234567', name: '' }) === false, 'A045: a voluntary re-booking LIFTS the tombstone (email + phone) so a returning customer syncs again');
+  // source guards
+  ok(/CREATE TABLE IF NOT EXISTS rtbf_suppressions/.test(_WORKER_SRC), 'A045: the rtbf_suppressions tombstone table is in the schema');
+  ok(/await _rtbfRecord\(env, ctx\.tenant_id, \{ email: _crow\.email, phone: _crow\.phone, name: _crow\.name \}\)/.test(_WORKER_SRC), 'A045: the RTBF erase records the identity tombstone BEFORE redacting the customer row');
+  ok(/if \(coll === 'customers' && await _rtbfMatch\(env, tenantId,/.test(_WORKER_SRC), 'A045: _pbSyncWrite SKIPS a resurrection whose email OR phone is tombstoned (new-id-safe)');
+  ok(/if \(await _rtbfMatch\(env, prof\.id, \{ email: b\.email, phone: b\.phone, name: b\.name \}\)\) await _rtbfLift/.test(_WORKER_SRC), 'A045: a voluntary public booking lifts the tombstone at native intake');
 }
 
 // ---- SSO pre-hijacking RECLAIM decision (auth-takeover defense): binding an SSO identity to a PRE-EXISTING local account
