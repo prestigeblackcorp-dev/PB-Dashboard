@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _coinbaseLatestStatus, _coinbaseFullySettled, _coinbaseGrantPlatform, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _smartRateMult, _assetKtRestore, _bookingKtRestore, _rtbfRecord, _rtbfMatch, _rtbfLift, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkSignTermsHashLegacy, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _coinbaseLatestStatus, _coinbaseFullySettled, _coinbaseGrantPlatform, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _domainOwnerToken, _domainOwnershipOk, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _smartRateMult, _assetKtRestore, _bookingKtRestore, _rtbfRecord, _rtbfMatch, _rtbfLift, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkSignTermsHashLegacy, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1403,6 +1403,24 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_er.portal.email === '' && _er.portal.uploads.length === 0 && _er.custPhone === '', 're-audit #33: the rest of the portal + phone PII is still redacted alongside idv (no regression)');
   ok(/await _erR2\.delete\(_uk\); _files\+\+; \} catch \(e\) \{ _erComplete = false; \}/.test(_WORKER_SRC), 're-audit #34: a failed R2 scan delete flips _erComplete=false (erasure no longer reports complete while a gov-ID scan is orphaned in R2)');
   ok(/DELETE FROM push_subscriptions WHERE tenant_id=\? AND LOWER\(user_email\)=\? AND audience='renter'/.test(_WORKER_SRC), 're-audit #48: an email-keyed renter web-push subscription (NULL/unmatched booking_id) is purged on erasure');
+}
+
+// ---- re-audit #20 (cross-tenant domain takeover): /verify now requires a per-tenant TXT ownership proof, not just "DNS points at our
+// target". The token is HMAC(secret, tenant|domain) -- deterministic, stateless, tenant-distinct -- so only the party controlling the
+// domain's DNS can publish THIS tenant's token, and a tenant can never ride a domain already aimed here into a live takeover. ----
+{
+  const _dEnv = { SESSION_KEY: 'test-secret-key' };
+  const _t1 = await _domainOwnerToken(_dEnv, 'tenantA', 'victim.com');
+  const _t1b = await _domainOwnerToken(_dEnv, 'tenantA', 'victim.com');
+  const _t2 = await _domainOwnerToken(_dEnv, 'tenantB', 'victim.com');
+  const _t3 = await _domainOwnerToken(_dEnv, 'tenantA', 'other.com');
+  ok(typeof _t1 === 'string' && /^[0-9a-f]{32}$/.test(_t1), 're-audit #20: _domainOwnerToken is a 32-hex HMAC token');
+  ok(_t1 === _t1b, 're-audit #20: the token is deterministic (recomputed on verify -- no storage needed)');
+  ok(_t1 !== _t2 && _t1 !== _t3, 're-audit #20: the token is distinct per tenant AND per domain -> tenant B cannot publish tenant A proof for victim.com (no cross-tenant takeover)');
+  ok(/const _ownOk = await _domainOwnershipOk\(env, ctx\.tenant_id, dom\);/.test(_WORKER_SRC) && /if \(ok && _ownOk\) \{/.test(_WORKER_SRC), 're-audit #20: /api/domain/verify marks live only when routing (ok) AND ownership (TXT) both pass');
+  ok(/const _sOwnOk = await _domainOwnershipOk\(env, ctx\.tenant_id, dom\);/.test(_WORKER_SRC) && /if \(ok && _sOwnOk\) \{/.test(_WORKER_SRC), 're-audit #20: /api/site/domain/verify also requires the ownership TXT proof (same vector)');
+  ok(/_dohLookup\('_atlas-verify\.' \+ String\(domain \|\| ''\)\.toLowerCase\(\), 'TXT'\)/.test(_WORKER_SRC) && /indexOf\('atlas-domain-verify=' \+ tok\) >= 0/.test(_WORKER_SRC), 're-audit #20: ownership proof reads the _atlas-verify TXT and requires it to carry the tenant token');
+  ok(/\} catch \(e\) \{ return false; \}\s*\n\}\s*\n\/\/ audit #9 \(SSRF\)/.test(_WORKER_SRC) || /async function _domainOwnershipOk[\s\S]*?catch \(e\) \{ return false; \}/.test(_WORKER_SRC), 're-audit #20: the ownership check fails CLOSED on a DNS lookup error (never marks a domain live on a transient failure)');
 }
 
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
