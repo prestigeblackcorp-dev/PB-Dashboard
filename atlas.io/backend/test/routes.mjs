@@ -5649,5 +5649,22 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_chargeOwedCents(_dFullCB, 'C1', 10000, true) === 10000, 'audit400 A078/A085: a FULLY refunded charge owes the full amount again -> re-collectable');
 }
 
+// ==== 200-agent RE-AUDIT batch df: criticals #1 (A041 backstop) + #2 (export token) + completions #5/#11/#12/#21 ====
+{
+  const _mkEnvBk2 = (stored) => ({ DB: { prepare: (sql) => { let a = []; const api = { bind: (...x) => { a = x; return api; }, first: async () => (/FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql) ? stored : null) }; return api; } } });
+  const _srvConfirmed = { data: JSON.stringify({ id: 'BK9', status: 'confirmed', startTs: 1000, endTs: 2000, _kt: { status: 50, statusV: 'pending' } }), status: 'confirmed', starts: 1000, ends: 2000 };
+  const _stale = { id: 'BK9', data: { id: 'BK9', status: 'pending', startTs: 1000, endTs: 2000, _kt: { status: 50, statusV: 'pending' } }, status: 'pending' };
+  await _bookingKtRestore(_mkEnvBk2(_srvConfirmed), 'T1', 'BK9', _stale);
+  ok(_stale.status === 'confirmed' && _stale.data.status === 'confirmed', 're-audit #1 (CRITICAL): the committed-status BACKSTOP keeps a server-confirmed booking against a stale pending-demote lacking a strictly-newer _kt.status (server confirms never stamp _kt) -- the held slot is not freed (got col=' + _stale.status + ')');
+  const _legitDemote = { id: 'BK9', data: { id: 'BK9', status: 'pending', startTs: 1000, endTs: 2000, _kt: { status: 99, statusV: 'pending' } }, status: 'pending' };
+  await _bookingKtRestore(_mkEnvBk2(_srvConfirmed), 'T1', 'BK9', _legitDemote);
+  ok(_legitDemote.status === 'pending', 're-audit #1: a GENUINE owner un-confirm (strictly-newer _kt.status) is still honored (backstop does not over-block)');
+  ok(/if \(_colBlocking\(_cur\.status\) && _inDemote && !_pushNewerStatus\)/.test(_WORKER_SRC), 're-audit #1: _bookingKtRestore has the committed-status backstop');
+  ok(/if \(_xd && _xd\.portalToken != null\) \{ delete _xd\.portalToken/.test(_WORKER_SRC) && !/quote: q, portalToken: token, status/.test(_WORKER_SRC), 're-audit #2 (CRITICAL): exports strip the data-blob portalToken AND intake no longer persists it');
+  ok(/d\.paid\[_pkKey\]\.pi \|\| d\.paid\[_pkKey\]\.paypal \|\| d\.paid\[_pkKey\]\.square \|\| d\.paid\[_pkKey\]\.coinbase/.test(_WORKER_SRC), 're-audit #5: the Stripe credit archive guard covers all four processors (completes A073)');
+  ok((_WORKER_SRC.match(/to: 'sub_cleared_gone'/g) || []).length === 3, 're-audit #11/#12: all THREE sub-reconcile sweeps (trials + past_due + active) clear a both-mode-404 dead sub (completes A094)');
+  ok(/re-audit HIGH #21/.test(_WORKER_SRC) && /_applyErasure\(row\.data\); row\.data\._erased = true;/.test(_WORKER_SRC), 're-audit #21: the PB-mirror bookings path re-redacts a tombstoned (erased) customer identity (completes A045 for bookings)');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
