@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _coinbaseLatestStatus, _coinbaseFullySettled, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _smartRateMult, _assetKtRestore, _bookingKtRestore, _rtbfRecord, _rtbfMatch, _rtbfLift, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkSignTermsHashLegacy, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _coinbaseLatestStatus, _coinbaseFullySettled, _coinbaseGrantPlatform, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _smartRateMult, _assetKtRestore, _bookingKtRestore, _rtbfRecord, _rtbfMatch, _rtbfLift, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkSignTermsHashLegacy, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1319,6 +1319,67 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_coinbaseFullySettled({ timeline: [{ status: 'RESOLVED' }] }) === false && _coinbaseFullySettled({ timeline: [{ status: 'UNRESOLVED' }] }) === false && _coinbaseFullySettled({}) === false, 're-audit #13: a merchant-RESOLVED / UNRESOLVED / unknown charge is NOT auto-full (fiat tolerance still applies)');
   ok(/\|\| \(_cbT === 'charge:resolved' && _cbWant > 0 && _cbPaid > 0 && _cbPaid < \(_cbWant - _cbTol\)\)\)/.test(_WORKER_SRC), 're-audit #13: the BYO crypto webhook fiat-shortfall block is gated to charge:resolved (a confirmed charge is never false-blocked)');
   ok(/const _cbFullR = _coinbaseFullySettled\(_gcR\.charge\);/.test(_WORKER_SRC) && /if \(!_cbFullR && _amt > 0 && _cbPaidR < \(_amt - _cbTolR\)\)/.test(_WORKER_SRC), 're-audit #13: the BYO crypto reconcile sweep credits a Coinbase-settled (COMPLETED/CONFIRMED) charge instead of false-blocking on the $5 cap');
+}
+
+// ---- re-audit #14: the PLATFORM crypto grant (plan/website/credits) extracted into _coinbaseGrantPlatform, shared by the webhook +
+// the (new, next build) confirm-on-return route + reconcile cron, all idempotent on the cb:<code> sentinel. It carries the #13 tolerance
+// twin: a charge:confirmed (Coinbase's full-payment proof) is NEVER fiat-shortfall-blocked; only a merchant charge:resolved is. These
+// drive the helper directly against a mock env to prove the webhook refactor preserves the grant/underpayment decisions. ----
+{
+  function cbEnv(opts) {
+    opts = opts || {};
+    const seen = new Set();
+    let planActivated = false, creditsAdded = false, websiteSet = false, underMarked = false;
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/sqlite_master/.test(sql)) return { n: 40 };
+          if (/SELECT crypto_until FROM tenants/.test(sql)) return { crypto_until: 0 };
+          if (/FROM tenants WHERE id/.test(sql)) return { id: 't1', name: 'Biz' };
+          return null;
+        },
+        run: async () => {
+          if (/INSERT OR IGNORE INTO platform_transactions/.test(sql)) { const sid = String(a[8]); if (/:under$/.test(sid)) { underMarked = true; return { meta: { changes: 1 } }; } if (seen.has(sid) || (opts.dupSentinel && sid === opts.dupSentinel)) return { meta: { changes: 0 } }; seen.add(sid); return { meta: { changes: 1 } }; }
+          if (/UPDATE tenants SET plan=/.test(sql)) { planActivated = true; return { meta: { changes: 1 } }; }
+          if (/UPDATE tenants SET website_addon=/.test(sql)) { websiteSet = true; return { meta: { changes: 1 } }; }
+          if (/UPDATE tenants SET credits_purchased/.test(sql)) { creditsAdded = true; return { meta: { changes: 1 } }; }
+          return { success: true, meta: { changes: 1 } };
+        },
+        all: async () => ({ results: [] }),
+      };
+      return api;
+    }
+    return { env: { DB: { prepare: stmt }, SESSION_KEY: 's', ENC_KEY: 'e' }, state: () => ({ planActivated, creditsAdded, websiteSet, underMarked }) };
+  }
+  // a large plan charge, CONFIRMED, whose fiat paid legs look ~$40 short of the $10,000 want (fx drift between quote and pay) -> MUST still grant
+  const bigPlan = { code: 'CBIG', metadata: { tenant: 't1', billing: 'plan', tier: 'pro', months: '12', email: 'o@x.com' }, pricing: { local: { amount: '10000.00' } }, payments: [{ status: 'CONFIRMED', value: { local: { amount: '9960.00' } } }], timeline: [{ status: 'COMPLETED' }] };
+  let h = cbEnv();
+  let r = await _coinbaseGrantPlatform(h.env, bigPlan, 'charge:confirmed', null);
+  ok(r && r.granted === true && h.state().planActivated === true, 're-audit #13/#14: a CONFIRMED large plan charge whose fiat legs look short of the want still GRANTS (the $5 cap no longer false-blocks a Coinbase-confirmed full payment)');
+  // same fiat shortfall but MERCHANT-RESOLVED -> blocked as underpaid
+  h = cbEnv();
+  r = await _coinbaseGrantPlatform(h.env, bigPlan, 'charge:resolved', null);
+  ok(r && r.underpaid === true && h.state().planActivated === false, 're-audit #14: the SAME fiat-short charge, merchant-RESOLVED, is blocked as underpaid (plan NOT activated)');
+  // resolved with ZERO parseable legs (blind) -> blocked
+  h = cbEnv();
+  r = await _coinbaseGrantPlatform(h.env, { code: 'CBL', metadata: { tenant: 't1', billing: 'plan', tier: 'pro', email: 'o@x.com' }, pricing: { local: { amount: '500.00' } }, payments: [], timeline: [{ status: 'RESOLVED' }] }, 'charge:resolved', null);
+  ok(r && r.underpaid === true, 're-audit #14: a RESOLVED charge with zero parseable paid legs is blocked (owner-resolved edge we cannot verify)');
+  // a confirmed FULLY-paid credits charge -> grants + adds credits
+  h = cbEnv();
+  r = await _coinbaseGrantPlatform(h.env, { code: 'CCR', metadata: { tenant: 't1', billing: 'credits', pack: '100', email: 'o@x.com' }, pricing: { local: { amount: '50.00' } }, payments: [{ status: 'CONFIRMED', value: { local: { amount: '50.00' } } }], timeline: [{ status: 'CONFIRMED' }] }, 'charge:confirmed', null);
+  ok(r && r.granted === true && h.state().creditsAdded === true, 're-audit #14: a confirmed credits charge grants via the shared helper (credits added)');
+  // sentinel already claimed (webhook beat the cron) -> idempotent dup, no second grant
+  h = cbEnv({ dupSentinel: 'cb:CDUP' });
+  r = await _coinbaseGrantPlatform(h.env, { code: 'CDUP', metadata: { tenant: 't1', billing: 'plan', tier: 'pro', months: '1', email: 'o@x.com' }, pricing: { local: { amount: '100.00' } }, payments: [{ status: 'CONFIRMED', value: { local: { amount: '100.00' } } }], timeline: [{ status: 'COMPLETED' }] }, 'charge:confirmed', null);
+  ok(r && r.dup === true && h.state().planActivated === false, 're-audit #14: a charge whose cb:<code> sentinel is already claimed is an idempotent no-op (no double grant across webhook/confirm/cron)');
+  // no metadata -> ignored
+  r = await _coinbaseGrantPlatform(cbEnv().env, { code: 'X' }, 'charge:confirmed', null);
+  ok(r && r.ignored === 'no_meta', 're-audit #14: a charge with no tenant/billing metadata is ignored (no grant)');
+  // source guards: the webhook delegates to the helper; the platform fiat-shortfall is resolved-scoped
+  ok(/const _cbG = await _coinbaseGrantPlatform\(env, _chg, _cbT, req\);/.test(_WORKER_SRC), 're-audit #14: /api/coinbase-webhook delegates the grant to the shared _coinbaseGrantPlatform helper');
+  ok(/evtType === 'charge:resolved' && _cgross > 0 && _cpaid > 0 && _cpaid < \(_cgross - _cTol\)/.test(_WORKER_SRC), 're-audit #13/#14: the platform grant fiat-shortfall block is gated to charge:resolved (a confirmed charge is never false-blocked)');
 }
 
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
@@ -5472,7 +5533,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/async function _runDomainRetrySweep\(env, now\) \{/.test(_WORKER_SRC) && /if \(await _due\(env, 'domain_retry', 3600000\)\) await _runDomainRetrySweep\(env, Date\.now\(\)\)/.test(_WORKER_SRC), 'D5: the domain retry sweep is wired into scheduled() (gated ~1h)');
   ok(/UPDATE domains_sold SET status='registered' WHERE id=\? AND status='pending_registrar'/.test(_WORKER_SRC) && /UPDATE domains_sold SET status='renew_failed' WHERE id=\? AND status='renew_pending'/.test(_WORKER_SRC), 'D5: the sweep finishes a pending registration and marks a definitively-failed renewal renew_failed (status-guarded, no double-apply)');
   // --- PA1: the crypto webhook blocks an UNDERPAID charge (resolved underpayments) before granting; alerts the owner ---
-  ok(/const _cpaid = _coinbasePaidCents\(_chg\);/.test(_WORKER_SRC) && /if \(_cResolvedBlind \|\| \(_cgross > 0 && _cpaid > 0 && _cpaid < \(_cgross - _cTol\)\)\) \{/.test(_WORKER_SRC), 'PA1: the Coinbase webhook compares ACTUAL paid vs requested and blocks an underpayment (no full entitlement for a short crypto payment)');
+  ok(/const _cpaid = _coinbasePaidCents\(chg\);/.test(_WORKER_SRC) && /if \(_cResolvedBlind \|\| \(evtType === 'charge:resolved' && _cgross > 0 && _cpaid > 0 && _cpaid < \(_cgross - _cTol\)\)\) \{/.test(_WORKER_SRC), 'PA1 (now in _coinbaseGrantPlatform, re-audit #13/#14): compares ACTUAL paid vs requested and blocks an underpayment of a merchant-RESOLVED charge (a confirmed charge is Coinbase-proven-full)');
   ok(/kind: 'crypto_underpaid'/.test(_WORKER_SRC) && /return json\(\{ ok: true, underpaid: true \}, 200\);/.test(_WORKER_SRC), 'PA1: an underpaid crypto charge is recorded + the grant sentinel is NOT claimed (a later top-up can still grant), and the owner is alerted');
   // --- PA2: a card subscription is blocked while crypto-prepaid time is active -> no double-charge (mirror of the crypto-side guard) ---
   ok(/if \(_cuN > Date\.now\(\)\) return err\(409, 'Your plan is prepaid with crypto through '/.test(_WORKER_SRC), 'PA2: Stripe plan/trial checkout is blocked while crypto_until is active (symmetric with the crypto-charge guard against an existing card sub)');
@@ -5522,7 +5583,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // Crypto L1: the underpayment tolerance is capped at an absolute $5 (not a pure 2% that would allow hundreds on a large prepay)
   ok(/const _cTol = Math\.min\(Math\.round\(_cgross \* 0\.02\), 500\);/.test(_WORKER_SRC) && /_cpaid < \(_cgross - _cTol\)/.test(_WORKER_SRC), 'C-L1: crypto underpayment tolerance = min(2%, $5)');
   // Crypto L2: a manually-resolved charge whose paid amount is unparseable does not auto-grant
-  ok(/const _cResolvedBlind = \(_cbT === 'charge:resolved' && _cpaid <= 0 && _cgross > 0\);/.test(_WORKER_SRC), 'C-L2: charge:resolved with an unverifiable paid amount is blocked, not auto-granted');
+  ok(/const _cResolvedBlind = \(evtType === 'charge:resolved' && _cpaid <= 0 && _cgross > 0\);/.test(_WORKER_SRC), 'C-L2: a charge:resolved with an unverifiable (zero-leg) paid amount is blocked, not auto-granted (now in _coinbaseGrantPlatform)');
 }
 
 // ==== 13AA: deferred-item remediation -- domain P&L (F4) + self-extend occupancy (L3) + GMV carried-fee (L4) ====
