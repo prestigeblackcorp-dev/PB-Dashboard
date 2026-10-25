@@ -1463,6 +1463,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(_ectx && _ectx\.waitUntil\) _ectx\.waitUntil\(_rpP\); else await _rpP;/.test(_WORKER_SRC), 're-audit #45: the forgot-password reset email is dispatched via waitUntil (off the response path) to close the email-enumeration timing side-channel');
 }
 
+// ---- re-audit #43/#52/#56 (cron/prune scan-ordering): abandoned-nudge oldest-first; prune paginates all bookings; win-back own oldest-first query. ----
+{
+  ok(/AND created_at BETWEEN \? AND \? ORDER BY created_at ASC LIMIT 300/.test(_WORKER_SRC), 're-audit #43: the abandoned-booking nudge scans oldest-created first so a row about to age out of the 3-day window is never starved by the LIMIT');
+  ok(/SELECT id, data FROM bookings WHERE tenant_id=\? AND id > \? ORDER BY id LIMIT 2000/.test(_WORKER_SRC) && /if \(_mrows\.length < 2000\) break;/.test(_WORKER_SRC), 're-audit #52: the stale-mirror prune paginates across ALL bookings (stable id cursor) instead of a single capped unordered LIMIT 4000 that skipped the tail');
+  ok(/const _winback = \(\(await env\.DB\.prepare\('SELECT id,tenant_id,data,starts,ends,portal_token FROM bookings WHERE ends BETWEEN \? AND \? ORDER BY ends ASC LIMIT 500'\)/.test(_WORKER_SRC) && /\.concat\(_winback\)/.test(_WORKER_SRC), 're-audit #56: win-back has its own OLDEST-ended-first query so it is never starved by the newest-first _done truncation');
+}
+
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
 // a slot (promo_uses.n++) at request time while still Pending/unpaid; the slot was released ONLY on /book failure, never when a
 // saved booking later cancelled or auto-expired -> every abandoned/cancelled public redemption permanently consumed a slot and
