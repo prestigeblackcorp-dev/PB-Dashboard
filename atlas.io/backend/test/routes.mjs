@@ -805,6 +805,52 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(redacted && /\[erased\]/.test(redacted) && redacted.indexOf(EMAIL) < 0, 'RTBF: the matched booking blob has PII redacted (name [erased], email cleared)');
 }
 
+// ---- re-audit #10: RTBF must ALSO reach a PHONE-ONLY booking (custPhone set, custEmail empty, customer_id NULL) -- e.g. a
+// phone-in booking for a customer with no email on file. The erase query now ORs a digit-normalized phone match against the
+// blob (custPhone/phone/customerPhone), and the ternary runs the blob-inclusive query whenever the customer has an email OR a
+// phone, so a phone-only customer no longer falls through to the customer_id-only path that would leave the phone PII live. ----
+{
+  const SID = 'sid_erp', CSRF = 'CSRFerp', TEN = 't_erp', UID = 'u_erp', PHONE = '555-0100';
+  const bookingData = JSON.stringify({ cust: 'Phone Only', custEmail: '', custPhone: PHONE, idLast4: '4242' });
+  let redacted = null, inclusiveUsed = false, cidOnlyUsed = false;
+  function erDB() {
+    function stmt(sql) {
+      let a = [];
+      const api = {
+        bind: (...x) => { a = x; return api; },
+        first: async () => {
+          if (/FROM sessions WHERE id/.test(sql)) return a[0] === SID ? { id: SID, user_id: UID, tenant_id: TEN, csrf: CSRF, expires_at: Date.now() + 1e12, idle_at: Date.now(), revoked_at: null } : null;
+          if (/FROM users WHERE id/.test(sql)) return { id: UID, email: 'owner@erp.com', tenant_id: TEN, role: 'owner', caps: null };
+          if (/FROM comp_grants/.test(sql)) return null;
+          if (/FROM customers WHERE id/.test(sql)) return { id: 'C2', email: '', name: '', phone: PHONE };   // phone-only: no email on file
+          if (/SELECT data, updated_at FROM bookings WHERE id/.test(sql)) return { data: bookingData, updated_at: null };
+          if (/sqlite_master/.test(sql)) return { n: 30 };
+          return null;
+        },
+        all: async () => {
+          if (/FROM bookings WHERE tenant_id=\? AND id > \? AND \(customer_id/.test(sql)) { inclusiveUsed = true; return { results: a[1] ? [] : [{ id: 'B2' }] }; }   // blob-inclusive query (email OR phone arm): first page returns the phone-only booking; 2nd page terminates
+          if (/FROM bookings WHERE tenant_id=\? AND id > \? AND customer_id=\? ORDER BY/.test(sql)) { cidOnlyUsed = true; return { results: [] }; }   // the customer_id-only fallback must NOT be the path taken here
+          return { results: [] };
+        },
+        run: async () => { if (/UPDATE bookings SET data=/.test(sql)) redacted = a[0]; return { success: true, meta: { changes: 1 } }; },
+      };
+      return api;
+    }
+    return { prepare: stmt };
+  }
+  const erEnv = { DB: erDB(), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
+  const erReq = (cid) => ({ method: 'POST', url: 'https://atlasrental.io/api/customers/' + cid + '/erase', headers: { get: (k) => { const h = { 'content-type': 'application/json', cookie: 'atlas_sid=' + SID, 'x-csrf-token': CSRF, origin: 'https://atlasrental.io' }; const v = h[String(k).toLowerCase()]; return v === undefined ? null : v; } }, json: async () => ({}), text: async () => '{}' });
+  const er = await worker.fetch(erReq('C2'), erEnv, ctx);
+  const ej = await er.json();
+  ok(er.status === 200 && ej.ok && ej.bookings_redacted === 1, 're-audit #10: a PHONE-ONLY booking (custEmail empty, customer_id NULL) is matched + redacted (got ' + JSON.stringify(ej) + ')');
+  ok(inclusiveUsed && !cidOnlyUsed, 're-audit #10: a phone-only customer (no email) still runs the blob-inclusive query, not the customer_id-only fallback');
+  ok(redacted && /\[erased\]/.test(redacted) && !/555-0100/.test(redacted), 're-audit #10: the matched phone-only booking blob has its phone PII redacted');
+  // source guards: the phone arm + ternary restructure must stay (the mock can't evaluate the SQL REPLACE, so pin the literal)
+  ok(/const _erPh2 = _rtbfNormPhone\(_crow\.phone/.test(_WORKER_SRC), 're-audit #10: the erase handler normalizes the customer phone to digits (_erPh2 = _rtbfNormPhone(_crow.phone))');
+  ok(/_bks = \(_erEm2 \|\| _erPh2\)/.test(_WORKER_SRC), 're-audit #10: the erase ternary runs the blob-inclusive query whenever the customer has an email OR a phone');
+  ok(/json_extract\(data,'\$\.custPhone'\),''\),' ',''\),'\('/.test(_WORKER_SRC), 're-audit #10: the phone arm digit-strips the stored custPhone (nested REPLACE) before comparing to the normalized customer phone');
+}
+
 // ---- LOGIN-CSRF / session fixation: the cookie-ISSUING pre-session routes (login/signup) must reject a cross-site Origin
 // (the session cookie is SameSite=None, so a cross-site page could otherwise fixate the victim on the attacker's account).
 // A same-origin or no-Origin request must pass the guard and proceed to normal validation. ----
@@ -1252,6 +1298,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const second = _collectGiftReturns(dd);
   ok(second.length === 0, 'gift-cancel #3: a SECOND cancel returns nothing (idempotent -> never double-releases the gift balance)');
   ok(_collectGiftReturns({ giftRedemptions: [{ code: 'x', amt: 0 }] }).length === 0 && _collectGiftReturns({}).length === 0, 'gift-cancel #3: a zero-amount redemption and a booking with none both yield an empty list (no-op)');
+}
+
+// ---- re-audit #15 (money): owner gift-unredeem must NOT double-release a redemption already RETURNED to the card. _collectGiftReturns
+// stamps giftReturnedAt + unclaims on cancel/expire but LEAVES the row in giftRedemptions; a later owner gift-unredeem would splice it
+// and call _giftUnclaim a SECOND time, driving gift_uses.cents negative (code re-redeemable past its balance). The release is now gated. ----
+{
+  ok(/if \(!_removed\.giftReturnedAt\) \{ try \{ await _giftUnclaim\(env, _mctx\.tenant_id, String\(_removed\.code/.test(_WORKER_SRC), 're-audit #15: gift-unredeem gates _giftUnclaim on !_removed.giftReturnedAt so an already-returned redemption is not unclaimed twice');
 }
 
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
@@ -4516,6 +4569,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 
   // ---- #2: the stale-mirror prune DETACHES a booking with Atlas-native state instead of hard-deleting it ----
   ok(/if \(_pbmHasNativeState\(_md\)\) \{[\s\S]*_bkPatch\(env, _mr\.id, tenantId[\s\S]*fd\.source = 'pb-detached'; fd\.readOnly = false;[\s\S]*\} else \{[\s\S]*DELETE FROM bookings WHERE id=\? AND tenant_id=\?/.test(_WORKER_SRC), '#2: prune detaches (CAS _bkPatch -> pb-detached) a mirror carrying Atlas state; only a pure mirror is DELETEd');
+  // re-audit #23: the prune's "seen in PB" set must EXCLUDE tombstones -- a PB-deleted booking still carried in the snapshot as
+  // _deleted:true must NOT count as alive, else its Atlas mirror row is kept forever and the PB deletion never propagates.
+  ok(/const _seenPb = new Set\(\); bookings\.forEach\(function \(b\) \{ if \(b && b\.id != null && !b\._deleted\) _seenPb\.add/.test(_WORKER_SRC), 're-audit #23: the pb-mirror prune excludes _deleted tombstones from the seen-in-PB set so a PB deletion propagates (prune still protected by #stale-mirror-preserve)');
+  // re-audit #22 (money, do-NOT-revert [PB refund breakeven]): _pbmTotalRevenue is an EXACT port of PB totalRevenue(), which does
+  // NOT subtract _refundedTotal -- the refunded amount was never counted as profit, and subtracting it drove an over-payment refund
+  // negative + diverged the mirror from PB. Pin: the revenue sum ends at authDrv with no trailing "- _refundedTotal" term.
+  ok(/\+ _pbmPortalChargesRev\(b\) \+ addl \+ authDrv;/.test(_WORKER_SRC), 're-audit #22: _pbmTotalRevenue ends at "+ addl + authDrv;" (gross, matching PB totalRevenue)');
+  ok(!/\+ addl \+ authDrv - \(Number\(b\._refundedTotal\)/.test(_WORKER_SRC), 're-audit #22: _pbmTotalRevenue does NOT subtract _refundedTotal (would double-count the refund against gross + diverge from PB)');
   ok(_pbmHasNativeState({ paid: { balance: { amountCents: 45000 } } }) === true, '#2: an online payment (d.paid) counts as Atlas-native state');
   ok(_pbmHasNativeState({ portal: { signedAt: 111 } }) === true, '#2: a customer signature counts');
   ok(_pbmHasNativeState({ giftRedemptions: [{ id: 'g1' }] }) === true, '#2: a gift redemption counts');
