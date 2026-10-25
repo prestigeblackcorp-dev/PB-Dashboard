@@ -1430,6 +1430,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/for \(const _pd of _pdoms\) \{ try \{ await _cfDeleteHostname\(env, _pd\); await _cfDeleteHostname\(env, 'www\.' \+ _pd\); \} catch \(e\) \{\} \}/.test(_WORKER_SRC), 're-audit #39: /api/admin/purge frees the tenant primary + site custom hostnames from Cloudflare before wiping the domain rows');
 }
 
+// ---- re-audit #26/#27/#29 (stripe-webhook money): platform chargeback offset, invoice.paid current-sub gate, won-dispute orphan resolve. ----
+{
+  ok(/_dispAdverse && \/\^\(plan\|trial\|credits\|website\|domain\|asset_unlock\)\$\/\.test\(_dBilling\)\)/.test(_WORKER_SRC) && /kind: 'platform_chargeback', pack: _dBilling, amount_cents: -Math\.abs\(_dAmt\)/.test(_WORKER_SRC), 're-audit #26: a chargeback of a PLATFORM product posts an offsetting NEGATIVE platform_transactions row (nets the overstated revenue) instead of a useless booking dispute_orphan');
+  ok(/UPDATE tenants SET plan=\?, tier=\?, delinquent_since=NULL, dunning_invoice=NULL, dunning_next=NULL, dunning_attempts=0, updated_at=\? WHERE id=\? AND \(stripe_sub IS NULL OR stripe_sub=\?\)/.test(_WORKER_SRC), 're-audit #27: invoice.paid flips plan/tier/dunning only when the invoice sub is the tenant CURRENT sub (or none yet) -- a superseded sub can no longer flip the plan back / overwrite the tier');
+  ok(/UPDATE dispute_orphans SET resolved_at=\?, booking_id=COALESCE\(booking_id,'\(won\)'\) WHERE tenant_id=\? AND dispute_id=\? AND resolved_at IS NULL/.test(_WORKER_SRC), 're-audit #29: a WON dispute resolves its orphan row so a later manual link cannot decrement revenue for a reinstated chargeback (double-count)');
+}
+
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
 // a slot (promo_uses.n++) at request time while still Pending/unpaid; the slot was released ONLY on /book failure, never when a
 // saved booking later cancelled or auto-expired -> every abandoned/cancelled public redemption permanently consumed a slot and
