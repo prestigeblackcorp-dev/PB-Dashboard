@@ -1476,6 +1476,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/var _txn = !!\(d\.paidAt \|\| _settled > 0 \|\| _giftC > 0\);/.test(_WORKER_SRC) && !/_giftC > 0 \|\| \(d\.portal && \(d\.portal\.balancePaidAt/.test(_WORKER_SRC), 're-audit #55: the review-eligibility gate no longer trusts the never-cleared-on-refund portal.*PaidAt markers -> a fully-refunded booking cannot post a verified review (relies on _settled>0/_giftC/paidAt which net refunds)');
 }
 
+// ---- re-audit #28 (byo-processors): PayPal + Coinbase dual-checkout now alert the owner (like Stripe/Square), via the credit helper's dupArchive. ----
+{
+  ok(/d: _outD, dupArchive: \(_committed \? _dupArch : null\) \};   \/\/ re-audit #28/.test(_WORKER_SRC), 're-audit #28: _paypalCreditBooking now returns dupArchive (it archived the displaced payment but never surfaced it) so the caller can alert the owner to a double charge');
+  ok(/'paypal\.paid\.duplicate_checkout'/.test(_WORKER_SRC), 're-audit #28: the PayPal /return surfaces a dual-checkout owner alert (paypal.paid.duplicate_checkout), matching Stripe/Square');
+  ok(/'coinbase\.paid\.duplicate_checkout'/.test(_WORKER_SRC), 're-audit #28: the BYO Coinbase webhook surfaces a dual-checkout owner alert (coinbase.paid.duplicate_checkout) -- it returned dupArchive but never alerted');
+}
+
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
 // a slot (promo_uses.n++) at request time while still Pending/unpaid; the slot was released ONLY on /book failure, never when a
 // saved booking later cancelled or auto-expired -> every abandoned/cancelled public redemption permanently consumed a slot and
@@ -5225,9 +5232,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/_dupArch = \{ oldPi: _oldRef, newPi: String\(pi\)\.slice\(0, 40\), kind: _pkKey, amt: amt \};/.test(_WORKER_SRC), 'audit-fix F1: _stripeCreditBooking captures the dual-checkout archive (both payment refs + amount) for the caller to alert on');
   ok(/dupArchive: \(_committed \? _dupArch : null\)/.test(_WORKER_SRC), 'audit-fix F1: _stripeCreditBooking returns ONLY the committed iteration\'s archive (null otherwise) so the alert fires once');
   ok((_WORKER_SRC.match(/if \(_crC && _crC\.dupArchive\) \{/g) || []).length === 1, 'audit-fix F1: the confirm-on-return path fires the owner double-charge alert off the returned dupArchive');
-  ok((_WORKER_SRC.match(/if \(_res && _res\.dupArchive\) \{/g) || []).length === 2, 'audit-fix F1 + audit400 A018: the reconcile-sweep path AND the Square return-path both fire the owner double-charge alert off the returned dupArchive (both use _res)');
+  ok((_WORKER_SRC.match(/if \(_res && _res\.dupArchive\) \{/g) || []).length === 3, 'audit-fix F1 + audit400 A018 + re-audit #28: the reconcile-sweep, the Square return-path, AND the PayPal return-path all fire the owner double-charge alert off the returned dupArchive (all use _res)');
   ok((_WORKER_SRC.match(/stripe\.paid\.duplicate_checkout/g) || []).length === 3, 'audit-fix F1: the duplicate-checkout audit now fires from ALL THREE credit paths (webhook + confirm-on-return + sweep), not just the webhook');
-  ok((_WORKER_SRC.match(/Possible double charge on a booking/g) || []).length === 4, 'audit-fix F1 + audit400 A018: a durable owner double-charge alert fires from the webhook + confirm-on-return + sweep (Stripe) AND now the Square return-path');
+  ok((_WORKER_SRC.match(/Possible double charge on a booking/g) || []).length === 6, 're-audit #28: a durable owner double-charge alert now fires from every processor path -- Stripe (webhook + confirm-on-return + sweep) + Square return + PayPal return + Coinbase BYO webhook (6 total)');
   // Finding 2 (MED notifications): pending must be excluded from the operational reminders (handled by guard 13w above, now asserting pending).
   // Finding 3 (HIGH notifications): signed-only effective end (handled by guard 13w above).
   // Finding 4 (HIGH legal-display): the per-booking dispute banner must classify a WON chargeback (restored via the byId ledger) as won, not under review.
