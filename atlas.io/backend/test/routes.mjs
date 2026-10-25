@@ -5583,5 +5583,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/SELECT 1 FROM platform_ai_spend_by_feature b WHERE b\.day=p\.day AND b\.model=p\.model\)/.test(_WORKER_SRC) && !/b\.day=p\.day AND b\.model=p\.model AND b\.source='other'/.test(_WORKER_SRC), 'audit400 A097: the AI-spend by-feature backfill fires only for a (day,model) with NO by_feature attribution at all (no more double-count of post-#286f live-attributed days)');
 }
 
+// ==== audit400 build cz: gift/promo money integrity (A088/A102 terminal re-check, A101 promo soft-409) + A090 idv-label laundering ====
+{
+  ok((_WORKER_SRC.match(/if \(_isTerminalNoRevive\(null, fd\.status\)\) \{ _giftOver = true; return false; \}/g) || []).length === 2, 'audit400 A088 + A102: BOTH gift-redeem CAS patches (owner + portal) re-check terminal status INSIDE the CAS so a cancel/expire landing mid-redeem cannot burn gift value on a dead booking');
+  ok(/\} else if \(!pv\.ok && \(pv\.reason === 'capped' \|\| pv\.reason === 'off' \|\| pv\.reason === 'expired'\)\) \{/.test(_WORKER_SRC), 'audit400 A101: a valid-but-unusable promo (capped/off/expired) returns a soft 409 to re-prompt, not a silent full-price booking');
+  ok(/const _claimIdvStatus = !!\(data\.portal && typeof data\.portal === 'object' && data\.portal\.idv && String\(data\.portal\.idv\.status\) === 'verified'\)/.test(_WORKER_SRC) && /if \(_srvS !== 'verified' && data\.portal && data\.portal\.idv\) data\.portal\.idv\.status = _srvS \|\| 'processing';/.test(_WORKER_SRC), 'audit400 A090: a client cannot upgrade portal.idv.status to verified -- it is validated against the server (only the Stripe-completion path sets it), so a manual/absent check can not be relabeled a Stripe Identity pass on evidence');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
