@@ -4589,7 +4589,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
     ok(_cofKept && _pbNew && !_pbOld, '#1: Atlas-native (card_on_file) charge kept; PB balance-payment charges rebuilt fresh (stale pb charge replaced)');
     const _pure = _pbMirrorMerge({ a: 1 }, null);
     ok(_pure && _pure.a === 1, '#1: no prior server blob -> pure mirror (first sync)');
+    // re-audit #32 (KYC integrity): a PB email change to a DIFFERENT identity drops the carried ID-verification; same email keeps it
+    const _svId = { custEmail: 'a@x.co', cust: 'Alice', idVerified: true, idVerifiedAt: 100, idVerifyMethod: 'Stripe Identity', idName: 'Alice', idLast4: '1234', portal: { idVerified: true, idv: { status: 'verified' } } };
+    const _mgB = _pbMirrorMerge({ custEmail: 'b@y.co', cust: 'Bob', mirror: { source: 'pb' } }, _svId);
+    ok(_mgB.custEmail === 'b@y.co' && _mgB.idVerified === undefined && _mgB.idName === undefined && _mgB.idLast4 === undefined && _mgB.portal.idVerified === false && _mgB.portal.idv === undefined, 're-audit #32: a PB email change to a different identity DROPS the carried ID-verification (new identity must re-verify)');
+    ok(_svId.portal.idVerified === true && _svId.portal.idv && _svId.portal.idv.status === 'verified', 're-audit #32: the drop clones portal and never mutates the caller server blob (serverData.portal untouched)');
+    const _mgA = _pbMirrorMerge({ custEmail: 'a@x.co', cust: 'Alice', mirror: { source: 'pb' } }, _svId);
+    ok(_mgA.idVerified === true && _mgA.idName === 'Alice' && _mgA.idVerifiedAt === 100, 're-audit #32: an unchanged identity (same email) KEEPS the carried ID-verification (no regression)');
   }
+  // re-audit #31: the intake auto-carry of a returning verified customer stamps idVerifiedAt (original Stripe date) + method, not a dateless claim
+  ok(/idVerifiedAt: _vcOk \? \(Number\(_vc\.verifiedAt\) \|\| now\) : undefined, idVerifyMethod: _vcOk \? 'Stripe Identity' : undefined/.test(_WORKER_SRC), 're-audit #31: the returning-customer auto-carry stamps idVerifiedAt (verified_customers.verified_at, falling back to carry time) + the Stripe Identity method -- no more dateless verification claim');
+  ok(/verifiedAt: Number\(row\.verified_at\) \|\| 0/.test(_WORKER_SRC), 're-audit #31: _lookupVerified exposes the original verified_at so the carry can date the claim');
 
   // ---- #4 (security MED): an unbacked client-asserted idVerified is stripped before _carryVerify can index it into verified_customers ----
   ok((_WORKER_SRC.match(/await _stripUnbackedIdVerify\(env, (tenantId|ctx\.tenant_id), (id|body\.id), (clientData|body\.data)\)/g) || []).length === 2, '#4: _stripUnbackedIdVerify wired at BOTH sig-strip sites (mirror-write CAS + POST create)');
