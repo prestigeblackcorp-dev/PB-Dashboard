@@ -2883,6 +2883,7 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
       <button class="btn btn-sm" id="bdChargeBtn" onclick="" style="border-color:rgba(34,197,94,.4);color:var(--green)">&#128184; Charge</button>
       <button class="btn" id="bdInvoiceBtn" onclick="">&#128196; Invoice</button>
       <button class="btn" id="bdContractBtn" onclick="">&#128221; Contract</button>
+      <button class="btn btn-sm" id="bdSwapBtn" onclick="" style="border-color:rgba(201,169,98,.5);color:var(--gold)" title="Swap this renter into another vehicle as a signed amendment (keeps the original agreement, signature, check-in &amp; photos; the new vehicle gets its own contract, check-in &amp; photos)">&#8646; Swap Vehicle</button>
       <button class="btn btn-sm" id="bdExtensionBtn" onclick="" style="display:none;border-color:rgba(167,139,250,.5);color:#a78bfa">&#128197; Extension</button>
       <button class="btn btn-gold" id="bdEditBtn" onclick="">&#9999; Edit</button>
       <button class="btn btn-sm" id="bdVoidBtn" onclick="" style="display:none;border-color:rgba(239,68,68,.55);color:#fff;background:rgba(239,68,68,.8)">&#9940; Void</button>
@@ -5329,7 +5330,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v400';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v401';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -9289,7 +9290,14 @@ function _addlIncomeAmt(b){ return (b&&b.addlIncome&&Number(b.addlIncome.amount)
 // totalRevenue so it counts in EVERY accrual KPI/chart/per-vehicle/table/filter; the Today cash-basis KPI
 // adds it separately by paidAt. It is a distinct field (not in b.revenue/charges) -> counted exactly once.
 function _authDriverPaidTotal(b){ return ((b&&Array.isArray(b.extraDrivers))?b.extraDrivers:[]).reduce(function(s,d){ return (d&&d.paid&&Number(d.payAmount)>0)?s+Number(d.payAmount):s; },0); }
-function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(b.refundSent?0:(Number(b.depositKept)||0))+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b)+_addlIncomeAmt(b)+_authDriverPaidTotal(b); }  // EARNED revenue = what the booking BILLS (rate + charges), independent of refunds. A refund is BREAKEVEN at worst: it reverses COLLECTED cash (often an overpayment) and already nets out in Total Collected, so it must NEVER subtract from earned revenue -- doing so drove a refunded overpayment NEGATIVE. To lower what was earned (goodwill/partial cancel), reduce b.revenue directly. A RETURNED deposit (refundSent) is not revenue -- mirror the Deposits Kept card + close-out invariant
+// Active (non-deleted) vehicle-swap segments, and the earned-revenue effect of their price adjustments.
+// A swap is a vehicle-substitution amendment to the original signed agreement; priceAdjust (+/-) is earned
+// revenue (what the amendment BILLS), folded in here exactly like _addlIncomeAmt -- counted once, flows to
+// every KPI/chart. The ORIGINAL agreement/signature/check-in are never touched. See the vehicle-swap module.
+function _vehicleSwaps(b){ return (b&&Array.isArray(b.vehicleSwaps))?b.vehicleSwaps.filter(function(w){return w&&!w._deleted;}):[]; }
+function _vehicleSwapAdjTotal(b){ return _vehicleSwaps(b).reduce(function(s,w){ return s+(Number(w.priceAdjust)||0); },0); }
+function _tripCurrentVehicle(b){ var sw=_vehicleSwaps(b); return (sw.length&&sw[sw.length-1].vehicle)?sw[sw.length-1].vehicle:(b&&b.vehicle); }
+function totalRevenue(b){ return (Number(b.revenue)||0)+(Number(b.fuelCharge)||0)+(Number(b.mileageCharge)||0)+(b.refundSent?0:(Number(b.depositKept)||0))+(Number(b.lateReturnFee)||0)+extensionCharge(b)+portalChargesRevenue(b)+_addlIncomeAmt(b)+_authDriverPaidTotal(b)+_vehicleSwapAdjTotal(b); }  // EARNED revenue = what the booking BILLS (rate + charges), independent of refunds. A refund is BREAKEVEN at worst: it reverses COLLECTED cash (often an overpayment) and already nets out in Total Collected, so it must NEVER subtract from earned revenue -- doing so drove a refunded overpayment NEGATIVE. To lower what was earned (goodwill/partial cancel), reduce b.revenue directly. A RETURNED deposit (refundSent) is not revenue -- mirror the Deposits Kept card + close-out invariant
 // Days the per-day broker rate covers \u2014 the ORIGINAL rental only. Extensions each carry
 // their own broker fee (entered per extension), so extending never auto-scales the rate.
 function brokerRateDays(b){ var x=_extLive(b).reduce(function(s,e){return s+(Number(e&&e.extensionDays)||0);},0); return Math.max(1,(Number(b.days)||1)-x); }
@@ -13118,6 +13126,7 @@ function openBookingDetail(id){
     var _vb=$d('bdVoidBtn'); if(_vb){ _vb.style.display=(_vOn&&!_vd&&b.status!=='cancelled')?'':'none'; _vb.onclick=function(){ openVoidModal(b.id); }; }
     var _vr=$d('bdVoidReportBtn'); if(_vr){ _vr.style.display=_vd?'':'none'; _vr.onclick=function(){ _genVoidLegalReport(b.id); }; }
     var _ev=$d('bdEvidenceBtn'); if(_ev){ _ev.onclick=function(){ _genChargebackEvidence(b.id); }; }
+    var _sw=$d('bdSwapBtn'); if(_sw){ _sw.onclick=function(){ openVehicleSwapMgr(b.id); }; var _nsw=((typeof _vehicleSwaps==='function')?_vehicleSwaps(b).length:0); _sw.innerHTML=(_nsw?('&#8646; Vehicles ('+(_nsw+1)+')'):'&#8646; Swap Vehicle'); }
     var _bf=$d('bdBackfillBtn'); if(_bf){ _bf.onclick=function(){ _backfillStripeIds(b.id); }; }
     var _cn=$d('bdCoverBtn'); if(_cn){ _cn.onclick=function(){ _genDisputeCoverNote(b.id); }; }
     var _ai=$d('bdAddIdsBtn'); if(_ai){ _ai.onclick=function(){ _stripeIdsModal(b.id); }; }
@@ -19710,6 +19719,40 @@ function _sidDelDp(i){
   b.disputes.splice(i,1); b._t=Date.now(); save(); if(typeof flushCloudSave==='function') flushCloudSave(); try{ render(); }catch(e){} _renderStripeIdsModal();
 }
 
+// Vehicle Substitution Amendments for the Evidence Report -- each swap (from->to, effective date, price
+// adjustment, amendment signature image + exact timestamp, and the substitute vehicle's own pickup/return
+// condition record + photo counts). Proves the renter stayed under the original agreement and acknowledged
+// each vehicle substitution. Renders nothing when there are no swaps. ASCII-safe (HTML entities only).
+function _swapEvCond(w,mode){
+  var odom=mode==='in'?w.odomIn:w.odomOut, fuel=mode==='in'?w.fuelIn:w.fuelOut, cond=mode==='in'?w.condIn:w.condOut;
+  var ph=((mode==='in'?w.checkInPhotoIds:w.checkOutPhotoIds)||[]).length;
+  if(!(odom||fuel||cond||ph)) return '<span class="muted">not recorded</span>';
+  return (odom?('Odometer '+esc(String(odom))+' mi'):'')+(fuel?(' &middot; '+esc(String(fuel))):'')+(cond?(' &middot; '+esc(String(cond))):'')+(ph?(' &middot; <b>'+ph+'</b> photo(s) on file'):'');
+}
+function _evVehicleSwaps(b){
+  var sw=(b&&Array.isArray(b.vehicleSwaps))?b.vehicleSwaps.filter(function(w){return w&&!w._deleted;}):[];
+  if(!sw.length) return '';
+  var rows=sw.map(function(w,i){
+    var pa=Number(w.priceAdjust)||0;
+    var sig=_isSigStr(w.amendmentSig)?('<img src="'+w.amendmentSig+'" alt="amendment signature" style="background:transparent;filter:brightness(0)"/>'):'';
+    return '<div style="border:1px solid #ddd;border-radius:6px;padding:12px;margin:10px 0;page-break-inside:avoid">'
+      +'<div style="font-weight:700;font-size:13px;color:#0a3d62">Vehicle Substitution Amendment '+(i+1)+' of '+sw.length+'</div>'
+      +'<table style="margin:4px 0 8px">'
+      +'<tr><td class="k">Substituted</td><td class="v"><b>'+esc(w.fromVehicle||'')+'</b> &rarr; <b>'+esc(w.vehicle||'')+(w.color?(' '+esc(w.color)):'')+'</b></td></tr>'
+      +'<tr><td class="k">Effective</td><td class="v">'+(w.effAt?_evWhen(w.effAt):'&mdash;')+'</td></tr>'
+      +(w.reason?('<tr><td class="k">Reason</td><td class="v">'+esc(w.reason)+'</td></tr>'):'')
+      +(pa?('<tr><td class="k">Price adjustment</td><td class="v">'+(pa>0?'+':'')+_evFmtMoney(pa)+(w.priceAdjustNote?(' &middot; '+esc(w.priceAdjustNote)):'')+'</td></tr>'):'')
+      +'<tr><td class="k">Amendment signed</td><td class="v">'+(_isSigStr(w.amendmentSig)?('<b>'+(w.amendmentSigAt?_evWhen(w.amendmentSigAt):esc(w.amendmentSigDate||''))+'</b>'):'<span class="muted">not signed</span>')+'</td></tr>'
+      +'<tr><td class="k">Substitute vehicle check-in</td><td class="v">'+_swapEvCond(w,'in')+'</td></tr>'
+      +'<tr><td class="k">Substitute vehicle check-out</td><td class="v">'+_swapEvCond(w,'out')+'</td></tr>'
+      +'</table>'
+      +(sig?('<div style="font-size:11px;color:#555;margin-bottom:4px">Renter amendment signature:</div>'+sig):'')
+      +'</div>';
+  }).join('');
+  return '<h2>Vehicle Substitution Amendments ('+sw.length+')</h2>'
+    +'<div class="note">The renter remained bound by the original signed agreement; each amendment below substituted the vehicle with the renter&rsquo;s acknowledgment, and all original terms stayed in force. Each substitute vehicle has its own pickup/return condition record and timestamped photos on file.</div>'
+    +rows;
+}
 function _genChargebackEvidence(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b){ toast('Booking not found.'); return; }
   var E=function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); };
@@ -19786,7 +19829,7 @@ function _genChargebackEvidence(id){
    +row('Pickup / pre-trip photos', ciN?('<b>'+ciN+'</b> timestamped photo(s) retained'):'<span class="muted">none on file</span>')
    +row('Return / post-trip photos', coN?('<b>'+coN+'</b> timestamped photo(s) retained'):'<span class="muted">none on file</span>')
    +'</table>'
-   +'<div id="evCondPhotos" class="muted" style="margin-top:8px">Loading condition photos...</div>'+_evIdentitySection(b)+_evStripeLedger(b)+_evCardAuth(b)+_evAgreement(b)+_evSignedDocs(b)
+   +'<div id="evCondPhotos" class="muted" style="margin-top:8px">Loading condition photos...</div>'+_evIdentitySection(b)+_evStripeLedger(b)+_evCardAuth(b)+_evAgreement(b)+_evSignedDocs(b)+_evVehicleSwaps(b)
    +'<div class="ft">Business record generated by Prestige Black Rentals from the booking on file. Signature, timestamps, signer IP (where captured), payment records, extension agreements and communication history are reproduced verbatim and were not altered for this report. Reference '+E(ref)+'. This document is provided to substantiate a legitimate, cardholder-authorized transaction in response to a dispute.</div>'
    +'</div></body></html>';
   var w=window.open('','_blank'); if(!w){ toast('Allow pop-ups to open the evidence report.'); return; }
@@ -29881,6 +29924,271 @@ document.addEventListener('keydown',function(e){
     else openCmdPalette();
   }
 });
+
+/* ===== VEHICLE SWAP (amendment model) =====================================================
+   Swap a renter into another vehicle WITHOUT disturbing the original signed agreement. Each swap is a
+   self-contained segment in b.vehicleSwaps[]: its own signed vehicle-substitution AMENDMENT (references the
+   original contract, all original terms stay in force), its own check-in + check-out condition record, and
+   its own condition photos. The original top-level vehicle/contract/signature/check-in is NEVER modified, so
+   "keep original" and "keep both" both hold. An optional price adjustment folds into totalRevenue via
+   _vehicleSwapAdjTotal (earned, counted once). ASCII-safe (HTML entities + plain ASCII only). ==============*/
+var _swapBkId=null,_swapView='list',_swapPhotoWork=[],_swapPhotoOrig=[],_swapPhotoField='';
+function _swapBk(){ return bookings.find(function(x){return x.id===_swapBkId;})||null; }
+function _swapVehList(){ try{ return (ALL_VEHICLES||[]).slice(); }catch(e){ return []; } }
+function _swapIsSling(v){ return v==='Polaris Slingshot'; }
+function _fmtDT(ms){ try{ if(typeof _cdt==='function') return _cdt(ms,true); }catch(e){} try{ return new Date(Number(ms)).toLocaleString(); }catch(e){ return ''; } }
+function _swapNowLocal(){ var d=new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,16); }
+function _swapFld(label,inner){ return '<div style="margin-bottom:10px"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">'+label+'</div>'+inner+'</div>'; }
+
+function openVehicleSwapMgr(id){
+  var b=bookings.find(function(x){return x.id===id;}); if(!b){ toast('Booking not found'); return; }
+  _swapBkId=id; _swapView='list'; _swapPhotoWork=[]; _swapPhotoOrig=[]; _swapPhotoField='';
+  var o=document.getElementById('swapOverlay'); if(o) o.remove();
+  var ov=document.createElement('div'); ov.id='swapOverlay';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:10002;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
+  ov.innerHTML='<div id="swapCard" style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;width:100%;max-width:640px;margin:20px auto"></div>';
+  ov.onclick=function(e){ if(e.target===ov) closeSwapMgr(); };
+  document.body.appendChild(ov);
+  _renderSwapMgr();
+}
+function closeSwapMgr(){ _swapDiscardPhotos(); var o=document.getElementById('swapOverlay'); if(o) o.remove(); _swapBkId=null; _swapView='list'; }
+function _swapGo(v){ _swapDiscardPhotos(); _swapView=v; _renderSwapMgr(); }
+function _swapDiscardPhotos(){
+  if(!_swapPhotoField) return;
+  (_swapPhotoWork||[]).filter(function(id){ return (_swapPhotoOrig||[]).indexOf(id)===-1; })
+    .forEach(function(id){ try{ dbDeletePhoto(id); }catch(e){} delete _photoMemCache[id]; });
+  _swapPhotoField=''; _swapPhotoWork=[]; _swapPhotoOrig=[];
+}
+function _renderSwapMgr(){
+  var card=document.getElementById('swapCard'); var b=_swapBk(); if(!card||!b) return;
+  var v=_swapView||'list';
+  if(v==='list') return _swapRenderList(card,b);
+  if(v==='new')  return _swapRenderNew(card,b);
+  var parts=v.split(':'); var seg=(b.vehicleSwaps||[]).find(function(w){return w&&w.id===parts[1];});
+  if(parts[0]==='amend') return _swapRenderAmend(card,b,seg);
+  if(parts[0]==='cin')   return _swapRenderCheck(card,b,seg,'in');
+  if(parts[0]==='cout')  return _swapRenderCheck(card,b,seg,'out');
+  _swapRenderList(card,b);
+}
+function _swapSegCard(o){
+  var pa=Number(o.priceAdjust)||0;
+  var paStr=pa?('<div style="font-size:11.5px;color:'+(pa>0?'var(--green)':'var(--gold)')+';margin-top:3px">Price adjustment: '+(pa>0?'+':'')+$$(pa)+(o.priceNote?(' &#183; '+esc(o.priceNote)):'')+'</div>'):'';
+  var line=function(lbl,c){ var any=c&&(c.odom||c.fuel||c.cond||c.photos);
+    if(!any) return '<span style="color:var(--muted)">'+lbl+': not recorded</span>';
+    return lbl+': '+(c.odom?(esc(String(c.odom))+' mi '):'')+(c.fuel?(esc(String(c.fuel))+' '):'')+(c.cond?(esc(String(c.cond))+' '):'')+(c.photos?('&#183; '+c.photos+' photo(s)'):''); };
+  return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px">'
+    +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">'
+    +'<div><div style="font-weight:700;font-size:13px;color:var(--text)">'+o.title+'</div>'
+    +'<div style="font-size:12.5px;color:var(--gold)">'+(o.from?('<span style="color:var(--muted)">'+esc(o.from)+' &#8594; </span>'):'')+esc(o.veh||'')+(o.color?(' &#183; '+esc(o.color)):'')+'</div></div>'
+    +'<div style="font-size:11px;padding:3px 9px;border-radius:10px;white-space:nowrap;'+(o.signed?'background:rgba(34,197,94,.12);color:var(--green)':'background:rgba(255,200,0,.1);color:#d9a441')+'">'+(o.signed?('&#10003; Signed'+(o.sigDate?(' '+esc(o.sigDate)):'')):'Unsigned')+'</div>'
+    +'</div>'
+    +(o.reason?('<div style="font-size:11.5px;color:var(--muted);margin-top:4px">Reason: '+esc(o.reason)+'</div>'):'')
+    +paStr
+    +'<div style="font-size:11.5px;margin-top:6px;line-height:1.75">'+line('Check-In',o.ci)+'<br>'+line('Check-Out',o.co)+'</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">'+(o.actions||'')+'</div>'
+    +'</div>';
+}
+function _swapRenderList(card,b){
+  var sw=(Array.isArray(b.vehicleSwaps)?b.vehicleSwaps:[]).filter(function(w){return w&&!w._deleted;});
+  var cur=(typeof _tripCurrentVehicle==='function')?_tripCurrentVehicle(b):b.vehicle;
+  var h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+    +'<div style="font-size:16px;font-weight:800;color:var(--gold)">Vehicles on this trip</div>'
+    +'<button class="btn btn-sm" onclick="closeSwapMgr()">Close</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:14px">'+esc(b.name||'')+' &#183; Booking '+esc(b.id||'')+' &#183; current vehicle: <b style="color:var(--text)">'+esc(cur||'')+'</b></div>';
+  h+=_swapSegCard({ title:'Original vehicle', veh:b.vehicle||'', color:(b.vehicle==='Polaris Slingshot'?(b.customerSigColor||b.contractSentColor||''):''),
+    signed:_isSigStr(b.customerSig), sigDate:b.customerSigDate||'',
+    ci:{odom:b.odomIn,fuel:b.fuelIn,cond:b.condIn,photos:(b.checkInPhotoIds||[]).length},
+    co:{odom:b.odomOut,fuel:b.fuelOut,cond:b.condOut,photos:(b.checkOutPhotoIds||[]).length},
+    actions:'<button class="btn btn-sm" onclick="closeSwapMgr();openContract(\''+b.id+'\')">Contract</button>'
+      +'<button class="btn btn-sm" onclick="closeSwapMgr();openCheckIn(\''+b.id+'\')">Check-In</button>'
+      +'<button class="btn btn-sm" onclick="closeSwapMgr();openCloseOut(\''+b.id+'\')">Check-Out</button>' });
+  sw.forEach(function(w,i){
+    h+=_swapSegCard({ title:'Swap #'+(i+1)+(w.effAt?(' &#183; '+_fmtDT(w.effAt)):''), veh:w.vehicle||'', color:w.color||'', from:w.fromVehicle||'',
+      reason:w.reason||'', priceAdjust:Number(w.priceAdjust)||0, priceNote:w.priceAdjustNote||'',
+      signed:_isSigStr(w.amendmentSig), sigDate:w.amendmentSigDate||'',
+      ci:{odom:w.odomIn,fuel:w.fuelIn,cond:w.condIn,photos:(w.checkInPhotoIds||[]).length},
+      co:{odom:w.odomOut,fuel:w.fuelOut,cond:w.condOut,photos:(w.checkOutPhotoIds||[]).length},
+      actions:'<button class="btn btn-sm" onclick="_swapGo(\'amend:'+w.id+'\')">'+(_isSigStr(w.amendmentSig)?'View Amendment':'Sign Amendment')+'</button>'
+        +'<button class="btn btn-sm" onclick="_swapGo(\'cin:'+w.id+'\')">Check-In</button>'
+        +'<button class="btn btn-sm" onclick="_swapGo(\'cout:'+w.id+'\')">Check-Out</button>'
+        +'<button class="btn btn-sm" style="color:var(--red);border-color:rgba(239,68,68,.3)" onclick="_swapDelete(\''+w.id+'\')">Remove</button>' });
+  });
+  h+='<button class="btn btn-gold" style="width:100%;margin-top:6px" onclick="_swapGo(\'new\')">+ Swap into another vehicle</button>';
+  card.innerHTML=h;
+}
+function _swapRenderNew(card,b){
+  var cur=(typeof _tripCurrentVehicle==='function')?_tripCurrentVehicle(b):b.vehicle;
+  var opts=_swapVehList().map(function(v){ return '<option value="'+esc(v)+'"'+(v===cur?' disabled':'')+'>'+esc(v)+(v===cur?' (current)':'')+'</option>'; }).join('');
+  card.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
+    +'<div style="font-size:16px;font-weight:800;color:var(--gold)">Swap into another vehicle</div>'
+    +'<button class="btn btn-sm" onclick="_swapGo(\'list\')">Back</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:12px">Creates a vehicle-substitution <b>amendment</b> to the original signed agreement. The original contract, signature, check-in and photos stay intact. Any price change folds into revenue.</div>'
+    +_swapFld('New vehicle','<select id="swNewVeh" class="finput" style="width:100%" onchange="_swapColorToggle()"><option value="">-- select --</option>'+opts+'</select>')
+    +'<div id="swColorWrap" style="display:none">'+_swapFld('Slingshot color','<input id="swNewColor" class="finput" style="width:100%" placeholder="e.g. Blue">')+'</div>'
+    +_swapFld('Effective (swap date / time)','<input id="swEff" type="datetime-local" class="finput" style="width:100%" value="'+_swapNowLocal()+'">')
+    +_swapFld('Reason (optional)','<input id="swReason" class="finput" style="width:100%" placeholder="e.g. mechanical issue, upgrade">')
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +_swapFld('Price adjustment ($, +/-)','<input id="swPrice" type="number" step="0.01" class="finput" style="width:100%" placeholder="0.00">')
+    +_swapFld('Adjustment note','<input id="swPriceNote" class="finput" style="width:100%" placeholder="e.g. upgrade to Lambo">')
+    +'</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin:2px 0 12px">Positive = renter owes more (added to earned revenue). Negative = credit.</div>'
+    +'<button class="btn btn-gold" style="width:100%" onclick="createVehicleSwap()">Create amendment &#8594; sign</button>';
+}
+function _swapColorToggle(){ var s=document.getElementById('swNewVeh'),w=document.getElementById('swColorWrap'); if(s&&w) w.style.display=_swapIsSling(s.value)?'':'none'; }
+function createVehicleSwap(){
+  var b=_swapBk(); if(!b) return;
+  var veh=(document.getElementById('swNewVeh')&&document.getElementById('swNewVeh').value)||'';
+  if(!veh){ toast('Pick a vehicle to swap into'); return; }
+  var color=_swapIsSling(veh)?((document.getElementById('swNewColor')&&document.getElementById('swNewColor').value.trim())||''):'';
+  var effV=(document.getElementById('swEff')&&document.getElementById('swEff').value)||'';
+  var effAt=effV?new Date(effV).getTime():Date.now();
+  var price=parseFloat(document.getElementById('swPrice')&&document.getElementById('swPrice').value)||0;
+  var cur=(typeof _tripCurrentVehicle==='function')?_tripCurrentVehicle(b):b.vehicle;
+  var curColor=(cur==='Polaris Slingshot')?(b.customerSigColor||b.contractSentColor||''):'';
+  var ent={ id:'swp_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), at:Date.now(), effAt:effAt,
+    fromVehicle:cur||'', fromColor:curColor, vehicle:veh, color:color,
+    reason:(document.getElementById('swReason')&&document.getElementById('swReason').value.trim())||'',
+    priceAdjust:price, priceAdjustNote:(document.getElementById('swPriceNote')&&document.getElementById('swPriceNote').value.trim())||'',
+    amendmentSig:'', amendmentSigDate:'', amendmentSigAt:0, amendmentSigBy:(b.name||''),
+    odomIn:'', fuelIn:'', condIn:'', checkInNotes:'', checkInPhotoIds:[],
+    odomOut:'', fuelOut:'', condOut:'', closeOutNotes:'', checkOutPhotoIds:[], damage:{}, _t:Date.now() };
+  var idx=bookings.findIndex(function(x){return x.id===b.id;}); if(idx===-1) return;
+  if(!Array.isArray(bookings[idx].vehicleSwaps)) bookings[idx].vehicleSwaps=[];
+  bookings[idx].vehicleSwaps.push(ent); bookings[idx]._t=Date.now();
+  save(); try{ render(); }catch(e){}
+  toast('Vehicle-swap amendment created -- capture the signature');
+  _swapGo('amend:'+ent.id);
+}
+function _swapRenderAmend(card,b,seg){
+  if(!seg){ _swapGo('list'); return; }
+  var signed=_isSigStr(seg.amendmentSig);
+  var origDate=b.customerSigDate||(b.customerSigAt?_fmtDT(b.customerSigAt):'');
+  var isSlingWaiver=_swapIsSling(b.vehicle)&&b.type==='hourly';
+  var docName=isSlingWaiver?'Liability Waiver':'Rental Agreement';
+  var pa=Number(seg.priceAdjust)||0;
+  var body='VEHICLE SUBSTITUTION AMENDMENT\n\n'
+    +'This Amendment is part of, and incorporates by reference, the '+docName+(origDate?(' dated '+origDate):'')+' between Prestige Black Rentals and '+(b.name||'the renter')+' (Booking '+(b.id||'')+').\n\n'
+    +'Effective '+(seg.effAt?_fmtDT(seg.effAt):'now')+', the vehicle furnished under that Agreement is substituted as follows:\n'
+    +'    Original vehicle:    '+(seg.fromVehicle||b.vehicle||'')+(seg.fromColor?(' ('+seg.fromColor+')'):'')+'\n'
+    +'    Substitute vehicle:  '+(seg.vehicle||'')+(seg.color?(' ('+seg.color+')'):'')+'\n'
+    +(pa?('    Price adjustment:    '+(pa>0?'+':'')+'$'+(Math.round(pa*100)/100).toFixed(2)+(seg.priceAdjustNote?(' ('+seg.priceAdjustNote+')'):'')+'\n'):'')
+    +'\nAll other terms, conditions, rate, security deposit, insurance and liability provisions of the original Agreement remain in full force and apply to the substitute vehicle. The renter\'s original signature and all prior agreements remain valid and binding. By signing below the renter acknowledges receiving the substitute vehicle and agrees this Amendment forms part of the original Agreement.';
+  var h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+    +'<div style="font-size:16px;font-weight:800;color:var(--gold)">Vehicle Substitution Amendment</div>'
+    +'<button class="btn btn-sm" onclick="_swapGo(\'list\')">Back</button></div>'
+    +'<pre style="white-space:pre-wrap;font-family:inherit;font-size:12.5px;line-height:1.6;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;color:var(--text);margin:0 0 14px">'+esc(body)+'</pre>';
+  if(signed){
+    h+='<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Signed by '+esc(seg.amendmentSigBy||b.name||'renter')+(seg.amendmentSigDate?(' on '+esc(seg.amendmentSigDate)):'')+(seg.amendmentSigAt?(' ('+esc(_fmtDT(seg.amendmentSigAt))+')'):'')+'</div>'
+      +'<img src="'+seg.amendmentSig+'" style="max-width:300px;max-height:120px;border:1px solid var(--border);border-radius:8px;background:#fff;padding:6px">'
+      +'<div style="margin-top:12px;display:flex;gap:8px"><button class="btn btn-sm" style="color:var(--red);border-color:rgba(239,68,68,.3)" onclick="_swapClearAmendSig(\''+seg.id+'\')">Re-sign (clear)</button></div>';
+  } else {
+    h+='<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Have the renter sign below, in person on this device.</div>'
+      +'<canvas id="swSigCanvas" width="520" height="150" style="width:100%;max-width:520px;height:150px;background:#fff;border:1px dashed var(--border);border-radius:10px;touch-action:none;cursor:crosshair"></canvas>'
+      +'<div style="display:flex;gap:8px;margin-top:10px"><button class="btn btn-gold" onclick="_swapSaveAmendSig(\''+seg.id+'\')">Save signature</button><button class="btn btn-sm" onclick="_swapClearCanvas()">Clear</button></div>';
+  }
+  card.innerHTML=h;
+  if(!signed) setTimeout(function(){ _swapSigInit('swSigCanvas'); },30);
+}
+function _swapSigInit(cid){
+  var cv=document.getElementById(cid); if(!cv) return;
+  var ctx=cv.getContext('2d'); ctx.lineWidth=2.4; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#000';
+  var drawing=false,last=null;
+  function pos(e){ var r=cv.getBoundingClientRect(); var t=(e.touches&&e.touches[0])||e; return { x:(t.clientX-r.left)*(cv.width/r.width), y:(t.clientY-r.top)*(cv.height/r.height) }; }
+  function down(e){ e.preventDefault(); drawing=true; last=pos(e); }
+  function move(e){ if(!drawing) return; e.preventDefault(); var p=pos(e); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; cv._dirty=true; }
+  function up(){ drawing=false; }
+  cv.onmousedown=down; cv.onmousemove=move; cv.onmouseup=up; cv.onmouseleave=up;
+  cv.ontouchstart=down; cv.ontouchmove=move; cv.ontouchend=up;
+}
+function _swapClearCanvas(){ var cv=document.getElementById('swSigCanvas'); if(cv){ cv.getContext('2d').clearRect(0,0,cv.width,cv.height); cv._dirty=false; } }
+function _swapSaveAmendSig(swapId){
+  var cv=document.getElementById('swSigCanvas'); if(!cv) return;
+  if(!cv._dirty){ toast('Please capture a signature first'); return; }
+  var b=_swapBk(); if(!b) return;
+  var idx=bookings.findIndex(function(x){return x.id===b.id;}); if(idx===-1) return;
+  var seg=(bookings[idx].vehicleSwaps||[]).find(function(w){return w&&w.id===swapId;}); if(!seg) return;
+  var t=new Date();
+  seg.amendmentSig=cv.toDataURL('image/png');
+  seg.amendmentSigDate=(t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
+  seg.amendmentSigAt=t.getTime(); seg._t=Date.now(); bookings[idx]._t=Date.now();
+  save();
+  toast('Amendment signature captured');
+  _renderSwapMgr();
+}
+function _swapClearAmendSig(swapId){
+  if(!confirm('Remove this amendment signature and re-sign? The original agreement is unaffected.')) return;
+  var b=_swapBk(); if(!b) return;
+  var idx=bookings.findIndex(function(x){return x.id===b.id;}); if(idx===-1) return;
+  var seg=(bookings[idx].vehicleSwaps||[]).find(function(w){return w&&w.id===swapId;}); if(!seg) return;
+  seg.amendmentSig=''; seg.amendmentSigDate=''; seg.amendmentSigAt=0; seg._t=Date.now(); bookings[idx]._t=Date.now();
+  save(); _renderSwapMgr();
+}
+function _swapRenderCheck(card,b,seg,mode){
+  if(!seg){ _swapGo('list'); return; }
+  var isIn=(mode==='in');
+  var odom=isIn?seg.odomIn:seg.odomOut, fuel=isIn?seg.fuelIn:seg.fuelOut, cond=isIn?seg.condIn:seg.condOut, notes=isIn?seg.checkInNotes:seg.closeOutNotes;
+  var photoIds=(isIn?seg.checkInPhotoIds:seg.checkOutPhotoIds)||[];
+  _swapPhotoWork=photoIds.slice(); _swapPhotoOrig=photoIds.slice(); _swapPhotoField=(isIn?'checkInPhotoIds':'checkOutPhotoIds');
+  var h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+    +'<div style="font-size:16px;font-weight:800;color:var(--gold)">'+(isIn?'Check-In':'Check-Out')+' &#183; '+esc(seg.vehicle||'')+'</div>'
+    +'<button class="btn btn-sm" onclick="_swapGo(\'list\')">Back</button></div>'
+    +'<div style="font-size:11.5px;color:var(--muted);margin-bottom:12px">Swap vehicle '+(isIn?'pickup':'return')+' condition &#8212; separate from the original vehicle.</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+    +_swapFld('Odometer (mi)','<input id="swOdom" type="number" class="finput" style="width:100%" value="'+esc(String(odom||''))+'">')
+    +_swapFld('Fuel / battery','<input id="swFuel" class="finput" style="width:100%" value="'+esc(String(fuel||''))+'" placeholder="Full, 3/4, 80%">')
+    +'</div>'
+    +_swapFld('Condition','<input id="swCond" class="finput" style="width:100%" value="'+esc(String(cond||''))+'" placeholder="Clean, no damage">')
+    +_swapFld('Notes','<textarea id="swNotes" class="finput" style="width:100%;min-height:54px">'+esc(String(notes||''))+'</textarea>')
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Condition photos</div>'
+    +'<input type="file" accept="image/*" multiple style="display:none" id="swPhotoInput" onchange="_swapHandlePhotos(this)">'
+    +'<button class="btn btn-sm" onclick="document.getElementById(\'swPhotoInput\').click()">+ Add photos</button>'
+    +'<div id="swPhotoGrid" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px"></div>'
+    +'<button class="btn btn-gold" style="width:100%;margin-top:14px" onclick="_swapSaveCheck(\''+seg.id+'\',\''+(isIn?'in':'out')+'\')">Save '+(isIn?'Check-In':'Check-Out')+'</button>';
+  card.innerHTML=h;
+  if(photoIds.length){ dbLoadPhotos(photoIds,function(res){ (res||[]).forEach(function(p){ if(p&&p.id&&p.data) _photoMemCache[p.id]=p.data; }); _renderPhotoGridFromCache('swPhotoGrid',_swapPhotoWork,'_swapDelPhoto'); }); }
+  else _renderPhotoGridFromCache('swPhotoGrid',_swapPhotoWork,'_swapDelPhoto');
+}
+function _swapHandlePhotos(input){
+  var files=Array.prototype.slice.call(input.files); input.value='';
+  files.forEach(function(file){
+    compressImage(file,function(dataUrl){
+      if(!dataUrl) return;
+      var id='ph_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
+      _photoMemCache[id]=dataUrl; _swapPhotoWork.push(id);
+      _renderPhotoGridFromCache('swPhotoGrid',_swapPhotoWork,'_swapDelPhoto');
+      dbSavePhoto(id,dataUrl,function(){},_swapBkId);
+    });
+  });
+}
+function _swapDelPhoto(id){ delete _photoMemCache[id]; _swapPhotoWork=_swapPhotoWork.filter(function(x){return x!==id;}); _renderPhotoGridFromCache('swPhotoGrid',_swapPhotoWork,'_swapDelPhoto'); try{ dbDeletePhoto(id); }catch(e){} }
+function _swapSaveCheck(swapId,mode){
+  var b=_swapBk(); if(!b) return;
+  var idx=bookings.findIndex(function(x){return x.id===b.id;}); if(idx===-1) return;
+  var seg=(bookings[idx].vehicleSwaps||[]).find(function(w){return w&&w.id===swapId;}); if(!seg) return;
+  var odom=parseFloat(document.getElementById('swOdom')&&document.getElementById('swOdom').value)||0;
+  var fuel=(document.getElementById('swFuel')&&document.getElementById('swFuel').value.trim())||'';
+  var cond=(document.getElementById('swCond')&&document.getElementById('swCond').value.trim())||'';
+  var notes=(document.getElementById('swNotes')&&document.getElementById('swNotes').value.trim())||'';
+  if(mode==='in'){ seg.odomIn=odom; seg.fuelIn=fuel; seg.condIn=cond; seg.checkInNotes=notes; seg.checkInPhotoIds=_swapPhotoWork.slice(); }
+  else { seg.odomOut=odom; seg.fuelOut=fuel; seg.condOut=cond; seg.closeOutNotes=notes; seg.checkOutPhotoIds=_swapPhotoWork.slice(); }
+  seg._t=Date.now(); bookings[idx]._t=Date.now();
+  _swapPhotoField=''; _swapPhotoWork=[]; _swapPhotoOrig=[];
+  save(); try{ _reconcileAllPhotos(); }catch(e){}
+  toast((mode==='in'?'Check-In':'Check-Out')+' saved for '+(seg.vehicle||'swap vehicle'));
+  _swapView='list'; _renderSwapMgr();
+}
+function _swapDelete(swapId){
+  if(!confirm('Remove this vehicle swap? Its amendment, check-in/out and photos will be hidden. The original agreement, signature and check-in are unaffected.')) return;
+  var b=_swapBk(); if(!b) return;
+  var idx=bookings.findIndex(function(x){return x.id===b.id;}); if(idx===-1) return;
+  var seg=(bookings[idx].vehicleSwaps||[]).find(function(w){return w&&w.id===swapId;});
+  if(seg){ seg._deleted=true; seg._t=Date.now(); }
+  bookings[idx]._t=Date.now();
+  save(); try{ render(); }catch(e){}
+  toast('Swap removed');
+  _swapGo('list');
+}
+
 </script>
 <!-- Vehicle/Parts Search feature (self-contained; PB_FLAGS.vehicleSearch=false disables) -->
 <script src="pb-vehicle-search.js?v=v334"></script>
