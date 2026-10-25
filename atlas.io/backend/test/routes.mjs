@@ -5574,5 +5574,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/UPDATE api_keys SET scope='read_write' WHERE scope IS NULL/.test(_WORKER_SRC) && /scope: \(row\.scope === 'read_write' \? 'read_write' : 'read'\)/.test(_WORKER_SRC) && !/scope: \(row\.scope \|\| 'read_write'\)/.test(_WORKER_SRC), 'audit400 A104: _apiKeyAuth defaults an unknown scope to least-privilege read (fail-closed); legacy NULL scopes are backfilled to explicit read_write so no existing key loses access');
 }
 
+// ==== audit400 build cy: sweep starvation (A112/A113/A114 rotation, A094 dead-sub clear) + A097 AI-spend double-count ====
+{
+  ok(/FROM pending_payments WHERE settled_at IS NULL AND created_at <= \? AND created_at >= \? ORDER BY RANDOM\(\) LIMIT 40/.test(_WORKER_SRC), 'audit400 A112: the pending-payment reconcile sweep rotates (ORDER BY RANDOM) so a never-settling oldest row cannot permanently starve the bounded window');
+  ok(/plan='past_due' AND stripe_sub IS NOT NULL AND stripe_sub<>'' ORDER BY RANDOM\(\) LIMIT 40/.test(_WORKER_SRC), 'audit400 A113: the past-due self-heal rotates (ORDER BY RANDOM) so a no-op poll cannot pin the oldest 40 and starve the tail');
+  ok(/plan='active' AND stripe_sub IS NOT NULL AND stripe_sub<>'' ORDER BY RANDOM\(\) LIMIT 40/.test(_WORKER_SRC), 'audit400 A114: the active-sub renewal self-heal rotates (ORDER BY RANDOM) across the whole active population');
+  ok(/if \(!s\.ok && s\.status === 404\) \{/.test(_WORKER_SRC) && /to: 'sub_cleared_gone'/.test(_WORKER_SRC), 'audit400 A094: a both-mode-404 (definitively gone) trial sub is cleared so it EXITS the bounded trial_ends window instead of starving it');
+  ok(/SELECT 1 FROM platform_ai_spend_by_feature b WHERE b\.day=p\.day AND b\.model=p\.model\)/.test(_WORKER_SRC) && !/b\.day=p\.day AND b\.model=p\.model AND b\.source='other'/.test(_WORKER_SRC), 'audit400 A097: the AI-spend by-feature backfill fires only for a (day,model) with NO by_feature attribution at all (no more double-count of post-#286f live-attributed days)');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
