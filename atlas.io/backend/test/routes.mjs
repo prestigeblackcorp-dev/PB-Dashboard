@@ -4335,7 +4335,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/_priorReal = Object\.keys\(d\.paid/g) || []).length === 6, 'cycle-12 A: exactly 6 _priorReal reducers (Stripe webhook + off-session + Square + PayPal + Stripe-credit-fn + crypto-credit-fn) -- G1-A + crypto BYO');
 
   // ---- BUG B: payment-start guards allow re-collection once a slot is FULLY clawed back ----
-  ok((_WORKER_SRC.match(/&& !_slotFullyClawed\(/g) || []).length === 8, 'cycle-12 B: all 8 payment-start guards (charge + non-charge x /pay,/paypal,/square,/coinbase) check _slotFullyClawed');
+  ok((_WORKER_SRC.match(/&& !_slotFullyClawed\(/g) || []).length === 4, 'cycle-12 B + audit400 A078/A085/A111: the 4 NON-charge payment-start guards (balance/deposit x /pay,/paypal,/square,/coinbase) still check _slotFullyClawed; the 4 CHARGE-kind guards now gate on the _chargeOwedCents RESIDUAL instead (so a partial chargeback/refund shortfall the portal shows as due is collectable)');
+  ok((_WORKER_SRC.match(/if \(_chargeOwedCents\(d, _cid, Math\.round\(\(Number\(_chg\.amount\) \|\| 0\) \* 100\), !!_chg\.paidAt\) <= 0\) return json\(\{ ok: false, reason: 'already_paid'/g) || []).length === 4, 'audit400 A078/A085/A111: all 4 CHARGE-kind re-collection guards (/pay,/paypal,/square,/coinbase) refuse only when the residual owed is <= 0 (double-charge protection preserved; partial-clawback shortfall now collectable)');
   // behavioral: _slotFullyClawed is a pure predicate
   ok(_slotFullyClawed({ amountCents: 5000, disputed: { decrementedCents: 5000 } }) === true, 'cycle-12 B: a fully charged-back slot is fully clawed');
   ok(_slotFullyClawed({ amountCents: 5000, disputed: { decrementedCents: 3000 } }) === false, 'cycle-12 B: a PARTIALLY charged-back slot is NOT fully clawed (still net-paid -> guard still refuses a 2nd payment)');
@@ -5635,6 +5636,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/_api\('\/api\/tenant\/profile'\)\.catch\(function\(\)\{return \{json:null\};\}\)/.test(_CSRC), 'audit400 A012: a dropped profile request degrades to {json:null} instead of rejecting the whole hydrate Promise.all');
   ok(/\}\)\.catch\(function\(\)\{ return false; \}\); \}/.test(_CSRC), 'audit400 A012: _srvHydrate resolves true on merge / false on failure (not undefined on both)');
   ok(/if\(_hyOk\) \{ try\{ _srvSyncPush\(\); \}catch\(e\)\{\} \}/.test(_CSRC), 'audit400 A012: the boot flush runs ONLY when the hydrate merge completed (never pushes a stale un-merged cache over newer server rows)');
+}
+
+// ==== audit400 A031/A032 (charge.refunded rf===null) + A078/A085/A111 (partial-clawback re-collection residual) ====
+{
+  ok(/if \(!rf && obj\.id\) \{ try \{ const _rpk =/.test(_WORKER_SRC) && /stripeApi\(_rpk, 'GET', 'refunds\?charge='/.test(_WORKER_SRC), 'audit400 A031/A032: charge.refunded resolves the triggering refund via the Stripe API when the event refunds list is empty -> real refund id for dedup (no double-decrement of an in-app refund) + the SINGLE refund delta amount (not the cumulative amount_refunded)');
+  const _dFull = { paid: { 'charge:C1': { amountCents: 10000 } } };
+  ok(_chargeOwedCents(_dFull, 'C1', 10000, true) === 0, 'audit400 A078/A085: a fully-paid $100 charge owes 0 -> re-collection still refused (double-charge protection preserved)');
+  const _dPartialCB = { paid: { 'charge:C1': { amountCents: 10000, disputed: { decrementedCents: 3000 } } } };
+  ok(_chargeOwedCents(_dPartialCB, 'C1', 10000, true) === 3000, 'audit400 A078/A085/A111: a PARTIAL $30 chargeback on a $100 charge owes the $30 shortfall -> now collectable at the pay rails (was refused as already_paid though _portalDue showed it due)');
+  const _dFullCB = { paid: { 'charge:C1': { amountCents: 10000, refunded: { amountCents: 10000 } } } };
+  ok(_chargeOwedCents(_dFullCB, 'C1', 10000, true) === 10000, 'audit400 A078/A085: a FULLY refunded charge owes the full amount again -> re-collectable');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
