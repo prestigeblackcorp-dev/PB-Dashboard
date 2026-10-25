@@ -972,7 +972,10 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // (c) FAIL-SAFE: no incoming _kt -> no restore (byte-identical to the _t-guard-only behavior for every legacy booking)
   const _bb3 = { id: 'BK-1', data: { id: 'BK-1', status: 'pending', startTs: 1000, endTs: 2000 }, status: 'pending' };
   await _bookingKtRestore(_mkEnvBk(_storedBk), 'T1', 'BK-1', _bb3);
-  ok(_bb3.data.status === 'pending' && _bb3.status === 'pending', 'A041 FAIL-SAFE: a push with NO data._kt -> unchanged (dormant until the client ships _bookingKtStamp)');
+  ok(_bb3.data.status === 'confirmed' && _bb3.status === 'confirmed', 'A041 + re-audit CRITICAL #1: a no-_kt push that DEMOTES a committed server booking to pending is KEPT confirmed by the backstop (server confirms never stamp _kt -> the old "dormant" path let this demote free the held slot = double-book)');
+  const _bb3b = { id: 'BK-1', data: { id: 'BK-1', status: 'confirmed', startTs: 1000, endTs: 2000 }, status: 'confirmed' };
+  await _bookingKtRestore(_mkEnvBk(_storedBk), 'T1', 'BK-1', _bb3b);
+  ok(_bb3b.data.status === 'confirmed' && _bb3b.status === 'confirmed', 'A041 FAIL-SAFE: a no-_kt push that does NOT demote a committed booking is unchanged (the backstop fires ONLY on a pending-demote)');
   // (d) STALE window push: incoming _kt.starts/ends=100 < stored 200 -> keep the server window + the starts/ends COLUMNS
   const _bb4 = { id: 'BK-1', data: { id: 'BK-1', status: 'confirmed', startTs: 5000, endTs: 9000, _kt: { status: 200, statusV: 'confirmed', starts: 100, startsV: 5000, ends: 100, endsV: 9000 } }, status: 'confirmed', starts: 5000, ends: 9000 };
   await _bookingKtRestore(_mkEnvBk(_storedBk), 'T1', 'BK-1', _bb4);
@@ -5664,6 +5667,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/d\.paid\[_pkKey\]\.pi \|\| d\.paid\[_pkKey\]\.paypal \|\| d\.paid\[_pkKey\]\.square \|\| d\.paid\[_pkKey\]\.coinbase/.test(_WORKER_SRC), 're-audit #5: the Stripe credit archive guard covers all four processors (completes A073)');
   ok((_WORKER_SRC.match(/to: 'sub_cleared_gone'/g) || []).length === 3, 're-audit #11/#12: all THREE sub-reconcile sweeps (trials + past_due + active) clear a both-mode-404 dead sub (completes A094)');
   ok(/re-audit HIGH #21/.test(_WORKER_SRC) && /_applyErasure\(row\.data\); row\.data\._erased = true;/.test(_WORKER_SRC), 're-audit #21: the PB-mirror bookings path re-redacts a tombstoned (erased) customer identity (completes A045 for bookings)');
+}
+
+// ==== 200-agent RE-AUDIT client batch: #16/#17/#19/#24/#35/#36 (regressions this session + stored XSS) ====
+{
+  const _RC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  ok(/onclick="Atlas\.aioAsk\('Fill my idle \$\{_jsAttr\(S\.fleet\.nouns\)\}'\)"/.test(_RC) && /,\\''\+_jsAttr\(_ou\)\+'\\'\)"/.test(_RC), 're-audit #24 (stored XSS): on* handler JS-string args use _jsAttr() (JS-escape then HTML-escape), not esc() -- a teammate-set usageUnit / fleet.nouns can no longer break out and run script in the owner session');
+  ok(/if\(_stampedBk && typeof _saveBookings==='function'\) _saveBookings\(cols\.bookings\)/.test(_RC), 're-audit #16: the push persists the _t/_kt stamps back to localStorage (no perpetual re-push of every edited booking)');
+  ok(/function _profKeyJson\(pk,val\)/.test(_RC) && /var pjs=_profKeyJson\(pk,parts\[pk\]\)/.test(_RC), 're-audit #17: profile change-detection compares the secret-stripped on-wire form, so trackers/comms reconcile clean instead of re-stamping every sync');
+  ok(/if\(!_done\)\{ try\{ window\.__atlasStoreWatchdog=true/.test(_RC) && /else if\(store\.session\(\) && window\.__atlasStoreWatchdog && !_bigReady\)\{ show\('landing'\); \}/.test(_RC) && /setTimeout\(function\(\)\{ if\(!_done\)\{ try\{ window\.__atlasStoreWatchdog=true; \}catch\(e\)\{\} \} _fin\(\); \}, 15000\)/.test(_RC), 're-audit #19: the IDB watchdog is 15s and a watchdog-resolved (IDB-abandoned) boot never store.logout()s a valid session (the 5s watchdog force-logged-out valid sessions on slow devices after a migration)');
+  ok(/else if\(kind==='assets' && item && item\.id && typeof DATA!=='undefined' && Array\.isArray\(DATA\.assets\)\)/.test(_RC) && /if\(hk\) _pushedHash\[hk\] = _zeroJson \|\| hv;/.test(_RC), 're-audit #35/#36: _fail resets a refused ASSET edit (not just bookings) AND points _pushedHash at the persisted (_t=0) blob so a refused record is not re-pushed in a loop');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
