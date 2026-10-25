@@ -5565,5 +5565,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/const _subStale = !!\(obj\.subscription && _before && _before\.stripe_sub && String\(_before\.stripe_sub\) !== String\(obj\.subscription\)\);/.test(_WORKER_SRC) && /AND \(dunning_invoice IS NULL OR dunning_invoice <> \?\) AND \(\? IS NULL OR stripe_sub = \?\)/.test(_WORKER_SRC), 'audit400 A096: invoice.payment_failed flips past_due + duns only for the tenant CURRENT plan sub (stale/superseded sub failure no longer locks a paid tenant)');
 }
 
+// ==== audit400 build cx: A065 owner-enum oracle, A071 GMV fraud-fp key, A100 BYO-Stripe test-key, A103 connect allowlist, A104 api-key scope ====
+{
+  ok(/'owner\.claim_blocked', \{ email: body\.email\.toLowerCase\(\) \}\); return err\(409, 'That email already has an account\.'\);/.test(_WORKER_SRC) && !/return err\(403, 'That email is reserved for the platform owner\.'\)/.test(_WORKER_SRC), 'audit400 A065: an owner email without a valid setup token returns the SAME generic 409 as any existing account (no distinctive "reserved for platform owner" enumeration oracle)');
+  ok(/const sk = \(md\.gmv === '1'\) \? \(await _platStripe\(env\)\) : \(await tenantStripeKey\(env, md\.tenant\)\); if \(!sk\) return;/.test(_WORKER_SRC), 'audit400 A071: the fraud-fingerprint read picks the PLATFORM key for a GMV/Connect charge (the charge lives on the platform account), so GMV bookings are fraud-screened');
+  ok(/if \(_k && \/\^\(sk\|rk\)_test_\/\.test\(_k\)\) return '';/.test(_WORKER_SRC), 'audit400 A100: tenantStripeKey treats a BYO test key (sk_test_/rk_test_) as not-live (empty key) so a test key never records a phantom paid booking');
+  ok(/_isAcct6 = \['quickbooks', 'xero'\]\.indexOf\(_prov6\) >= 0/.test(_WORKER_SRC) && /if \(_isPay6 \|\| _isAcct6\) \{ if \(ctx\.user\.role !== 'owner'\)/.test(_WORKER_SRC) && /\['stripe', 'paypal', 'square', 'coinbase', 'quickbooks', 'xero'\]\.indexOf\(_dp\) >= 0/.test(_WORKER_SRC), 'audit400 A103: owner-managed accounting (quickbooks/xero) is OWNER-only on BOTH generic connect + disconnect -- a settings delegate cannot clobber/sever it');
+  ok(/UPDATE api_keys SET scope='read_write' WHERE scope IS NULL/.test(_WORKER_SRC) && /scope: \(row\.scope === 'read_write' \? 'read_write' : 'read'\)/.test(_WORKER_SRC) && !/scope: \(row\.scope \|\| 'read_write'\)/.test(_WORKER_SRC), 'audit400 A104: _apiKeyAuth defaults an unknown scope to least-privilege read (fail-closed); legacy NULL scopes are backfilled to explicit read_write so no existing key loses access');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
