@@ -1470,6 +1470,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/const _winback = \(\(await env\.DB\.prepare\('SELECT id,tenant_id,data,starts,ends,portal_token FROM bookings WHERE ends BETWEEN \? AND \? ORDER BY ends ASC LIMIT 500'\)/.test(_WORKER_SRC) && /\.concat\(_winback\)/.test(_WORKER_SRC), 're-audit #56: win-back has its own OLDEST-ended-first query so it is never starved by the newest-first _done truncation');
 }
 
+// ---- re-audit #49/#55 (gift / review): gift-unclaim retries a transient error; review gate drops stale refund-surviving paid markers. ----
+{
+  ok(/for \(var _gtry = 0; _gtry < 3; _gtry\+\+\) \{/.test(_WORKER_SRC) && /UPDATE gift_uses SET cents=MAX\(0,cents-\?\)/.test(_WORKER_SRC), 're-audit #49: _giftUnclaim retries the bounded UPDATE so a transient D1 error does not permanently strand returned gift value (the up-only reconcile never corrects it down)');
+  ok(/var _txn = !!\(d\.paidAt \|\| _settled > 0 \|\| _giftC > 0\);/.test(_WORKER_SRC) && !/_giftC > 0 \|\| \(d\.portal && \(d\.portal\.balancePaidAt/.test(_WORKER_SRC), 're-audit #55: the review-eligibility gate no longer trusts the never-cleared-on-refund portal.*PaidAt markers -> a fully-refunded booking cannot post a verified review (relies on _settled>0/_giftC/paidAt which net refunds)');
+}
+
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
 // a slot (promo_uses.n++) at request time while still Pending/unpaid; the slot was released ONLY on /book failure, never when a
 // saved booking later cancelled or auto-expired -> every abandoned/cancelled public redemption permanently consumed a slot and
