@@ -1147,7 +1147,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const dueUnpaid = _portalDue(dUnpaid, { starts: FAR });
   ok(dueUnpaid.preCharges.some(c => c.id === 'ext1') && dueUnpaid.dueCents === 15000, 'money #17: before the balance is paid, a pre-trip charge still folds into the balance (total 10000 + charge 5000), unchanged');
   ok((_WORKER_SRC.match(/!_cut7 \|\| \(Number\(_bc\.at\) \|\| 0\) <= _cut7/g) || []).length >= 4, 'audit HIGH #7: all FOUR non-platform settle helpers (PayPal/Square/Coinbase/BYO-Stripe) fold ONLY pre-trip charges with at <= balCut (the checkout-open cutoff), mirroring the platform webhook -- a charge added mid-checkout is never marked paid-for-free');
-  ok(/fd\.balCuts\[String\((co\.id|co\.orderId|ch\.code)\)\] = Date\.now\(\)/.test(_WORKER_SRC), 'audit HIGH #7: the non-platform /pay branches PIN balCut (keyed by the provider order id) in d.balCuts for the settle-time fold cutoff');
+  ok(/fd\.balCuts\[String\((co\.id|co\.orderId|ch\.code)\)\] = _balCut/.test(_WORKER_SRC) && (_WORKER_SRC.match(/var _pd = _portalDue\(d, brow\), _balCut = Date\.now\(\), amt;/g) || []).length === 3, 'audit HIGH #7 + audit400 A076: the non-platform /pay branches PIN balCut captured at AMOUNT-LOCK time (before the provider round-trip), not a post-call Date.now(), so a charge added during the round-trip is not folded paid-for-free');
 }
 
 // ---- AI COST-CAP race (money/COGS #11737): the old flow checked the committed daily cost, then made the call, then added the
@@ -5588,6 +5588,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/if \(_isTerminalNoRevive\(null, fd\.status\)\) \{ _giftOver = true; return false; \}/g) || []).length === 2, 'audit400 A088 + A102: BOTH gift-redeem CAS patches (owner + portal) re-check terminal status INSIDE the CAS so a cancel/expire landing mid-redeem cannot burn gift value on a dead booking');
   ok(/\} else if \(!pv\.ok && \(pv\.reason === 'capped' \|\| pv\.reason === 'off' \|\| pv\.reason === 'expired'\)\) \{/.test(_WORKER_SRC), 'audit400 A101: a valid-but-unusable promo (capped/off/expired) returns a soft 409 to re-prompt, not a silent full-price booking');
   ok(/const _claimIdvStatus = !!\(data\.portal && typeof data\.portal === 'object' && data\.portal\.idv && String\(data\.portal\.idv\.status\) === 'verified'\)/.test(_WORKER_SRC) && /if \(_srvS !== 'verified' && data\.portal && data\.portal\.idv\) data\.portal\.idv\.status = _srvS \|\| 'processing';/.test(_WORKER_SRC), 'audit400 A090: a client cannot upgrade portal.idv.status to verified -- it is validated against the server (only the Stripe-completion path sets it), so a manual/absent check can not be relabeled a Stripe Identity pass on evidence');
+}
+
+// ==== audit400 build da: deposit-capture clamp (A072), cross-processor archive (A073), reconcile hold receipt (A077), shared-mailer suppression (A107) ====
+{
+  ok(/const _capAmt = \(vInt\(body\.amountCents\) && body\.amountCents > 0\) \? Math\.min\(Math\.round\(Number\(body\.amountCents\)\), _capTot\) : _capTot;/.test(_WORKER_SRC) && /p\.captured = \{ at: Date\.now\(\), amountCents: _capAmt \}; delete p\.hold;/.test(_WORKER_SRC), 'audit400 A072: the hold-capture clamps body.amountCents to an integer <= the held amount and uses it for the Stripe call AND the record (no over-charge / fractional-cents corruption)');
+  ok(/d\.paid\[_pkKey\]\.paypal \|\| d\.paid\[_pkKey\]\.square \|\| d\.paid\[_pkKey\]\.coinbase \|\| d\.paid\[_pkKey\]\.pi/.test(_WORKER_SRC), 'audit400 A073: the PayPal credit archive-guard checks all four processor ids (paypal/square/coinbase/stripe-pi) so a displaced cross-processor payment is archived, not silently overwritten');
+  ok(/const _holdS = \(_mdS\.kind === 'security' && _mdS\.hold === '1'\); _wasHold = _holdS;/.test(_WORKER_SRC) && /if \(_tr && _dd && _dd\.custEmail && !_wasHold\)/.test(_WORKER_SRC), 'audit400 A077: the reconcile sweep suppresses the false "Payment received" receipt for an uncaptured security-deposit HOLD');
+  ok(/if \(!\(_byoM && _byoM\.secret && _byoM\.meta && _byoM\.meta\.from\)\) await suppress\(env, '__platform__', _to, 'email', _supReason\)/.test(_WORKER_SRC), 'audit400 A107: a hard bounce/complaint on the SHARED mailer is suppressed platform-wide (stops every shared-domain tenant mailing a dead address); a BYO-mailer tenant stays per-tenant');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
