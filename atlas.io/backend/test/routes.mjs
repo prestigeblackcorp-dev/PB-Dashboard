@@ -1382,6 +1382,18 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/evtType === 'charge:resolved' && _cgross > 0 && _cpaid > 0 && _cpaid < \(_cgross - _cTol\)/.test(_WORKER_SRC), 're-audit #13/#14: the platform grant fiat-shortfall block is gated to charge:resolved (a confirmed charge is never false-blocked)');
 }
 
+// ---- re-audit #14 part 2: the platform-crypto BACKSTOP -- a 0-amount pending marker at charge creation + a confirm-on-return route +
+// a reconcile cron, all reusing the idempotent _coinbaseGrantPlatform (money logic covered by the unit tests above). The confirm route
+// early-returns without a live COINBASE key and the cron polls Coinbase over the network, so the wiring is source-pinned here. ----
+{
+  ok(/kind: 'crypto_pending', tier: meta\.tier \|\| null, pack: meta\.pack \|\| null, amount_cents: 0, stripe_id: 'cbpend:' \+ ch\.code/.test(_WORKER_SRC), 're-audit #14: /api/billing/crypto-charge persists a 0-amount cbpend:<code> pending marker (so the backstops can find + poll the charge; amount_cents:0 keeps it out of the no-kind-filter revenue rollup)');
+  ok(/if \(path === '\/api\/billing\/crypto-confirm' && method === 'POST'\)/.test(_WORKER_SRC), 're-audit #14: the confirm-on-return route /api/billing/crypto-confirm exists (webhook-independent grant on return)');
+  ok(/if \(String\(\(_gc\.charge\.metadata \|\| \{\}\)\.tenant \|\| ''\) !== ctx\.tenant_id\) continue;/.test(_WORKER_SRC), 're-audit #14: crypto-confirm only grants a charge whose metadata tenant matches the authenticated caller (no cross-tenant grant)');
+  ok(/async function _reconcilePlatformCrypto\(env, now\) \{/.test(_WORKER_SRC), 're-audit #14: the platform-crypto reconcile cron function exists');
+  ok(/if \(await _due\(env, 'crypto_platform_reconcile', 600000\)\) await _reconcilePlatformCrypto\(env, Date\.now\(\)\);/.test(_WORKER_SRC), 're-audit #14: the reconcile cron is wired into scheduled() (gated ~10 min, bounded LIMIT 50)');
+  ok(/WHERE stripe_id=\? OR stripe_id=\?"\)\.bind\('cb:' \+ _code, 'cb:' \+ _code \+ ':under'\)/.test(_WORKER_SRC), 're-audit #14: both backstops skip a charge already granted (cb:<code>) or flagged underpaid (cb:<code>:under) -> idempotent, no double grant, and retire the marker');
+}
+
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
 // a slot (promo_uses.n++) at request time while still Pending/unpaid; the slot was released ONLY on /book failure, never when a
 // saved booking later cancelled or auto-expired -> every abandoned/cancelled public redemption permanently consumed a slot and
