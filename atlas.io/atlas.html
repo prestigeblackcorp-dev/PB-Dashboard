@@ -1740,7 +1740,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
           var lsKeys=[]; try{ for(var j=0;j<_ls.length;j++){ var kk=_ls.key(j); if(_isBig(kk)) lsKeys.push(kk); } }catch(e){}
           var pend=[];
           lsKeys.forEach(function(k){
-            if(k in _bigCache){ try{ _rRemove(k); }catch(e){} return; }        // already in IDB -> drop stale localStorage copy
+            if(k in _bigCache){ var _lv0=null; try{ _lv0=_rGet(k); }catch(e){} if(_lv0!=null && _lv0!==_bigCache[k]){ _bigCache[k]=_lv0; pend.push(_idbPut(k,_lv0).then(function(){ try{ _rRemove(k); }catch(e){} }).catch(function(){})); } else { try{ _rRemove(k); }catch(e){} } return; }        // re-audit #18: a localStorage big-key that DIFFERS from the IDB copy is a NEWER write made before _bigReady this boot (post-migration writes go to IDB and the ls copy is removed, so ls can only hold a pre-_bigReady write that is newer than the prior session's IDB value) -> it must WIN: overwrite IDB with it, don't blind-drop the newest save. Identical -> drop the dup (today's behavior).
             var v=null; try{ v=_rGet(k); }catch(e){}
             if(v==null) return;
             _bigCache[k]=v;                                                     // serve immediately
@@ -1753,7 +1753,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
   });
   try{
     _lsProto.getItem=function(k){ if(this===_ls && _bigReady && _isBig(k)) return (k in _bigCache)?_bigCache[k]:null; return _natGet.call(this,k); };
-    _lsProto.setItem=function(k,v){ if(this===_ls && _bigReady && _isBig(k)){ v=String(v); _bigCache[k]=v; _idbPut(k,v).catch(function(){ try{ _natSet.call(_ls,k,v); }catch(e){} }); return; } return _natSet.call(this,k,v); };
+    _lsProto.setItem=function(k,v){ if(this===_ls && _bigReady && _isBig(k)){ v=String(v); _bigCache[k]=v; _idbPut(k,v).catch(function(){ try{ _natSet.call(_ls,k,v); }catch(e){ try{ window.__atlasBigWriteFailed=k; }catch(e2){} try{ if(window.console&&console.error) console.error('[atlas] big-key save failed -- IDB put AND localStorage fallback both failed (storage full):',k); }catch(e3){} } }); return; } return _natSet.call(this,k,v); };   // re-audit #37: the double-fault (IDB put fails -> native setItem ALSO fails on a >5MB blob) was SILENTLY swallowed -> guaranteed silent data loss. Surface it (flag + console.error) so the save is observably failed, not silent; the in-memory _bigCache still holds the value for this session so the UI stays consistent until reload.
     _lsProto.removeItem=function(k){ if(this===_ls && _bigReady && _isBig(k)){ delete _bigCache[k]; _idbDel(k); return; } return _natRemove.call(this,k); };
   }catch(e){ /* can't override Storage.prototype -> native localStorage, exactly as before */ }
 })();
@@ -2344,7 +2344,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23cu';
+  var APP_VERSION='2026.7.23cv';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -6223,7 +6223,7 @@ const Atlas = (function(){
   // Per-customer trips + spend from real bookings (excludes cancelled), keyed by email then name (matches viewCustomer).
   function _custStats(name,email,_bks){   // PERF: accept a pre-read bookings array so renderCustomers reads/parses the blob ONCE, not once per customer (was O(customers) full JSON.parses). Union match logic unchanged.
     var trips=0, spent=0, key=(email||'').toLowerCase(), nm=(name||'').toLowerCase();
-    (_bks||_bookings()||[]).forEach(function(b){ if(!_isCommitted(b))return; var m=(key&&(b.custEmail||'').toLowerCase()===key)||(nm&&(b.cust||'').toLowerCase()===nm); if(m){ trips++; spent+=_bkTotal(b); } });   // email-OR-name union: matches the customer profile modal (viewCustomer) + loyalty basis (_loySpend) exactly, so the Customers row, the profile, and loyalty points never disagree on a customer whose bookings have mixed/blank emails
+    (_bks||_bookings()||[]).forEach(function(b){ if(!_isCommitted(b))return; var m=(key&&(b.custEmail||'').toLowerCase()===key)||(nm&&(b.cust||'').toLowerCase()===nm); if(m){ trips++; spent+=(_bkHasCorePayment(b)?_bkEarnedRev(b):_offlineCollectedCharges(b)); } });   // re-audit #44: "Total spent" is now CASH actually paid (0 rental until a real payment lands, NET of refunds, gift-netted) -- was _bkTotal (the accrual quote), which on a committed-but-UNPAID or refunded booking INFLATED lifetime spend. Mirrors the P4 cash basis of the Collected columns + receivables; _loySpend already uses _loyPaid (cash), so the Customers row, profile, and loyalty now agree on cash. email-OR-name union unchanged.
     return {trips:trips,spent:spent};
   }
   function _fmtDay(ts){ try{ return new Date(ts).toLocaleDateString(undefined,{month:'short',day:'numeric'}); }catch(e){ return ''; } }
@@ -7923,7 +7923,7 @@ const Atlas = (function(){
     var key=(c.email||'').toLowerCase(), nm=(c.name||'').toLowerCase();
     var mine=(DATA.bookings||[]).filter(function(b){ return (b.custEmail&&b.custEmail.toLowerCase()===key)||(b.cust&&b.cust.toLowerCase()===nm); });
     var nc=mine.filter(_isCommitted);   // earned only -- matches the Customers row (_custStats) + Analytics
-    var spent=nc.reduce(function(s,b){return s+((b.quote&&b.quote.total)||0);},0), trips=nc.length;
+    var spent=nc.reduce(function(s,b){return s+(_bkHasCorePayment(b)?_bkEarnedRev(b):_offlineCollectedCharges(b));},0), trips=nc.length;   // re-audit #44: CASH actually paid (net of refunds, gift-netted) -- matches the cash basis of the _custStats Customers row. Was the accrual quote.total, which inflated the profile's lifetime "Spent" on a committed-but-unpaid or refunded booking.
     var codes={}; mine.forEach(function(b){ if(b.promoCode) codes[b.promoCode]=1; });
     var verified=mine.some(function(b){ return b.idVerified||(b.portal&&b.portal.idVerified); });   // Customers G5/B: roll the per-booking ID-verify up to the person
     var cmeta=_custMeta(key);
@@ -8074,7 +8074,7 @@ const Atlas = (function(){
       +'<div class="mp-row mp-total" style="cursor:pointer" onclick="Atlas.drillReportRow(\'total\')"><span>Total booked</span><span class="tnum">'+money(total)+'</span></div>'
       +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillReportRow(\'coll\')"><span>Collected to date</span><span class="tnum">'+money(coll)+'</span></div></div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'bookings\')">Bookings CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'tax\')">Tax Summary CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'events\')">Activity Log CSV</button><button class="btn btn--ghost btn--sm" onclick="Atlas.downloadReport(\'accounting\')">QuickBooks / Xero</button></div>'
-      +'<div style="font-size:12px;color:var(--muted);margin-top:10px">'+r.label+' &middot; earned bookings only (pending + cancelled excluded) &mdash; the card shows booked value; "Collected to date" is cash + gift value collected (the Revenue KPI nets redeemed gift to its sale). Bookings CSV and Tax CSV tie to the same bookings.</div>'; }
+      +'<div style="font-size:12px;color:var(--muted);margin-top:10px">'+r.label+' &middot; earned bookings only (pending + cancelled excluded) &mdash; the card shows booked value; "Collected to date" is cash actually collected (net of refunds) -- gift-settled value is recognized as income at the gift\'s SALE, not re-counted here (re-audit #57: the figure is cash-only, matching the Tax CSV). Bookings CSV and Tax CSV tie to the same bookings.</div>'; }
   function drillReportRow(kind){ var r=_repRange(); var bks=(DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && (b.createdAt||b.startTs||0)>=r.from; });
     if(kind==='gross'||kind==='total'||kind==='coll'){   // audit c4 [9]: drill the report-card revenue rows into a list in the SAME period (_repRange) and the SAME measure as the clicked row, so it foots -- the rows used to all open drillKpi('anaRev') (all-time, gift-netted _bkEarnedRev), which matched none of the three figures
       var _meas=function(b){ var q=b.quote||{}, cc=_collectedCharges(b), cct=_collectedChargeTax(b); return kind==='gross'?((q.gross||q.subtotal||q.total||0)+(cc-cct)) : kind==='total'?((q.total||0)+cc) : _bkOwedEarned(b); };
@@ -11663,7 +11663,8 @@ const Atlas = (function(){
     }).catch(_wait); }
   function _billingReturn(){ try{ _qboReturn(); }catch(e){} try{ _xeroReturn(); }catch(e){}   // handle QuickBooks ?quickbooks= and Xero ?xero= OAuth returns alongside the Stripe ?billing= return (all land back on the dashboard)
     try{ var q=new URLSearchParams(location.search); var b=q.get('billing'); if(!b) return;
-    if(b==='cryptopending'){ toast('Crypto payment started \u2014 confirming on the blockchain. Your account updates automatically once it settles (usually a few minutes).'); var _cp=0; var _cpT=setInterval(function(){ _cp++; try{ var _s=store.session(); if(_s&&typeof _srvHydrate==='function') _srvHydrate(_s.tenantId).then(function(){ try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){} }); }catch(e){} if(_cp>=10){ try{ clearInterval(_cpT); }catch(e){} } }, 18000); try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){} return; }   // crypto confirms async -> poll a few times so the plan/credits reflect once the webhook lands; the normal live-poll also catches it
+    if(b==='cryptopending'){ toast('Crypto payment started \u2014 confirming on the blockchain. Your account updates automatically once it settles (usually a few minutes).'); try{ _api('/api/billing/crypto-confirm',{method:'POST',body:{}}).then(function(r){ try{ if(r&&r.confirmed){ var _s2=store.session(); if(_s2&&typeof _srvHydrate==='function') _srvHydrate(_s2.tenantId).then(function(){ try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){} }); } }catch(e){} }).catch(function(){}); }catch(e){}   // re-audit #14 (client): confirm-on-return -- ask the server to poll Coinbase NOW and grant the plan/credits/website webhook-independently, then hydrate to reflect it immediately; the 18s interval below stays as the slower webhook/cron backstop
+      var _cp=0; var _cpT=setInterval(function(){ _cp++; try{ var _s=store.session(); if(_s&&typeof _srvHydrate==='function') _srvHydrate(_s.tenantId).then(function(){ try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){} }); }catch(e){} if(_cp>=10){ try{ clearInterval(_cpT); }catch(e){} } }, 18000); try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){} return; }   // crypto confirms async -> poll a few times so the plan/credits reflect once the webhook lands; the normal live-poll also catches it
     if(b==='success' && typeof S!=='undefined' && S){ var kind=q.get('kind'), tier=q.get('tier'), pack=q.get('pack'), sid=q.get('session_id');
       if(kind==='plan'&&tier){ var t=_tier(tier); if(t){ var chg=!(S.plan==='active'&&S.tier===t.id); S.plan='active'; S.tier=t.id; if(chg){ S.subscribedAt=Date.now(); S.credits={free:t.credits,purchased:(S.credits&&S.credits.purchased)||0,weekStart:_weekStart()}; } save(); } }
       else if(kind==='credits'&&pack){ var n=parseInt(pack,10)||0; if(n){ if(!S.credits)S.credits={free:0,purchased:0}; S.credits.purchased=(S.credits.purchased||0)+n; if(typeof S.credits.bal==='number') S.credits.bal=(S.credits.bal||0)+n; save(); } }
