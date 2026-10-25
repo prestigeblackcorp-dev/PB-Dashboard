@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _smartRateMult, _assetKtRestore, _bookingKtRestore, _rtbfRecord, _rtbfMatch, _rtbfLift, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _smartRateMult, _assetKtRestore, _bookingKtRestore, _rtbfRecord, _rtbfMatch, _rtbfLift, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkSignTermsHashLegacy, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -5602,6 +5602,27 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 {
   ok(/if \(String\(_smd\.gmv\) === '1' && _owC > 0\) await _atlasOwedClear\(env, brow\.tenant_id, _owC\);/.test(_WORKER_SRC), 'audit400 A068: confirm-on-return clears the Atlas owed-fee ledger on a new GMV credit (mirrors the webhook) so the carried fee is not re-collected on the next checkout');
   ok(/rateLimit\(env, 'pubbookTI:' \+ prof\.id \+ ':' \+ ip, 10, 3600000\)/.test(_WORKER_SRC) && /rateLimit\(env, 'pubbookT:' \+ prof\.id, 600, 3600000\)/.test(_WORKER_SRC) && !/rateLimit\(env, 'pubbookT:' \+ prof\.id, 120, 3600000\)/.test(_WORKER_SRC), 'audit400 A108: /book abuse control is per-(tenant,IP) with the per-tenant aggregate raised to a 600/hr DoS backstop, so a few IPs cannot starve a tenant booking page');
+}
+
+// ==== audit400 A029: the signed rental agreement now binds the rental WINDOW (start/return), so a same-length reschedule after signing is caught ====
+{
+  const _d0 = { asset: 'Villa', periods: 3, quote: { totalCents: 30000, depositCents: 10000, securityCents: 5000 }, startTs: 1000, endTs: 4000 };
+  const _snap = _bkSignTerms(_d0);
+  ok(_snap.s0 === 1000 && _snap.e0 === 4000, 'A029: _bkSignTerms snapshots the rental window (s0=start, e0=base return)');
+  ok(_bkTermsDrifted(_snap, _d0) === false, 'A029: identical terms + window -> not drifted');
+  const _resched = { asset: 'Villa', periods: 3, quote: { totalCents: 30000, depositCents: 10000, securityCents: 5000 }, startTs: 9000, endTs: 12000 };
+  ok(_bkTermsDrifted(_snap, _resched) === true, 'A029: a SAME-LENGTH reschedule (dates shifted, periods + total UNCHANGED) now drifts the signature (was silently "covered")');
+  const _legacy = { a: 'Villa', p: 3, t: 30000, d: 10000, s: 5000 };   // a pre-A029 snapshot: NO s0/e0
+  ok(_bkTermsDrifted(_legacy, _resched) === false, 'A029: a LEGACY snapshot (no s0/e0) is NEVER falsely flagged by the new window fields (no mass re-sign on deploy)');
+  const _priced = { asset: 'Villa', periods: 3, quote: { totalCents: 40000, depositCents: 10000, securityCents: 5000 }, startTs: 1000, endTs: 4000 };
+  ok(_bkTermsDrifted(_legacy, _priced) === true, 'A029: a legacy snapshot still detects a price/{a,p,t,d,s} change (no regression)');
+  const _lh = await _bkSignTermsHashLegacy(_d0), _lh2 = await _bkSignTermsHashLegacy(_resched);
+  ok(_lh === _lh2 && !!_lh, 'A029: the LEGACY (no-window) hash is identical across a same-length reschedule -> an existing signature stored pre-A029 still matches at _stripUnbackedSig (the dual-hash prevents a formula-change mass re-sign)');
+  // source guards
+  ok(/s0: Number\(d\.startTs\) \|\| 0/.test(_WORKER_SRC) && /e0: Number\(d\.endTs\) \|\| 0/.test(_WORKER_SRC), 'A029: _bkSignTerms binds startTs/endTs (base window, not the effective end, so a separate extension signature does not flip the base hash)');
+  ok(/'s0:' \+ t\.s0, 'e0:' \+ t\.e0/.test(_WORKER_SRC) && /function _bkSignTermsStrLegacy/.test(_WORKER_SRC), 'A029: the v2 hash input includes the window; a _bkSignTermsStrLegacy (no-window) formula is kept for backward-compat');
+  ok(/_curH === _r\.terms_hash \|\| _curHL === _r\.terms_hash/.test(_WORKER_SRC), 'A029: _stripUnbackedSig accepts the new OR the legacy terms_hash so the formula change never retroactively flags an existing signature');
+  ok(/if \(storedTerms\.s0 !== undefined \|\| storedTerms\.e0 !== undefined\)/.test(_WORKER_SRC), 'A029: the window drift check is gated on the stored snapshot carrying s0/e0 (legacy snapshots skip it)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
