@@ -1423,6 +1423,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/\} catch \(e\) \{ return false; \}\s*\n\}\s*\n\/\/ audit #9 \(SSRF\)/.test(_WORKER_SRC) || /async function _domainOwnershipOk[\s\S]*?catch \(e\) \{ return false; \}/.test(_WORKER_SRC), 're-audit #20: the ownership check fails CLOSED on a DNS lookup error (never marks a domain live on a transient failure)');
 }
 
+// ---- re-audit #39/#40 (multisite-domains): dangling CF hostnames freed on reconnect + purge; the primary domain claim is atomic. ----
+{
+  ok(/WHERE id=\? AND NOT EXISTS \(SELECT 1 FROM tenants WHERE custom_domain=\? AND id<>\?\)/.test(_WORKER_SRC) && /if \(!\(_clk && _clk\.meta && _clk\.meta\.changes\)\) return err\(409/.test(_WORKER_SRC), 're-audit #40: /api/domain/connect claims the domain ATOMICALLY (UPDATE ... WHERE NOT EXISTS another holder) -> a concurrent connect loses the race with a 409, never binds one domain to two tenants');
+  ok(/if \(_oldDomC && _oldDomC\.toLowerCase\(\) !== dom && env\.CF_API_TOKEN\) \{ try \{ await _cfDeleteHostname\(env, _oldDomC\);/.test(_WORKER_SRC), 're-audit #39: a RECONNECT to a different domain frees the OLD CF custom hostname (no dangling hostname)');
+  ok(/for \(const _pd of _pdoms\) \{ try \{ await _cfDeleteHostname\(env, _pd\); await _cfDeleteHostname\(env, 'www\.' \+ _pd\); \} catch \(e\) \{\} \}/.test(_WORKER_SRC), 're-audit #39: /api/admin/purge frees the tenant primary + site custom hostnames from Cloudflare before wiping the domain rows');
+}
+
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
 // a slot (promo_uses.n++) at request time while still Pending/unpaid; the slot was released ONLY on /book failure, never when a
 // saved booking later cancelled or auto-expired -> every abandoned/cancelled public redemption permanently consumed a slot and
