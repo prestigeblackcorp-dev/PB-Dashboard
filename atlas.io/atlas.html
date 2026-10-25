@@ -1725,12 +1725,14 @@ body.trk-fs-on .trk-fs-exit{display:grid}
   function _idbAll(){ return new Promise(function(res,rej){ try{ var r=_idbDB.transaction('kv','readonly').objectStore('kv').getAll(); r.onsuccess=function(){ res(r.result||[]); }; r.onerror=function(){ rej(r.error); }; }catch(e){ rej(e); } }); }
   function _idbDel(k){ return new Promise(function(res){ try{ var tx=_idbDB.transaction('kv','readwrite'); tx.objectStore('kv').delete(k); tx.oncomplete=function(){res();}; tx.onerror=function(){res();}; }catch(e){ res(); } }); }
   window.__atlasStoreReady=new Promise(function(resolve){
+    var _done=false, _fin=function(){ if(_done) return; _done=true; resolve(); };   // audit400 A061: idempotent settle
+    setTimeout(_fin, 5000);                        // audit400 A061: WATCHDOG -- a dropped/hung terminal IDB event (onsuccess/onerror/onblocked never firing, or _idbAll() never settling) would otherwise leave this Promise unresolved, and init() awaits it, so the WHOLE app hangs on a blank screen. Fall back to native passthrough after a few seconds so the app always boots.
     try{
-      if(!window.indexedDB){ resolve(); return; }
+      if(!window.indexedDB){ _fin(); return; }
       var op=indexedDB.open('atlas_store',1);
       op.onupgradeneeded=function(e){ var db=e.target.result; if(!db.objectStoreNames.contains('kv')) db.createObjectStore('kv',{keyPath:'k'}); };
-      op.onerror=function(){ resolve(); };          // IDB blocked/unavailable -> passthrough (today's behavior)
-      op.onblocked=function(){ resolve(); };
+      op.onerror=function(){ _fin(); };          // IDB blocked/unavailable -> passthrough (today's behavior)
+      op.onblocked=function(){ _fin(); };
       op.onsuccess=function(e){
         _idbDB=e.target.result;
         _idbAll().then(function(recs){
@@ -1744,10 +1746,10 @@ body.trk-fs-on .trk-fs-exit{display:grid}
             _bigCache[k]=v;                                                     // serve immediately
             pend.push(_idbPut(k,v).then(function(){ try{ _rRemove(k); }catch(e){} }).catch(function(){}));   // copy -> verify(commit) -> free localStorage; on IDB fail keep the ls copy
           });
-          Promise.all(pend).then(function(){ _bigReady=true; resolve(); });
-        }).catch(function(){ resolve(); });   // audit c4 [12]: an IDB hydration failure (open OK but _idbAll rejects) must NOT flip _bigReady with an empty _bigCache -- that shadows real localStorage big-key data (atlas_bookings_/atlas_assets_/atlas_tenant_) to null (empty-tenant, and a later setItem could then overwrite the untouched native values). Stay in native passthrough (resolve WITHOUT _bigReady) so the existing data stays readable, matching the op.onerror/onblocked paths.
+          Promise.all(pend).then(function(){ if(_done) return; _bigReady=true; _fin(); });   // audit400 A061: if the watchdog already committed native passthrough (_done), do NOT flip _bigReady mid-session (the app has been reading/writing native localStorage) -- a late IDB success stays passthrough for this session
+        }).catch(function(){ _fin(); });   // audit c4 [12]: an IDB hydration failure (open OK but _idbAll rejects) must NOT flip _bigReady with an empty _bigCache -- that shadows real localStorage big-key data (atlas_bookings_/atlas_assets_/atlas_tenant_) to null (empty-tenant, and a later setItem could then overwrite the untouched native values). Stay in native passthrough (resolve WITHOUT _bigReady) so the existing data stays readable, matching the op.onerror/onblocked paths.
       };
-    }catch(e){ resolve(); }
+    }catch(e){ _fin(); }
   });
   try{
     _lsProto.getItem=function(k){ if(this===_ls && _bigReady && _isBig(k)) return (k in _bigCache)?_bigCache[k]:null; return _natGet.call(this,k); };
@@ -2028,7 +2030,7 @@ const Atlas = (function(){
     // the server's _t so the NEXT push wins, then (debounced) re-hydrate so newest-wins merges the server's version in.
     function _stale(j){ try{ if(j&&j.serverT) _seenT(j.serverT); }catch(e){} _reHydrateSoon(); }
     function _dropLocal(){ try{ if(kind==='assets'){ if(typeof DATA!=='undefined'&&DATA.assets){ DATA.assets=DATA.assets.filter(function(x){return !(x&&x.id===item.id);}); if(typeof _saveAssets==='function')_saveAssets(); try{ if(typeof renderFleet==='function')renderFleet(); }catch(e){} } } else if(kind==='bookings'){ if(typeof _saveBookings==='function'&&typeof _bookings==='function') _saveBookings(_bookings().filter(function(x){return !(x&&x.id===item.id);})); } if(hk) delete _pushedHash[hk]; }catch(e){} }   // audit c1 [26]: the server rejected re-creating a row deleted on another device (ok+deleted:true, worker tombstone guard). Drop the local phantom instead of marking it synced -- otherwise it lives in this device's localStorage forever, keeps showing in Fleet, counts toward availability/cap, and is never retried or cleared.
-    function _fail(jj){ try{ toast((jj&&(jj.error||jj.reason)) ? String(jj.error||jj.reason) : 'That change could not be saved \u2014 it conflicts with the current server state.'); }catch(e){} if(hk) _pushedHash[hk]=hv; _reHydrateSoon(); }   // B1: the server REFUSED this write (e.g. a 409 slot clash when confirming a held slot). SURFACE it + stop the infinite silent re-push (mark this push done) + re-hydrate the authoritative version -- a 409 was previously neither 404 nor 2xx, so it was swallowed and the owner saw a false "confirmed" that never persisted + looped forever.
+    function _fail(jj){ try{ toast((jj&&(jj.error||jj.reason)) ? String(jj.error||jj.reason) : 'That change could not be saved \u2014 it conflicts with the current server state.'); }catch(e){} try{ if(kind==='bookings' && item && item.id && typeof _bookings==='function' && typeof _saveBookings==='function'){ _saveBookings(_bookings().map(function(x){ if(x && x.id===item.id){ x._t=0; } return x; })); } }catch(e){} if(hk) _pushedHash[hk]=hv; _reHydrateSoon(); }   // B1: the server REFUSED this write (e.g. a 409 slot clash when confirming a held slot). SURFACE it + stop the infinite silent re-push (mark this push done) + re-hydrate the authoritative version. audit400 A059/A064: the server did NOT persist this change, but the optimistic local record may carry a NEWER _t (the confirm bumped it), so the newest-wins re-hydrate would KEEP the false "Confirmed". CLEAR this booking's _t (=0) so the re-hydrate adopts the server-authoritative row for this id -- a one-shot server-wins override; a genuine later local edit re-bumps _t via _monoNow() and re-pushes.
     _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){ var j=(res&&res.json)||{};
       if(res && res.status===404){ _api('/api/data/'+kind,{method:'POST',body:body}).then(function(r2){ var j2=(r2&&r2.json)||{}; if(r2&&r2.status>=200&&r2.status<300){ if(j2.deleted)_dropLocal(); else if(j2.stale)_stale(j2); else _ok(); } else if(r2&&r2.status>=500){ /* audit400 A010: transient 5xx -> leave the record DIRTY (do NOT _fail/mark synced) so the next _srvSyncPush retries, mirroring the network-error .catch */ } else if(r2&&r2.status>=400){ _fail(j2); } }).catch(function(){}); }
       else if(res && res.status>=200 && res.status<300){ if(j.deleted)_dropLocal(); else if(j.stale)_stale(j); else _ok(); }
@@ -2173,6 +2175,7 @@ const Atlas = (function(){
     _api('/api/policy/accept',{method:'POST',body:{}}).then(function(res){ if(res.json&&res.json.ok){ _hidePolicyBanner(); try{ var tid=store.session()&&store.session().tenantId; var _tb=_lsGet('atlas_tenant_'+tid,null); if(_tb){ _tb.tosVersion=res.json.version; _lsSet('atlas_tenant_'+tid,_tb); } }catch(e){} toast('Thank you -- your acceptance is recorded'); } else { toast('Could not record acceptance'); } }).catch(function(){ toast('Network error - please try again'); }); }
   function _graftSrvPay(loc,srv){ if(!loc||!srv) return;   // S1: client mirror of the worker _graftServerPay -- when a LOCAL booking wins the newest-wins merge, still graft back the SERVER-authoritative payment/upload/idv/charge state the owner's device may not have synced yet (else a paid booking reads UNPAID, stickily)
     if(srv.paid && typeof srv.paid==='object'){ if(!loc.paid||typeof loc.paid!=='object') loc.paid={}; for(var k in srv.paid) loc.paid[k]=srv.paid[k]; }   // webhook-written slots win
+    if(typeof srv.revCents==='number') loc.revCents=srv.revCents;   // audit400 A063: the SERVER-reconciled collected revenue (nets refunds/chargebacks) is server-authoritative like the paid slots -- graft it too so a LOCAL-wins booking's P&L "collected" figure stays consistent with the grafted paid flags instead of reading a stale accrual estimate.
     ['refundIds','refundedPIs'].forEach(function(f){ if(Array.isArray(srv[f])){ var arr=Array.isArray(loc[f])?loc[f]:[]; srv[f].forEach(function(x){ if(arr.indexOf(x)<0)arr.push(x); }); loc[f]=arr; } });
     if(srv.portal && typeof srv.portal==='object'){ if(!loc.portal||typeof loc.portal!=='object') loc.portal={};
       ['reservePaidAt','balancePaidAt','depositPaidAt'].forEach(function(f){ if(srv.portal[f]!=null) loc.portal[f]=srv.portal[f]; });
@@ -2229,7 +2232,7 @@ const Atlas = (function(){
     // value -> the fresh stamp beat the server's per-key newest-wins and silently reverted another device's edit to ANY profile
     // key (money/tax/locations/flags/promos/legal/blacklist). Only the CURRENT session tenant (loadTenant enforces the _tid
     // isolation stamp); merged already respects local newest-wins, so a not-yet-pushed local edit on THIS device still wins.
-    try{ var _csT=store.session(); if(_csT && _csT.tenantId===tid){ var _sm=load(); if(_sm) S=_sm; } }catch(e){}
+    try{ var _csT=store.session(); if(_csT && _csT.tenantId===tid){ S=merged; } }catch(e){}   // audit400 A058: refresh in-memory S from the SAME merged object the _pushedKeys reseed above used -- NOT a load() storage read-back, which can diverge from merged (a not-yet-committed big-key write, or any loadTenant transform) and leave S and _pushedKeys describing different states, so the next edit diffs stale-S vs merged-_pushedKeys and stamps a spurious fresh _kt that reverts another device's profile edit. merged is this tenant's profile blob (load()/save() are symmetric blob read/write) + already respects local newest-wins; the session-tenant guard is retained.
   }
   const FLEET_TYPES=[
     {id:'cars',emoji:'\u{1F697}',label:'Cars & Exotics',noun:'vehicle',nouns:'vehicles',customerNoun:'renter',customerNouns:'renters',sample:['2023 Corvette C8','BMW M3 Competition','Porsche Macan','Range Rover Sport','Tesla Model S','Mercedes G-Wagon']},
@@ -2330,7 +2333,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23cr';
+  var APP_VERSION='2026.7.23cs';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
