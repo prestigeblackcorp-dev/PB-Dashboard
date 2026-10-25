@@ -5330,7 +5330,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v403';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v404';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -19432,7 +19432,7 @@ function _evAgreement(b){
     +'<tr><td class="k">Vehicle / VIN</td><td class="v">'+esc(b.vehicle||'')+(vin?(' &middot; VIN '+esc(vin)):'')+'</td></tr></table>'
     +'<div style="margin-top:10px">'+bt+'</div>'
     +(dr?('<h2>Additional Authorized Drivers &mdash; Signatures</h2>'+dr):'');
-  var tpl=(b.type==='lease'&&typeof leaseTemplate!=='undefined'&&leaseTemplate)?leaseTemplate:(isW?(typeof slingshotWaiverTemplate!=='undefined'?slingshotWaiverTemplate:''):(typeof contractTemplate!=='undefined'?contractTemplate:''));
+  var tpl=(b.type==='lease'&&typeof leaseTemplate!=='undefined'&&leaseTemplate)?leaseTemplate:(isW?(typeof slingshotWaiverTemplate!=='undefined'?slingshotWaiverTemplate:''):(typeof _dailyTemplateForBooking==='function'?_dailyTemplateForBooking(b):(typeof contractTemplate!=='undefined'?contractTemplate:'')));   // evidence: render the daily contract with the terms ACTUALLY signed (V1 vs strong)
   if(tpl){
     var bd={}; try{ bd=_buildContractBreakdown(b); }catch(e){ bd={}; }
     var vi=(typeof VEHICLE_INFO!=='undefined'&&VEHICLE_INFO[b.vehicle])?VEHICLE_INFO[b.vehicle]:{}; var v=b.verify||{};
@@ -22830,6 +22830,198 @@ var DEFAULT_CONTRACT_TEMPLATE = `<!DOCTYPE html>
 </body>
 </html>`;
 
+
+
+// ARCHIVED pre-2026-10-25 DAILY Car Rental Agreement (the terms renters signed BEFORE the v403
+// strengthening). Used to RE-RENDER an already-signed daily contract (evidence report, PDF, reprint, signed
+// copy) so it always shows the clauses the renter ACTUALLY agreed to -- never clauses added to the template
+// later. Do NOT edit; this is a frozen legal snapshot.
+var DEFAULT_CONTRACT_TEMPLATE_V1 = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  @page { margin: 0.5in; size: letter; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 11.5px; color: #e0e0e0; background: #111; line-height: 1.6; }
+  .wrap { max-width: 760px; margin: 0 auto; background: #0d0d0d; border: 1.5px solid #C9A962; padding: 38px 46px 46px; }
+  .hdr { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+  .co { font-weight: 700; font-size: 12px; line-height: 1.9; color: #e0e0e0; }
+  .logo-block { text-align: center; }
+  .logo-p { font-size: 46px; font-weight: 900; color: #C9A962; font-family: Georgia, serif; line-height: 1; }
+  .logo-sub { font-size: 7.5px; letter-spacing: .28em; text-transform: uppercase; color: #C9A962; margin-top: 4px; }
+  h1 { text-align: center; font-size: 22px; font-weight: 400; color: #e0e0e0; font-family: Georgia, serif; margin-bottom: 28px; }
+  h2 { font-size: 11.5px; font-weight: 700; text-transform: uppercase; color: #e0e0e0; margin: 22px 0 10px; }
+  .fr { display: flex; align-items: baseline; margin-bottom: 6px; gap: 8px; }
+  .fl { width: 180px; flex-shrink: 0; color: #999; font-size: 11px; }
+  .fv { flex: 1; color: #e0e0e0; font-weight: 500; border-bottom: 1px solid #333; min-height: 16px; padding-bottom: 2px; word-break: break-word; }
+  p { margin-bottom: 9px; font-size: 11.5px; color: #ccc; }
+  ul { margin: 6px 0 10px 18px; }
+  li { margin-bottom: 6px; font-size: 11.5px; color: #ccc; }
+  .center { text-align: center; color: #888; margin: 10px 0 8px; }
+  .sig-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 32px; }
+  .sig-line { border-bottom: 1.5px solid #C9A962; min-height: 82px; margin-bottom: 7px; display: flex; align-items: flex-end; padding-bottom: 0; }
+  .sig-label { font-size: 10.5px; color: #999; margin-top: 3px; }
+  .note { font-size: 10.5px; color: #777; margin-top: 6px; }
+  @media print {
+    body { background: #0d0d0d; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+  @media (max-width: 520px) {
+    .wrap { padding: 20px 16px 28px; border-left: none; border-right: none; }
+    .hdr { flex-direction: column; gap: 10px; align-items: center; text-align: center; }
+    .co { text-align: center; }
+    .fr { flex-direction: column; gap: 2px; margin-bottom: 10px; }
+    .fl { width: 100%; font-size: 10px; color: #777; }
+    .fv { border-bottom: none; border-top: none; padding-bottom: 6px; border-bottom: 1px solid #222; }
+    .sig-grid { grid-template-columns: 1fr; gap: 20px; }
+    h1 { font-size: 17px; }
+    h2 { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- HEADER -->
+  <div class="hdr">
+    <div class="co">
+      Prestige Black Corporation<br>
+      5473 Blair Rd. Ste 100<br>
+      Dallas, TX 75231
+    </div>
+    <div class="logo-block">
+      <div class="logo-p">P</div>
+      <div class="logo-sub">Prestige<br>Black</div>
+    </div>
+  </div>
+
+  <h1>Car Rental Agreement</h1>
+
+  <!-- 1. PARTIES -->
+  <h2>1. Parties</h2>
+  <p>This Car Rental Agreement ("Agreement") is made and entered into on this <strong style="color:#e0e0e0">{{today}}</strong>, by and between:</p>
+  <div class="fr"><span class="fl">Owner:</span><span class="fv">Prestige Black Corporation</span></div>
+  <div class="fr"><span class="fl">Address:</span><span class="fv">5473 Blair Rd. Ste 100 Dallas, TX 75231</span></div>
+  <div class="fr"><span class="fl">Phone:</span><span class="fv">(214) 207-2481</span></div>
+  <p class="center">and</p>
+  <div class="fr"><span class="fl">Renter:</span><span class="fv">{{customer_name}}</span></div>
+  <div class="fr"><span class="fl">Address:</span><span class="fv">{{license_address}}</span></div>
+  <div class="fr"><span class="fl">Phone:</span><span class="fv">{{customer_phone}}</span></div>
+  <div class="fr"><span class="fl">Driver's License No.:</span><span class="fv">{{license_number}}</span></div>
+  <div class="fr"><span class="fl">State of Issue:</span><span class="fv">{{license_state}}</span></div>
+  {{broker_line}}
+
+  <!-- 2. VEHICLE INFORMATION -->
+  <h2>2. Vehicle Information</h2>
+  <div class="fr"><span class="fl">Make:</span><span class="fv">{{vehicle_make}}</span></div>
+  <div class="fr"><span class="fl">Model:</span><span class="fv">{{vehicle_model}}</span></div>
+  <div class="fr"><span class="fl">Year:</span><span class="fv">{{vehicle_year}}</span></div>
+  <div class="fr"><span class="fl">Color:</span><span class="fv">{{vehicle_color}}</span></div>
+  <div class="fr"><span class="fl">VIN:</span><span class="fv">{{vehicle_vin}}</span></div>
+  <div class="fr"><span class="fl">Mileage at Start:</span><span class="fv">{{odometer_in}}</span></div>
+  <div class="fr"><span class="fl">Fuel / Battery at Pickup:</span><span class="fv">{{fuel_in}}</span></div>
+  <div class="fr"><span class="fl">Fuel / Battery at Return:</span><span class="fv">{{fuel_out}}</span></div>
+  <div class="fr"><span class="fl">Mileage Add-on:</span><span class="fv">{{unlimited_fee}}</span></div>
+  <div class="fr"><span class="fl">Delivery:</span><span class="fv">{{delivery_fee}}</span></div>
+  <div class="fr"><span class="fl">Pet Fee:</span><span class="fv">{{pet_fee}}</span></div>
+
+  <!-- 3. RENTAL TERM -->
+  <h2>3. Rental Term</h2>
+  <div class="fr"><span class="fl">The rental period shall begin on:</span><span class="fv">{{pickup_date}}{{pickup_time_display}}</span></div>
+  <div class="fr"><span class="fl">The rental period shall end on:</span><span class="fv">{{return_date}}{{dropoff_time_display}}</span></div>
+
+  <!-- 4. RENTAL RATE AND FEES -->
+  <h2>4. Rental Rate and Fees</h2>
+  {{breakdown_table}}
+  <div class="fr" style="margin-top:12px"><span class="fl">Security Deposit:</span><span class="fv">{{deposit_amount}} &nbsp;<em style="font-weight:400;color:#888">(refundable upon trip completion and inspection)</em></span></div>
+  <div class="fr"><span class="fl">Mileage Policy:</span><span class="fv">{{mileage_policy}}</span></div>
+  <div class="fr"><span class="fl">Refuel Fee:</span><span class="fv">$30 per quarter tank short of pickup level</span></div>
+  <p class="note" style="margin-top:8px">Payment is due in advance of the rental period unless otherwise agreed in writing.</p>
+
+  <!-- 5. CONDITION AND INSPECTION -->
+  <h2>5. Condition and Inspection of Vehicle</h2>
+  <p>The Renter acknowledges receipt of the Vehicle in clean, good operating condition and agrees to return it in the same condition (ordinary wear and tear excepted). Any damages, mechanical issues, or loss must be reported immediately to the Owner.</p>
+
+  <!-- 6. USE OF VEHICLE -->
+  <h2>6. Use of Vehicle</h2>
+  <p>The renter agrees:</p>
+  <ul>
+    <li>To operate the Vehicle only for lawful personal use.</li>
+    <li>Not to use the Vehicle for racing, towing, transporting passengers for hire, or any illegal purpose.</li>
+    <li>Not to permit any person other than the authorized driver(s) to operate the Vehicle.</li>
+    <li><strong style="color:#e0e0e0">Unauthorized Drivers \u2014 Consequences:</strong> Allowing or permitting any individual who is not listed and authorized under this Agreement to operate the Vehicle constitutes a material breach. In such event, the <strong>entire Security Deposit shall be forfeited and retained in full</strong>, and the Owner reserves the right to <strong>immediately repossess and pick up the Vehicle</strong>, ending the rental. <strong>No refund will be issued for any remaining or additional rental days</strong>, and the Renter remains responsible for the full rental term and any retrieval, towing, or administrative costs.</li>
+    <li>To operate the Vehicle in full compliance with all applicable federal, state, and local traffic laws, ordinances, and regulations. In the event Renter commits, causes, or is cited for any traffic violation, moving violation, reckless driving, excessive speeding, illegal racing, improper use of the Vehicle, or other unlawful operation during the rental period, Owner reserves the right to withhold all or a portion of the Security Deposit to cover fines, penalties, administrative costs, towing, impound fees, increased insurance exposure, or damages resulting from such violation.</li>
+    <li>Any evidence of reckless operation, including but not limited to excessive speeding (20+ mph over posted limit), racing, burnouts, drifting, launch control abuse, track use, or operation in a manner that materially increases risk shall constitute a material breach of this Agreement and may result in immediate termination of the rental without refund and forfeiture of the Security Deposit.</li>
+    <li><strong style="color:#e0e0e0">100 MPH Speed Policy \u2014 Three-Strike Rule:</strong> Operating the Vehicle at or above 100 mph constitutes a serious violation of this Agreement and will be tracked as follows:
+      <ul style="margin-top:6px">
+        <li><strong>Strike 1:</strong> Formal written warning issued to Renter. Renter is notified that future violations will result in escalating consequences.</li>
+        <li><strong>Strike 2:</strong> A portion of the Security Deposit may be withheld at Owner's discretion as a penalty for repeated violation.</li>
+        <li><strong>Strike 3:</strong> Immediate termination of the rental agreement. Owner will dispatch vehicle retrieval at Renter's current location. <strong>No refund will be issued for any remaining rental days.</strong> The Security Deposit will be forfeited in full. Renter is responsible for any towing, retrieval, or administrative costs incurred.</li>
+      </ul>
+    </li>
+  </ul>
+
+  <!-- 7. INSURANCE AND LIABILITY -->
+  <h2>7. Insurance and Liability</h2>
+  <p>The Renter shall maintain valid automobile insurance covering liability, collision, and comprehensive damage during the rental term. The Renter shall be fully responsible for any loss, theft, or damage to the Vehicle, regardless of fault.</p>
+
+  <!-- 8. INDEMNIFICATION -->
+  <h2>8. Indemnification</h2>
+  <p>The Renter agrees to indemnify and hold harmless the Owner from any and all claims, damages, losses, or expenses (including attorney's fees) arising out of or related to the Renter's use, operation, or possession of the Vehicle.</p>
+
+  <!-- 9. SECURITY DEPOSIT -->
+  <h2>9. Security Deposit</h2>
+  <p>A refundable security deposit of <strong style="color:#e0e0e0">{{deposit_amount}}</strong> is required before possession of the Vehicle. The deposit will be refunded within seven (7) days after return, provided no damage, excessive cleaning, unpaid mileage, or late fees apply. <strong>Late returns are charged at $75 per hour</strong> past the agreed return time.</p>
+
+  <!-- 10. RETURN OF VEHICLE -->
+  <h2>10. Return of Vehicle</h2>
+  <p>The Vehicle must be returned to the agreed location on or before the return date and time. <strong>Late returns are subject to a $75 per hour late fee</strong>, applied after a 1-hour grace period. Failure to return the Vehicle within 24 hours of the scheduled time without notice shall be considered vehicle theft and reported to law enforcement.</p>
+  <p><strong style="color:#e0e0e0">Personal Belongings:</strong> Prestige Black is not responsible or liable for any personal items, valuables, or belongings left in, lost from, or forgotten in any Vehicle before, during, or after the rental. It is the Renter's sole responsibility to remove and verify all personal belongings before completing the return. Any items left behind are surrendered at the Renter's own risk.</p>
+
+  <!-- 11. GOVERNING LAW -->
+  <h2>11. Governing Law</h2>
+  <p>This Agreement shall be governed by and construed in accordance with the laws of the State of Texas.</p>
+
+  <!-- 12. ENTIRE AGREEMENT -->
+  <h2>12. Entire Agreement</h2>
+  <p>This Agreement constitutes the entire understanding between the parties and supersedes all prior negotiations or representations. Any modification must be in writing and signed by both parties.</p>
+
+  <!-- 13. SIGNATURES -->
+  <h2>13. Signatures</h2>
+  <div class="sig-grid">
+    <div>
+      <div class="sig-line">{{owner_signature}}</div>
+      <div class="sig-label">Date: {{today}}</div>
+      <div class="sig-label" style="margin-top:4px">Printed Name: Edwin P. Watson Jr. on behalf of Prestige Black Corp.</div>
+    </div>
+    <div>
+      <div class="sig-line">{{customer_signature}}</div>
+      <div class="sig-label">Date: {{customer_signed_date}}</div>
+      <div class="sig-label" style="margin-top:4px">Printed Name: {{customer_name}}</div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>`;
+// The v403 strong daily template went live 2026-10-25. A DAILY booking whose customer signature was captured
+// before this instant was signed under the V1 terms -> re-renders use DEFAULT_CONTRACT_TEMPLATE_V1.
+var PB_CONTRACT_V2_CUTOVER = (function(){ var t=Date.parse('2026-10-25T00:00:00-05:00'); return isFinite(t)?t:1792083600000; })();
+// Choose the DAILY template to RENDER for a booking: the frozen V1 for a daily contract signed before the
+// cutover (or explicitly stamped v1), else the current template. Lease + Slingshot-waiver use their own.
+function _dailyTemplateForBooking(b){
+  try{
+    if(!b || b.type==='lease' || (b.vehicle==='Polaris Slingshot' && b.type==='hourly')) return contractTemplate;
+    if(b.contractSignedVersion==='v1') return DEFAULT_CONTRACT_TEMPLATE_V1;
+    if(b.contractSignedVersion==='v2') return contractTemplate;
+    var at=Number(b.customerSigAt)||0;
+    if(!at && b.customerSigDate){ var _ds=Date.parse(b.customerSigDate); if(isFinite(_ds)) at=_ds; }   // fall back to the signature DATE when no epoch is stored
+    if(at && at < PB_CONTRACT_V2_CUTOVER) return DEFAULT_CONTRACT_TEMPLATE_V1;
+  }catch(e){}
+  return contractTemplate;
+}
+
 var leaseTemplate = '';  // LEASE: motor-vehicle lease agreement (selected when booking.type==='lease'); synced to pb_data/leaseTemplate
 var DEFAULT_LEASE_TEMPLATE = `<!DOCTYPE html>
 <html lang="en">
@@ -23861,7 +24053,7 @@ function _renderContractContent(){
     return;
   }
   var b=bookings.find(function(x){return x.id===_contractBookingId;}); if(!b) return;
-  var activeTemplate=_contractIsLease?(leaseTemplate||contractTemplate):(_contractIsWaiver?slingshotWaiverTemplate:contractTemplate);
+  var activeTemplate=_contractIsLease?(leaseTemplate||contractTemplate):(_contractIsWaiver?slingshotWaiverTemplate:_dailyTemplateForBooking(b));   // render an already-signed daily contract with the terms ACTUALLY signed (V1 vs strong), never clauses added later
   activeTemplate = activeTemplate.replace(/Jalen Nguyen/g, 'Edwin P. Watson Jr.');   // owner change safety net (render-time)
   if(!activeTemplate) return;
 
@@ -24200,7 +24392,7 @@ function openContract(id){
   if(isDailySling) _updateSlingshotDocToggleBtns(false);
   // Apply restored color (signed > sent > Green default)
   switchSlingshotColor(_slingshotColor);
-  var activeTemplate = _contractIsLease ? (leaseTemplate||contractTemplate) : (_contractIsWaiver ? slingshotWaiverTemplate : contractTemplate);
+  var activeTemplate = _contractIsLease ? (leaseTemplate||contractTemplate) : (_contractIsWaiver ? slingshotWaiverTemplate : _dailyTemplateForBooking(b));   // already-signed daily contract renders with the terms ACTUALLY signed (V1 vs strong)
   if(!activeTemplate){
     if(_contractIsLease){ toast('No lease agreement template is loaded.'); return; }
     if(confirm((_contractIsWaiver?'No slingshot waiver template set up yet.':'No contract template set up yet.')+'\nOpen the template editor now?')){ openContractTemplate(_contractIsWaiver?'waiver':''); }
