@@ -5679,5 +5679,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/else if\(kind==='assets' && item && item\.id && typeof DATA!=='undefined' && Array\.isArray\(DATA\.assets\)\)/.test(_RC) && /if\(hk\) _pushedHash\[hk\] = _zeroJson \|\| hv;/.test(_RC), 're-audit #35/#36: _fail resets a refused ASSET edit (not just bookings) AND points _pushedHash at the persisted (_t=0) blob so a refused record is not re-pushed in a loop');
 }
 
+// ==== re-audit build dh: #3 RBAC grant escalation, #4 subscription.updated current-sub guard, #6 re-collect re-books revenue ====
+{
+  ok(/out\.caps\.customersEdit = _can\(ctx, 'customersEdit'\) \? 1 : 0;/.test(_WORKER_SRC) && /&& !\(stored\.mods && \('customersEdit' in stored\.mods\)\)\) return !!flat\['customers'\];/.test(_WORKER_SRC), 're-audit #3: _grantableCaps pins customersEdit to the granter authority when customers-view is granted (no inherited edit), and _can honors an explicit customersEdit in mods');
+  ok(/SET plan='active'[^"]*WHERE id=\? AND \(stripe_sub IS NULL OR stripe_sub=\?\)/.test(_WORKER_SRC) && (_WORKER_SRC.match(/WHERE id=\? AND \(stripe_sub IS NULL OR stripe_sub=\?\)/g) || []).length >= 3, 're-audit #4: the subscription.updated active/trialing/past_due UPDATEs are gated on the event sub being the tenant CURRENT sub (a superseded sub event cannot flip plan/tier)');
+  ok(/var _priorClawed = !!\(_slotHad && d\.paid\[_pkKey\] && _slotFullyClawed\(d\.paid\[_pkKey\]\)\);/.test(_WORKER_SRC) && /\(!_slotHad \|\| _priorClawed\) && !_piRefunded/.test(_WORKER_SRC), 're-audit #6: a re-collection displacing a FULLY-clawed prior slot re-books revenue (its revenue was already removed), instead of being suppressed as a double-count');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
