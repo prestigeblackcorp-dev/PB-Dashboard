@@ -5232,7 +5232,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const _INDEX_SRC13U = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
   // worker: the orphan table, the additive webhook persist, the 3 owner endpoints, and the SAME idempotent sentinel + shared slot-math the webhook uses
   ok(/CREATE TABLE IF NOT EXISTS dispute_orphans /.test(_WORKER_SRC), 'G32: an orphan-dispute table persists an unmatched chargeback');
-  ok(/else if \(_dAmt > 0 && _dTn && !_dBk\) \{/.test(_WORKER_SRC), 'G32: the dispute webhook records an orphan ONLY when the tenant is known but no booking could be resolved (the decrement path above is untouched)');
+  ok(/else if \(_dAmt > 0 && _dTn && !_dBk && _dispAdverse\) \{/.test(_WORKER_SRC), 'G32 + audit400 A086: the dispute webhook records an orphan ONLY when the tenant is known, no booking could be resolved, AND the dispute is ADVERSE (funds withdrawn) -- a warning/inquiry never becomes a misleading orphan (the decrement path above is untouched)');
   ok(/INSERT INTO dispute_orphans \(tenant_id,dispute_id,amount_cents,reason,pi,charge,kind,created_at,resolved_at,booking_id\)/.test(_WORKER_SRC), 'G32: the orphan is recorded with its dispute id, amount, reason, PI/charge and kind');
   ok(/path === '\/api\/disputes\/orphans' && method === 'GET'/.test(_WORKER_SRC), 'G32: an owner endpoint lists unresolved orphan disputes (bookEdit-gated, tenant-scoped)');
   ok(/path === '\/api\/disputes\/link' && method === 'POST'/.test(_WORKER_SRC) && /path === '\/api\/disputes\/dismiss' && method === 'POST'/.test(_WORKER_SRC), 'G32: owner endpoints link an orphan to a booking or dismiss it (both CSRF-gated)');
@@ -5497,6 +5497,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/_deIdentifyPlaybook\(_pbGeneric\(String\(pbrow\.playbook\)\)\)/.test(_WORKER_SRC), 'audit400 A056: a served cross-tenant playbook is re-run through _deIdentifyPlaybook at serve time (belt-and-suspenders over the distill-time scrub)');
   // behavioral: _deIdentifyPlaybook still masks names + now a glued-currency amount, and leaves "customer service" alone
   ok(/Guest \[name\]/.test(_deIdentifyPlaybook('Guest Rodriguez pays late')) && !/\d/.test(_deIdentifyPlaybook('owed USD1540 and 2300EUR last month')), 'audit400 A055 (behavioral): glued-currency amounts ("USD1540","2300EUR") are neutralized; name masking unaffected');
+}
+
+// ==== audit400 build cu: webhook/billing (A079 crypto-underpaid revenue, A086 orphan-dispute adverse-gate, A095 asset_unlock resurrection, A096 stale-sub past_due) ====
+{
+  ok(/kind: 'crypto_underpaid', pack: _cbilling, amount_cents: 0,/.test(_WORKER_SRC) && !/crypto_underpaid', pack: _cbilling, amount_cents: _cpaid/.test(_WORKER_SRC), 'audit400 A079: the crypto_underpaid ledger marker books amount_cents:0 (an un-activated purchase never feeds the no-kind-filter revenue rollup)');
+  ok(/else if \(_dAmt > 0 && _dTn && !_dBk && _dispAdverse\) \{/.test(_WORKER_SRC), 'audit400 A086: the orphan-dispute insert is adverse-gated like the decrement branch -- a warning/inquiry (no funds withdrawn) never becomes a misleading orphan');
+  ok(/if \(obj\.billing_reason !== 'subscription_cycle'\) await _aulRMW\(env, im\.tenant/.test(_WORKER_SRC), 'audit400 A095: the invoice.paid asset_unlock self-heal ADD-IF-MISSING is gated to the first invoice, so a stray renewal cannot resurrect a canceled unlock');
+  ok(/const _subStale = !!\(obj\.subscription && _before && _before\.stripe_sub && String\(_before\.stripe_sub\) !== String\(obj\.subscription\)\);/.test(_WORKER_SRC) && /AND \(dunning_invoice IS NULL OR dunning_invoice <> \?\) AND \(\? IS NULL OR stripe_sub = \?\)/.test(_WORKER_SRC), 'audit400 A096: invoice.payment_failed flips past_due + duns only for the tenant CURRENT plan sub (stale/superseded sub failure no longer locks a paid tenant)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
