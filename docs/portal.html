@@ -39,10 +39,10 @@
   input:focus,select:focus{border-color:var(--gold);}
   .otp-wrap{position:relative;margin-bottom:4px;}
   .otp-hidden{position:absolute;inset:0;opacity:0;width:100%;height:100%;font-size:1px;z-index:2;cursor:text;caret-color:transparent;}
-  .otp-row{display:flex;gap:6px;justify-content:center;pointer-events:none;}
+  .otp-row{display:flex;gap:8px;justify-content:center;pointer-events:none;}
   .otp-box{
     background:#111;border:2px solid var(--border);border-radius:10px;color:var(--text);
-    font-size:22px;font-weight:700;text-align:center;width:clamp(38px,13.5vw,46px);height:56px;flex:0 0 auto;
+    font-size:22px;font-weight:700;text-align:center;width:46px;height:56px;
     display:flex;align-items:center;justify-content:center;transition:border-color .15s;
     flex-shrink:0;
   }
@@ -460,7 +460,6 @@
   <div class="driver-sheet">
     <div class="driver-sheet-title">Add Authorized Driver</div>
     <div class="driver-sheet-sub" id="driver-modal-sub">This driver will be added to your reservation and must sign the rental agreement.</div>
-    <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:10px;padding:11px 13px;margin-bottom:14px;font-size:12px;color:var(--text-muted);line-height:1.55"><strong style="color:var(--text)">Only add someone else &mdash; not yourself.</strong> An authorized driver is a <strong>second, different person</strong> who will also drive the vehicle. As the primary renter you are already approved to drive, so there is no need to add yourself here. Each authorized driver must verify their own ID and sign.</div>
     <div id="drv-sling-note" style="display:none;background:rgba(201,169,98,.1);border:1px solid rgba(201,169,98,.35);border-radius:10px;padding:11px 13px;margin-bottom:14px;font-size:12px;color:#C9A962;line-height:1.55"><strong>Please note:</strong> adding an additional authorized driver to a Slingshot hourly rental means <strong>both people</strong> must pay the full booking price and each complete the waiver &amp; ID verification.</div>
     <div class="form-group">
       <label class="field-label">Full Name *</label>
@@ -570,19 +569,6 @@
 <script>
 const WORKER = (typeof PB_WORKER!=='undefined'?PB_WORKER:'https://pb-booking.prestigeblackcorp.workers.dev');
 
-// S1 security: resolve the signing-link token for a booking. Deep-links (?sign=..&t=..) carry it in the URL;
-// portal-loaded bookings carry _signToken from /portal/data. /signing/load + /signing/save verify it. The
-// token rides along invisibly -- the customer's signing steps are unchanged. (14-day grace covers old links.)
-function _sigTokenFor(bookingId){
-  try{
-    var urlTok = (new URLSearchParams(location.search)).get('t') || '';
-    if(urlTok) return urlTok;
-    var bs = (typeof state!=='undefined' && state && state.bookings) ? state.bookings : [];
-    for(var i=0;i<bs.length;i++){ if(bs[i] && bs[i].id===bookingId && bs[i]._signToken) return bs[i]._signToken; }
-  }catch(e){}
-  return '';
-}
-
 // --- State -----------------------------------------------------------------
 var _initEmail = ''; try{ _initEmail = localStorage.getItem('pb_portal_email')||''; }catch(e){}
 var _initToken = ''; try{ _initToken = localStorage.getItem('pb_portal_token')||''; }catch(e){}
@@ -623,12 +609,15 @@ var VEHICLE_MILEAGE = {
 var VEHICLE_INFO = {
   "Corvette":           { year:'2023', make:'Chevrolet',    model:'Corvette C8',            color:'White', vin:'1G1YB2D47P5120874' },
   "Corvette Z51":       { year:'2023', make:'Chevrolet',    model:'Corvette C8 Z51',        color:'Black', vin:'161YB3D40P5103078' },
-  "BMW M3":             { year:'2026', make:'BMW',          model:'M3 Competition xDrive',  color:'Black', vin:'WBS33HJ00TFV48138'  },
+  "BMW M3":             { year:'2026', make:'BMW',          model:'M3 Competition xDrive',  color:'Black', vin:'WBS33HJOOTFV48138'  },
   "BMW i4":             { year:'2022', make:'BMW',          model:'i4',                     color:'White', vin:'WBY73AW05NFN04209'  },
   "Macan":              { year:'2025', make:'Porsche',      model:'Macan',                  color:'Black', vin:'WP1AA2A50SLB08321'  },
-  "Porsche Boxster S":  { year:'2013', make:'Porsche',      model:'Boxster S',              color:'White', vin:'WP0CB2A85DS133371'  },
+  "Porsche Boxster S":  { year:'2013', make:'Porsche',      model:'Boxster S',              color:'White', vin:'WPOCB2A85DS133371'  },
   "C300":               { year:'2022', make:'Mercedes-Benz',model:'C300 AMG',               color:'Gray',  vin:'W1KAF4HB5NR044083'  },
+  "Accord":             { year:'2016', make:'Honda',        model:'Accord Coupe',           color:'Black', vin:'1HGCT1B3XGAO12602'  },
   "Lambo Huracan":      { year:'2015', make:'Lamborghini',  model:'Hurac\u00E1n',                color:'Gray',  vin:'ZHWUC1ZF7FLA00990'  },
+  "Lambo Urus":         { year:'2020', make:'Lamborghini',  model:'Urus',                   color:'Blue',  vin:'ZPBUA1ZL0LLA09861'  },
+  "Escalade Rental":    { year:'2023', make:'Cadillac',     model:'Escalade',               color:'Black', vin:'1GYS4EKL4PR184067'  },
   "Escalade Chauffeur": { year:'2022', make:'Cadillac',     model:'Escalade',               color:'White', vin:'1GYS4GKL5NR128843'  },
   "Polaris Slingshot":  { year:'2025', make:'Polaris',      model:'Slingshot SL',           color:'Green', vin:'57XAAPHD4S8167698'  },
 };
@@ -967,50 +956,10 @@ async function _downloadSignedContractPdf(rootEl, fname){
 // copy. The live signing flow keeps using its own inline fill (untouched), so this can NEVER affect
 // signing. KEEP IN SYNC: if you add a template placeholder to _initSigningMode's fill, add it here too.
 // Returns the filled template HTML, or '' if there is no template.
-function _isSlingFullDay(bk){ return !!(bk && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event','lease'].indexOf(String(bk.type||'').toLowerCase())===-1); }
-// Slingshot FULL-DAY docs carry BOTH signatures (waiver + rental agreement) on EVERY doc, at the primary sig spot.
-function _bothSigsHtml(bk, isWv){
-  var _flt = isWv ? '' : 'invert(1)';   // dark rental-agreement needs inverted ink; light waiver renders as-is
-  function _img(s){ return (s&&String(s).indexOf('data:image/')===0) ? '<img src="'+s+'" style="max-height:64px;max-width:260px;display:block;filter:'+_flt+'">' : '<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>'; }
-  return '<div style="display:flex;flex-direction:column;gap:12px">'
-    + '<div><div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#555;margin-bottom:3px">Liability Waiver'+(bk.waiverSigDate?' \u00B7 '+esc(String(bk.waiverSigDate)):'')+'</div>'+_img(bk.waiverSig)+'</div>'
-    + '<div><div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#555;margin-bottom:3px">Rental Agreement'+(bk.customerSigDate?' \u00B7 '+esc(String(bk.customerSigDate)):'')+'</div>'+_img(bk.customerSig)+'</div>'
-    + '</div>';
-}
-// Original SIGNED terms (return date + day count) for the BASE agreement -- reconstructed robustly so a
-// signed contract always shows what was ACTUALLY signed and is never altered by later extensions. Extension
-// churn (add then delete) can inflate bk.days (a deleted ext may not decrement it) and leave the surviving
-// ext's fromDate stale, which made the base doc show the EXTENDED return + an inflated term. The FIRST-created
-// extension extended FROM the original return (nothing had moved the window yet when it was created), so its
-// fromDate is the true original return -- reliable even after other extensions are added or deleted. Original
-// days = the pickup->original-return span (daily), else bk.days minus the live extension days (hourly/legacy).
-// No extensions at all -> the booking's own stored dropoff/days ARE the original.
-function _smOrigTerms(bk){
-  var raw=(Array.isArray(bk.extensions)?bk.extensions:(bk.extensions&&typeof bk.extensions==='object'?Object.values(bk.extensions):[])).filter(Boolean);
-  if(!raw.length) return { returnStr:(bk.dropoffDate||''), days: Math.max(1, Number(bk.days)||1) };
-  // earliest-CREATED extension: when it was created nothing had moved the window yet, so its "extended from"
-  // (fromDate, or toDate minus its own days) IS the original signed return -- robust to later add/delete churn.
-  var sorted=raw.slice().sort(function(a,b){ return (Number(a.createdAt)||0)-(Number(b.createdAt)||0); });
-  var origReturn='';
-  for(var _i=0;_i<sorted.length;_i++){ var _f=(typeof _smExtFrom==='function')?_smExtFrom(sorted[_i]):(sorted[_i]&&sorted[_i].fromDate); if(_f){ origReturn=_f; break; } }
-  if(!origReturn) origReturn=(bk.dropoffDate||'');
-  var days=0, p=(bk.pickupDate||bk.date||'');
-  if((bk.type==='daily'||!bk.type) && p && origReturn){
-    var pd=new Date(p+'T12:00:00'), rd=new Date(origReturn+'T12:00:00');
-    if(!isNaN(pd.getTime()) && !isNaN(rd.getTime())){ var d=Math.round((rd-pd)/86400000); if(d>=1) days=d; }
-  }
-  if(!days){
-    var liveDays=raw.filter(function(e){ return !e._deleted; }).reduce(function(a,e){ return a+(Number(e.extensionDays)||0); },0);
-    days=Math.max(1, (Number(bk.days)||1) - liveDays);
-  }
-  return { returnStr: origReturn, days: days };
-}
-function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
-  var tmpl = (bk.type==='lease') ? (data.leaseTemplate|| /* M2: no daily-contract fallback for a lease (see live-sign path) */ '') : (docType==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+function _smFillContractTmpl(bk, data, drvIdx, readOnly){
+  var tmpl = (bk.type==='lease') ? (data.leaseTemplate||data.contractTemplate||'') : (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
   if(!tmpl) return '';
-  tmpl = tmpl.replace(/Jalen Nguyen/g, 'Edwin P. Watson Jr.');   // owner change: never render the prior owner on a client-facing doc, whatever the stored template says
   if(bk.type==='lease' && typeof _pbLeaseFill==='function') tmpl = _pbLeaseFill(tmpl, bk, !readOnly);
-  var _isWv = (docType==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly'));   // waiver=light doc (dark ink); contract=dark doc (needs inverted ink)
   // Slingshot color normalization
   if(bk.vehicle==='Polaris Slingshot'){
     var _sentCol = bk.contractSentColor||'Green';
@@ -1029,16 +978,12 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
   var tStr = (today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
   var _sbd = _buildContractBreakdown(bk);
   var _svInfo = Object.assign({}, (bk.vehicleInfo||{}), VEHICLE_INFO[bk.vehicle]||{});  // booking snapshot fallback (covers owner-added custom vehicles the portal catalog lacks); catalog wins when present
-  // #16: the base agreement reproduces the ORIGINALLY-SIGNED return + day count (extensions are separate amendment pages).
-  var _ot2 = _smOrigTerms(bk);
-  var _origDropB2 = _ot2.returnStr;   // #16: original signed return (robust to extension add/delete churn)
-  var _origDaysB2 = _ot2.days;        // #16: original signed day count
   var _sRentalType = bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
   var _sPickupFull = fmtDateFull(bk.pickupDate||bk.date||'');
-  var _sReturnFull = fmtDateFull(_origDropB2||bk.dropoffDate||'');   // #16: original signed return
+  var _sReturnFull = fmtDateFull(bk.dropoffDate||'');
   var _sVm = VEHICLE_MILEAGE[bk.vehicle]||{};
   // includedMiles is the TOTAL for the trip -> derive per-day from it (don't multiply the total by days).
-  var _sDaysM = _origDaysB2||_sbd.days||1;   // #16: original day count
+  var _sDaysM = _sbd.days||1;
   var _sTripTot = (Number(bk.includedMiles)>0)?Number(bk.includedMiles):((Number(_sVm.miles)||0)*_sDaysM);
   var _sPerDay = (Number(bk.includedMiles)>0&&_sDaysM>0)?Math.round(Number(bk.includedMiles)/_sDaysM):(Number(_sVm.miles)||0);
   var _sOvRate = Number(bk.overageRate)||_sVm.overage||0;
@@ -1071,7 +1016,7 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
     .replace(/\{\{dropoff_time\}\}/gi, _sr(bk.dropoffTime?fmtTime(bk.dropoffTime):''))
     .replace(/\{\{pickup_time_display\}\}/gi, _sr(bk.pickupTime?' at '+fmtTime(bk.pickupTime):''))
     .replace(/\{\{dropoff_time_display\}\}/gi, _sr(bk.dropoffTime?' at '+fmtTime(bk.dropoffTime):''))
-    .replace(/\{\{days\}\}/gi, _sr(String(_origDaysB2||_sbd.days)))
+    .replace(/\{\{days\}\}/gi, _sr(String(_sbd.days)))
     .replace(/\{\{daily_rate\}\}/gi, _sr(_sbd.days>0?'$'+_sbd.dailyRateNum.toFixed(2):'N/A'))
     .replace(/\{\{base_rental\}\}/gi, _sr('$'+_sbd.baseRev.toFixed(2)))
     .replace(/\{\{addons_total\}\}/gi, _sr('$'+_sbd.addonsTotal.toFixed(2)))
@@ -1124,11 +1069,11 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
     .replace(/\{\{additional_drivers\}\}/gi, _sr(_buildAdditionalDriversHtml(bk, true)))
     .replace(/\{\{owner_signature\}\}/gi,
       (data.owner_signature&&data.owner_signature.startsWith('data:image/'))
-        ? '<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block;filter:'+(_isWv?'brightness(0)':'brightness(0) invert(1)')+'">'
-        : '<span style="font-family:\'Brush Script MT\',\'Snell Roundhand\',cursive;font-size:28px;line-height:1;color:'+(_isWv?'#111':'#fff')+'">Edwin P. Watson Jr.</span>')
+        ? '<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">'
+        : '<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
     .replace(/\{\{customer_signature\}\}/gi,
       readOnly
-        ? (_isSlingFullDay(bk) ? _bothSigsHtml(bk, _isWv) : ((bk.customerSig&&bk.customerSig.startsWith('data:image/')) ? '<img src="'+bk.customerSig+'" style="max-height:80px;max-width:300px;display:block;filter:'+(_isWv?'':'invert(1)')+'">' : '_______________________________'))
+        ? ((bk.customerSig&&bk.customerSig.startsWith('data:image/')) ? '<img src="'+bk.customerSig+'" style="max-height:80px;max-width:300px;display:block">' : '_______________________________')
         : ((drvIdx === null)
             ? '<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span>'
             : (bk.customerSig&&bk.customerSig.startsWith('data:image/')
@@ -1156,28 +1101,26 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly, docType){
 // EVERY extension, when PB_FLAGS.cumulativeContracts is on). extId set -> the cumulative document from the
 // original through THAT extension. Falls back to the base-only contract whenever cumulative is off, there
 // are no extensions, or the cumulative build fails -- so the download never breaks.
-async function _portalDownloadSignedContract(bookingId, btnEl, extId, docType){
+async function _portalDownloadSignedContract(bookingId, btnEl, extId){
   var _lbl=null;
   if(btnEl){ try{ _lbl=btnEl.textContent; btnEl.disabled=true; btnEl.textContent='Preparing...'; }catch(e){} }
   function _restore(){ if(btnEl){ try{ btnEl.disabled=false; if(_lbl!=null) btnEl.textContent=_lbl; }catch(e){} } }
   try{
-    var r=await fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'});
+    var r=await fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'});
     var data=r&&r.ok?await r.json():null;
     if(!data||!data.booking){ toast('Could not load your contract.'); _restore(); return; }
     var bk=data.booking;
-    var exts=_extLiveP(bk);
+    var exts=(bk.extensions||[]).filter(Boolean);
     var tmpl='', _uptoLabel='', _extPart='';
-    if(docType==='waiver'){
-      tmpl=_smFillContractTmpl(bk, data, null, true, 'waiver'); _uptoLabel=''; _extPart='';
-    } else if(_pbCumulativeOn() && exts.length){
+    if(_pbCumulativeOn() && exts.length){
       var upto=exts.length-1;   // original + ALL extensions
       if(extId){ var ix=exts.findIndex(function(e){ return e&&e.id===extId; }); if(ix>=0){ upto=ix; _uptoLabel=' thru Extension '+(ix+1);
         // extension file saves as "<Client First Last> Extension <N> <start date>" (start = ext.fromDate)
         var _ex=exts[ix]||{}; var _sd=(_ex.fromDate||_ex.toDate||_ex.sigDate||'')+''; _extPart='Extension '+(ix+1)+(_sd?' '+_sd:''); } }
       tmpl=_buildCumulativeContractHtml(bk, data, upto, {});
     }
-    if(!tmpl && docType!=='waiver'){ tmpl=_smFillContractTmpl(bk, data, null, true); _uptoLabel=''; _extPart=''; }   // fallback: base-only (cumulative off / no exts / build failed)
-    if(!tmpl){ toast(docType==='waiver'?'No waiver on file for this booking.':'No contract on file for this booking.'); _restore(); return; }
+    if(!tmpl){ tmpl=_smFillContractTmpl(bk, data, null, true); _uptoLabel=''; _extPart=''; }   // fallback: base-only (cumulative off / no exts / build failed)
+    if(!tmpl){ toast('No contract on file for this booking.'); _restore(); return; }
     var isHtml=tmpl.trim().toLowerCase().startsWith('<!doctype')||tmpl.trim().startsWith('<html');
     var holder=document.createElement('div'); holder.style.cssText='position:absolute;left:-99999px;top:0;width:760px;visibility:hidden';
     document.body.appendChild(holder);
@@ -1191,7 +1134,7 @@ async function _portalDownloadSignedContract(bookingId, btnEl, extId, docType){
       holder.innerHTML='<div>'+tmpl+'</div>'; rootEl=holder;
     }
     var _base=((bk.name||'Client')+'').trim().replace(/\s+/g,' ')||'Client';
-    var fname=(docType==='waiver' ? (_base+' Signed Waiver') : (_extPart ? (_base+' '+_extPart) : (_base+' Signed Contract'+_uptoLabel))).replace(/[\/\\:*?"<>|]/g,'-')+'.pdf';
+    var fname=(_extPart ? (_base+' '+_extPart) : (_base+' Signed Contract'+_uptoLabel)).replace(/[\/\\:*?"<>|]/g,'-')+'.pdf';
     if(rootEl){ await _downloadSignedContractPdf(rootEl, fname); }
     else { toast('Could not render the contract for download.'); }
     try{ document.body.removeChild(holder); }catch(e){}
@@ -1200,49 +1143,8 @@ async function _portalDownloadSignedContract(bookingId, btnEl, extId, docType){
 }
 // Download the cumulative document from the original through a SPECIFIC extension.
 function _portalDownloadExtension(bookingId, extId, btnEl){ return _portalDownloadSignedContract(bookingId, btnEl, extId); }
-function _portalDownloadWaiver(bookingId, btnEl){ return _portalDownloadSignedContract(bookingId, btnEl, null, 'waiver'); }
-// View a document read-only (BEFORE or after signing) in a full-screen overlay -- so a client can always
-// preview their contract, waiver, or any extension from the Contract section, not just download once signed.
-function _portalPreviewDoc(bookingId, docType, extId, btnEl){
-  var _lbl=null; if(btnEl){ try{ _lbl=btnEl.textContent; btnEl.disabled=true; btnEl.textContent='Opening\u2026'; }catch(e){} }
-  function _restore(){ if(btnEl){ try{ btnEl.disabled=false; if(_lbl!=null) btnEl.textContent=_lbl; }catch(e){} } }
-  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'})
-    .then(function(r){ return r.ok?r.json():null; })
-    .then(function(data){
-      if(!data||!data.booking){ toast('Could not load the document.'); _restore(); return; }
-      var bk=data.booking, tmpl='';
-      if(extId){
-        var _ex=_extLiveP(bk);
-        var _ix=_ex.findIndex(function(e){ return e && e.id===extId; });
-        if(_ix>=0 && _pbCumulativeOn() && typeof _buildCumulativeContractHtml==='function') tmpl=_buildCumulativeContractHtml(bk,data,_ix,{});
-        if(!tmpl && _ix>=0 && typeof _buildExtAmendmentHtml==='function') tmpl='<!DOCTYPE html><html><body style="font-family:-apple-system,Segoe UI,sans-serif;padding:18px">'+_buildExtAmendmentHtml(bk,_ix,{dark:false,owner_signature:(data.owner_signature||'')})+'</body></html>';
-      } else {
-        tmpl=_smFillContractTmpl(bk, data, null, true, docType);
-      }
-      if(!tmpl){ toast('No document on file yet.'); _restore(); return; }
-      _showDocOverlay(tmpl, bookingId, docType, extId);
-      _restore();
-    }).catch(function(){ toast('Could not open the document.'); _restore(); });
-}
-function _showDocOverlay(docHtml, bid, docType, extId){
-  var old=document.getElementById('pbDocOverlay'); if(old) old.remove();
-  var isFull=/^\s*<!doctype|^\s*<html/i.test(docHtml);
-  var title=extId?'Extension Agreement':(docType==='waiver'?'Liability Waiver':'Rental Agreement');
-  var frameHtml=isFull?docHtml:('<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:-apple-system,Segoe UI,sans-serif;padding:20px;color:#111;background:#fff;line-height:1.5}</style></head><body>'+docHtml+'</body></html>');
-  var ov=document.createElement('div'); ov.id='pbDocOverlay';
-  ov.style.cssText='position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.88);display:flex;flex-direction:column';
-  ov.innerHTML=
-    '<div style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:#0d0d0d;border-bottom:1px solid rgba(255,255,255,.12);flex-shrink:0">'+
-      '<div style="font-weight:800;color:#C9A962;font-size:15px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+title+'</div>'+
-      '<button onclick="'+((docType==='waiver'&&!extId)?('_portalDownloadWaiver(\''+bid+'\', this)'):('_portalDownloadSignedContract(\''+bid+'\', this'+(extId?(",'"+extId+"'"):'')+')'))+'" style="padding:8px 14px;min-height:44px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:13px">\uD83D\uDCC4 Download</button>'+
-      '<button onclick="var d=document.getElementById(\'pbDocOverlay\');if(d)d.remove();" style="padding:8px 16px;min-height:44px;border:none;border-radius:8px;background:#333;color:#fff;font-weight:700;cursor:pointer;font-size:13px">Close</button>'+
-    '</div>'+
-    '<iframe id="pbDocFrame" sandbox="allow-same-origin" style="flex:1;width:100%;border:none;background:#fff"></iframe>';
-  document.body.appendChild(ov);
-  var fr=document.getElementById('pbDocFrame'); if(fr) fr.srcdoc=frameHtml;
-}
 
-function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
+function _initSigningMode(bookingId, driverIdx, fromPortal){
   _smDriverIdx = (driverIdx !== null && driverIdx !== undefined && !isNaN(Number(driverIdx))) ? Number(driverIdx) : null;
   _smFromPortal = !!fromPortal;
   document.getElementById('signing-screen').style.display = 'block';
@@ -1253,7 +1155,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
   document.getElementById('sign-tag').textContent = _smDriverIdx !== null ? 'Additional Driver Agreement' : 'Rental Agreement';
   var body = document.getElementById('signing-body');
 
-  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'})
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
   .then(r => r.ok ? r.json() : null)
   .then(function(data){
     if(!data||!data.booking){
@@ -1263,17 +1165,10 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     var bk = data.booking;
     var _isDriver = (_smDriverIdx !== null);
     var _signer = _isDriver ? (bk.extraDrivers&&bk.extraDrivers[_smDriverIdx]) : null;
-    // Slingshot FULL-DAY rentals sign TWO docs consecutively -- the WAIVER first, then the CONTRACT. docType is
-    // explicit ('waiver'/'contract') on the chained 2nd step; otherwise default to the waiver first (if unsigned)
-    // for the primary renter. Every other vehicle + Slingshot hourly + drivers stay on 'contract' (unchanged).
-    var _slingFullDay = !_isDriver && bk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event','lease'].indexOf(String(bk.type||'').toLowerCase())===-1;
-    var _waiverSigned = !!(bk.waiverSig && String(bk.waiverSig).indexOf('data:image/')===0);
-    var _dt = (docType==='waiver'||docType==='contract') ? docType : ((_slingFullDay && !_waiverSigned) ? 'waiver' : 'contract');
-    document.getElementById('sign-tag').textContent = _isDriver ? 'Additional Driver Agreement' : (_dt==='waiver' ? 'Liability Waiver' : 'Rental Agreement');
     var _signerName = _isDriver ? ((_signer&&_signer.name)||'Additional Driver') : (bk.name||'').split(' ')[0]||'there';
     var _alreadySig = _isDriver
       ? (_signer&&_signer.sig&&_signer.sig.startsWith('data:image/'))
-      : (_dt==='waiver' ? _waiverSigned : (bk.customerSig&&bk.customerSig.startsWith('data:image/')));
+      : (bk.customerSig&&bk.customerSig.startsWith('data:image/'));
     var _alreadyDate = _isDriver ? (_signer&&_signer.sigDate) : bk.customerSigDate;
 
     if(_alreadySig){
@@ -1302,9 +1197,8 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
       return;
     }
 
-    // Pick template (docType-aware: waiver -> the Slingshot waiver template; contract -> the rental agreement)
-    var tmpl = (bk.type==='lease') ? (data.leaseTemplate|| /* M2: NEVER fall back to the daily rental agreement for a lease; an absent leaseTemplate (worker not redeployed / sync lag) must hit the "contact us" block below, not serve the wrong legal doc */ '') : (_dt==='waiver' || (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly')) ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
-    tmpl = tmpl.replace(/Jalen Nguyen/g, 'Edwin P. Watson Jr.');   // owner change: never render the prior owner on the doc the client SIGNS (mirror the download render)
+    // Pick template
+    var tmpl = (bk.type==='lease') ? (data.leaseTemplate||data.contractTemplate||'') : (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
     if(!tmpl){ body.innerHTML='<div style="color:#f87171;padding:20px">No contract template found. Please contact Prestige Black Rentals.</div>'; return; }
     if(bk.type==='lease' && typeof _pbLeaseFill==='function') tmpl = _pbLeaseFill(tmpl, bk, true);
 
@@ -1327,18 +1221,12 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     var tStr = (today.getMonth()+1)+'/'+today.getDate()+'/'+today.getFullYear();
     var _sbd = _buildContractBreakdown(bk);
     var _svInfo = Object.assign({}, (bk.vehicleInfo||{}), VEHICLE_INFO[bk.vehicle]||{});  // booking snapshot fallback (covers owner-added custom vehicles the portal catalog lacks); catalog wins when present
-    // #16: the BASE/original agreement reproduces the ORIGINALLY-SIGNED terms -- the pre-extension return date and
-    // day count (extensions are separate amendment pages). Without this the re-rendered base doc showed the grown
-    // return, contradicting what the client actually signed.
-    var _otB = _smOrigTerms(bk);
-    var _origDropB = _otB.returnStr;   // #16: original signed return (robust to extension add/delete churn)
-    var _origDaysB = _otB.days;        // #16: original signed day count
     var _sRentalType = bk.type==='daily'?'Daily Rental':bk.type==='hourly'?'Hourly Booking':'Chauffeur Service';
     var _sPickupFull = fmtDateFull(bk.pickupDate||bk.date||'');
-    var _sReturnFull = fmtDateFull(_origDropB||bk.dropoffDate||'');   // #16: original signed return
+    var _sReturnFull = fmtDateFull(bk.dropoffDate||'');
     var _sVm = VEHICLE_MILEAGE[bk.vehicle]||{};
     // includedMiles is the TOTAL for the trip -> derive per-day from it (don't multiply the total by days).
-    var _sDaysM = _origDaysB||_sbd.days||1;   // #16: original day count
+    var _sDaysM = _sbd.days||1;
     var _sTripTot = (Number(bk.includedMiles)>0)?Number(bk.includedMiles):((Number(_sVm.miles)||0)*_sDaysM);
     var _sPerDay = (Number(bk.includedMiles)>0&&_sDaysM>0)?Math.round(Number(bk.includedMiles)/_sDaysM):(Number(_sVm.miles)||0);
     var _sOvRate = Number(bk.overageRate)||_sVm.overage||0;
@@ -1372,7 +1260,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
       .replace(/\{\{dropoff_time\}\}/gi, _sr(bk.dropoffTime?fmtTime(bk.dropoffTime):''))
       .replace(/\{\{pickup_time_display\}\}/gi, _sr(bk.pickupTime?' at '+fmtTime(bk.pickupTime):''))
       .replace(/\{\{dropoff_time_display\}\}/gi, _sr(bk.dropoffTime?' at '+fmtTime(bk.dropoffTime):''))
-      .replace(/\{\{days\}\}/gi, _sr(String(_origDaysB||_sbd.days)))
+      .replace(/\{\{days\}\}/gi, _sr(String(_sbd.days)))
       .replace(/\{\{daily_rate\}\}/gi, _sr(_sbd.days>0?'$'+_sbd.dailyRateNum.toFixed(2):'N/A'))
       .replace(/\{\{base_rental\}\}/gi, _sr('$'+_sbd.baseRev.toFixed(2)))
       .replace(/\{\{addons_total\}\}/gi, _sr('$'+_sbd.addonsTotal.toFixed(2)))
@@ -1426,7 +1314,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
       .replace(/\{\{owner_signature\}\}/gi,
         (data.owner_signature&&data.owner_signature.startsWith('data:image/'))
           ? '<img src="'+data.owner_signature+'" style="max-height:80px;max-width:300px;display:block">'
-          : '<span style="font-family:\'Brush Script MT\',\'Snell Roundhand\',cursive;font-size:28px;line-height:1;color:'+((_dt==='waiver'||(bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly'))?'#111':'#fff')+'">Edwin P. Watson Jr.</span>')
+          : '<span style="color:#aaa;font-style:italic;font-size:11px">not yet signed</span>')
       .replace(/\{\{customer_signature\}\}/gi,
         (_smDriverIdx === null)
           ? '<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span>'
@@ -1462,7 +1350,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
       '<canvas id="smSigCanvas" width="480" height="160" style="width:100%;max-width:480px;height:clamp(120px,22vw,160px);border:2px dashed rgba(201,169,98,.5);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block"></canvas>'+
       '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'+
       '<button onclick="_smClearSig()" style="padding:8px 16px;border:1px solid rgba(255,255,255,.2);border-radius:8px;background:transparent;color:rgba(255,255,255,.7);cursor:pointer;font-size:13px">\u2715 Clear</button>'+
-      '<button onclick="_smSubmitSig(\''+bookingId+'\','+((_smDriverIdx!==null)?_smDriverIdx:'null')+',\''+_dt+'\')" id="smSubmitBtn" style="padding:8px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:15px">\u270D\uFE0F Sign & Submit</button>'+
+      '<button onclick="_smSubmitSig(\''+bookingId+'\','+((_smDriverIdx!==null)?_smDriverIdx:'null')+')" id="smSubmitBtn" style="padding:8px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:15px">\u270D\uFE0F Sign & Submit</button>'+
       '</div>'+
       '<div id="smSigMsg" style="font-size:12px;color:rgba(255,255,255,.4);margin-top:8px">By signing, you agree to the terms of the rental agreement above.</div>'+
       '</div>';
@@ -1473,7 +1361,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal, docType){
     }
     window._smData = data;
     _smInitCanvas();
-    if(bk.type==='lease' && _smDriverIdx===null){ try{ _pbLeaseAckSetup(bk); }catch(e){} }   // initials are lessee(primary)-only; an authorized driver skips the walk
+    if(bk.type==='lease'){ try{ _pbLeaseAckSetup(bk); }catch(e){} }
 
     // Sticky bar
     var _sb = document.createElement('div');
@@ -1496,11 +1384,11 @@ function _smExtFrom(ext){
   }
   return (ext && ext.fromDate) || '';
 }
-// Original return = the FIRST-created extension's "extended from" (before any extension moved the dropoff).
-// Delegates to _smOrigTerms so the extension doc, the signed base contract, and its download all agree and
-// are equally robust to add/delete churn.
+// Original return = the FIRST extension's computed "from" (before any extension moved the dropoff).
 function _smOrigReturn(bk){
-  return _smOrigTerms(bk).returnStr;
+  var exts=(bk&&bk.extensions)||[];
+  if(!exts.length) return (bk&&bk.dropoffDate)||'';
+  return _smExtFrom(exts[0]) || (bk.dropoffDate||'');
 }
 
 // ====================================================================================================
@@ -1511,29 +1399,6 @@ function _smOrigReturn(bk){
 // ====================================================================================================
 function _pbCumulativeOn(){ try{ return !!(window.PB_FLAGS&&window.PB_FLAGS.cumulativeContracts); }catch(e){ return false; } }
 function _isSigDataUri(s){ return !!(s && String(s).indexOf('data:image/')===0); }
-// Canonical LIVE extension list for the portal (mirrors the dashboard's _extLive): drops soft-deleted
-// tombstones (_deleted) AND null/empty entries, and tolerates extensions stored as an object. Use this
-// EVERYWHERE the portal reads extensions -- signing, numbering, gating, download, preview -- so a deleted
-// extension can NEVER inflate the count (e.g. render a live ext as "#4") or leave a dead ext in a gate.
-// Every caller sharing this one list also guarantees indices line up across builders (no wrong-doc renders).
-function _extLiveP(bk){ var x=bk&&bk.extensions; var a=Array.isArray(x)?x:(x&&typeof x==='object'?Object.values(x):[]); return a.filter(function(e){ return e && !e._deleted; }); }
-// Reconciled money for ONE extension (display-only -- never mutates stored amounts). Returns
-// {charged, refunded, net, hasRefund}. charged = what the client was billed (ext.additionalCharge).
-// refunded = the Stripe refund tied to this extension: an explicit per-ext field if present, else the
-// booking-level Stripe-refund total (b._refundedTotal) attributed to the SOLE charged extension. So the
-// client (and the document they sign) sees the true amount kept -- e.g. charged $1,415.63 - refund
-// $845.00 = actual $570.63 -- never the raw pre-refund figure. Deposit refunds live in refundSent/
-// depositKept, NOT _refundedTotal, so a returned deposit never bleeds into an extension's math.
-function _extMoney(b, ext){
-  var charged = Math.max(0, Number(ext&&ext.additionalCharge)||0);
-  var refunded = Math.max(0, Number(ext&&(ext._reconciledRefund!=null?ext._reconciledRefund:ext._refunded))||0);
-  if(!refunded && charged>0 && Number(b&&b._refundedTotal)>0){
-    var _charged=_extLiveP(b).filter(function(e){ return e && Math.max(0,Number(e.additionalCharge)||0)>0; });
-    if(_charged.length===1 && _charged[0]===ext) refunded = Math.max(0, Number(b._refundedTotal)||0);
-  }
-  refunded = Math.min(refunded, charged);
-  return { charged: charged, refunded: refunded, net: Math.max(0, charged-refunded), hasRefund: refunded>0.005 };
-}
 
 // Gate-only "fully signed" for the strict sequence: primary renter + every NON-DENIED authorized driver
 // signed THIS extension. Excludes denied drivers (they can never sign) so they can't deadlock the chain.
@@ -1553,7 +1418,7 @@ function _extFullySignedForGate(b, ext){
 //   owner_signature  -> data URI of the owner signature (white image).
 function _buildExtAmendmentHtml(bk, extIdx, opts){
   opts=opts||{};
-  var exts=_extLiveP(bk), ext=exts[extIdx];
+  var exts=(bk.extensions||[]).filter(Boolean), ext=exts[extIdx];
   if(!ext) return '';
   var dark=!!opts.dark, signMode=(opts.mode==='sign');
   var tx=dark?'#e8e8e8':'#111', mut=dark?'#9a9a9a':'#555', faint=dark?'#8a8a8a':'#666';
@@ -1568,7 +1433,7 @@ function _buildExtAmendmentHtml(bk, extIdx, opts){
   var _own=(typeof opts.owner_signature==='string')?opts.owner_signature:'';
   var ownerSig=(_isSigDataUri(_own))
     ? '<img src="'+_own+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;'+ownerInk+'">'
-    : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+tx+';line-height:1">Edwin P. Watson Jr.</span>';
+    : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:'+tx+';line-height:1">Jalen Nguyen</span>';
   var sigBoxCss='border-bottom:1.5px solid '+sigBd+';min-height:80px;margin-bottom:4px;display:flex;align-items:flex-end;padding-bottom:2px';
   var padSpan='<span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed '+(dark?'#888':'#aaa')+';height:60px"></span>';
   var drvList=(bk.extraDrivers||[]);
@@ -1606,7 +1471,7 @@ function _buildExtAmendmentHtml(bk, extIdx, opts){
       '<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Extended From</span><br><strong>'+fmtDateFull(fromRaw)+'</strong></div>'+
       '<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">New Return Date</span><br><strong>'+fmtDateFull(ext.toDate)+'</strong></div>'+
       '<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Added</span><br><strong>+'+ext.extensionDays+' '+unit+'</strong></div>'+
-      (function(){ var _em=_extMoney(bk,ext); if(!(_em.charged>0)) return ''; return '<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Additional Charge</span><br><strong style="color:#C9A962">$'+_em.net.toFixed(2)+'</strong>'+(_em.hasRefund?'<br><span style="font-size:10px;color:'+faint+'">charged $'+_em.charged.toFixed(2)+', refunded $'+_em.refunded.toFixed(2)+'</span>':'')+'</div>'; })()+
+      (ext.additionalCharge?'<div><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Additional Charge</span><br><strong style="color:#C9A962">$'+Number(ext.additionalCharge).toFixed(2)+'</strong></div>':'')+
       (ext.notes?'<div style="flex:1"><span style="color:'+mut+';font-size:11px;text-transform:uppercase">Notes</span><br>'+esc(ext.notes)+'</div>':'')+
     '</div>'+
     '<h2 style="'+h2+'">Terms &amp; Conditions</h2>'+
@@ -1616,7 +1481,7 @@ function _buildExtAmendmentHtml(bk, extIdx, opts){
     '<div style="display:flex;gap:30px;flex-wrap:wrap;align-items:flex-start">'+
       '<div style="flex:1 1 210px;min-width:190px">'+
         '<div style="'+sigBoxCss+'">'+ownerSig+'</div>'+
-        '<div style="font-size:11px;font-weight:700;color:'+tx+'">Prestige Black Corp. \u2014 Edwin P. Watson Jr.</div>'+
+        '<div style="font-size:11px;font-weight:700;color:'+tx+'">Prestige Black Corp. \u2014 Jalen Nguyen</div>'+
         '<div style="font-size:10px;color:'+faint+';text-transform:uppercase;letter-spacing:.04em">Owner / Lessor</div>'+
       '</div>'+
       '<div style="flex:2 1 320px;min-width:200px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:18px 22px">'+
@@ -1642,7 +1507,7 @@ function _buildCumulativeContractHtml(bk, data, uptoExtIdx, opts){
     if(!originalHtml) return '';
     var dark=/#0d0d0d/.test(originalHtml);
     var ownerSig=(data&&typeof data.owner_signature==='string')?data.owner_signature:'';
-    var exts=_extLiveP(bk);
+    var exts=(bk.extensions||[]).filter(Boolean);
     var lim=Math.min(Number(uptoExtIdx), exts.length-1);
     var amend='';
     for(var i=0;i<=lim;i++){
@@ -1667,7 +1532,7 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx, fromPortal){
   document.getElementById('sign-tag').textContent = _exIsDrv ? 'Extension \u2014 Additional Driver' : 'Extension Agreement';
   var body = document.getElementById('signing-body');
 
-  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'})
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
   .then(r => r.ok ? r.json() : null)
   .then(function(data){
     if(!data||!data.booking){
@@ -1675,24 +1540,12 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx, fromPortal){
       return;
     }
     var bk = data.booking;
-    var exts = _extLiveP(bk);   // LIVE extensions only -- a deleted (tombstoned) ext must never count toward numbering or the gate
+    var exts = (bk.extensions||[]).filter(Boolean);   // drop any null/empty entries so findIndex + prevExt loop never throw
     var extIdx = exts.findIndex(e => e && e.id === extId);
-    if(extIdx === -1){
-      // The linked extension no longer exists -- almost always an OLD email whose extension was since deleted
-      // and replaced. Never dead-end the client: if exactly one live extension still needs THIS signer, send
-      // them straight to it (so any stale link lands on the current agreement instead of an error).
-      var _needsThisSigner=exts.filter(function(e){
-        if(!e) return false;
-        if(_exIsDrv){ var s=e.driverSigs&&e.driverSigs[_exDIdx]; return !(s&&_isSigDataUri(s.sig)); }
-        return !(e.signed && _isSigDataUri(e.sig));
-      });
-      if(_needsThisSigner.length===1){ extId=_needsThisSigner[0].id; extIdx=exts.indexOf(_needsThisSigner[0]); }
-    }
     if(extIdx === -1){
       var _haveIds = exts.map(function(e){ return (e&&e.id)||'(no-id)'; }).join(', ');
       try{ console.error('[PB] extension not found in the server copy of this booking. looked for extId=', extId, '| booking has', exts.length, 'extension(s):', _haveIds); }catch(_e){}
-      var _openPortal = exts.length ? '<div style="margin-top:14px"><button onclick="showAuthForSigner()" style="padding:10px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:700;cursor:pointer;font-size:14px">Open your Contracts \u2192</button><div style="font-size:11px;color:rgba(255,255,255,.4);margin-top:8px">Your current agreement is in the portal under Contracts.</div></div>' : '';
-      body.innerHTML = '<div style="text-align:center;padding:24px 20px;color:#e8e8e8"><div style="font-size:34px;margin-bottom:10px">\uD83D\uDCC4</div><div style="font-size:16px;font-weight:700;margin-bottom:6px">This link is out of date</div><div style="color:rgba(255,255,255,.55);font-size:13px">This particular extension was replaced. Your latest agreement is ready in your portal, or call us and we\u2019ll re-send it.</div>'+_openPortal+'<div style="margin-top:14px;font-size:12px;color:rgba(255,255,255,.55)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div><div style="margin-top:6px"><small style="opacity:.3">ref '+esc(String(extId))+' \u00B7 '+exts.length+' on file</small></div></div>';
+      body.innerHTML = '<div style="color:#f87171;padding:20px">Extension not found. Please contact Prestige Black Rentals at <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a>.<br><small style="opacity:.4">ref '+esc(String(extId))+' \u00B7 '+exts.length+' on file</small></div>';
       return;
     }
     var ext = exts[extIdx];
@@ -1711,19 +1564,33 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx, fromPortal){
       return;
     }
 
-    // NO signing gate. Each extension is a STANDALONE amendment with its own signature block, IP/country
-    // stamp, and signing log -- it does not depend on any other extension being signed first. The document
-    // the client was emailed a link to is ALWAYS immediately signable. (A prior "strict-sequence" gate --
-    // "Extension #N unlocks once Extension #1 is signed" -- permanently trapped a paying client when the
-    // earlier extensions had been deleted: the gate demanded a signature on a document that no longer exists.
-    // A client should never be sent a link to sign and then be told they cannot sign. Removed for good.)
+    // Strict-sequence guard (cumulative mode): this extension can't be signed until the Rental Agreement
+    // AND every earlier extension are fully signed -- unless the owner manually unlocked it. Catches stale
+    // signing links that bypass the portal's locked UI.
+    if(_pbCumulativeOn()){
+      var _isS=function(s){ return !!(s && String(s).startsWith('data:image/')); };
+      var _baseOk=_isS(bk.customerSig) && (bk.extraDrivers||[]).every(function(d){ return !d||!d.name||d.status==='denied'||_isS(d.sig); });
+      var _kBlock=-1; for(var _k=0;_k<extIdx;_k++){ if(!_extFullySignedForGate(bk, exts[_k])){ _kBlock=_k; break; } }
+      var _unlocked=(_baseOk && _kBlock===-1) || !!ext.unlockOverride;
+      if(!_unlocked){
+        var _blockTxt=!_baseOk ? 'the Rental Agreement is fully signed' : ('Extension #'+(_kBlock+1)+' is fully signed');
+        body.innerHTML='<div style="text-align:center;padding:30px">'+
+          '<div style="font-size:42px;margin-bottom:12px">\uD83D\uDD12</div>'+
+          '<div style="font-size:18px;font-weight:700;color:#fbbf24;margin-bottom:8px">Not ready to sign yet</div>'+
+          '<div style="color:rgba(255,255,255,.55);font-size:14px">Extension #'+(extIdx+1)+' unlocks once '+_blockTxt+'. Please complete the earlier agreement first.</div>'+
+          '<div style="margin-top:20px;font-size:12px;color:rgba(255,255,255,.55)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div>'+
+          _signerPortalPrompt(bk)+
+          '</div>';
+        return;
+      }
+    }
 
     window._smData = data;
     // Owner signature ALWAYS appears: the uploaded image if on file, else a typed cursive signature.
     var _ownSig = (typeof data.owner_signature==='string') ? data.owner_signature : '';   // tolerate a non-string owner sig (object/number) -> typed cursive fallback
     var ownerSig = (_ownSig&&_ownSig.startsWith('data:image/'))
       ? '<img src="'+_ownSig+'" style="max-height:72px;max-width:260px;display:block;object-fit:contain;filter:brightness(0)">'
-      : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Edwin P. Watson Jr.</span>';
+      : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',\'Snell Roundhand\',cursive;font-size:30px;color:#111;line-height:1">Jalen Nguyen</span>';
 
     var prevExtRows = '';
     for(var pi=0;pi<extIdx;pi++){
@@ -1762,14 +1629,14 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx, fromPortal){
         '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Extended From</span><br><strong>'+fmtDateFull(_extFromRaw)+'</strong></div>'+
         '<div><span style="color:#555;font-size:11px;text-transform:uppercase">New Return Date</span><br><strong>'+fmtDateFull(ext.toDate)+'</strong></div>'+
         '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Days Added</span><br><strong>+'+ext.extensionDays+' day'+(ext.extensionDays!==1?'s':'')+'</strong></div>'+
-        (function(){ var _em=_extMoney(bk,ext); if(!(_em.charged>0)) return ''; return '<div><span style="color:#555;font-size:11px;text-transform:uppercase">Additional Charge</span><br><strong style="color:#b8982e">$'+_em.net.toFixed(2)+'</strong>'+(_em.hasRefund?'<br><span style="font-size:10px;color:#777">charged $'+_em.charged.toFixed(2)+', refunded $'+_em.refunded.toFixed(2)+'</span>':'')+'</div>'; })()+
+        (ext.additionalCharge?'<div><span style="color:#555;font-size:11px;text-transform:uppercase">Additional Charge</span><br><strong style="color:#b8982e">$'+Number(ext.additionalCharge).toFixed(2)+'</strong></div>':'')+
         (ext.notes?'<div><span style="color:#555;font-size:11px;text-transform:uppercase">Notes</span><br>'+esc(ext.notes)+'</div>':'')+
       '</div>'+
       '<h2>Terms & Conditions</h2>'+
       '<p style="font-size:12px;color:#333;line-height:1.7;margin:0 0 8px">All original terms of the Rental Agreement remain in effect. This extension amends only the return date and charges noted above. Standard late fees of $75/hr apply for returns past the agreed time.</p>'+
       '<hr style="border:none;border-top:1.5px solid #aaa;margin:24px 0 18px">'+
       '<div style="display:flex;gap:28px;flex-wrap:wrap">'+
-        '<div style="flex:1;min-width:200px"><div class="sig-box">'+ownerSig+'</div><div style="font-size:11px">Date: '+todayFmt+'</div><div style="font-size:11px">Prestige Black Corp. \u2014 Edwin P. Watson Jr.</div></div>'+
+        '<div style="flex:1;min-width:200px"><div class="sig-box">'+ownerSig+'</div><div style="font-size:11px">Date: '+todayFmt+'</div><div style="font-size:11px">Prestige Black Corp. \u2014 Jalen Nguyen</div></div>'+
         '<div style="flex:1;min-width:200px"><div class="sig-box"><span id="sigPH" style="display:inline-block;min-width:200px;border-bottom:2px dashed #aaa;height:60px"></span></div><div style="font-size:11px">Date: <span id="sigDatePH">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></div><div style="font-size:11px">Customer: '+esc(bk.name)+'</div></div>'+
       '</div></body></html>';
 
@@ -1828,7 +1695,7 @@ function _pbLeaseFill(tmpl, bk, liveSign){
   var term=Number(bk.leaseTerm)||12, down=Number(bk.leaseDown)||0, monthly=Number(bk.leaseMonthly)||0;
   var deposit=Number(bk.leaseDeposit!=null?bk.leaseDeposit:bk.deposit)||0;
   var miles=Number(bk.leaseMiles)|| (term*1250), over=Number(bk.leaseOverage)||0.5;
-  var total=monthly*term;   // agreement line is literally "Total of Monthly Payments" == the monthly installments summed; down payment, deposit and one-time add-ons each print on their own line, so they must NOT be folded in here (the itemized Lease Total in the breakdown table is the all-in figure)
+  var total=Number(bk.leaseTotal)|| (down+monthly*term);
   var startS=fd(bk.pickupDate||bk.date||''), endS=fd(bk.dropoffDate||'');
   var ini=liveSign?'':(bk.leaseInitials?String(bk.leaseInitials).toUpperCase().slice(0,6):'');
   function R(re,val){ tmpl=tmpl.replace(re,function(){return val;}); }
@@ -1870,7 +1737,7 @@ function _pbLeaseAckSetup(bk){
       '<div style="font-size:15px;font-weight:800;color:#C9A962;margin-bottom:4px">Review &amp; Initial - Required Before Signing</div>'+
       '<div style="font-size:12px;color:rgba(255,255,255,.55);margin-bottom:12px;line-height:1.5">This is a binding motor-vehicle lease. You must review and initial <strong style="color:#fff">4 key sections</strong>. We will scroll you to each one in the agreement above.</div>'+
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px"><label style="font-size:12px;color:rgba(255,255,255,.7)">Your initials:</label>'+
-      '<input id="pbIniInput" type="text" maxlength="6" value="'+di+'" style="width:84px;padding:7px 10px;border:1px solid rgba(201,169,98,.5);border-radius:8px;background:#0e0e12;color:#C9A962;font-weight:800;font-size:15px;text-align:center;letter-spacing:.08em;text-transform:uppercase"></div>'+
+      '<input id="pbIniInput" type="text" maxlength="5" value="'+di+'" style="width:84px;padding:7px 10px;border:1px solid rgba(201,169,98,.5);border-radius:8px;background:#0e0e12;color:#C9A962;font-weight:800;font-size:15px;text-align:center;letter-spacing:.08em;text-transform:uppercase"></div>'+
       '<div id="pbIniProgress" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>'+
       '<button id="pbIniBtn" onclick="_pbIniBegin()" style="padding:11px 24px;border:none;border-radius:10px;background:#C9A962;color:#000;font-weight:800;font-size:15px;cursor:pointer;width:100%;max-width:340px">Begin - Take Me to Section 1</button>'+
       '<div id="pbIniHint" style="font-size:12px;color:rgba(255,255,255,.45);margin-top:10px"></div>';
@@ -1975,7 +1842,7 @@ function showAuthForSigner(){
   }
 }
 
-function _smSubmitSig(bookingId, driverIdx, docType){
+function _smSubmitSig(bookingId, driverIdx){
   var _isDriver = (driverIdx !== null && driverIdx !== undefined && !isNaN(Number(driverIdx)));
   var _dIdx = _isDriver ? Number(driverIdx) : null;
   var c = document.getElementById('smSigCanvas'); if(!c) return;
@@ -1993,14 +1860,13 @@ function _smSubmitSig(bookingId, driverIdx, docType){
     document.getElementById('smSigMsg').textContent = msg||'Network error \u2014 please try again.';
   }
 
-  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'})
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
   .then(r => r.ok?r.json():null)
   .then(function(freshData){
     var _freshBk = freshData&&freshData.booking ? freshData.booking : null;
     if(!_freshBk){ _showSaveErr('Error loading data \u2014 please refresh.'); return; }
     var _signerName = _isDriver ? ((_freshBk.extraDrivers&&_freshBk.extraDrivers[_dIdx]&&_freshBk.extraDrivers[_dIdx].name)||'Driver').split(' ')[0] : (_freshBk.name||'').split(' ')[0]||'there';
-    var _savePayload = {bookingId, sig, sigDate, t:_sigTokenFor(bookingId)};
-    if(docType==='waiver') _savePayload.doc='waiver';
+    var _savePayload = {bookingId, sig, sigDate};
     if(_isDriver) _savePayload.driverIdx = _dIdx;
     // LEASE: a primary lessee signature must carry the 4-section acknowledgment (initials) captured above.
     if(_freshBk && _freshBk.type==='lease' && !_isDriver){
@@ -2014,14 +1880,7 @@ function _smSubmitSig(bookingId, driverIdx, docType){
           // Update local state so button reflects signed status
           if(_smFromPortal && state && state.bookings){
             var _lb = state.bookings.find(function(x){ return x.id===bookingId; });
-            if(_lb){ if(docType==='waiver'){ _lb.waiverSig=sig; _lb.waiverSigDate=sigDate; } else { _lb.customerSig=sig; _lb.customerSigDate=sigDate; } }
-          }
-          // Slingshot full-day: after the WAIVER, immediately continue to the CONTRACT (consecutive signing).
-          if(docType==='waiver' && _freshBk && _freshBk.vehicle==='Polaris Slingshot' && ['hourly','chauffeur','event','lease'].indexOf(String(_freshBk.type||'').toLowerCase())===-1){
-            document.getElementById('signing-body').innerHTML = '<div style="text-align:center;padding:40px"><div style="font-size:48px;margin-bottom:12px">\u2705</div><div style="font-size:18px;font-weight:800;color:#22c55e;margin-bottom:8px">Waiver signed!</div><div style="color:rgba(255,255,255,.6);font-size:14px">Now review and sign your Rental Agreement\u2026</div></div>';
-            var _sbw=document.getElementById('smStickyBar'); if(_sbw) _sbw.remove();
-            setTimeout(function(){ _initSigningMode(bookingId, null, _smFromPortal, 'contract'); }, 950);
-            return;
+            if(_lb){ _lb.customerSig = sig; _lb.customerSigDate = sigDate; }
           }
           var _portalBtn = _smFromPortal
             ? '<button onclick="_smGoBack()" style="margin-top:20px;padding:12px 32px;background:#C9A962;color:#000;border:none;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer;">\u2190 Back to My Bookings</button>'
@@ -2064,24 +1923,24 @@ function _smSubmitExtSig(bookingId, extId, driverIdx){
     document.getElementById('smSigMsg').textContent = msg||'Network error \u2014 please try again.';
   }
 
-  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&t='+encodeURIComponent(_sigTokenFor(bookingId))+'&_='+Date.now(),{cache:'no-store'})
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
   .then(r => r.ok?r.json():null)
   .then(function(freshData){
     var bkFresh = freshData&&freshData.booking ? freshData.booking : null;
     if(!bkFresh){ _showSaveErr('Error loading data \u2014 please refresh.'); return; }
-    var _exPayload={bookingId,sig,sigDate,extId,t:_sigTokenFor(bookingId)}; if(_exIsDrv) _exPayload.driverIdx=_exDIdx;
+    var _exPayload={bookingId,sig,sigDate,extId}; if(_exIsDrv) _exPayload.driverIdx=_exDIdx;
     return fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_exPayload)})
       .then(r => r.json())
       .then(function(res){
         if(res&&res.ok){
           var name = _exIsDrv ? (((bkFresh.extraDrivers&&bkFresh.extraDrivers[_exDIdx]&&bkFresh.extraDrivers[_exDIdx].name)||'Driver').split(' ')[0]) : ((bkFresh.name||'').split(' ')[0]||'there');
-          // Number by the LIVE extension list (never count deleted tombstones) so the confirmation matches the doc.
-          var extNum = _extLiveP(bkFresh).findIndex(function(e){ return e && e.id === extId; }) + 1;
-          // Update local state so the portal's Contract tab reflects signed status immediately -- find the ext by
-          // ID (not index: the local array can include tombstones, so an index would land on the wrong entry).
+          var exts = bkFresh.extensions||[];
+          var extIdx = exts.findIndex(e => e.id === extId);
+          var extNum = extIdx+1;
+          // Update local state so the portal's Contract tab reflects signed status immediately
           if(_smFromPortal && state && state.bookings){
             var _lbk = state.bookings.find(function(x){ return x.id===bookingId; });
-            var _lext = _lbk && (_lbk.extensions||[]).find(function(e){ return e && e.id===extId; });
+            var _lext = _lbk && (_lbk.extensions||[])[extIdx];
             if(_lext){
               if(_exIsDrv){ _lext.driverSigs = _lext.driverSigs||{}; _lext.driverSigs[_exDIdx] = {sig:sig, sigDate:sigDate}; }
               else { _lext.signed = true; _lext.sig = sig; _lext.sigDate = sigDate; }
@@ -2109,6 +1968,113 @@ function _smSubmitExtSig(bookingId, extId, driverIdx){
         }
       });
   }).catch(err => _showSaveErr('Network error \u2014 '+err));
+}
+
+// VEHICLE SUBSTITUTION AMENDMENT signing (portal) -- mirrors the extension signing flow. Loads the booking,
+// finds the swap in vehicleSwaps[], renders the amendment + signature pad, and POSTs /signing/save with swapId.
+// The original agreement/signature is untouched. ASCII-safe (HTML entities + plain ASCII).
+var _smSwapTok = '';
+function _smAmendWhen(ms){ if(!ms) return 'now'; try{ return new Date(Number(ms)).toLocaleString(); }catch(e){ return 'now'; } }
+function _initAmendmentSigningMode(bookingId, swapId, fromPortal){
+  _smFromPortal = !!fromPortal;
+  try{ _smSwapTok = new URLSearchParams(location.search).get('t') || ''; }catch(e){ _smSwapTok=''; }
+  document.getElementById('signing-screen').style.display = 'block';
+  document.getElementById('auth-screen').style.display = 'none';
+  document.getElementById('app-screen').style.display = 'none';
+  var backBtn = document.getElementById('sign-back-btn');
+  if(backBtn) backBtn.style.display = _smFromPortal ? '' : 'none';
+  var tagEl = document.getElementById('sign-tag'); if(tagEl) tagEl.textContent = 'Vehicle Substitution Amendment';
+  var body = document.getElementById('signing-body');
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
+  .then(function(r){ return r.ok ? r.json() : null; })
+  .then(function(data){
+    if(!data||!data.booking){ body.innerHTML = '<div style="color:#f87171;padding:20px">Unable to load. Contact Prestige Black Rentals at <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a>.</div>'; return; }
+    var bk = data.booking;
+    var swaps = (bk.vehicleSwaps||[]).filter(function(w){ return w && !w._deleted; });
+    var sw = swaps.find(function(w){ return w && w.id===swapId; });
+    if(!sw){ body.innerHTML = '<div style="color:#f87171;padding:20px">This amendment was not found. Please contact Prestige Black Rentals at <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a>.<br><small style="opacity:.4">ref '+esc(String(swapId))+'</small></div>'; return; }
+    var who = ((bk.name||'').split(' ')[0]) || 'there';
+    var already = !!(sw.amendmentSig && String(sw.amendmentSig).startsWith('data:image/'));
+    if(already){
+      body.innerHTML = '<div style="text-align:center;padding:30px">'+
+        '<div style="font-size:48px;margin-bottom:12px">&#9989;</div>'+
+        '<div style="font-size:18px;font-weight:700;color:#22c55e;margin-bottom:8px">Amendment Already Signed!</div>'+
+        '<div style="color:rgba(255,255,255,.5);font-size:14px">The vehicle substitution was signed on '+esc(sw.amendmentSigDate||'file')+'. Thank you, '+esc(who)+'!</div>'+
+        '<div style="margin-top:20px;font-size:12px;color:rgba(255,255,255,.55)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div>'+
+        _signerPortalPrompt(bk)+
+        '</div>';
+      return;
+    }
+    window._smData = data;
+    var _ownSig = (typeof data.owner_signature==='string') ? data.owner_signature : '';
+    var ownerSig = (_ownSig&&_ownSig.startsWith('data:image/'))
+      ? '<img src="'+_ownSig+'" style="max-height:58px;max-width:220px;display:block;object-fit:contain;filter:brightness(0)">'
+      : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',cursive;font-size:26px;color:#111">Jalen Nguyen</span>';
+    var isSlingWaiver = (bk.vehicle==='Polaris Slingshot' && bk.type==='hourly');
+    var docName = isSlingWaiver ? 'Liability Waiver' : 'Rental Agreement';
+    var origDate = bk.customerSigDate || '';
+    var pa = Number(sw.priceAdjust)||0;
+    var paLine = pa ? ('<tr><td style="padding:6px 10px;font-size:13px;color:#444">Price adjustment</td><td style="padding:6px 10px;font-size:13px;font-weight:700">'+(pa>0?'+':'')+'$'+(Math.round(pa*100)/100).toFixed(2)+(sw.priceAdjustNote?(' <span style="color:#888">('+esc(sw.priceAdjustNote)+')</span>'):'')+'</td></tr>') : '';
+    body.innerHTML =
+      '<div style="background:#fff;color:#111;border-radius:12px;padding:20px;max-width:620px;margin:0 auto">'+
+        '<div style="font-size:18px;font-weight:800;color:#0a3d62;margin-bottom:6px">Vehicle Substitution Amendment</div>'+
+        '<p style="font-size:13.5px;line-height:1.6;margin:0 0 12px">Hi '+esc(who)+', please review and sign this amendment to your '+esc(docName)+(origDate?(' dated '+esc(origDate)):'')+'. Your original agreement and signature remain in full force &mdash; this only substitutes the vehicle.</p>'+
+        '<table style="width:100%;border-collapse:collapse;background:#f7f9fb;border-radius:8px;overflow:hidden">'+
+          '<tr><td style="padding:6px 10px;font-size:13px;color:#444;width:42%">Original vehicle</td><td style="padding:6px 10px;font-size:13px;font-weight:700">'+esc(sw.fromVehicle||bk.vehicle||'')+(sw.fromColor?(' ('+esc(sw.fromColor)+')'):'')+'</td></tr>'+
+          '<tr><td style="padding:6px 10px;font-size:13px;color:#444">Substitute vehicle</td><td style="padding:6px 10px;font-size:13px;font-weight:700">'+esc(sw.vehicle||'')+(sw.color?(' ('+esc(sw.color)+')'):'')+'</td></tr>'+
+          '<tr><td style="padding:6px 10px;font-size:13px;color:#444">Effective</td><td style="padding:6px 10px;font-size:13px">'+esc(_smAmendWhen(sw.effAt))+'</td></tr>'+
+          paLine+
+        '</table>'+
+        '<p style="font-size:12px;line-height:1.55;color:#333;margin:12px 0 0">All other terms, conditions, rate, security deposit, insurance and liability provisions of the original Agreement remain in full force and apply to the substitute vehicle. By signing below you acknowledge receiving the substitute vehicle and agree this Amendment forms part of the original Agreement.</p>'+
+        '<div style="margin-top:14px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Prestige Black Rentals</div>'+ownerSig+'</div>'+
+      '</div>'+
+      '<div id="smSignSection" style="margin-top:18px;text-align:center">'+
+        '<div style="font-size:12px;color:rgba(255,255,255,.6);margin-bottom:6px">Sign below</div>'+
+        '<canvas id="smSigCanvas" width="480" height="160" style="width:100%;max-width:480px;height:clamp(120px,22vw,160px);border:2px dashed rgba(201,169,98,.5);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block;margin:0 auto"></canvas>'+
+        '<div style="margin-top:10px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'+
+          '<button onclick="_smClearSig()" style="padding:8px 18px;border:1px solid rgba(255,255,255,.25);border-radius:8px;background:transparent;color:rgba(255,255,255,.8);font-weight:700;cursor:pointer;font-size:14px">Clear</button>'+
+          '<button onclick="_smSubmitAmendmentSig(\''+bookingId+'\',\''+swapId+'\')" id="smSubmitBtn" style="padding:8px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:15px">&#9997;&#65039; Sign &amp; Submit</button>'+
+        '</div>'+
+        '<div id="smSigMsg" style="margin-top:8px;font-size:13px;color:rgba(255,255,255,.6)"></div>'+
+      '</div>';
+    _smInitCanvas();
+  })
+  .catch(function(){ body.innerHTML = '<div style="color:#f87171;padding:20px">Network error. Please try again or call (214) 207-2481.</div>'; });
+}
+function _smSubmitAmendmentSig(bookingId, swapId){
+  var c = document.getElementById('smSigCanvas'); if(!c) return;
+  var ctx = c.getContext('2d');
+  var px = ctx.getImageData(0,0,c.width,c.height).data;
+  var hasInk = false; for(var i=3;i<px.length;i+=4){ if(px[i]>10){ hasInk=true; break; } }
+  if(!hasInk){ document.getElementById('smSigMsg').textContent='Please sign above before submitting.'; return; }
+  var btn = document.getElementById('smSubmitBtn'); if(btn){ btn.disabled=true; btn.textContent='Saving...'; }
+  var sig = c.toDataURL('image/png');
+  var t = new Date(); var sigDate = (t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
+  function _showSaveErr(msg){ if(btn){ btn.disabled=false; btn.innerHTML='&#9997;&#65039; Sign &amp; Submit'; } var m=document.getElementById('smSigMsg'); if(m){ m.style.color='#f87171'; m.textContent=msg||'Network error -- please try again.'; } }
+  var payload = {bookingId:bookingId, sig:sig, sigDate:sigDate, swapId:swapId}; if(_smSwapTok) payload.t=_smSwapTok;
+  fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .then(function(r){ return r.json(); })
+    .then(function(res){
+      if(res&&res.ok){
+        var bkName=''; try{ bkName=((window._smData&&window._smData.booking&&window._smData.booking.name)||'').split(' ')[0]; }catch(e){}
+        if(_smFromPortal && state && state.bookings){ var _lb=state.bookings.find(function(x){ return x.id===bookingId; }); if(_lb && Array.isArray(_lb.vehicleSwaps)){ var _ls=_lb.vehicleSwaps.find(function(w){ return w&&w.id===swapId; }); if(_ls){ _ls.amendmentSig=sig; _ls.amendmentSigDate=sigDate; _ls.signed=true; } } }
+        var _portalBtn = _smFromPortal ? '<button onclick="_smGoBack()" style="margin-top:20px;padding:12px 32px;background:#C9A962;color:#000;border:none;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer">&#8592; Back to My Bookings</button>' : _signerPortalPrompt((window._smData&&window._smData.booking)||{});
+        var sb = document.getElementById('smStickyBar'); if(sb) sb.remove();
+        document.getElementById('signing-body').innerHTML =
+          '<div style="text-align:center;padding:40px">'+
+          '<div style="font-size:60px;margin-bottom:16px">&#9989;</div>'+
+          '<div style="font-size:22px;font-weight:800;color:#22c55e;margin-bottom:10px">Amendment Signed!</div>'+
+          '<div style="color:rgba(255,255,255,.6);font-size:15px;margin-bottom:20px">Thank you'+(bkName?(', '+esc(bkName)):'')+'! The vehicle substitution has been signed and recorded.</div>'+
+          '<div style="background:rgba(255,255,255,.05);border-radius:10px;padding:16px;display:inline-block;text-align:left;min-width:220px">'+
+          '<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Your Signature</div>'+
+          '<img src="'+sig+'" style="max-height:60px;max-width:240px;display:block;background:#fff;padding:6px;border-radius:6px">'+
+          '<div style="font-size:11px;color:rgba(255,255,255,.3);margin-top:6px">Signed '+sigDate+'</div></div>'+
+          '<div style="margin-top:24px;font-size:13px;color:rgba(255,255,255,.55)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div>'+
+          _portalBtn+
+          '</div>';
+      } else { _showSaveErr(res&&res.error ? res.error : 'Save failed -- please try again.'); }
+    })
+    .catch(function(err){ _showSaveErr('Network error -- '+err); });
 }
 
 // --- Auth ------------------------------------------------------------------
@@ -2177,8 +2143,6 @@ function _safeClear(key){
 // Called when a payment API returns 401 \u2014 prompts re-login without forcing a page redirect
 function _portalSessionExpired(){
   toast('Session expired \u2014 please sign out and sign back in to pay.','error');
-  // #13: re-enable any pay/sign button left disabled on a spinner so the client isn't stuck needing a full reload
-  try{ Array.prototype.forEach.call(document.querySelectorAll('button[disabled]'), function(b){ if(/Loading|Working|Preparing|Saving|Opening|\u2026/i.test(b.textContent||'')){ b.disabled=false; } }); }catch(e){}
 }
 
 // Resolve a Stripe payment confirmation that couldn't be marked-paid at return time (no session
@@ -2272,18 +2236,20 @@ document.addEventListener('DOMContentLoaded',()=>{
   var sp = new URLSearchParams(location.search);
   var signId = sp.get('sign');
   var extId  = sp.get('extId');
+  var swapId = sp.get('swap');   // vehicle-substitution amendment signing
   var driverParam = sp.get('driver');
   var driverIdx = (driverParam !== null && driverParam !== '') ? parseInt(driverParam) : null;
   var paidFlag   = sp.get('paid');
   var paidBkId   = sp.get('bookingId');
   var paidChgId  = sp.get('chargeId');
-  var paidPartial= sp.get('partial')==='1';   // H3: a single lease MONTHLY payment -> a partial; do NOT paint the balance paid-in-full on return (the worker records it as a partial + leaves the residual)
   var paidSid    = sp.get('session_id');   // Stripe checkout session id -> the worker verifies the payment before marking paid
   var paidSelfKind = sp.get('selfKind');   // 'extras' | 'addtime' -> chauffeur self-service checkout (mark-self-paid appends the paid charge / folds add-time hours in)
 
   if(signId){
     hideLoading();
-    if(extId){
+    if(swapId){
+      _initAmendmentSigningMode(signId, swapId);
+    } else if(extId){
       _initExtensionSigningMode(signId, extId, driverIdx);
     } else {
       _initSigningMode(signId, driverIdx);
@@ -2309,7 +2275,7 @@ document.addEventListener('DOMContentLoaded',()=>{
       if(_pBk){
         if(paidChgId){
           (_pBk.portalCharges||[]).forEach(function(c){ if(c&&c.id===paidChgId) c.paidAt=_paidNow; });
-        } else if(!paidPartial){   // H3: a single lease monthly is a partial -> don't optimistically show paid-in-full
+        } else {
           _pBk.balancePaidAt = _paidNow;
         }
       }
@@ -2347,28 +2313,13 @@ document.addEventListener('DOMContentLoaded',()=>{
                     (_pBk.portalCharges||[]).forEach(function(c){
                       if(c && c.id===paidChgId && !c.paidAt) c.paidAt = _paidNow;
                     });
-                  } else if(!paidPartial && !(_markResult && _markResult.partial)){   // H3: a monthly partial keeps its residual -> leave loadPortalData's refreshed balance, don't paint paid-in-full
+                  } else {
                     if(!_pBk.balancePaidAt) _pBk.balancePaidAt = _paidNow;
                     if(!_pBk.balancePaidMethod) _pBk.balancePaidMethod = 'Stripe (portal)';
                     if(!_pBk.balancePaidAmount && _markResult && _markResult.amount != null) _pBk.balancePaidAmount = _markResult.amount;
                   }
                 }
               }
-              // Paid an EXTENSION on a SIGNED base -> carry the client straight to signing it.
-              try{
-                if(paidBkId && paidChgId && _markOk){
-                  var _eb=state.bookings.find(function(x){ return x.id===paidBkId; });
-                  var _ec=_eb?(_eb.portalCharges||[]).find(function(c){ return c && c.id===paidChgId && c._extId; }):null;
-                  var _baseSigned=!!(_eb && _eb.customerSig && String(_eb.customerSig).indexOf('data:image/')===0);
-                  var _ex=_ec?(_eb.extensions||[]).find(function(e){ return e && e.id===_ec._extId && !e._deleted; }):null;
-                  if(_ex && _baseSigned && !_ex.signed && typeof _initExtensionSigningMode==='function'){
-                    showApp(); switchTab('bookings');
-                    setTimeout(function(){ toast('\u2705 Payment received \u2014 now sign your extension.','success'); }, 300);
-                    setTimeout(function(){ _initExtensionSigningMode(paidBkId, _ec._extId, null, true); }, 650);
-                    return;
-                  }
-                }
-              }catch(_e){}
               showApp();
               switchTab('bookings');
               if(_markOk){
@@ -2415,7 +2366,7 @@ function showApp(){
 
 async function loadPortalData(){
   try{
-    const r = await fetch(`${WORKER}/portal/data`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token})});
+    const r = await fetch(`${WORKER}/portal/data?email=${encodeURIComponent(state.email)}&token=${encodeURIComponent(state.token)}`);
     if(r.status === 401){ return 'unauthorized'; }   // only real auth failure clears session
     if(!r.ok){ return 'error'; }                     // network/server error \u2014 keep session
     const d = await r.json();
@@ -2476,7 +2427,7 @@ function renderContractTab(){
     if(!b) return false;
     var s = (b.status||'').toLowerCase();
     if(s==='cancelled') return false;
-    return b.contractSent || (b.customerSig && b.customerSig.startsWith('data:image/')) || (b.waiverSig && String(b.waiverSig).indexOf('data:image/')===0) || (_extLiveP(b).length>0);
+    return b.contractSent || (b.customerSig && b.customerSig.startsWith('data:image/'));
   });
   if(!bks.length){
     el.innerHTML='<div style="text-align:center;color:var(--text-muted);padding:60px 16px;"><div style="font-size:40px;margin-bottom:12px;">\uD83D\uDCC4</div><div style="font-size:15px;font-weight:600;margin-bottom:8px;">No Contract Yet</div><div style="font-size:13px;">Your rental agreement will appear here once a booking is confirmed.</div></div>';
@@ -2486,74 +2437,50 @@ function renderContractTab(){
   var html = '';
   bks.forEach(function(b){
     var alreadySigned = _isSig(b.customerSig);
-    var _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event','lease'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day = waiver + rental agreement
-    var _wSig = _isSig(b.waiverSig);
     var _drvs = (b.extraDrivers||[]).filter(function(d){ return d && d.name && d.status !== 'denied'; });   // a denied driver is not a party -> doesn't block "fully signed"
     var _pendingDrv = _drvs.filter(function(d){ return !_isSig(d.sig); }).length;
-    var fullySigned = alreadySigned && _pendingDrv===0 && (!_sfd || _wSig);   // Slingshot full-day also needs the waiver
+    var fullySigned = alreadySigned && _pendingDrv===0;   // primary renter + EVERY listed authorized driver has signed
     var sigDate = b.sigDate || b.contractSignedAt || b.customerSigDate || '';
     var sigDateStr = sigDate ? (function(){ try{ return new Date(sigDate).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }catch(e){ return String(sigDate); } })() : '';
-    var exts = _extLiveP(b);   // always list LIVE extensions (never tombstoned) so the client can view/sign/download each
+    var exts = _pbCumulativeOn() ? (b.extensions||[]).filter(Boolean) : [];
     html += '<div class="card" style="margin-bottom:14px;">'
       + '<div class="card-header"><div><div class="vehicle-name" style="font-size:15px;">' + (b.vehicle||b.car||'Rental Agreement') + '</div>'
       + '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + (b.startDate||'') + (b.endDate?' \u2013 '+b.endDate:'') + '</div></div>'
       + (fullySigned
         ? '<span style="background:rgba(34,197,94,.15);color:#4ade80;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u2705 Signed</span>'
-        : ((_sfd && alreadySigned && !_wSig)
-          ? '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u26A0\uFE0F Waiver Needed</span>'
-          : (alreadySigned
-            ? '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u23F3 Awaiting Drivers</span>'
-            : '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u26A0\uFE0F Action Needed</span>')))
+        : (alreadySigned
+          ? '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u23F3 Awaiting Drivers</span>'
+          : '<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;">\u26A0\uFE0F Action Needed</span>'))
       + '</div>';
-    // --- Slingshot full-day: Liability Waiver row (reviewed + signed BEFORE the rental agreement) ---
-    if(_sfd){
-      var _wDateStr = b.waiverSigDate ? String(b.waiverSigDate) : '';
-      html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:6px 0 6px;">Liability Waiver</div>';
-      html += '<button class="btn btn-ghost" style="margin-right:6px;margin-bottom:6px" onclick="_portalPreviewDoc(\''+b.id+'\',\'waiver\',null,this)">\uD83D\uDC41\uFE0F View Waiver</button>';
-      if(_wSig){
-        if(_wDateStr) html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Signed '+_wDateStr+'</div>';
-        html += '<button class="btn btn-ghost" onclick="_portalDownloadWaiver(\''+b.id+'\', this)">\uD83D\uDCC4 Download Waiver</button>';
-      } else {
-        html += '<button class="btn" onclick="_initSigningMode(\''+b.id+'\',null,true,\'waiver\')">\u270D\uFE0F Sign Liability Waiver \u2192</button>';
-      }
-      html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:14px 0 6px;">Rental Agreement</div>';
-    }
     // --- Original rental agreement row ---
     var _mt = exts.length ? '0' : '8px';
-    if(exts.length && !_sfd) html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:6px 0 6px;">Original Agreement</div>';
+    if(exts.length) html += '<div style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin:6px 0 6px;">Original Agreement</div>';
     if(sigDateStr && alreadySigned) html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Signed ' + sigDateStr + '</div>';
-    html += '<button class="btn btn-ghost" style="margin-right:6px;margin-bottom:6px" onclick="_portalPreviewDoc(\''+b.id+'\',\'contract\',null,this)">\uD83D\uDC41\uFE0F View Agreement</button>';
     if(fullySigned){
       html += '<button class="btn" style="margin-top:'+_mt+';" onclick="_portalDownloadSignedContract(\''+b.id+'\', this)">\uD83D\uDCC4 Download '+(exts.length?'Full Contract':'Signed Contract')+'</button>';
-    } else if(_sfd && alreadySigned && !_wSig){
-      // Rental agreement signed but the liability waiver is still missing (owner in-person capture, or a booking
-      // signed before the waiver step existed). The waiver row above carries the live "Sign Liability Waiver"
-      // action; keep the already-signed agreement downloadable so a legacy signed copy never disappears.
-      html += '<div style="font-size:12px;color:var(--text-muted);padding:10px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">Rental agreement signed \u2014 complete the liability waiver above to finish.</div>';
-      html += '<button class="btn btn-ghost" style="margin-top:8px;" onclick="_portalDownloadSignedContract(\''+b.id+'\', this)">\uD83D\uDCC4 Download Signed Agreement</button>';
     } else if(alreadySigned){
       html += '<div style="font-size:12px;color:var(--text-muted);padding:10px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">You\'ve signed \u2014 awaiting '+_pendingDrv+' authorized driver signature'+(_pendingDrv===1?'':'s')+' before the signed copy is ready.</div>';
     } else {
-      if(_sfd && !_wSig){
-        html += '<div style="font-size:12px;color:var(--text-muted);padding:10px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">Sign the liability waiver above \u2014 you\'ll be brought here to sign the rental agreement automatically.</div>';
-      } else {
-        html += '<button class="btn" style="margin-top:'+_mt+';" onclick="_initSigningMode(\''+b.id+'\',null,true'+(_sfd?",'contract'":'')+')">\u270D\uFE0F Sign Rental Agreement \u2192</button>';
-      }
+      html += '<button class="btn" style="margin-top:'+_mt+';" onclick="_initSigningMode(\''+b.id+'\',null,true)">\u270D\uFE0F Sign Rental Agreement \u2192</button>';
     }
-    // --- Extension rows: each is a STANDALONE amendment. No sequential lock -- every live extension is
-    // independently viewable/signable/downloadable, in any order, so a deleted or unsigned earlier ext can
-    // never trap a client on a later one. (Tombstoned exts were already dropped by _extLiveP above.)
+    // --- Extension rows (strict sequence) ---
     if(exts.length){
+      var priorAllSigned = true;   // every extension BEFORE this one fully signed by all required parties
       exts.forEach(function(ext, i){
         var extNum = i+1;
         var primSigned = !!(ext.signed && _isSig(ext.sig));
         var drvPending = 0;
         (b.extraDrivers||[]).forEach(function(d,di){ if(!d||!d.name||d.status==='denied') return; var s=ext.driverSigs&&ext.driverSigs[di]; if(!_isSig(s&&s.sig)) drvPending++; });
         var gateSigned = _extFullySignedForGate(b, ext);
+        var unlocked = (fullySigned && priorAllSigned) || !!ext.unlockOverride;
         var badge, action;
         if(gateSigned){
           badge='<span style="background:rgba(34,197,94,.15);color:#4ade80;border-radius:20px;padding:3px 9px;font-size:10px;font-weight:700;">\u2705 Signed</span>';
           action='<button class="btn" style="margin-top:0;" onclick="_portalDownloadExtension(\''+b.id+'\',\''+ext.id+'\', this)">\uD83D\uDCC4 Download (thru Ext '+extNum+')</button>';
+        } else if(!unlocked){
+          var blockMsg = !fullySigned ? 'Complete the Rental Agreement first' : 'Extension '+(i)+' must be fully signed first';
+          badge='<span style="background:rgba(148,163,184,.15);color:#94a3b8;border-radius:20px;padding:3px 9px;font-size:10px;font-weight:700;">\uD83D\uDD12 Locked</span>';
+          action='<div style="font-size:11.5px;color:var(--text-muted);padding:9px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">'+blockMsg+'</div>';
         } else if(!primSigned){
           badge='<span style="background:rgba(234,179,8,.15);color:#fbbf24;border-radius:20px;padding:3px 9px;font-size:10px;font-weight:700;">\u26A0\uFE0F Action Needed</span>';
           action='<button class="btn" style="margin-top:0;" onclick="_initExtensionSigningMode(\''+b.id+'\',\''+ext.id+'\',null,true)">\u270D\uFE0F Sign Extension '+extNum+' \u2192</button>';
@@ -2562,16 +2489,12 @@ function renderContractTab(){
           action='<div style="font-size:11.5px;color:var(--text-muted);padding:9px;background:rgba(255,255,255,.03);border-radius:8px;text-align:center;">You\'ve signed \u2014 awaiting '+drvPending+' authorized driver signature'+(drvPending===1?'':'s')+'.</div>'+
             '<button class="btn btn-ghost" style="margin-top:6px;" onclick="_portalDownloadExtension(\''+b.id+'\',\''+ext.id+'\', this)">\uD83D\uDCC4 Download draft (thru Ext '+extNum+')</button>';
         }
-        action = '<button class="btn btn-ghost" style="margin-top:0;margin-right:6px" onclick="_portalPreviewDoc(\''+b.id+'\',\'contract\',\''+ext.id+'\',this)">\uD83D\uDC41\uFE0F View</button>' + action;   // client can always preview the extension
-        var _em = _extMoney(b, ext);
-        var _moneyInline = _em.charged ? (' \u00B7 $'+_em.net.toFixed(2)) : '';
-        var _moneySub = _em.hasRefund
-          ? '<div style="font-size:11px;color:var(--text-muted);margin:-2px 0 8px;">Charged $'+_em.charged.toFixed(2)+' \u00B7 refunded $'+_em.refunded.toFixed(2)+' \u00B7 <span style="color:#4ade80;font-weight:700">actual $'+_em.net.toFixed(2)+'</span></div>'
-          : '';
+        var charge = Number(ext.additionalCharge)||0;
         html += '<div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.07);">'
           + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;">'
-          + '<div style="font-size:13px;font-weight:700;">Extension '+extNum+'<span style="font-size:11px;color:var(--text-muted);font-weight:500;"> \u00B7 new return '+(ext.toDate?fmtDateFull(ext.toDate):'\u2014')+_moneyInline+'</span></div>'
-          + badge + '</div>' + _moneySub + action + '</div>';
+          + '<div style="font-size:13px;font-weight:700;">Extension '+extNum+'<span style="font-size:11px;color:var(--text-muted);font-weight:500;"> \u00B7 new return '+(ext.toDate?fmtDateFull(ext.toDate):'\u2014')+(charge?' \u00B7 $'+charge.toFixed(2):'')+'</span></div>'
+          + badge + '</div>' + action + '</div>';
+        priorAllSigned = priorAllSigned && gateSigned;
       });
     }
     html += '</div>';
@@ -2866,7 +2789,7 @@ function showDrivers(b){
     const isDenied  = d.status === 'denied';
     const isApproved = d.status === 'approved';
     const initial   = (d.name||'?')[0].toUpperCase();
-    const sigUrl    = `${sigBase}?sign=${encodeURIComponent(b.id)}&driver=${i}${b._signToken?('&t='+encodeURIComponent(b._signToken)):''}`;
+    const sigUrl    = `${sigBase}?sign=${encodeURIComponent(b.id)}&driver=${i}`;
     // Badge
     let badgeHtml;
     if(isPending){
@@ -2920,15 +2843,11 @@ function showSignContract(b){
   if(['cancelled'].includes(s)) return '';
   // Only show if contract has been sent by admin
   if(!b.contractSent) return '';
-  const _sfd = (b.vehicle==='Polaris Slingshot') && ['hourly','chauffeur','event','lease'].indexOf(String(b.type||'').toLowerCase())===-1;   // Slingshot full-day signs waiver + agreement
-  const _wSig = b.waiverSig && String(b.waiverSig).startsWith('data:image/');
-  const _cSig = b.customerSig && b.customerSig.startsWith('data:image/');
-  const alreadySigned = _cSig && (!_sfd || _wSig);   // Slingshot full-day needs BOTH docs signed
-  if(alreadySigned) return `<div style="margin-top:10px;display:flex;align-items:center;gap:6px;font-size:12px;color:#22c55e;font-weight:600;">\u2705 ${_sfd?'Documents':'Contract'} Signed</div>`;
-  const _label = (_sfd && !_wSig) ? 'Sign Liability Waiver' : 'Sign Rental Agreement';   // waiver comes first for Slingshot full-day
+  const alreadySigned = b.customerSig && b.customerSig.startsWith('data:image/');
+  if(alreadySigned) return `<div style="margin-top:10px;display:flex;align-items:center;gap:6px;font-size:12px;color:#22c55e;font-weight:600;">\u2705 Contract Signed</div>`;
   return `<div style="margin-top:12px;">
     <button onclick="_initSigningMode('${b.id}',null,true)" style="width:100%;padding:13px;background:linear-gradient(135deg,#C9A962,#a8893e);color:#000;border:none;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer;letter-spacing:.02em;display:flex;align-items:center;justify-content:center;gap:8px;">
-      \u270D\uFE0F ${_label}
+      \u270D\uFE0F Sign Rental Agreement
     </button>
   </div>`;
 }
@@ -2979,102 +2898,10 @@ async function addUnlimited(bookingId){
   }
 }
 
-// Sum of UNPAID extension-linked portal charges. An extension is shown + paid ONCE as its own charge, so
-// the base-balance display + payment net this out (matches the worker /portal/pay-balance netting exactly).
-function _unpaidExtChargeTotal(b){
-  return (((b&&b.portalCharges))||[]).reduce(function(s,c){ return (c && !c.paidAt && (c._extId || c._extPayment || String(c.category||'').toLowerCase()==='extension') && Number(c.amount)>0) ? s+(Number(c.amount)||0) : s; }, 0);
-}
-// Sign-anytime element for any UNSIGNED extension (owner-created OR client add-days) -- so a guest can always
-// sign without the owner sending a link. _initExtensionSigningMode handles ordering (earlier ext must sign first).
-function showExtensionSign(b){
-  if(!b) return '';
-  var t=(b.type||'').toLowerCase(); if(t==='chauffeur'||t==='event') return '';
-  var s=(b.status||'').toLowerCase(); if(['cancelled','completed','voided'].indexOf(s)!==-1) return '';
-  if(!(b.customerSig && String(b.customerSig).indexOf('data:image/')===0)) return '';   // extensions sign separately only AFTER the base is signed; unsigned add-days folds into the booking (nothing separate to sign)
-  var exts=(Array.isArray(b.extensions)?b.extensions:(b.extensions&&typeof b.extensions==='object'?Object.values(b.extensions):[])).filter(function(e){ return e && !e._deleted; });
-  var unsigned=exts.filter(function(e){ return !(e.signed && String(e.sig||'').indexOf('data:image/')===0); });
-  if(!unsigned.length) return '';
-  var bid=b.id;
-  var _extPaid=function(e){ if(!e||!e._billedViaCharge) return true; var _c=(Array.isArray(b.portalCharges)?b.portalCharges:[]).find(function(c){ return c && c._extId===e.id; }); return !_c || !!_c.paidAt; };   // a portal-self extension (billed via its own charge) is signable only AFTER that charge is paid
-  return unsigned.map(function(e){
-    var num=exts.indexOf(e)+1;
-    var when=e.toDate?_radFmtRet(e.toDate):'';
-    return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">'+
-      '<div style="background:rgba(201,169,98,.06);border:1px solid rgba(201,169,98,.28);border-radius:12px;padding:12px 14px;">'+
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'+
-          '<div style="font-size:12px;font-weight:800;color:#C9A962;">\u270D\uFE0F Sign Extension #'+num+'</div>'+
-          (when?'<div style="font-size:11px;color:rgba(255,255,255,.6);">through '+esc(when)+'</div>':'')+
-        '</div>'+
-        '<div style="font-size:11px;color:rgba(255,255,255,.55);line-height:1.5;margin-bottom:10px;">Your rental was extended. Review and sign your extension agreement to confirm the new return date.</div>'+
-        (_extPaid(e)
-          ? '<button type="button" onclick="_initExtensionSigningMode(\''+bid+'\',\''+e.id+'\',null,true)" style="width:100%;padding:11px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;">Review and Sign Extension #'+num+' \u2192</button>'
-          : '<div style="width:100%;padding:11px;background:rgba(255,255,255,.04);border:1px dashed rgba(201,169,98,.4);border-radius:10px;font-weight:700;font-size:12.5px;color:rgba(255,255,255,.62);text-align:center;box-sizing:border-box;">\uD83D\uDD12 Complete the extension payment above, then sign here.</div>')+
-      '</div></div>';
-  }).join('');
-}
 var PB_CRYPTO_LIVE = false;   // flip to true once Coinbase key is set + worker deployed -> reveals the portal crypto button
 function showPayBalance(b){
-  const bal = Number(b.remainingBalance) || 0;   // extension is never in the balance now (signed=its own charge, unsigned=folded), so no netting
+  const bal = Number(b.remainingBalance) || 0;
   if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed','voided'].includes((b.status||'').toLowerCase())) return '';
-  // ---- H3: a LEASE pays by the month, not the whole term at once. Show this month's payment as the primary
-  // action (one monthly = leaseMonthly, clamped to the remaining balance so the final stub month pays off the
-  // lease), with a secondary link to settle the full remaining balance early. Each monthly charge is recorded
-  // as a partial that decrements remainingBalance (worker /portal/pay-balance amount + mark-balance-paid #5). ----
-  if(b.type==='lease' && Number(b.leaseMonthly)>0){
-    const lmPaidSoFar = Array.isArray(b.balancePayments) ? b.balancePayments.reduce(function(s,p){return s+(Number(p&&p.amount)||0);},0) : (Number(b.balancePaidAmount)||0);
-    const lmMonthly = Math.round((Number(b.leaseMonthly)||0)*100)/100;
-    const lmTerm    = Number(b.leaseTerm)||0;
-    const lmThis    = Math.round(Math.min(lmMonthly, bal)*100)/100;          // final payment may be a stub < one month
-    const lmTotal   = Math.round((lmThis + lmThis*0.05 + lmThis*0.0825)*100)/100;
-    const lmFullTot = Math.round((bal + bal*0.05 + bal*0.0825)*100)/100;
-    const lmPaidCnt = lmMonthly>0 ? Math.round(lmPaidSoFar/lmMonthly) : 0;
-    const lmProg    = lmTerm>0 ? (lmPaidCnt+' of '+lmTerm+' monthly payments made') : (lmPaidCnt+' monthly payment'+(lmPaidCnt===1?'':'s')+' made');
-    // Next scheduled due date (payment 1 was collected at signing): same day-of-month each month, or -- when the
-    // start day is a 29/30/31 that isn't in every month -- every 30 calendar days. Mirrors the worker reminder schedule.
-    var lmNextDue='';
-    (function(){
-      var _m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(b.pickupDate||b.date||'')); if(!_m) return;
-      var _s=new Date(+_m[1],+_m[2]-1,+_m[3],12,0,0), _d=_s.getDate(), _t0=new Date(); _t0.setHours(0,0,0,0);
-      for(var _n=1;_n<lmTerm;_n++){
-        var _due=_d<=28 ? new Date(_s.getFullYear(),_s.getMonth()+_n,_d,12,0,0) : new Date(_s.getTime()+_n*30*86400000);
-        var _dd=new Date(_due.getFullYear(),_due.getMonth(),_due.getDate(),12,0,0); _dd.setHours(0,0,0,0);
-        if(_dd>=_t0){
-          var _days=Math.round((_dd-_t0)/86400000);
-          var _rel=_days<=0?'due today':_days===1?'in 1 day':('in '+_days+' days');   // reminder email goes out when this hits 'in 3 days'
-          lmNextDue=_due.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+' ('+_rel+')';
-          break;
-        }
-      }
-    })();
-    return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
-      <div style="background:rgba(201,169,98,.06);border:1px solid rgba(201,169,98,.28);border-radius:12px;padding:12px 14px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <div style="font-size:12px;font-weight:800;color:#C9A962;">&#128467; Lease Monthly Payment</div>
-          <div style="font-size:11px;color:rgba(255,255,255,.6);">${lmProg}</div>
-        </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <div style="font-size:12px;font-weight:700;color:#C9A962;">${lmThis<lmMonthly-0.005?'Final payment':'This month'}</div>
-          <div style="font-size:16px;font-weight:800;color:#C9A962;">$${lmThis.toFixed(2)}</div>
-        </div>
-        <div style="font-size:10px;color:rgba(255,255,255,.55);margin-bottom:8px;">
-          Charged: $${lmTotal.toFixed(2)} &nbsp;&middot;&nbsp; includes 5% processing fee + 8.25% TX tax
-        </div>
-        ${lmNextDue?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:11px;color:rgba(255,255,255,.5);">
-          <div>Next payment due</div><div style="color:#C9A962;font-weight:700;">${lmNextDue}</div>
-        </div>`:''}
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-size:11px;color:rgba(255,255,255,.5);">
-          <div>Balance remaining</div><div>$${bal.toFixed(2)}</div>
-        </div>
-        <button onclick="payLeaseMonth('${b.id}', ${lmThis})" id="payBtn_${b.id}"
-          style="width:100%;padding:11px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;letter-spacing:.02em;">
-          Pay This Month &mdash; $${lmTotal.toFixed(2)} &rarr;
-        </button>
-        <div style="text-align:center;margin-top:9px;">
-          <a href="#" onclick="payBalance('${b.id}');return false;" style="font-size:11px;color:rgba(255,255,255,.5);">or settle the full remaining balance ($${lmFullTot.toFixed(2)})</a>
-        </div>
-      </div>
-    </div>`;
-  }
   const fee   = Math.round(bal * 0.05 * 100) / 100;
   const tax   = Math.round(bal * 0.0825 * 100) / 100;
   const total = Math.round((bal + fee + tax) * 100) / 100;
@@ -3123,31 +2950,6 @@ async function payBalance(bookingId){
   }catch(e){
     toast('Network error. Please try again.','error');
     if(btn){ btn.disabled=false; btn.textContent='Pay by Card \u2192'; }
-  }
-}
-
-// H3: charge ONE lease monthly payment (a partial of the remaining balance). Same endpoint + Stripe flow as
-// payBalance, but sends `amount` so the worker charges only this month; the finalize records it as a partial
-// and decrements remainingBalance. Returning with &partial=1 keeps the portal from flashing "paid in full".
-async function payLeaseMonth(bookingId, amount){
-  const btn = document.getElementById('payBtn_'+bookingId);
-  if(btn){ btn.disabled=true; btn.textContent='Loading\u2026'; }
-  try{
-    const r = await fetch(`${WORKER}/portal/pay-balance`,{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ email:state.email, token:state.token, bookingId, amount:amount })
-    });
-    const d = await r.json();
-    if(r.status===401){ _portalSessionExpired(); return; }
-    if(!r.ok || !d.url){
-      toast(d.error||'Unable to open payment. Call (214) 207-2481.','error');
-      if(btn){ btn.disabled=false; btn.textContent='Pay This Month \u2192'; }
-      return;
-    }
-    window.location.href = d.url;
-  }catch(e){
-    toast('Network error. Please try again.','error');
-    if(btn){ btn.disabled=false; btn.textContent='Pay This Month \u2192'; }
   }
 }
 
@@ -3324,116 +3126,6 @@ function _chFmtCountdown(ms){
 }
 
 // -- Enhance Your Trip: ONE card, ONE pay button covering add-time hours + extras --
-// -- Add Days: client self-service day extension for SELF-DRIVE rentals (before or during trip) --------
-// Priced at the booking's own effective per-day rate (carries promo/special). Not signed yet -> folds into
-// the balance; already signed -> creates a pending extension, pays first (existing payCharge), then signs
-// (existing extension signing). The worker re-computes + authorises everything.
-// Fleet rate tiers -- IDENTICAL to the website (PB_Booking_live.js) + worker PB_RATES. Extensions price off
-// these, capped at the customer's own per-day so a promo booking never pays more.
-var PB_RATES = {
-  'Corvette': { daily:450, weekly:1900, monthly:5700 }, 'Corvette Z51': { daily:450, weekly:1900, monthly:5700 },
-  'BMW M3': { daily:450, weekly:2200, monthly:5700 }, 'BMW i4': { daily:150, weekly:950, monthly:3000 },
-  'Macan': { daily:275, weekly:1750, monthly:4000 }, 'Porsche Boxster S': { daily:225, weekly:1250, monthly:3750 },
-  'C300': { daily:200, weekly:1250, monthly:3750 }, 'Polaris Slingshot': { daily:300, weekly:1500, monthly:4500 },
-  'Lambo Huracan': { daily:1350, weekly:0, monthly:0 }
-};
-function _pbTierTotal(days, r, startDow, promo){
-  var daily=(r&&r.daily)||0, weekly=(r&&r.weekly)||0, monthly=(r&&r.monthly)||0;
-  var base=days*daily, tiered=false;
-  if(monthly>0 && days>=30){ base=monthly+(days-30)*(monthly/30); tiered=true; }
-  else if(weekly>0 && days>=7){ base=weekly+(days-7)*(weekly/7); tiered=true; }
-  if(!tiered && !promo && startDow>=1 && startDow<=4) base=base*0.90;
-  return Math.round(base*100)/100;
-}
-function _radQuote(veh, n, origDaily, drop){
-  var r=PB_RATES[veh]||null, dow=0; try{ dow=new Date(drop+'T12:00:00Z').getUTCDay(); }catch(e){}
-  var tier=r?_pbTierTotal(n, r, dow, false):(origDaily*n);
-  return Math.round(Math.min(tier, origDaily*n)*100)/100;
-}
-// New-return date shown to the client as MM/DD/YYYY (Day) e.g. 09/02/2026 (Wed).
-function _radAddDaysIso(drop, n){ try{ if(!drop) return ''; var t=new Date(drop+'T12:00:00Z').getTime(); if(!isFinite(t)) return ''; return new Date(t+(Number(n)||0)*86400000).toISOString().slice(0,10); }catch(e){ return ''; } }
-function _radFmtRet(iso){
-  if(!iso) return '';
-  var d=new Date(iso+'T12:00:00Z');
-  if(isNaN(d.getTime())) return iso;
-  var dow=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()];
-  var mm=('0'+(d.getUTCMonth()+1)).slice(-2), dd=('0'+d.getUTCDate()).slice(-2), yy=d.getUTCFullYear();
-  return mm+'/'+dd+'/'+yy+' ('+dow+')';
-}
-function showRentalAddDays(b){
-  if(!b) return '';
-  var t=(b.type||'').toLowerCase();
-  if(t==='chauffeur'||t==='event') return '';
-  var s=(b.status||'').toLowerCase();
-  if(['cancelled','completed','voided'].indexOf(s)!==-1) return '';
-  var bd; try{ bd=_buildContractBreakdown(b); }catch(e){ return ''; }
-  // TRUE original per-day = base revenue / ORIGINAL days. b.days grows with each extension but revenue does not,
-  // so dailyRateNum (=baseRev/b.days) would dilute the cap + undercharge repeat extensions -- divide by origDays.
-  var _radExtPrior=(Array.isArray(b.extensions)?b.extensions:(b.extensions&&typeof b.extensions==='object'?Object.values(b.extensions):[])).filter(function(e){return e&&!e._deleted;}).reduce(function(s,e){return s+(Number(e.extensionDays)||0);},0);
-  var _radOrigDays=Math.max(1,((bd&&bd.days)||1)-_radExtPrior);
-  // #17: mirror the worker's adPerDay EXACTLY = (revenue - addons) / origDays, with UNLIMITED subtracted on
-  // ORIGINAL days (unlimited * _radOrigDays), not grown b.days -- otherwise the preview under-quotes vs the charge.
-  var _radAddons=(Number(b.delivery)||0)+(Number(b.stop)||0)+(Number(b.wait)||0)+(Number(b.unlimited)||0)*_radOrigDays+(Number(b.pet)||0)+(Number(b.photo)||0)+(Number(b.champagne)||0)+(Number(b.decor)||0)+(Number(b.redcarpet)||0)+(Number(b.bouquet)||0);
-  var rate=Math.round(((Math.max(0,(Number(b.revenue)||0)-_radAddons))/_radOrigDays)*100)/100;   // customer's TRUE per-day = the price cap (worker-identical)
-  if(rate<1) return '';
-  var bid=b.id;
-  var signed=!!(b.customerSig&&String(b.customerSig).indexOf('data:image/')===0);
-  var drop=b.dropoffDate||b.pickupDate||b.date||'';
-  var veh=b.vehicle||'';
-  var base1=_radQuote(veh,1,rate,drop);
-  var tot1 = signed ? Math.round(base1*1.1325*100)/100 : base1;   // signed => charged now (5% fee + 8.25% tax); UNSIGNED => folds into the balance, paid at signing (base only)
-  var ret1=_radAddDaysIso(drop,1);
-  var totLabel = signed ? 'Total (5% fee + 8.25% tax)' : 'Added to your balance (due at signing)';
-  return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">'+
-    '<div style="background:rgba(201,169,98,.05);border:1px solid rgba(201,169,98,.22);border-radius:12px;padding:14px 16px;">'+
-      '<div style="font-size:14px;font-weight:800;color:#fff;margin-bottom:3px;">\uD83D\uDCC5 Add Days</div>'+
-      '<div style="font-size:11px;color:rgba(255,255,255,.5);line-height:1.5;margin-bottom:12px;">Keep your <strong style="color:#C9A962;">'+esc(b.vehicle||'rental')+'</strong> longer at your rate of <strong style="color:#C9A962;">$'+rate.toLocaleString()+'/day</strong>.</div>'+
-      '<div style="display:flex;align-items:center;gap:14px;justify-content:center;margin:4px 0 12px;">'+
-        '<button type="button" onclick="_radStep(\''+bid+'\',-1)" aria-label="Fewer days" style="width:40px;height:40px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,.05);color:#fff;font-size:22px;font-weight:800;cursor:pointer;line-height:1;">\u2212</button>'+
-        '<div style="text-align:center;min-width:66px;"><div id="radN_'+bid+'" style="font-size:28px;font-weight:800;color:#C9A962;line-height:1;">1</div><div id="radNl_'+bid+'" style="font-size:10px;color:rgba(255,255,255,.5);letter-spacing:.04em;">DAY</div></div>'+
-        '<button type="button" onclick="_radStep(\''+bid+'\',1)" aria-label="More days" style="width:40px;height:40px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,.05);color:#fff;font-size:22px;font-weight:800;cursor:pointer;line-height:1;">+</button>'+
-      '</div>'+
-      '<div style="display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,.6);margin-bottom:3px;"><span>New return</span><span id="radRet_'+bid+'" style="color:#fff;font-weight:600;">'+esc(_radFmtRet(ret1))+'</span></div>'+
-      '<div style="display:flex;justify-content:space-between;font-size:12px;color:rgba(255,255,255,.6);"><span>'+totLabel+'</span><span id="radTot_'+bid+'" style="color:#fff;font-weight:800;font-size:15px;">$'+tot1.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+'</span></div>'+
-      '<button type="button" onclick="rentalAddDaysGo(\''+bid+'\')" id="radBtn_'+bid+'" data-veh="'+esc(veh)+'" data-origdaily="'+rate+'" data-signed="'+(signed?'1':'0')+'" data-drop="'+esc(drop)+'" style="width:100%;margin-top:12px;padding:12px;background:linear-gradient(135deg,#b8982e,#7a6320);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;letter-spacing:.02em;">Add to my trip</button>'+
-    '</div></div>';
-}
-function _radStep(bid,delta){
-  var el=document.getElementById('radN_'+bid); if(!el) return;
-  var n=Math.max(1,Math.min(60,(parseInt(el.textContent,10)||1)+(delta||0)));
-  el.textContent=n; var l=document.getElementById('radNl_'+bid); if(l) l.textContent=(n===1?'DAY':'DAYS');
-  _radRecalc(bid);
-}
-function _radRecalc(bid){
-  var el=document.getElementById('radN_'+bid), btn=document.getElementById('radBtn_'+bid); if(!el||!btn) return;
-  var n=Math.max(1,parseInt(el.textContent,10)||1);
-  var veh=btn.getAttribute('data-veh')||'', origDaily=Number(btn.getAttribute('data-origdaily'))||0, drop=btn.getAttribute('data-drop')||'';
-  var _rSigned=(btn.getAttribute('data-signed')==='1'); var base=_radQuote(veh,n,origDaily,drop), total=_rSigned?(Math.round(base*1.1325*100)/100):base;   // #18: unsigned folds into balance (base only), signed = charged now
-  var ret=_radAddDaysIso(drop,n);
-  var rEl=document.getElementById('radRet_'+bid); if(rEl) rEl.textContent=_radFmtRet(ret);
-  var tEl=document.getElementById('radTot_'+bid); if(tEl) tEl.textContent='$'+total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-}
-async function rentalAddDaysGo(bid){
-  var el=document.getElementById('radN_'+bid), btn=document.getElementById('radBtn_'+bid); if(!btn) return;
-  var n=Math.max(1,parseInt((el&&el.textContent)||'1',10)||1);
-  btn.disabled=true; var _t=btn.textContent; btn.textContent='Working\u2026';
-  try{
-    var r=await fetch(WORKER+'/portal/add-days',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:state.email,token:state.token,bookingId:bid,addDays:n})});
-    var d=await r.json().catch(function(){return{};});
-    if(r.status===401){ if(typeof _portalSessionExpired==='function'){_portalSessionExpired();return;} }
-    if(!r.ok||!d.ok){ toast((d&&d.error)||'Could not add days \u2014 call (214) 207-2481.','error'); btn.disabled=false; btn.textContent=_t; return; }
-    if(d.mode==='extension' && d.chargeId){
-      toast(d.signAfter?'Extension created \u2014 opening secure payment; you\'ll sign it right after.':'Extension created \u2014 opening secure payment.','success');
-      if(typeof payCharge==='function'){ payCharge(bid, d.chargeId); return; }
-      toast('Extension added \u2014 pay it in the Charges section.','success');
-    } else {
-      toast('\u2705 '+n+' day'+(n!==1?'s':'')+' added \u2014 new return '+(d.newDropoff||'')+'.','success');
-    }
-    if(typeof loadPortalData==='function'){ try{ await loadPortalData(); }catch(e){} }
-    if(typeof renderBookings==='function') renderBookings();
-  }catch(e){ toast('Network error \u2014 please try again.','error'); btn.disabled=false; btn.textContent=_t; }
-}
-
 function showChauffeurEnhance(b){
   if(!_chPortalOn() || !b || b.type!=='chauffeur') return '';
   var s=(b.status||'').toLowerCase(); if(['cancelled','completed'].indexOf(s)!==-1) return '';
@@ -3489,7 +3181,7 @@ function showChauffeurEnhance(b){
     '</div>'+
     '<button onclick="chauffeurEnhance(\''+bid+'\')" id="chPayBtn_'+bid+'" disabled style="width:100%;margin-top:8px;padding:12px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-weight:800;font-size:14px;cursor:pointer;opacity:.5;letter-spacing:.02em;">Select an enhancement</button>';
 
-  var promoBlock = '';   // POLICY: Enhance Your Trip is full-price -- no promo on add-time/extras (mirrors no-discount-on-late-return)
+  var promoBlock = _chPromoOn() ? ('<div id="chPromoWrap_'+bid+'" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">'+_chPromoRowHtml(bid)+'</div>') : '';
 
   return '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">'+
     '<div id="chEnhBox_'+bid+'" style="background:rgba(124,196,255,.05);border:1px solid rgba(124,196,255,.22);border-radius:12px;padding:14px 16px;">'+
@@ -3617,12 +3309,10 @@ function renderBookings(){
       <div class="booking-meta">${priceStr?`<span>${priceStr}</span> &nbsp;\u00B7&nbsp; `:''}${bookingRef(b.id)}</div>
       ${progressBar(b.status)}
       ${showSignContract(b)}
-      ${showPayBalance(b)}
-      ${showPendingCharges(b)}
-      ${showExtensionSign(b)}
       ${showAddUnlimited(b)}
       ${showChauffeurEnhance(b)}
-      ${showRentalAddDays(b)}
+      ${showPayBalance(b)}
+      ${showPendingCharges(b)}
       ${showMileageTracker(b)}
       ${showCondition(b)}
       ${paymentHistory}
@@ -3644,19 +3334,6 @@ function _buildPaymentHistory(b){
     const d = b.balancePaidAt ? fmtDate(b.balancePaidAt) : '';
     rows.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);"><span style="color:var(--text-muted)">Full Payment${d?' \u00B7 '+d:''}</span><span style="color:var(--green);font-weight:700">${amt?'$'+amt:''} \u2705</span></div>`);
   }
-  // Rental-extension charges the client actually paid on their card. Show the GROSS charged; a refund (if
-  // any) is its own line below, so the ledger reads charge + refund the way the owner's trip ledger does.
-  _extLiveP(b).forEach(function(e){
-    var em=_extMoney(b,e);
-    if(!(em.charged>0)) return;
-    if(!(e._paidExternally || e.paid || e.paidAt || em.refunded>0)) return;   // only actually-collected extensions
-    const d = e.paidAt ? fmtDate(e.paidAt) : '';
-    rows.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);"><span style="color:var(--text-muted)">Rental Extension${d?' \u00B7 '+d:''}</span><span style="color:var(--green);font-weight:700">$${em.charged.toFixed(2)} \u2705</span></div>`);
-  });
-  // Stripe refund(s) issued back to the client's card (e.g. an over-charge that was partially refunded).
-  if(Number(b._refundedTotal)>0){
-    rows.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border);"><span style="color:var(--text-muted)">Refund to Card</span><span style="color:#f87171;font-weight:700">-$${Number(b._refundedTotal).toFixed(2)}</span></div>`);
-  }
   if(b.zelleRequested){
     const d = b.zelleRequestedAt ? fmtDate(b.zelleRequestedAt) : '';
     rows.push(`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;"><span style="color:var(--text-muted)">Zelle Requested${d?' \u00B7 '+d:''}</span><span style="color:#a78bfa;font-weight:700">Pending</span></div>`);
@@ -3671,9 +3348,9 @@ var VEHICLE_RATES = {
   "Corvette":           { rate:450,  deposit:750,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_4934.jpg?v=1780329454&width=600',       desc:'2023 Chevrolet Corvette C8 \u00B7 White' },
   "Corvette Z51":       { rate:450,  deposit:750,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/67E01466-6370-4766-9664-B3177F7A0BF3.png?v=1774231506&width=600', desc:'2023 Chevrolet Corvette C8 Z51 \u00B7 Black' },
   "BMW M3":             { rate:450,  deposit:750,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/Sleek_BMW_M3_at_twilight.png?v=1772687164&width=600',            desc:'2026 BMW M3 Competition xDrive \u00B7 Black' },
-  "BMW i4":             { rate:150,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Mar_16_2026_10_29_04_PM.png?v=1773719350&width=600', desc:'2022 BMW i4 \u00B7 White' },
-  "Macan":              { rate:275,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/Sleek_Porsche_Macan_at_twilight.png?v=1772687164&width=600',      desc:'2025 Porsche Macan \u00B7 Black' },
-  "Porsche Boxster S":  { rate:225,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_7810.jpg?v=1778039085&width=600',        desc:'2013 Porsche Boxster S \u00B7 White' },
+  "BMW i4":             { rate:150,  deposit:300,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Mar_16_2026_10_29_04_PM.png?v=1773719350&width=600', desc:'2022 BMW i4 \u00B7 White' },
+  "Macan":              { rate:325,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/Sleek_Porsche_Macan_at_twilight.png?v=1772687164&width=600',      desc:'2025 Porsche Macan \u00B7 Black' },
+  "Porsche Boxster S":  { rate:300,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_7810.jpg?v=1778039085&width=600',        desc:'2013 Porsche Boxster S \u00B7 White' },
   "C300":               { rate:200,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/Mercedes-Benz_AMG_C300_at_twilight.png?v=1772687163&width=600',  desc:'2022 Mercedes-Benz C300 AMG \u00B7 Gray' },
   "Lambo Huracan":      { rate:1350, deposit:1000, type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/6E5F23BF-88AE-446E-BF29-516AECBB0BAD.png?v=1774231128&width=600', desc:'2015 Lamborghini Hurac\u00E1n \u00B7 Gray' },
   "Polaris Slingshot":  { rate:300,  deposit:250,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_8536.heic?v=1780329704&width=600',       desc:'2025 Polaris Slingshot SL' },
