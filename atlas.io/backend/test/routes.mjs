@@ -286,15 +286,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const _origFetch = globalThis.fetch;
   globalThis.fetch = (u, opts) => { sent.push(String((opts && opts.body) || '')); return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, text: async () => '', json: async () => ({ id: 'm1' }) }); };
 
+  // re-audit #45: the reset email is now dispatched via ctx.waitUntil (timing side-channel fix) -> drain the scheduled promise before reading the captured mail
+  const _fpWaited = []; const fpCtx = { waitUntil: (p) => { _fpWaited.push(p); }, passThroughOnException() {} };
   // 1) forgot-password: an EXISTING email -> generic ok (no enumeration)
-  let pr = await worker.fetch(pReq('POST', '/api/auth/forgot-password', { email: 'Known@X.com' }), pwEnv, ctx);
+  let pr = await worker.fetch(pReq('POST', '/api/auth/forgot-password', { email: 'Known@X.com' }), pwEnv, fpCtx);
   let pj = await pr.json();
   ok(pr.status === 200 && pj.ok === true && /reset link is on the way/i.test(pj.message || ''), 'forgot-password: existing email -> generic ok + message');
 
   // 2) forgot-password: a NON-existing email -> the SAME generic response (no enumeration)
-  let pr2 = await worker.fetch(pReq('POST', '/api/auth/forgot-password', { email: 'nobody@x.com' }), pwEnv, ctx);
+  let pr2 = await worker.fetch(pReq('POST', '/api/auth/forgot-password', { email: 'nobody@x.com' }), pwEnv, fpCtx);
   let pj2 = await pr2.json();
   ok(pr2.status === 200 && pj2.ok === true && pj2.message === pj.message, 'forgot-password: unknown email -> identical generic response (no enumeration)');
+  await Promise.all(_fpWaited.map((p) => Promise.resolve(p).catch(() => {})));   // re-audit #45: await the waitUntil-deferred reset-email send so the link capture below is deterministic
+  ok(_fpWaited.length === 1, 're-audit #45: forgot-password dispatches the reset email via waitUntil (deferred off the response path) -- exactly one scheduled send for the existing email, none for the unknown (identical response timing)');
 
   const sentMail = sent.map((b) => { try { return JSON.parse(b); } catch (e) { return {}; } }).find((b) => b.html && /Reset your password/i.test(b.html));
   const linkM = ((sentMail && sentMail.html) || '').match(/href="([^"]+)"/);
@@ -1452,6 +1456,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/income\|earnings\|commission\|wage\|salary\|net\\b\|gross\|roi\|money/.test(_WORKER_SRC), 're-audit #53: _aiQKind classifies earnings/commission/wage/salary/net/gross/roi as sensitive so a finance question is never served a stale own-tenant cache answer');
 }
 
+// ---- re-audit #45/#47/#54: A090 idv-strip bookingId-independent; _reprice negative-rule skip + clamp (#45 forgot-pw timing covered by the behavioral test above). ----
+{
+  ok(/\} else if \(data\.portal && data\.portal\.idv\) \{ data\.portal\.idv\.status = 'processing'; \}/.test(_WORKER_SRC), 're-audit #47: a bookings create with NO bookingId downgrades a client-claimed portal.idv.status to processing (the A090 strip no longer skips the no-bookingId path)');
+  ok(/if \(!\(amt > 0\)\) return; _feeLines\.push\(/.test(_WORKER_SRC) && /var total = Math\.max\(0, sub \+ fees \+ tax\);/.test(_WORKER_SRC), 're-audit #54: _reprice skips a non-positive money rule (mirrors the client estimate) and clamps the total >= 0 so a negative rule cannot drive a negative stored total');
+  ok(/if \(_ectx && _ectx\.waitUntil\) _ectx\.waitUntil\(_rpP\); else await _rpP;/.test(_WORKER_SRC), 're-audit #45: the forgot-password reset email is dispatched via waitUntil (off the response path) to close the email-enumeration timing side-channel');
+}
+
 // ---- CAPPED PROMO slot released on cancel + auto-expire (money MED #13): a public booking that redeemed a capped promo reserved
 // a slot (promo_uses.n++) at request time while still Pending/unpaid; the slot was released ONLY on /book failure, never when a
 // saved booking later cancelled or auto-expired -> every abandoned/cancelled public redemption permanently consumed a slot and
@@ -2424,12 +2435,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
         all: async () => {
           if (/GROUP BY intent/.test(sql)) return { results: [{ intent: 'marketing', vertical: '', n: 8 }] };
           if (/FROM ai_answers WHERE kind='stable' AND intent=/.test(sql)) return { results: [
-            { answer: 'For tenant Bob charge $1,540/week and target 43% utilization; his email is bob@acme.com.' },
-            { answer: 'List across 3 channels and respond within 24 hours.' },
-            { answer: 'Discount slow midweeks a little to fill gaps.' },
-            { answer: 'Follow up with past renters within a day.' },
-            { answer: 'Bundle add-ons for peak weekends.' },
-          ] };
+            { answer: 'For tenant Bob charge $1,540/week and target 43% utilization; his email is bob@acme.com.', tenant_id: 't1' },
+            { answer: 'List across 3 channels and respond within 24 hours.', tenant_id: 't2' },
+            { answer: 'Discount slow midweeks a little to fill gaps.', tenant_id: 't3' },
+            { answer: 'Follow up with past renters within a day.', tenant_id: 't1' },
+            { answer: 'Bundle add-ons for peak weekends.', tenant_id: 't2' },
+          ] };   // re-audit #41: rows now carry tenant_id spanning 3 distinct tenants so the new _sampleTenants>=3 diversity gate passes (the sample query is now a ROW_NUMBER-per-tenant subquery selecting answer+tenant_id)
           return { results: [] };
         },
         run: async () => { if (/INSERT INTO platform_playbooks/.test(sql)) storedPlaybook = a[2]; return { success: true, meta: { changes: 1 } }; },
