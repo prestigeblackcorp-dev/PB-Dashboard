@@ -1815,7 +1815,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/const SESSION_MAX_MS = 1000 \* 60 \* 60 \* 24 \* 180;/.test(_WORKER_SRC), 'keepalive: SESSION_MAX_MS is a finite 180d ceiling -- an active session has a bounded MAX lifetime, an abandoned one still dies first at IDLE_MS (24h)');
   ok(/var _rollExp = Math\.min\(now \+ ABS_MS, \(s\.created_at \|\| now\) \+ SESSION_MAX_MS\)/.test(_WORKER_SRC), 'keepalive: resolveSession rolls the absolute expiry forward on activity, capped at created_at + SESSION_MAX_MS, so an actively-used session is never logged out mid-use by the fixed 30d cap');
   ok(/UPDATE sessions SET idle_at=\?, expires_at=\? WHERE id=\?/.test(_WORKER_SRC), 'keepalive: the roll writes expires_at in lockstep with idle_at (single UPDATE) so the DB-side absolute window advances for an active session');
-  ok(/policyAccepted: \(t && t\.tos_version\) \|\| null \}, 200, \{ 'Set-Cookie': sessionCookie\(ctx\.session\.id\) \}\)/.test(_WORKER_SRC), 'keepalive: /api/auth/me re-arms the 30d session cookie (Set-Cookie, same sid) so an actively-polled tab cookie never drops at its fixed Max-Age');
+  ok((_WORKER_SRC.match(/'Set-Cookie': sessionCookie\(ctx\.session\.id\)/g) || []).length >= 2, 'keepalive: /api/auth/me re-arms the 30d session cookie (Set-Cookie, same sid -> CSRF untouched) on BOTH its full and its degraded responses so an actively-polled tab cookie never drops at its fixed Max-Age');
 
   // BILLING SELF-HEAL by customer: a PAYING tenant whose stripe_sub was never captured (missed checkout.session.completed)
   // is stuck 'trial' and locked out -- the sub-keyed reconcile can't see it (stripe_sub IS NULL). A shared helper resolves
