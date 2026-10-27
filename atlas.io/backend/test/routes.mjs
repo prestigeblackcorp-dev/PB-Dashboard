@@ -1817,6 +1817,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/UPDATE sessions SET idle_at=\?, expires_at=\? WHERE id=\?/.test(_WORKER_SRC), 'keepalive: the roll writes expires_at in lockstep with idle_at (single UPDATE) so the DB-side absolute window advances for an active session');
   ok(/policyAccepted: \(t && t\.tos_version\) \|\| null \}, 200, \{ 'Set-Cookie': sessionCookie\(ctx\.session\.id\) \}\)/.test(_WORKER_SRC), 'keepalive: /api/auth/me re-arms the 30d session cookie (Set-Cookie, same sid) so an actively-polled tab cookie never drops at its fixed Max-Age');
 
+  // BILLING SELF-HEAL by customer: a PAYING tenant whose stripe_sub was never captured (missed checkout.session.completed)
+  // is stuck 'trial' and locked out -- the sub-keyed reconcile can't see it (stripe_sub IS NULL). Reconcile via the STORED
+  // customer so a missed billing webhook can never lock a paying customer out of a plan they are being charged for.
+  ok(/_due\(env, 'trial_nosub_reconcile', 1800000\)/.test(_WORKER_SRC), 'billing self-heal: _reconcileStuckTrials runs a gated (~30min) by-CUSTOMER pass for stuck trials that have a stripe_customer but no stripe_sub');
+  ok(/plan='trial' AND trial_ends IS NOT NULL AND trial_ends < \? AND \(stripe_sub IS NULL OR stripe_sub=''\) AND stripe_customer IS NOT NULL/.test(_WORKER_SRC), 'billing self-heal: the by-customer pass targets exactly the webhook-missed-sub case (plan=trial, expired, no sub, but a customer on file)');
+  ok((_WORKER_SRC.match(/via: 'cron_by_customer'/g) || []).length >= 2, 'billing self-heal: the by-customer reconcile flips a paying stuck-trial to active (or syncs a still-trialing one) via a Stripe-authoritative customer->subscription lookup, audited cron_by_customer');
+
   // #16 the public /api/unsub endpoint is rate-limited per IP (was an unmetered public POST).
   ok(/rateLimit\(env, 'unsub:' \+/.test(_WORKER_SRC), '#16: /api/unsub is rate-limited per CF-Connecting-IP');
 
