@@ -2096,6 +2096,16 @@ const Atlas = (function(){
     }catch(e){ _livePolling=false; }
   }
   setInterval(_livePollTick, 45000);
+  // SESSION KEEPALIVE -- "while active, do not expire". /api/auth/me is always-open + authed: each call slides the server
+  // idle window AND rolls the session's absolute expiry forward (resolveSession), and re-arms the 30-day session cookie
+  // (Set-Cookie on that route) so an actively-open tab's browser cookie never drops either. Fires every 5 min while the
+  // tab is VISIBLE (independent of the DEFAULT-OFF livePoll flag, and far under the 24h idle), and immediately when the
+  // tab becomes visible again -- so an open, in-use tab keeps its session alive, while a CLOSED/abandoned tab stops
+  // pinging and correctly idles out. Result ignored (pure session refresh, no re-render); _apiCsrf-guarded so it is inert
+  // pre-login and self-stops once _sessionExpired() nulls _apiCsrf.
+  function _sessionKeepalive(){ try{ if(document.hidden||!ATLAS_BACKEND||!_apiCsrf) return; _api('/api/auth/me').catch(function(){}); }catch(e){} }
+  setInterval(_sessionKeepalive, 300000);
+  try{ document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='visible') _sessionKeepalive(); }); }catch(e){}
   // A11Y (WCAG 1.3.1/4.1.2): programmatically associate every .field's <label> with its control -- screen readers otherwise
   // announce most of the ~176 inputs as unnamed -- and make leaf clickable div/span[onclick] keyboard-operable (Enter/Space).
   // Runtime + observed so it covers static AND JS-rendered forms uniformly without hand-editing each; idempotent + fail-safe.
@@ -2344,7 +2354,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23cv';
+  var APP_VERSION='2026.7.23cw';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
