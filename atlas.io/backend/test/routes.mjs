@@ -1827,6 +1827,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/via: 'by_customer'/g) || []).length >= 2, 'billing self-heal: the helper flips a paying stuck-trial to ACTIVE (or syncs a still-trialing one) Stripe-authoritatively (audited by_customer) -- only a real active sub unlocks, never grants free service');
   ok((_WORKER_SRC.match(/await _reconcileTrialByCustomer\(env,/g) || []).length >= 2, 'billing self-heal: the shared helper runs from BOTH the cron sweep AND /api/auth/me');
   ok(/_bState === 'trial_expired' && await _due\(env, 'selfheal_' \+ ctx\.tenant_id, 600000\)/.test(_WORKER_SRC), 'billing self-heal (ON-ACCESS): /api/auth/me reconciles a trial_expired tenant with a stripe_customer the instant they load the dashboard (gated ~10min) -> a paying customer is never stuck behind the paywall waiting for the 2h cron');
+  ok(/b === 'website' \|\| b === 'asset_unlock'/.test(_WORKER_SRC), "billing self-heal: the plan-sub matcher EXCLUDES add-on subs (website / asset_unlock) and accepts a metadata-LESS plan sub -> a missed-webhook subscription whose billing metadata was never set still resolves to the plan");
+  ok(/catch \(_meErr\)/.test(_WORKER_SRC) && /_degraded: true/.test(_WORKER_SRC), "/api/auth/me RESILIENCE: it never 500s -- on any payload-build failure it degrades to a minimal response carrying the real (already-computed) billing_state, so the client can always clear the paywall once billing is corrected");
 
   // #16 the public /api/unsub endpoint is rate-limited per IP (was an unmetered public POST).
   ok(/rateLimit\(env, 'unsub:' \+/.test(_WORKER_SRC), '#16: /api/unsub is rate-limited per CF-Connecting-IP');
