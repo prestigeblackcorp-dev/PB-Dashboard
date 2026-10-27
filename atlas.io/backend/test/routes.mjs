@@ -1809,6 +1809,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/\(SELECT deleted_at FROM tenants WHERE id=users\.tenant_id\) AS _tdel/.test(_WORKER_SRC), '#13: resolveSession reads the tenant delete/freeze flag via a correlated subquery (no extra round-trip, base FROM users WHERE id=? preserved)');
   ok(/if \(user\._tdel\) return null;/.test(_WORKER_SRC), '#13: a deleted tenant (_tdel) kills the session (returns null) -- backstop for a failed revoke');
 
+  // SESSION KEEPALIVE "while active, do not expire": an ACTIVE session rolls its 30d absolute expiry (+ browser cookie) forward
+  // on each authed request so a client using the app is never logged out mid-use; bounded by a finite ceiling; abandoned
+  // sessions still die first at the 24h IDLE_MS check.
+  ok(/const SESSION_MAX_MS = 1000 \* 60 \* 60 \* 24 \* 180;/.test(_WORKER_SRC), 'keepalive: SESSION_MAX_MS is a finite 180d ceiling -- an active session has a bounded MAX lifetime, an abandoned one still dies first at IDLE_MS (24h)');
+  ok(/var _rollExp = Math\.min\(now \+ ABS_MS, \(s\.created_at \|\| now\) \+ SESSION_MAX_MS\)/.test(_WORKER_SRC), 'keepalive: resolveSession rolls the absolute expiry forward on activity, capped at created_at + SESSION_MAX_MS, so an actively-used session is never logged out mid-use by the fixed 30d cap');
+  ok(/UPDATE sessions SET idle_at=\?, expires_at=\? WHERE id=\?/.test(_WORKER_SRC), 'keepalive: the roll writes expires_at in lockstep with idle_at (single UPDATE) so the DB-side absolute window advances for an active session');
+  ok(/policyAccepted: \(t && t\.tos_version\) \|\| null \}, 200, \{ 'Set-Cookie': sessionCookie\(ctx\.session\.id\) \}\)/.test(_WORKER_SRC), 'keepalive: /api/auth/me re-arms the 30d session cookie (Set-Cookie, same sid) so an actively-polled tab cookie never drops at its fixed Max-Age');
+
   // #16 the public /api/unsub endpoint is rate-limited per IP (was an unmetered public POST).
   ok(/rateLimit\(env, 'unsub:' \+/.test(_WORKER_SRC), '#16: /api/unsub is rate-limited per CF-Connecting-IP');
 
