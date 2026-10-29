@@ -1830,6 +1830,23 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/b === 'website' \|\| b === 'asset_unlock'/.test(_WORKER_SRC), "billing self-heal: the plan-sub matcher EXCLUDES add-on subs (website / asset_unlock) and accepts a metadata-LESS plan sub -> a missed-webhook subscription whose billing metadata was never set still resolves to the plan");
   ok(/catch \(_meErr\)/.test(_WORKER_SRC) && /_degraded: true/.test(_WORKER_SRC), "/api/auth/me RESILIENCE: it never 500s -- on any payload-build failure it degrades to a minimal response carrying the real (already-computed) billing_state, so the client can always clear the paywall once billing is corrected");
 
+  // TRIAL-GRADUATION: a tenant whose sub CONVERTED to paying (trial ended + it charged real cycles) and was then cancelled must
+  // resolve to plan='canceled' (billing_state 'canceled' -> client "Your subscription is inactive / Reactivate"), NOT plan='trial'
+  // (-> "Your free trial has ended", which wrongly framed a months-paid customer as only-ever-a-trial). A never-converted trial
+  // still resets to 'trial'. Both terminal webhook twins + the by-customer self-heal agree, and all CLEAR the dead sub id so the
+  // paywall's "Switch to a cheaper plan" re-checkout is never 409-blocked by a stale stripe_sub.
+  ok(/var _wasPaidD = !!\(_curd && \(_curd\.plan === 'active' \|\| _curd\.plan === 'past_due'\)\);/.test(_WORKER_SRC), 'trial-graduation (subscription.deleted): _wasPaidD is read from the tenant CURRENT row (plan active/past_due = it had converted to paying)');
+  ok(/\.bind\(_wasPaidD \? 'canceled' : 'trial', Date\.now\(\), md\.tenant\)\.run\(\);/.test(_WORKER_SRC), "trial-graduation (subscription.deleted): a paid-then-cancelled sub -> plan='canceled', a never-converted trial -> 'trial' (the same UPDATE clears stripe_sub for both)");
+  ok(/was_paid: _wasPaidD/.test(_WORKER_SRC), 'trial-graduation (subscription.deleted): the billing.cancelled audit records whether the sub had converted (was_paid) for the owner ledger');
+  ok(/var _wasPaidU = !!\(_curu && \(_curu\.plan === 'active' \|\| _curu\.plan === 'past_due'\)\);/.test(_WORKER_SRC), 'trial-graduation (subscription.updated->terminal): _wasPaidU is read from the CURRENT row so a converted sub going canceled/unpaid/incomplete_expired resolves to canceled, not trial');
+  ok(/if \(_wasPaidU\) await env\.DB\.prepare\("UPDATE tenants SET plan='canceled', stripe_sub=NULL,/.test(_WORKER_SRC), "trial-graduation (subscription.updated->terminal): the paid->canceled path ALSO clears stripe_sub (mirrors the authoritative subscription.deleted twin; robust if Stripe leaves the sub 'unpaid' and never fires deleted) so the re-checkout isn't 409-blocked by a stale sub id");
+  ok(/var _canc = _planSubs\.filter\(function \(s\) \{ return s\.status === 'canceled' \|\| s\.status === 'incomplete_expired'; \}\)/.test(_WORKER_SRC), 'trial-graduation (self-heal): _reconcileTrialByCustomer detects a CANCELED/expired plan sub for a stuck trial (after it has ruled out active/trialing/past_due)');
+  ok(/'invoices\?customer=' \+ encodeURIComponent\(t\.stripe_customer\) \+ '&status=paid&limit=5'/.test(_WORKER_SRC), 'trial-graduation (self-heal): it confirms the canceled sub was a FORMER PAYING customer by asking Stripe for that customer paid invoices');
+  ok(/_il\.j\.data\.some\(function \(inv\) \{ return Number\(inv\.amount_paid \|\| 0\) > 0; \}\)/.test(_WORKER_SRC), 'trial-graduation (self-heal): ONLY a real (non-$0) paid invoice qualifies -- a never-converted trial whose sub merely expired is NOT mis-marked canceled');
+  ok(/to: 'canceled', via: 'by_customer', reason: 'paid_then_cancelled'/.test(_WORKER_SRC), 'trial-graduation (self-heal): a paid-then-cancelled stuck trial flips to plan=canceled (audited paid_then_cancelled) -- fixes the live tenant stuck at trial after 4-5 paid cycles + a cancel; STILL locked (no active sub -> never grants free service)');
+  ok(!/\+ ' plan' \+ \(_trialOk \? ' \(7-day free trial\)' : ''\)/.test(_WORKER_SRC), "invoice cosmetic: the plan checkout product NAME no longer bakes in '(7-day free trial)' -- Stripe Checkout shows the trial natively from trial_period_days, and that baked name persisted on EVERY renewal invoice, perpetually labeling a months-paid subscription a trial");
+  ok(/name = 'Atlas Rental\.io ' \+ _planLabel\(tier\) \+ ' plan';/.test(_WORKER_SRC), "invoice cosmetic: the plan product name is exactly 'Atlas Rental.io <Tier> plan' (clean on the checkout AND every renewal invoice)");
+
   // #16 the public /api/unsub endpoint is rate-limited per IP (was an unmetered public POST).
   ok(/rateLimit\(env, 'unsub:' \+/.test(_WORKER_SRC), '#16: /api/unsub is rate-limited per CF-Connecting-IP');
 
