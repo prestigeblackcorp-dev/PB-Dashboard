@@ -2354,7 +2354,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23cw';
+  var APP_VERSION='2026.7.23cx';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -11671,12 +11671,24 @@ const Atlas = (function(){
       var ok = res && res.status>=200 && res.status<300 && (sid ? !!j.confirmed : (!bs || bs==='ok'));
       if(ok){ _done(); } else { _wait(); }
     }).catch(_wait); }
+  // PAID-BUT-LOCKED FIX (plan twin of _confirmTrialReturn): a PLAN checkout Stripe just redirected back from is PAID, but the server
+  // only flips plan='active' on the checkout.session.completed / invoice.paid webhook -- if that is missed/lagging (or the TEST webhook
+  // secret is unset) the PAYING subscriber is stranded behind the paywall (confirmed live). So confirm the session straight with the
+  // server (worker fetches it from Stripe + writes plan='active'+stripe_sub, no webhook needed), waiting for CSRF to restore after the
+  // redirect and retrying a few times while Stripe settles. Idempotent server-side (consumed-marker), so a later webhook is a no-op.
+  function _confirmPlanReturn(sid, tries){ tries=tries||0;
+    if(!sid || !(typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND)) return;   // offline/demo: the optimistic local S.plan set in _billingReturn is all there is
+    if(!_apiCsrf){ if(tries<14){ setTimeout(function(){ _confirmPlanReturn(sid, tries+1); }, 1500); } return; }   // CSRF restores async at boot after the Stripe redirect -- WAIT for it, never give up early
+    _api('/api/billing/confirm-session',{method:'POST',body:{session_id:sid,kind:'plan'}}).then(function(res){ var j=(res&&res.json)||{};
+      if(res && res.status>=200 && res.status<300 && j.confirmed){ try{ hidePaywall(); }catch(e){} try{ var _s=store.session(); if(_s && typeof _srvHydrate==='function'){ _srvHydrate(_s.tenantId).then(function(){ try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){} }); } else { try{ renderTrialBox(); renderSet(); }catch(e){} } }catch(e){} }
+      else if(tries<14){ setTimeout(function(){ _confirmPlanReturn(sid, tries+1); }, 2200); }   // not settled yet (pending) -> retry; the webhook is the slower backstop
+    }).catch(function(){ if(tries<10){ setTimeout(function(){ _confirmPlanReturn(sid, tries+1); }, 2500); } }); }
   function _billingReturn(){ try{ _qboReturn(); }catch(e){} try{ _xeroReturn(); }catch(e){}   // handle QuickBooks ?quickbooks= and Xero ?xero= OAuth returns alongside the Stripe ?billing= return (all land back on the dashboard)
     try{ var q=new URLSearchParams(location.search); var b=q.get('billing'); if(!b) return;
     if(b==='cryptopending'){ toast('Crypto payment started \u2014 confirming on the blockchain. Your account updates automatically once it settles (usually a few minutes).'); try{ _api('/api/billing/crypto-confirm',{method:'POST',body:{}}).then(function(r){ try{ if(r&&r.confirmed){ var _s2=store.session(); if(_s2&&typeof _srvHydrate==='function') _srvHydrate(_s2.tenantId).then(function(){ try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){} }); } }catch(e){} }).catch(function(){}); }catch(e){}   // re-audit #14 (client): confirm-on-return -- ask the server to poll Coinbase NOW and grant the plan/credits/website webhook-independently, then hydrate to reflect it immediately; the 18s interval below stays as the slower webhook/cron backstop
       var _cp=0; var _cpT=setInterval(function(){ _cp++; try{ var _s=store.session(); if(_s&&typeof _srvHydrate==='function') _srvHydrate(_s.tenantId).then(function(){ try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){} }); }catch(e){} if(_cp>=10){ try{ clearInterval(_cpT); }catch(e){} } }, 18000); try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){} return; }   // crypto confirms async -> poll a few times so the plan/credits reflect once the webhook lands; the normal live-poll also catches it
     if(b==='success' && typeof S!=='undefined' && S){ var kind=q.get('kind'), tier=q.get('tier'), pack=q.get('pack'), sid=q.get('session_id');
-      if(kind==='plan'&&tier){ var t=_tier(tier); if(t){ var chg=!(S.plan==='active'&&S.tier===t.id); S.plan='active'; S.tier=t.id; if(chg){ S.subscribedAt=Date.now(); S.credits={free:t.credits,purchased:(S.credits&&S.credits.purchased)||0,weekStart:_weekStart()}; } save(); } }
+      if(kind==='plan'&&tier){ var t=_tier(tier); if(t){ var chg=!(S.plan==='active'&&S.tier===t.id); S.plan='active'; S.tier=t.id; if(chg){ S.subscribedAt=Date.now(); S.credits={free:t.credits,purchased:(S.credits&&S.credits.purchased)||0,weekStart:_weekStart()}; } save(); } _confirmPlanReturn(sid, 0); }   // PAID-BUT-LOCKED FIX: confirm the paid session with the SERVER (webhook-independent) so a missed checkout.session.completed/invoice.paid can't leave the just-paid subscriber locked out -- the optimistic local S.plan above would otherwise be contradicted by the server's 402 and re-raise the paywall
       else if(kind==='credits'&&pack){ var n=parseInt(pack,10)||0; if(n){ if(!S.credits)S.credits={free:0,purchased:0}; S.credits.purchased=(S.credits.purchased||0)+n; if(typeof S.credits.bal==='number') S.credits.bal=(S.credits.bal||0)+n; save(); } }
       else if(kind==='website'){ S.websitePaid=true; save(); }
       else if(kind==='trial'){ if(tier){ var _tt=_tier(tier); if(_tt) S.tier=_tt.id; save(); } _confirmTrialReturn(sid, 0); }   // GATE FIX: don't optimistically mark card-on-file from the return URL -- confirm the checkout session server-side first (records card_on_file + stripe_sub even if the webhook lags/misconfigured), THEN onboard. A completed trial clears the gate; an incomplete one honestly stays gated. _confirmTrialReturn owns the proceed + toast.

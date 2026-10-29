@@ -1847,6 +1847,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!/\+ ' plan' \+ \(_trialOk \? ' \(7-day free trial\)' : ''\)/.test(_WORKER_SRC), "invoice cosmetic: the plan checkout product NAME no longer bakes in '(7-day free trial)' -- Stripe Checkout shows the trial natively from trial_period_days, and that baked name persisted on EVERY renewal invoice, perpetually labeling a months-paid subscription a trial");
   ok(/name = 'Atlas Rental\.io ' \+ _planLabel\(tier\) \+ ' plan';/.test(_WORKER_SRC), "invoice cosmetic: the plan product name is exactly 'Atlas Rental.io <Tier> plan' (clean on the checkout AND every renewal invoice)");
 
+  // PAID-BUT-LOCKED (launch-blocker found in live test): a plan re-subscribe PAID but stayed plan='canceled' server-side because the
+  // checkout.session.completed/invoice.paid webhook was missed AND the client never confirmed the plan session the way it does a trial.
+  // Fix = parity with the trial path: the change-plan hosted-checkout successUrl carries session_id back, and confirm-session activates
+  // the plan from the paid Stripe session (webhook-independent). (Client twin: _confirmPlanReturn in atlas.html -- not guarded here.)
+  ok(/successUrl: origin \+ '\/\?billing=success&kind=plan&tier=' \+ encodeURIComponent\(tier\) \+ '&session_id=\{CHECKOUT_SESSION_ID\}'/.test(_WORKER_SRC), "paid-but-locked: the change-plan hosted-checkout successUrl includes &session_id={CHECKOUT_SESSION_ID} so the client's confirm-on-return can activate the plan without waiting on the webhook");
+  ok(/_kind === 'plan'/.test(_WORKER_SRC) && /billing\.subscribed_confirmed/.test(_WORKER_SRC), "paid-but-locked: /api/billing/confirm-session has a kind='plan' path that sets plan='active'+stripe_sub from the PAID Stripe session (webhook-independent activation of a just-subscribed tenant)");
+
   // #16 the public /api/unsub endpoint is rate-limited per IP (was an unmetered public POST).
   ok(/rateLimit\(env, 'unsub:' \+/.test(_WORKER_SRC), '#16: /api/unsub is rate-limited per CF-Connecting-IP');
 
