@@ -1860,6 +1860,11 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // per-period charge (and the confirmation email + booking.created webhook unit too, since cfg.unit is overridden at the source).
   ok(/function _rateUnit\(rm\)/.test(_WORKER_SRC), 'public-unit: _rateUnit(rm) maps money.rateModel -> the display unit string (hour/week/month/day)');
   ok(/cfg\.unit = _rateUnit\(\(prof\.money && prof\.money\.rateModel\) \|\| cfg\.unit \|\| 'day'\)/.test(_WORKER_SRC), "public-unit: the public booking serve path overrides the served unit to TRACK money.rateModel (not the stale pubSite.config.unit) so the site's rate label matches the quote math + the per-period charge");
+  // The /api/public D payload (above) was only ONE surface -- the SERVER-RENDERED pages (home showcase, asset detail, SEO landing + FAQ)
+  // and the preview availability-SPAN math each read the stale pubSite.config.unit via their OWN cfg. _pubUnit(prof) now feeds them all.
+  ok(/function _pubUnit\(prof\)/.test(_WORKER_SRC), 'public-unit: _pubUnit(prof) = the authoritative public rate unit (money.rateModel first, legacy pubSite.config.unit only as fallback) shared by every SSR render + the availability-span math');
+  ok(!/var unit = String\(cfg\.unit \|\| 'day'\)/.test(_WORKER_SRC) && !/String\(lcfg\.unit \|\| 'day'\)/.test(_WORKER_SRC) && !/String\(_pcfg\.unit \|\| 'day'\)/.test(_WORKER_SRC), 'public-unit: NO server-rendered page still reads the stale pubSite.config.unit for its displayed unit (home showcase / asset detail / SEO landing + FAQ all use _pubUnit(prof))');
+  ok((_WORKER_SRC.match(/_pubUnit\(prof\)/g) || []).length >= 6, 'public-unit: _pubUnit(prof) drives the unit at every public render site (availability-span math + home showcase + asset detail + SEO landing + SEO FAQ) so the label + the span math match the per-period charge');
 
   // #16 the public /api/unsub endpoint is rate-limited per IP (was an unmetered public POST).
   ok(/rateLimit\(env, 'unsub:' \+/.test(_WORKER_SRC), '#16: /api/unsub is rate-limited per CF-Connecting-IP');
