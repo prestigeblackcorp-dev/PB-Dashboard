@@ -5398,6 +5398,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRCl2b === _INDEX_SRCl2b, 'lead2booking: atlas.html and index.html remain byte-identical');
 }
 
+// ==== dispute-evidence hardening: usage readings in the chargeback doc + a write-once pickup baseline ====
+{
+  const _ATLAS_SRCeh = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCeh = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/Condition &amp; Usage Evidence On File/.test(_ATLAS_SRCeh) && /Usage reading \(out &rarr; in\)/.test(_ATLAS_SRCeh), 'evidence usage: the chargeback evidence report reproduces the odometer/engine-hours + fuel readings behind a mileage/fuel-overage charge, not just the condition photo counts');
+  ok(/if\(b\.checkIn && b\.checkIn\.odoOut!=null && \(b\.status==='Returned'\|\|b\.status==='Completed'\|\|b\.status==='Voided'\|\|b\.status==='Cancelled'\)\)\{ toast/.test(_ATLAS_SRCeh), 'checkin lock: doCheckIn refuses to rewrite the frozen pickup baseline once the booking is returned/terminal (overage/fuel can no longer be re-gamed)');
+  ok(_ATLAS_SRCeh === _INDEX_SRCeh, 'evidence hardening: atlas.html and index.html remain byte-identical');
+}
+
 // ==== 13v: PB-parity G18 -- void + chargeback-evidence reports include the comms/event timeline ====
 {
   const _ATLAS_SRC13v = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
