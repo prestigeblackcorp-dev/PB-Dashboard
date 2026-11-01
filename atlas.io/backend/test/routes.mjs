@@ -5268,6 +5268,22 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRCdh === _INDEX_SRCdh, 'deposit: atlas.html and index.html remain byte-identical');
 }
 
+// ==== owner-edit rate lock (A008 client): editing a booking must preserve the LOCKED base rate, not re-price at current ====
+// createBooking(editId) routes an edit through the same path as a new booking and used to stamp b.rate=mEff.baseRate
+// (the asset's CURRENT rate) + re-quote at it UNCONDITIONALLY. So editing ANY field (even a phone number) after the
+// owner raised the asset price silently re-priced the agreed booking (phantom "balance due") AND bumped the rate that
+// future extensions bill (via _bkPeriodRate -> b.rate). Fix: on a SAME-asset edit, lock the base rate to the booking's
+// own b.rate; a new booking / asset switch still prices at the current rate.
+{
+  const _ATLAS_SRCrl = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCrl = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/var _sameAssetEdit=!!\(editId && b &&/.test(_ATLAS_SRCrl), 'owner-edit rate lock: createBooking detects a SAME-asset edit (_sameAssetEdit) by stable assetId (or name fallback)');
+  ok(/var _mEffB=\(_sameAssetEdit && b\.rate!=null && Number\(b\.rate\)!==Number\(mEff\.baseRate\)\)/.test(_ATLAS_SRCrl), 'owner-edit rate lock: a same-asset edit whose asset rate drifted re-prices at the LOCKED b.rate (_mEffB), not the current asset rate -> no phantom balance + extension-rate parity preserved');
+  ok(/var q=calcQuote\(_mEffB,/.test(_ATLAS_SRCrl), 'owner-edit rate lock: the quote is computed from _mEffB (locked money), not the raw current mEff');
+  ok(/b\.rate=_mEffB\.baseRate;/.test(_ATLAS_SRCrl) && !/b\.rate=mEff\.baseRate;/.test(_ATLAS_SRCrl), 'owner-edit rate lock: b.rate is stamped from _mEffB -- the old unconditional b.rate=mEff.baseRate (current rate on every edit) is gone');
+  ok(_ATLAS_SRCrl === _INDEX_SRCrl, 'owner-edit rate lock: atlas.html and index.html remain byte-identical');
+}
+
 // ==== 13v: PB-parity G18 -- void + chargeback-evidence reports include the comms/event timeline ====
 {
   const _ATLAS_SRC13v = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');

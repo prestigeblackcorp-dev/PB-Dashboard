@@ -2354,7 +2354,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23da';
+  var APP_VERSION='2026.7.23db';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -6389,9 +6389,15 @@ const Atlas = (function(){
     var _cf=_availabilityConflict(asset, w.startTs, w.endTs, editId);   // warn on double-book / blackout; owner can knowingly override
     if(_cf && !confirm(esc(asset)+' is '+(_cf.type==='blackout'?('blocked off for those dates ('+_cf.reason+')'):(_cf.type==='maintenance'?('marked out of service ('+_cf.reason+')'):('already booked for those dates ('+_cf.reason+')')))+'.\n\nBook it anyway?')) return;
     var _blE=val('bkEmail'), _blP=(document.getElementById('bkPhone')?val('bkPhone'):''); var _blHit=(_blE && _isBlacklisted(_blE))?_custMeta(String(_blE).toLowerCase()):_blPhoneHit(_blP); if(_blHit){ if(!confirm('\u26d4 '+(cust||_blE||'This customer')+' is on your blacklist'+(_blHit.blacklistReason?(' -- '+_blHit.blacklistReason):'')+'.\n\nBook anyway?')) return; }   // #blacklist / P5: warn on an EMAIL or PHONE match (server /book matches both); owner can override, never hard-block
-    var q=calcQuote(mEff,{periods:w.periods,addons:0,extras:extras,discount:disc,startsAt:w.startTs});
     var b= editId? _getBooking(editId) : {id:_nextBkId(), createdAt:Date.now()};
-    b.cust=cust; b.custEmail=val('bkEmail'); b.asset=asset; b.assetId=(_ao&&_ao.id)||b.assetId||undefined; b.rate=mEff.baseRate;   // #367: stamp the STABLE asset id so the conflict check survives a rename (name kept as the fallback)
+    // A008 (owner-edit rate lock): editing an existing booking must NOT silently re-price it at the asset's CURRENT
+    // baseRate -- that breaks the AGREED price (a phantom "balance due" appears) AND the future-extension rate, which
+    // reads the booking's locked b.rate via _bkPeriodRate. Preserve the LOCKED base rate across an edit of the SAME
+    // asset; a NEW booking or an asset SWITCH prices at the current rate. Mirrors the server self-extend _bkLockedRate.
+    var _sameAssetEdit=!!(editId && b && (((b.assetId!=null&&b.assetId!=='')&&_ao&&String(b.assetId)===String(_ao.id)) || ((b.assetId==null||b.assetId==='')&&b.asset===asset)));
+    var _mEffB=(_sameAssetEdit && b.rate!=null && Number(b.rate)!==Number(mEff.baseRate)) ? Object.assign({},mEff,{baseRate:Number(b.rate)}) : mEff;   // lock the per-period base rate to the booking's own; all other money rules (tax, fees, smart pricing) stay current
+    var q=calcQuote(_mEffB,{periods:w.periods,addons:0,extras:extras,discount:disc,startsAt:w.startTs});
+    b.cust=cust; b.custEmail=val('bkEmail'); b.asset=asset; b.assetId=(_ao&&_ao.id)||b.assetId||undefined; b.rate=_mEffB.baseRate;   // #367: stamp the STABLE asset id so the conflict check survives a rename (name kept as the fallback)   // A008: _mEffB.baseRate = the booking's LOCKED rate on a same-asset edit (== b.rate, preserved), the current rate on a new booking / asset switch
     if(!b.rep){ var _repE=(typeof _sessEmail==='function'&&_sessEmail())||''; if(_repE) b.rep={ email:_repE }; }   // #repsig: stamp the handling employee so the worker renders THEIR saved company signature on the rental contract "on behalf of the business" (resolved by email from settings.repSigs; their name + signature come from Settings). Set ONCE -> an edit by a different teammate keeps the original signer.
     if(document.getElementById('bkPhone')) b.phone=val('bkPhone');       // only touch fields the operator's form collects
     if(document.getElementById('bkNotes')) b.notes=val('bkNotes');
