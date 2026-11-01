@@ -5254,6 +5254,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRC13u === _INDEX_SRC13u, 'G35: atlas.html and index.html remain byte-identical');
 }
 
+// ==== deposit hold dead-end: an owner-MARKED note (no server PI) must clear LOCALLY, never dead-end on /api/pay ====
+// holdAuth writes a client-only b.hold note (the real hold is the customer's portal deposit = b.paid.security = h._fromPaid).
+// Release/Capture used to ALWAYS hit /api/pay/{release,capture}, which returned no_payment for a note -> _mark() never ran ->
+// the note stuck 'authorized' forever and inflated the Deposits-held KPI. Fix: gate the server call on h._fromPaid (release
+// clears a note locally like the cancel path) + gate the Capture BUTTON on _canCap so a note shows no dead "Capture".
+{
+  const _ATLAS_SRCdh = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCdh = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/&& h\._fromPaid\)\{ _api\('\/api\/pay\/release'/.test(_ATLAS_SRCdh), 'deposit: holdRelease hits /api/pay/release ONLY for a real server-side hold (h._fromPaid); an owner-marked note clears LOCALLY (was a dead-end server call that stuck the note authorized forever + inflated Deposits-held)');
+  ok(/var _canCap=!!\(\(h&&h\._fromPaid\)\|\|!_liveHold\)/.test(_ATLAS_SRCdh), 'deposit: _canCap = a real server hold (h._fromPaid) OR demo/offline (!_liveHold) -- the only states where a Capture can actually settle');
+  ok(/_canCap\?\('<button class="btn btn--ghost btn--sm" style="color:var\(--danger\)" onclick="Atlas\.holdCapture/.test(_ATLAS_SRCdh), 'deposit: the Capture button is gated on _canCap, so an owner-note on a live backend no longer offers a dead Capture (G6: never book phantom revenue)');
+  ok(_ATLAS_SRCdh === _INDEX_SRCdh, 'deposit: atlas.html and index.html remain byte-identical');
+}
+
 // ==== 13v: PB-parity G18 -- void + chargeback-evidence reports include the comms/event timeline ====
 {
   const _ATLAS_SRC13v = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
