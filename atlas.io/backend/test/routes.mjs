@@ -5309,6 +5309,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRCce === _INDEX_SRCce, 'collected: atlas.html and index.html remain byte-identical');
 }
 
+// ==== voided-booking revenue: a voided booking counts CASH COLLECTED, not the G5 full-quote estimate ====
+// _isCommitted includes 'Voided', and _bkEarned returned revCents/100 (the G5 full-quote estimate on a committed-but-
+// unpaid booking) -> a just-voided no-show showed its FULL rental as revenue + tax until the server zeroed revenue_cents
+// on the next hydrate, and PERMANENTLY if the server's exact-match clear (revenue_cents==quote.total*100) missed because
+// the quote changed after confirm. _bkEarned now returns _voidRetained (actual cash) for a Voided booking -- immediate,
+// and matches the value the server converges to (0 for an unpaid void; the collected amount otherwise).
+{
+  const _ATLAS_SRCvr = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCvr = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/function _bkEarned\(b\)\{ if\(b && b\.status==='Voided'\) return _voidRetained\(b\);/.test(_ATLAS_SRCvr), 'voided revenue: _bkEarned returns _voidRetained (cash actually collected) for a Voided booking, not the revCents G5 estimate -> a voided no-show stops counting full accrual revenue + tax the instant it is voided');
+  ok(_ATLAS_SRCvr === _INDEX_SRCvr, 'voided revenue: atlas.html and index.html remain byte-identical');
+}
+
 // ==== 13v: PB-parity G18 -- void + chargeback-evidence reports include the comms/event timeline ====
 {
   const _ATLAS_SRC13v = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
