@@ -2152,6 +2152,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // _tzAbbr: a non-empty short label for a valid tz, empty for none
   ok(_tzAbbr(Date.UTC(2026, 5, 15, 14, 0), 'America/Chicago').length >= 2, 'tz #20: _tzAbbr returns a label for a valid tz');
   ok(_tzAbbr(Date.now(), '') === '', 'tz #20: _tzAbbr with no tz -> empty string (legacy display)');
+  // TZ-PICKER (completes #20): tenantProfile exposes tz with the owner's MANUALLY-set brand.tz (Settings > Branding) winning
+  // over the edge-backfilled `tz` column, so a wrong edge guess (owner traveling) can't override an explicit business tz.
+  ok(/tz: \(_br && typeof _br\.tz === 'string' && _br\.tz\) \|\| t\.tz \|\| ''/.test(_WORKER_SRC), 'tz-picker: tenantProfile.tz = brand.tz (owner-set) first, then the edge-backfilled tz column, then empty -- the manual Settings>Branding timezone wins');
 }
 
 // ---- SPONGE Stage 4 (flag-gated): an established, FRESH, NON-sensitive exact repeat is served from THIS tenant's own
