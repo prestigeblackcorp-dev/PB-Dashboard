@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _coinbaseLatestStatus, _coinbaseFullySettled, _coinbaseGrantPlatform, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _domainOwnerToken, _domainOwnershipOk, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _smartRateMult, _assetKtRestore, _bookingKtRestore, _rtbfRecord, _rtbfMatch, _rtbfLift, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkSignTermsHashLegacy, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _coinbaseLatestStatus, _coinbaseFullySettled, _coinbaseGrantPlatform, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _domainOwnerToken, _domainOwnershipOk, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _bkLockedRate, _smartRateMult, _assetKtRestore, _bookingKtRestore, _rtbfRecord, _rtbfMatch, _rtbfLift, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkSignTermsHashLegacy, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -1289,6 +1289,24 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const _normalExt = { startTs: 1778000000000, endTs: 1779000000000, periods: 2, extensions: [{ addedPeriods: 2, newEndTs: 1780000000000, prevEndTs: 1779000000000, _deleted: false }] };
   ok(_bkEffEndServer(0, _normalExt, dayPms) === 1780000000000, 'audit400 A003: a normal booking still resolves base+delta correctly after the maxNew floor (1780000000000) (got ' + _bkEffEndServer(0, _normalExt, dayPms) + ')');
   ok(/if \(allHaveNew && allHavePrev\) return Math\.max\(maxNew, base \+ exts\.reduce/.test(_WORKER_SRC), 'audit400 A003 (source): the ext-end branch floors on maxNew (frozen signed end) so a collapsed base cannot shrink the occupied window and double-book');
+}
+
+// ---- SELF-EXTEND rate parity (money, A008 server-side): the portal self-extend CHARGE + its price DISPLAY must resolve the
+// booking's LOCKED rate through the SAME cascade as the owner dashboard extend (atlas.html _bkPeriodRate/_extRate):
+// d.rate -> quote.rate -> quote.rateCents/100 -> baseRate, each via `!= null` so a deliberate $0 is PRESERVED. The old server
+// `||`-cascade dropped the quote.rateCents tier (website bookings billed the asset's CURRENT base rate, not their locked rate)
+// and treated a locked 0 as falsy (a free loaner self-extend fell through to baseRate and billed real money). ----
+{
+  const M = { baseRate: 100, rateModel: 'day' };
+  ok(_bkLockedRate({ rate: 0, quote: { rateCents: 0 } }, M) === 0, 'self-extend rate: a DELIBERATE $0 loaner (d.rate=0) resolves to 0, NOT the tenant baseRate (100) -> the no_rate guard safely blocks a self-extend instead of billing a free rental');
+  ok(_bkLockedRate({ quote: { rateCents: 8500 } }, M) === 85, 'self-extend rate: a website booking with the rate stored ONLY in quote.rateCents resolves to the LOCKED 85/day, NOT the current baseRate (100) -> owner/customer extension price parity');
+  ok(_bkLockedRate({ rate: 120, quote: { rateCents: 8500 } }, M) === 120, 'self-extend rate: a top-level locked d.rate wins over the quote (120)');
+  ok(_bkLockedRate({ quote: { rate: 90, rateCents: 8500 } }, M) === 90, 'self-extend rate: quote.rate wins over quote.rateCents when present (90)');
+  ok(_bkLockedRate({ }, M) === 100, 'self-extend rate: a booking with NO locked rate at all falls back to the tenant baseRate (100)');
+  ok(_bkLockedRate({ quote: { rateCents: 12550 } }, M) === 125.5, 'self-extend rate: quote.rateCents/100 keeps cents precision (125.50)');
+  // SOURCE: both self-extend surfaces route through _bkLockedRate, and NEITHER still uses the old falsy-0 ||-cascade.
+  ok((_WORKER_SRC.match(/_bkLockedRate\(d, _s[em][^)]*\)/g) || []).length >= 2, 'self-extend rate (source): both the /selfextend CHARGE (_seRate) and the portal selfExtend DISPLAY resolve the rate via _bkLockedRate so shown == charged == owner-extend');
+  ok(!/Number\(d\.rate\) \|\| Number\(d\.quote && d\.quote\.rate\) \|\| Number\(_s[em][^)]*\.baseRate\)/.test(_WORKER_SRC), 'self-extend rate (source): NO self-extend site still uses the old `Number(d.rate)||Number(d.quote.rate)||baseRate` cascade that dropped quote.rateCents + billed a $0 loaner at baseRate');
 }
 
 // ---- GIFT-CARD value returned on cancel (money #3): cancelling a booking refunded real payments but never released the
