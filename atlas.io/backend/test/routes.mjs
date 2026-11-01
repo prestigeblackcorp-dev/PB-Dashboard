@@ -1331,6 +1331,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(startTs > now \+ 1826 \* 86400000\)/.test(_WORKER_SRC), 'book-start-bound: the public /book intake rejects a start more than ~5 years out (the past-only check left the future unbounded)');
 }
 
+// ---- SELF-EXTEND availability heal (CRITICAL double-book): portal self-extend grows a CONFIRMED booking's blocking window
+// via a pre-check that excludes PENDING, with no post-write heal -- so a booking that CONFIRMS into the extension window during
+// the check->commit gap stays invisible and double-books. Every other blocking-write path has _confirmSlotHeal; add one here
+// that REVERTS just the extension (mark _deleted + drop its unpaid charge) on a post-write conflict. ----
+{
+  ok(/avail HEAL \(first-confirm-wins\)/.test(_WORKER_SRC), 'self-extend heal: the portal /selfextend handler re-checks occupancy AFTER the extension commits (the pre-check excludes pending, so a racing confirm was invisible there)');
+  ok(/if \(e && e\.id === _seExId\) e\._deleted = true/.test(_WORKER_SRC) && /return !\(c && c\.id === _seChId\)/.test(_WORKER_SRC), 'self-extend heal: on a post-write overbook it REVERTS just the extension (mark _deleted) + drops its unpaid charge, leaving the base booking intact -- not demoting the whole booking');
+  ok((_WORKER_SRC.match(/var _shConf = _peakUnits\(/g) || []).length >= 1, 'self-extend heal: the post-write re-check uses the SAME _peakUnits occupancy math as the pre-check + every other availability gate');
+}
+
 // ---- GIFT-CARD value returned on cancel (money #3): cancelling a booking refunded real payments but never released the
 // redeemed gift-card value in gift_uses, so the customer's prepaid balance was silently forfeited. _collectGiftReturns lists
 // the redemptions to release and stamps giftReturnedAt so a re-cancel is a no-op (never double-releases). ----
@@ -6135,7 +6145,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 
 // ==== re-audit build di: #8 _peakUnits turnaround, #7/#9 scalar-only double-book guard ====
 {
-  ok((_WORKER_SRC.match(/_bkEffEndServer\(r\.ends,[^)]*\) \+ _(buf|seBuf) \}/g) || []).length === 5, 're-audit #8: all 5 _peakUnits call sites build intervals with the turnaround-EXTENDED end (e + buffer), so two bookings whose gap < buffer count as concurrent on a multi-unit asset');
+  ok((_WORKER_SRC.match(/_bkEffEndServer\(r\.ends,[^)]*\) \+ _(buf|seBuf) \}/g) || []).length === 6, 're-audit #8: all 6 _peakUnits call sites build intervals with the turnaround-EXTENDED end (e + buffer), so two bookings whose gap < buffer count as concurrent on a multi-unit asset (6th = the self-extend post-write availability heal, which reuses the same interval math as its pre-check)');
   ok(/var _stW7 = \(_wc091\.indexOf\('status'\) >= 0\)/.test(_WORKER_SRC) && /await _confirmSlotHeal\(env, tenantId, id, _bd7, _s7, _e7\)/.test(_WORKER_SRC), 're-audit #7/#9: a scalar-only (no body.data) write that lands a blocking status / moves the window runs the confirm-time double-book heal inside _bookingMirrorWrite (was bypassed -- the route-handler guards are gated on body.data)');
 }
 
