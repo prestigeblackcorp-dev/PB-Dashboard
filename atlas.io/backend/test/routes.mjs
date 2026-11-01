@@ -5284,6 +5284,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRCrl === _INDEX_SRCrl, 'owner-edit rate lock: atlas.html and index.html remain byte-identical');
 }
 
+// ==== tax label (collected vs booked): the ACCRUAL tax figure must NOT be labeled "Tax collected" ====
+// The Reports card + Tax CSV are an accrual view (Gross-Disc+Fees+Tax+Addon = Total booked); their tax is BOOKED tax
+// (q.taxAmt) and foots to Total booked. Labeling it "Tax collected" contradicted Net profit's _taxCollected (the
+// collected-fraction-scaled tax). Relabel to "Tax (booked)"; the Tax CSV also carries a true "Tax collected (cash)"
+// column = sum of _bkTax (same basis as _taxCollected) so both tax figures across the app agree.
+{
+  const _ATLAS_SRCtx = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCtx = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/<span>Tax \(booked\)<\/span>/.test(_ATLAS_SRCtx), 'tax label: the Reports accrual-tax row is "Tax (booked)" (foots to Total booked), not the misleading "Tax collected"');
+  ok(/'Total booked \(accrual\)','Collected to date \(cash\)','Tax collected \(cash\)'/.test(_ATLAS_SRCtx), 'tax label: the Tax CSV adds a true "Tax collected (cash)" column beside the accrual "Tax (booked)"');
+  ok(/tc\+=_bkTax\(b\)/.test(_ATLAS_SRCtx), 'tax label: the cash-tax column sums _bkTax (the SAME collected-fraction-scaled tax Net profit subtracts via _taxCollected) so the two app-wide tax figures agree');
+  ok(_ATLAS_SRCtx === _INDEX_SRCtx, 'tax label: atlas.html and index.html remain byte-identical');
+}
+
 // ==== 13v: PB-parity G18 -- void + chargeback-evidence reports include the comms/event timeline ====
 {
   const _ATLAS_SRC13v = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
