@@ -5384,6 +5384,19 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRCev === _INDEX_SRCev, 'evidence trail: atlas.html and index.html remain byte-identical');
 }
 
+// ==== lead->booking conversion: guard bookEdit FIRST + mark the lead Won only when the booking is actually saved ====
+// leadToBooking used to `l.stage='Won'; save()` immediately with NO bookEdit guard, then open the form -- so abandoning or a
+// blocked (non-bookEdit) form stranded the lead as Won with no booking (inflating conversion metrics). Now it mirrors
+// waitToBooking: guard first, defer the Won stamp to createBooking via _leadConvertId (consumed on the booking's own save).
+{
+  const _ATLAS_SRCl2b = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCl2b = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/function leadToBooking\(id\)\{ if\(!_guard\('bookEdit'/.test(_ATLAS_SRCl2b), 'lead2booking: leadToBooking guards bookEdit FIRST (a non-bookEdit teammate can no longer trip the conversion)');
+  ok(/function leadToBooking\(id\)\{[^}]*_leadConvertId=id;/.test(_ATLAS_SRCl2b) && !/function leadToBooking\(id\)\{ if\(!_guard\('bookEdit','Converting a lead'\)\)return; var l=_leads\(\)\.filter\(function\(x\)\{return x\.id===id;\}\)\[0\]; if\(!l\)return; l\.stage='Won'/.test(_ATLAS_SRCl2b), 'lead2booking: leadToBooking no longer stamps the lead Won immediately -- it sets _leadConvertId, deferring the Won mark to the booking save');
+  ok(/if\(_leadConvertId\)\{ var _lcv=_leads\(\)\.filter\(function\(x\)\{return x\.id===_leadConvertId;\}\)\[0\]; if\(_lcv\) _lcv\.stage='Won'; _leadConvertId=null; \}/.test(_ATLAS_SRCl2b), 'lead2booking: createBooking marks the source lead Won ONLY on the actual save (abandoned/blocked form never reaches here)');
+  ok(_ATLAS_SRCl2b === _INDEX_SRCl2b, 'lead2booking: atlas.html and index.html remain byte-identical');
+}
+
 // ==== 13v: PB-parity G18 -- void + chargeback-evidence reports include the comms/event timeline ====
 {
   const _ATLAS_SRC13v = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');

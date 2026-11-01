@@ -2354,7 +2354,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23dg';
+  var APP_VERSION='2026.7.23dh';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -6265,8 +6265,8 @@ const Atlas = (function(){
       +list.map(function(b){ return '<tr style="cursor:pointer" onclick="Atlas.openBooking(\''+b.id+'\')"><td><b>'+b.id+'</b>'+(_bkHasReq(b)?' <span class="chip chip--warn" style="padding:1px 6px;font-size:10.5px;vertical-align:1px">Request</span>':'')+'</td><td><div class="cust"><span class="avatar">'+esc((b.cust||'?')[0])+'</span>'+esc(b.cust)+((b.assignedName&&S.team&&S.team.length)?' <span class="chip chip--muted" style="padding:0 6px;font-size:10px;vertical-align:1px" title="Assigned to '+esc(b.assignedName)+'">'+esc(b.assignedName)+'</span>':'')+'</div></td><td>'+esc(b.asset)+'</td><td class="tnum">'+_fmtWhen(b.startTs,b.time)+' &middot; '+b.periods+_bkUnitAbbr(b)+'</td><td class="tnum"><b>'+money(_bkTotal(b))+'</b></td><td>'+statusChip(b.status)+'</td></tr>'; }).join('')+'</tbody>';
   }
   function bkFilter(s){ _bkFilter=s; renderBookings(); }
-  function newBooking(){ if(!_guard('bookEdit','Creating bookings'))return; _waitConvertId=null; _bookingForm(null); }   /* re-audit MED: clear any stale waitlist-conversion id so a NEW booking never inherits an abandoned conversion and silently deletes an unrelated waitlist entry. waitToBooking re-sets it AFTER calling this. */
-  function editBooking(id){ if(!_guard('bookEdit','Editing bookings'))return; _waitConvertId=null; _bookingForm(_getBooking(id)); }   // audit c4 [16]: clear any stale waitlist-conversion id (mirror newBooking) so saving an unrelated booking edit can't silently delete a live waitlist entry via createBooking's removal line
+  function newBooking(){ if(!_guard('bookEdit','Creating bookings'))return; _waitConvertId=null; _leadConvertId=null; _bookingForm(null); }   /* re-audit MED: clear any stale waitlist-conversion id so a NEW booking never inherits an abandoned conversion and silently deletes an unrelated waitlist entry. waitToBooking re-sets it AFTER calling this. */
+  function editBooking(id){ if(!_guard('bookEdit','Editing bookings'))return; _waitConvertId=null; _leadConvertId=null; _bookingForm(_getBooking(id)); }   // audit c4 [16]: clear any stale waitlist-conversion id (mirror newBooking) so saving an unrelated booking edit can't silently delete a live waitlist entry via createBooking's removal line
   // The date / time / duration inputs -- shape depends on the operator's Booking model (Settings > Bookings).
   function _bkWhenFieldsHtml(periods){ var cfg=_bookingCfg(), unitLbl=cap(_perUnit());
     var sD='<div class="field"><label>Start date</label><input class="input" type="date" id="bkStart" oninput="Atlas.bkPreview()"></div>';
@@ -6415,6 +6415,7 @@ const Atlas = (function(){
     if(document.getElementById('bkRefCode')){ b.referredByCode=(val('bkRefCode')||'').trim().toUpperCase(); }
     _upsertBooking(b);
     if(_waitConvertId){ S.waitlist=_waitlist().filter(function(w){return w.id!==_waitConvertId;}); _waitConvertId=null; }   // fix: booking now exists -> safe to drop the source waitlist entry (single save persists both)
+    if(_leadConvertId){ var _lcv=_leads().filter(function(x){return x.id===_leadConvertId;})[0]; if(_lcv) _lcv.stage='Won'; _leadConvertId=null; }   // fix: booking now exists -> NOW mark the source lead Won (deferred from leadToBooking; the same save persists both). An abandoned/blocked form never reaches here, so the lead keeps its real stage
     save();   // save() persists S too (promo.used counters live in S.promos, not DATA) so a single-use code stays used after reload
     if(editId) _logEvent('booking','Booking '+b.id+' updated ('+b.cust+')',{booking:b.id});
     else _logEvent('booking','Booking '+b.id+' created: '+b.cust+' / '+b.asset+' / '+money(q.total),{booking:b.id,total:_r2(q.total)});
@@ -7440,6 +7441,7 @@ const Atlas = (function(){
   /* ---- booking extras: toggle catalog items, adjust quantity, add custom one-offs ---- */
   var _bkDraft=null;
   var _waitConvertId=null;   // fix: waitlist->booking conversion in flight; entry removed only after createBooking's save()
+  var _leadConvertId=null;   // fix: lead->booking conversion in flight; the lead is marked Won only after createBooking's save (mirror _waitConvertId) -- no premature Won on an abandoned/blocked form
   function _bkExById(id){ return _bkDraft.extras.filter(function(x){return x.id===id;})[0]; }
   function bkToggleEx(id){ var cat=_extrasCatalog().filter(function(e){return e.id===id;})[0]; if(!cat)return;
     var i=_bkDraft.extras.map(function(x){return x.id;}).indexOf(id);
@@ -7904,7 +7906,7 @@ const Atlas = (function(){
     _leads().unshift({id:'ld'+Date.now().toString(36), name:nm, contact:(val('ldContact')||'').trim(), asset:(val('ldAsset')||'').trim(), note:(val('ldNote')||'').trim(), stage:'New', at:Date.now()});
     _logEvent('customer','Added lead '+nm,{}); save(); closeModal(); _renderLeadCard(); toast(nm+' added to leads'); }
   function leadStage(id,stage){ var l=_leads().filter(function(x){return x.id===id;})[0]; if(!l)return; l.stage=stage; save(); _renderLeadCard(); }
-  function leadToBooking(id){ var l=_leads().filter(function(x){return x.id===id;})[0]; if(!l)return; l.stage='Won'; save(); _renderLeadCard(); try{ newBooking(); var _lpf=function(){ var c=document.getElementById('bkCust'); if(c&&l.name&&!c.value)c.value=l.name; var ct=String(l.contact||'').trim(); if(ct){ var t=document.getElementById((ct.indexOf('@')>=0)?'bkEmail':'bkPhone'); if(t&&!t.value)t.value=ct; } }; _lpf(); setTimeout(_lpf,60); }catch(e){} toast('Lead marked Won -- booking pre-filled for '+(l.name||'')+(l.contact?(' ('+l.contact+')'):'')); }   // G26 (PB-parity): carry the lead's name + contact into the new booking form instead of dropping it
+  function leadToBooking(id){ if(!_guard('bookEdit','Converting a lead'))return; var l=_leads().filter(function(x){return x.id===id;})[0]; if(!l)return; try{ newBooking(); _leadConvertId=id; var _lpf=function(){ var c=document.getElementById('bkCust'); if(c&&l.name&&!c.value)c.value=l.name; var ct=String(l.contact||'').trim(); if(ct){ var t=document.getElementById((ct.indexOf('@')>=0)?'bkEmail':'bkPhone'); if(t&&!t.value)t.value=ct; } }; _lpf(); setTimeout(_lpf,60); }catch(e){} toast('Booking pre-filled for '+(l.name||'')+(l.contact?(' ('+l.contact+')'):'')+' -- the lead is marked Won when you save'); }   // G26 (PB-parity): carry the lead's name + contact into the new booking form. fix (mirror waitToBooking): guard bookEdit FIRST + mark the lead Won only after createBooking's save (via _leadConvertId) -- NOT immediately, so abandoning/blocking the form no longer strands the lead as Won with no booking (which inflated the Won/conversion metrics)
   function rmLead(id){ if(!_guard('bookEdit'))return; S.leads=_leads().filter(function(x){return x.id!==id;}); save(); _renderLeadCard(); }
   // ---- Waitlist: capture demand for booked-out assets, and auto-surface it when a booking cancels ----
   function _waitlist(){ if(!S.waitlist) S.waitlist=[]; return S.waitlist; }
