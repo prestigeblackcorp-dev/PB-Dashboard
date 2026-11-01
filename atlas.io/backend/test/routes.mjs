@@ -5392,7 +5392,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const _ATLAS_SRCl2b = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
   const _INDEX_SRCl2b = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
   ok(/function leadToBooking\(id\)\{ if\(!_guard\('bookEdit'/.test(_ATLAS_SRCl2b), 'lead2booking: leadToBooking guards bookEdit FIRST (a non-bookEdit teammate can no longer trip the conversion)');
-  ok(/function leadToBooking\(id\)\{[^}]*_leadConvertId=id;/.test(_ATLAS_SRCl2b) && !/function leadToBooking\(id\)\{ if\(!_guard\('bookEdit','Converting a lead'\)\)return; var l=_leads\(\)\.filter\(function\(x\)\{return x\.id===id;\}\)\[0\]; if\(!l\)return; l\.stage='Won'/.test(_ATLAS_SRCl2b), 'lead2booking: leadToBooking no longer stamps the lead Won immediately -- it sets _leadConvertId, deferring the Won mark to the booking save');
+  ok(/try\{ newBooking\(\); _leadConvertId=id;/.test(_ATLAS_SRCl2b), 'lead2booking: leadToBooking opens the form then sets _leadConvertId (deferring the Won mark to the booking save), instead of stamping the lead Won up front');
+  ok(!/if\(!l\)return; l\.stage='Won'; save\(\);/.test(_ATLAS_SRCl2b), 'lead2booking: the old immediate `l.stage=Won; save()` (before the booking even exists) is gone');
   ok(/if\(_leadConvertId\)\{ var _lcv=_leads\(\)\.filter\(function\(x\)\{return x\.id===_leadConvertId;\}\)\[0\]; if\(_lcv\) _lcv\.stage='Won'; _leadConvertId=null; \}/.test(_ATLAS_SRCl2b), 'lead2booking: createBooking marks the source lead Won ONLY on the actual save (abandoned/blocked form never reaches here)');
   ok(_ATLAS_SRCl2b === _INDEX_SRCl2b, 'lead2booking: atlas.html and index.html remain byte-identical');
 }
