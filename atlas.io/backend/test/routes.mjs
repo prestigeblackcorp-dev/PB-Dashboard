@@ -5356,6 +5356,24 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRCfe === _INDEX_SRCfe, 'fee parity: atlas.html and index.html remain byte-identical');
 }
 
+// ==== e-sign drift parity (legal): the OWNER-side terms-drift check must include the rental WINDOW (dates), matching the
+// server _bkTermsDrifted (A029 binds s0=startTs / e0=endTs). A reschedule-only change (dates moved, price/periods same) was
+// flagged stale on the customer portal + server but NOT on the owner's booking view. ====
+{
+  const _ATLAS_SRCdr = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCdr = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/if\(st\.s0!==undefined\|\|st\.e0!==undefined\)\{ if\(\(Number\(st\.s0\)\|\|0\)!==\(Number\(b\.startTs\)\|\|0\)\|\|\(Number\(st\.e0\)\|\|0\)!==\(Number\(b\.endTs\)\|\|0\)\) return true; \}/.test(_ATLAS_SRCdr), 'e-sign drift: the owner-side _bkTermsDriftedC also compares the signed rental window (s0/e0 vs startTs/endTs), matching the server -> a reschedule after signing now flags the owner "Review" too (legacy sigs w/o a window snapshot never flag)');
+  ok(_ATLAS_SRCdr === _INDEX_SRCdr, 'e-sign drift: atlas.html and index.html remain byte-identical');
+}
+
+// ==== evidence trail (dispute): removing a condition photo must leave an audit-log line, like add/finalize/unlock ====
+{
+  const _ATLAS_SRCev = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCev = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/condition photo removed on '\+b\.id/.test(_ATLAS_SRCev), 'evidence trail: bkRmCondition logs the removal (add/finalize/unlock already logged) so a deleted dispute photo is not silently gone from the evidence set');
+  ok(_ATLAS_SRCev === _INDEX_SRCev, 'evidence trail: atlas.html and index.html remain byte-identical');
+}
+
 // ==== 13v: PB-parity G18 -- void + chargeback-evidence reports include the comms/event timeline ====
 {
   const _ATLAS_SRC13v = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
