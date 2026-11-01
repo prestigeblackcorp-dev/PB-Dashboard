@@ -5344,6 +5344,18 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRCvr === _INDEX_SRCvr, 'voided revenue: atlas.html and index.html remain byte-identical');
 }
 
+// ==== fee parity: calcQuote must SKIP a non-positive money rule, matching the server priceQuote + public qt estimate ====
+// money.rules are additive FEES. The server (worker priceQuote 3000) and the public qt estimate skip a rule whose computed
+// amount is <=0; the client calcQuote applied it unconditionally, so a mis-saved NEGATIVE "fee" reduced the OWNER-created
+// total while the website/server total ignored it -> the two channels charged different amounts for the same asset+rule.
+{
+  const _ATLAS_SRCfe = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCfe = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/var _famt=\(r\.kind==='percent'\? subtotal\*\(r\.value\|\|0\)\/100 : \(r\.value\|\|0\)\);/.test(_ATLAS_SRCfe), 'fee parity: calcQuote computes the fee amount _famt before pushing it');
+  ok(/if\(!\(_famt>0\)\) return;/.test(_ATLAS_SRCfe), 'fee parity: calcQuote SKIPS a non-positive fee (0 or a negative mis-saved value), matching server priceQuote + public qt -> the owner-channel total no longer diverges from the website charge');
+  ok(_ATLAS_SRCfe === _INDEX_SRCfe, 'fee parity: atlas.html and index.html remain byte-identical');
+}
+
 // ==== 13v: PB-parity G18 -- void + chargeback-evidence reports include the comms/event timeline ====
 {
   const _ATLAS_SRC13v = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
