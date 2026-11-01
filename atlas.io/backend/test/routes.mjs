@@ -1309,6 +1309,28 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!/Number\(d\.rate\) \|\| Number\(d\.quote && d\.quote\.rate\) \|\| Number\(_s[em][^)]*\.baseRate\)/.test(_WORKER_SRC), 'self-extend rate (source): NO self-extend site still uses the old `Number(d.rate)||Number(d.quote.rate)||baseRate` cascade that dropped quote.rateCents + billed a $0 loaner at baseRate');
 }
 
+// ---- CANCEL phantom revenue (money): the kept-fee clamp must bound the kept RENTAL revenue by cash ACTUALLY collected
+// (_actuallyPaidCents), not raw revenue_cents -- which on a NEVER-PAID committed booking still holds the G5 full-quote
+// estimate, so "Keep the deposit/50%" on a $0-collected no-show booked a phantom fee as revenue. ----
+{
+  ok(/var _rentalRev = Math\.max\(0, Math\.min\(\(Number\(rr\.revenue_cents\) \|\| 0\), _actuallyPaidCents\(dd\)\) - _depRev\);/.test(_WORKER_SRC), 'cancel-phantom: the kept-fee base is capped at _actuallyPaidCents(dd) (cash collected), not raw revenue_cents -> a never-paid/gift-only cancel books $0 fee, not the G5 estimate');
+}
+
+// ---- RBAC forge-payment (security): the generic bookEdit-gated /api/data/bookings write must strip a client-introduced
+// non-hold `paid` slot the server has no record of -- a `billing`-cap bypass that let a front-desk teammate forge a "paid"
+// stamp (cover for pocketed cash). Mirrors _stripUnbackedSig / _stripUnbackedIdVerify; runs before _graftServerPay. ----
+{
+  ok(/async function _stripUnbackedPaid\(env, tenantId, bookingId, data\)/.test(_WORKER_SRC), 'rbac-paid: _stripUnbackedPaid exists (mirrors the signature / ID-verify unbacked-claim strippers)');
+  ok(/if \(p && !p\.hold && !Object\.prototype\.hasOwnProperty\.call\(srvPaid, k\)\) delete data\.paid\[k\];/.test(_WORKER_SRC), 'rbac-paid: it drops a client NON-hold paid slot whose key the server blob has no record of (a forged collected-money stamp); hold slots + server-backed keys are kept');
+  ok((_WORKER_SRC.match(/await _stripUnbackedPaid\(env/g) || []).length >= 2, 'rbac-paid: it is invoked on BOTH the mirror-update (before graft) and the CREATE path, exactly like the sig / id-verify strippers');
+}
+
+// ---- /book intake data-hygiene: a raw client `b.start` ms timestamp must have an UPPER bound so a far-future junk
+// booking (e.g. year 275760) cannot be created and block availability absurdly far out. ----
+{
+  ok(/if \(startTs > now \+ 1826 \* 86400000\)/.test(_WORKER_SRC), 'book-start-bound: the public /book intake rejects a start more than ~5 years out (the past-only check left the future unbounded)');
+}
+
 // ---- GIFT-CARD value returned on cancel (money #3): cancelling a booking refunded real payments but never released the
 // redeemed gift-card value in gift_uses, so the customer's prepaid balance was silently forfeited. _collectGiftReturns lists
 // the redemptions to release and stamps giftReturnedAt so a re-cancel is a no-op (never double-releases). ----
