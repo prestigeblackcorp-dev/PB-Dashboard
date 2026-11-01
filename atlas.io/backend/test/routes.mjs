@@ -5298,6 +5298,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_ATLAS_SRCtx === _INDEX_SRCtx, 'tax label: atlas.html and index.html remain byte-identical');
 }
 
+// ==== collected-to-date: a booking paid ONLY via an online charge (no core reserve/balance) must count that cash ====
+// _bkOwedEarned's no-core-payment branch returned _offlineCollectedCharges, which EXCLUDES paidOnline charges -> a
+// walk-in/phone booking whose only payment is an online payment-widget charge showed $0 collected (and overstated the
+// balance owed). The branch never reads revCents, so counting online charges here cannot double-count.
+{
+  const _ATLAS_SRCce = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCce = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/function _bkOwedEarned\(b\)\{ return _bkHasCorePayment\(b\) \? _bkEarned\(b\) : _collectedCharges\(b\); \}/.test(_ATLAS_SRCce), 'collected: _bkOwedEarned counts ALL real collected charges (online + offline) via _collectedCharges when there is no core reserve/balance payment -- an online-charge-only booking no longer reads $0 collected');
+  ok(_ATLAS_SRCce === _INDEX_SRCce, 'collected: atlas.html and index.html remain byte-identical');
+}
+
 // ==== 13v: PB-parity G18 -- void + chargeback-evidence reports include the comms/event timeline ====
 {
   const _ATLAS_SRC13v = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
