@@ -6190,6 +6190,15 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(body && body\.settings && typeof body\.settings === 'object'\) _sanitizePublicSiteIds\(body\.settings\);/.test(_WORKER_SRC), 'site-builder HIGH: the profile PUT runs the id sanitizer before either settings-write branch stores the publicSite blob verbatim');
 }
 
+// ==== build fh: Wave-10 audit fixes (cron pending-expire starvation, admin data-lock bypass x2, admin-deleted owner scrub, mailer test-recipient) ====
+{
+  ok(/pending_expire_cursor/.test(_WORKER_SRC) && /created_at <= \? AND id > \? ORDER BY id ASC LIMIT 200/.test(_WORKER_SRC), 'cron MED (Wave-10): _runPendingExpire rotates by a persisted id cursor (pending_expire_cursor) so non-opted-in abandoned pendings can no longer permanently fill a fixed oldest-first window and starve an opted-in tenant (bricking its capped-promo slots + stranding gift value)');
+  ok(/var _compAcs = await _ownerControlState\(env, ctx\.user\.email\); if \(_compAcs\.frozen \|\| _compAcs\.data_locked\)/.test(_WORKER_SRC), 'admin MED (Wave-10): /api/admin/comp re-checks _ownerControlState on the live session (data-lock does NOT revoke it) -> a data-locked owner cannot grant free/gold platform access');
+  ok(/var _pbAcs = await _ownerControlState\(env, ctx\.user\.email\); if \(_pbAcs\.frozen \|\| _pbAcs\.data_locked\)/.test(_WORKER_SRC), 'admin MED (Wave-10): /api/pb-sync re-checks _ownerControlState on the live session so a data-locked owner cannot run it');
+  ok(/if \(m\) r\.email = m\[1\]; return r; \}\)\.filter\(function \(r\) \{ return !_isOwnerEmail\(env, r\.email \|\| ''\); \}\);/.test(_WORKER_SRC), 'admin LOW (Wave-10): /api/admin/deleted scrubs platform-owner rows from the staff-readable list (matches /members|transactions|purchases)');
+  ok(/const to = ctx\.user\.email;   \/\/ WAVE10 LOW: a test email always goes/.test(_WORKER_SRC), 'mailer LOW (Wave-10): /api/email/test sends only to the signed-in user own address, not an arbitrary body.to over the shared Atlas mailer');
+}
+
 // ==== build fg: Wave-9 audit fixes (non-ID portal-media auth, gift-return RBAC on cancel, public-booking duration cap) ====
 {
   ok(/const _bookingId = _pm\[1\], _kind = _pm\[2\], _tenantId = key\.split/.test(_WORKER_SRC) && /\(!_isId \|\| _can\(_sctx, 'customersEdit'\)\)/.test(_WORKER_SRC), 'file/media MED (Wave-9): the /api/f serve gate matches EVERY /portal/<booking>/<kind>- key (not only id-) -> condition/pickup/return photos (and a gov-ID mislabeled as condition) require the booking session/portal-token instead of serving to any capability-URL holder; a gov-ID still needs customersEdit');
