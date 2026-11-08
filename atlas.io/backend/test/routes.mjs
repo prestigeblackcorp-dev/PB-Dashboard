@@ -6125,6 +6125,23 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/\? \(_priorReal \+ _capturedDepCents\(d\)\) : \(Number\(row\.revenue_cents\) \|\| 0\)/g) || []).length === 6, 'deposit-estbase MED #2: ALL 6 credit-path estimate-replace sites add the captured-deposit floor to _priorReal so a first online core payment on a cash/G5 booking cannot drop a captured deposit from revenue_cents');
 }
 
+// ==== build ez: Wave-4 correctness-engine audit fixes (billing takedown, analytics mode-filters, availability column backfill, pricing order) ====
+{
+  // Billing MED: public-site takedown now covers canceled/unpaid/lapsed-trial, not only past_due
+  ok(/if \(_plan === 'canceled' \|\| _plan === 'unpaid'\) return true;/.test(_WORKER_SRC) && /if \(_plan === 'trial'\) \{ const _te = Number\(tenant\.trial_ends\);/.test(_WORKER_SRC), 'billing MED: _siteTakenDown withdraws the hosted site from a CANCELED/UNPAID tenant immediately and a lapsed TRIAL after grace (delinquent_since is cleared on cancel / never set for a trial, so the past_due-only check kept serving a non-paying ex-customer forever)');
+  // Analytics MED #1: cohort revenue mode-filtered
+  ok(/WHERE t\.created_at>=\? AND COALESCE\(pt\.livemode,0\)=\?/.test(_WORKER_SRC), 'analytics MED #1: cohort revenue mode-filters livemode (was the only owner-dashboard revenue read mixing TEST + LIVE)');
+  // Analytics MED #2: counsel rollup revenue mode-filtered + signups owner-excluded
+  ok(/const rev = \(\(await env\.DB\.prepare\('SELECT COALESCE\(SUM\(amount_cents\),0\) c FROM platform_transactions WHERE created_at>=\? AND COALESCE\(livemode,0\)=\?'\)/.test(_WORKER_SRC), 'analytics MED #2: Counsel rollup "collected" revenue mode-filters livemode (matches the Morning Brief/Overview)');
+  // Analytics: top_tenants + revenue-spike today mode-filtered
+  ok(/SELECT tenant_id,email,COALESCE\(SUM\(amount_cents\),0\) rev FROM platform_transactions WHERE COALESCE\(livemode,0\)=\? GROUP BY tenant_id/.test(_WORKER_SRC), 'analytics: top_tenants_revenue mode-filters livemode');
+  ok(/const _rv = await env\.DB\.prepare\('SELECT COALESCE\(SUM\(amount_cents\),0\) c FROM platform_transactions WHERE created_at>=\? AND COALESCE\(livemode,0\)=\?'\)/.test(_WORKER_SRC), 'analytics: revenue-spike TODAY mode-filtered to match the mode-filtered baseline (no false spike email from TEST charges)');
+  // Availability MED: patchFields backfills starts/ends from the blob window
+  ok(/else if \(body\.data && vInt\(body\.data\.startTs\)\) set\('starts', Number\(body\.data\.startTs\)\);/.test(_WORKER_SRC) && /else if \(body\.data && \(vInt\(body\.data\.endTs\) \|\| vInt\(body\.data\._effEndTs\)\)\) set\('ends',/.test(_WORKER_SRC), 'availability MED: patchFields backfills the denormalized starts/ends columns from data.startTs/endTs when the top-level scalar is omitted, so a blob-only confirmed booking cannot commit with NULL columns and vanish from the overlap prefilter (double-book)');
+  // Pricing LOW: smart-pricing multiplier computed in the same float order as the embedded public-page quote
+  ok(/var _pqRent = rate \* p \* _rm, _pqUsedWeekly = false;/.test(_WORKER_SRC), 'pricing LOW: the simple-rate branch computes rate*p*mult in the SAME order as the public-page quote so a non-integer Smart Pricing multiplier cannot round charged 1c off shown');
+}
+
 // ==== audit400 build da: deposit-capture clamp (A072), cross-processor archive (A073), reconcile hold receipt (A077), shared-mailer suppression (A107) ====
 {
   ok(/const _capAmt = \(vInt\(body\.amountCents\) && body\.amountCents > 0\) \? Math\.min\(Math\.round\(Number\(body\.amountCents\)\), _capTot\) : _capTot;/.test(_WORKER_SRC) && /p\.captured = \{ at: Date\.now\(\), amountCents: _capAmt \}; delete p\.hold;/.test(_WORKER_SRC), 'audit400 A072: the hold-capture clamps body.amountCents to an integer <= the held amount and uses it for the Stripe call AND the record (no over-charge / fractional-cents corruption)');
