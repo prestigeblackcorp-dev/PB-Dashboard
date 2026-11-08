@@ -6142,6 +6142,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/var _pqRent = rate \* p \* _rm, _pqUsedWeekly = false;/.test(_WORKER_SRC), 'pricing LOW: the simple-rate branch computes rate*p*mult in the SAME order as the public-page quote so a non-integer Smart Pricing multiplier cannot round charged 1c off shown');
 }
 
+// ==== build fa: Wave-5 subsystem-audit fixes (PB-sync null-date, portal self-extend race, gift-card hardening) ====
+{
+  // PB-sync MED: _pbmCentralMs slices to YYYY-MM-DD so a time-component date can't resolve NULL starts/ends (invisible-to-overlap double-book)
+  ok(/const naive = Date\.parse\(String\(dateStr\)\.slice\(0, 10\) \+ 'T' \+ t \+ ':00Z'\);/.test(_WORKER_SRC), 'PB-sync MED: _pbmCentralMs hardens a non-date-only PB date (slice to YYYY-MM-DD) so a mirror booking cannot commit confirmed with NULL starts/ends and vanish from the overlap scan (double-sell)');
+  // Portal self-extend MED: the post-commit heal checks up to the FRESH effective end, not this request's _seNewEnd
+  ok(/var _shEffEnd = _shFR \? _bkEffEndServer\(0, jparse\(_shFR\.data, \{\}\), _sePms\) : _seNewEnd;/.test(_WORKER_SRC) && /_peakUnits\(_shRows\.map[\s\S]*?, _sePrevEnd - _seBuf, _shEffEnd \+ _seBuf\);/.test(_WORKER_SRC), 'portal self-extend MED: the heal validates the FULL window up to the booking fresh effective end (sums concurrent self-extends) so two differently-sized concurrent self-extends on one token cannot leave their superposition tail unchecked -> double-book');
+  // Gift LOW: graft coerces giftRedemptions unconditionally (server-authoritative; discards a client-forged array)
+  ok(/clientD\.giftRedemptions = Array\.isArray\(serverD\.giftRedemptions\) \? serverD\.giftRedemptions\.slice\(\) : \[\];/.test(_WORKER_SRC), 'gift LOW: _graftServerPay coerces giftRedemptions unconditionally so a booking that never went through a gift endpoint cannot keep a client-forged redemption (cut-the-due + brick-the-code via reconcile MAX)');
+  // Gift LOW: the money/receipt gift sums exclude a RETURNED redemption
+  ok((_WORKER_SRC.match(/return s2 \+ \(\(r && !r\.giftReturnedAt\) \? \(Number\(r\.amt\) \|\| 0\) : 0\);/g) || []).length === 2, 'gift LOW: _portalDue + the receipt exclude a giftReturnedAt redemption from the applied-credit sum (robust against any future revive/non-terminal-return granting phantom credit)');
+  // Gift/money LOW: /cancel blocks a voided/completed booking (would reverse void semantics / refund a finished rental)
+  ok(/if \(_cxT === 'voided' \|\| _cxTd === 'voided' \|\| _cxT === 'completed' \|\| _cxTd === 'completed'\) return json\(\{ ok: false, reason: 'terminal'/.test(_WORKER_SRC), 'gift/money LOW: booking /cancel is blocked on a voided/completed booking (re-cancel of a cancelled booking stays the idempotent no-op)');
+}
+
 // ==== audit400 build da: deposit-capture clamp (A072), cross-processor archive (A073), reconcile hold receipt (A077), shared-mailer suppression (A107) ====
 {
   ok(/const _capAmt = \(vInt\(body\.amountCents\) && body\.amountCents > 0\) \? Math\.min\(Math\.round\(Number\(body\.amountCents\)\), _capTot\) : _capTot;/.test(_WORKER_SRC) && /p\.captured = \{ at: Date\.now\(\), amountCents: _capAmt \}; delete p\.hold;/.test(_WORKER_SRC), 'audit400 A072: the hold-capture clamps body.amountCents to an integer <= the held amount and uses it for the Stripe call AND the record (no over-charge / fractional-cents corruption)');
