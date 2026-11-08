@@ -6190,6 +6190,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(body && body\.settings && typeof body\.settings === 'object'\) _sanitizePublicSiteIds\(body\.settings\);/.test(_WORKER_SRC), 'site-builder HIGH: the profile PUT runs the id sanitizer before either settings-write branch stores the publicSite blob verbatim');
 }
 
+// ==== build fi: Wave-11 audit fixes (customer RTBF resurrection HIGH, team actor-rank MED, SSO invite-consume LOW/MED) ====
+{
+  ok(/async function _custEraseGuard\(env, tenantId, id, email, phone\)/.test(_WORKER_SRC) && (_WORKER_SRC.match(/await _custEraseGuard\(env, ctx\.tenant_id, (?:rid|id), body\.email, body\.phone\)/g) || []).length >= 2, 'customer RTBF HIGH (Wave-11): _custEraseGuard guards BOTH generic /api/data/customers UPDATE paths (POST-as-update + PUT) so a stale device re-sync cannot resurrect an erased (GDPR/CCPA) customer PII -- the class _pbSyncWrite already closed, left open on the main owner-dashboard path');
+  ok(/coll === 'customers' && await _rtbfMatch\(env, ctx\.tenant_id, \{ email: body\.email, phone: body\.phone \}\)\) \{ try \{ await audit\(env, ctx, req, 'customer\.erase_kept', \{ id: rid, via: 'insert' \}/.test(_WORKER_SRC), 'customer RTBF HIGH (Wave-11): the customer INSERT path also skips a tombstoned-identity write (resurrection under a NEW id)');
+  ok(/function _effectiveCapSet\(role, capsJson\)/.test(_WORKER_SRC) && /if \(_tCaps\.teamManage\) \{ _denyAudit/.test(_WORKER_SRC) && /if \(_tCaps\[_tk\] && !_can\(ctx, _tk\)\)/.test(_WORKER_SRC), 'team MED (Wave-11): team PUT/DELETE enforces actor-outranks-target -- a non-owner teamManage delegate cannot modify a team-admin (teamManage holder) or a teammate holding a capability the actor itself lacks');
+  ok(/UPDATE users SET sso_sub=\?, sso_provider=\?, invite_token=NULL, status='active', email_verified=1 WHERE id=\?/.test(_WORKER_SRC), 'team/SSO LOW/MED (Wave-11): SSO activation consumes a pending invite (clears the single-use invite_token + flips status active + email_verified) so the token is not left replayable');
+}
+
 // ==== build fh: Wave-10 audit fixes (cron pending-expire starvation, admin data-lock bypass x2, admin-deleted owner scrub, mailer test-recipient) ====
 {
   ok(/pending_expire_cursor/.test(_WORKER_SRC) && /created_at <= \? AND id > \? ORDER BY id ASC LIMIT 200/.test(_WORKER_SRC), 'cron MED (Wave-10): _runPendingExpire rotates by a persisted id cursor (pending_expire_cursor) so non-opted-in abandoned pendings can no longer permanently fill a fixed oldest-first window and starve an opted-in tenant (bricking its capped-promo slots + stranding gift value)');
