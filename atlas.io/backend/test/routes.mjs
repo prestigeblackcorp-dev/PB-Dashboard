@@ -1313,7 +1313,11 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // (_actuallyPaidCents), not raw revenue_cents -- which on a NEVER-PAID committed booking still holds the G5 full-quote
 // estimate, so "Keep the deposit/50%" on a $0-collected no-show booked a phantom fee as revenue. ----
 {
-  ok(/var _rentalRev = Math\.max\(0, Math\.min\(\(Number\(rr\.revenue_cents\) \|\| 0\), _actuallyPaidCents\(dd\)\) - _depRev\);/.test(_WORKER_SRC), 'cancel-phantom: the kept-fee base is capped at _actuallyPaidCents(dd) (cash collected), not raw revenue_cents -> a never-paid/gift-only cancel books $0 fee, not the G5 estimate');
+  ok(/var _rentalRev = Math\.max\(0, Math\.min\(\(Number\(rr\.revenue_cents\) \|\| 0\), _rentalPaidCents\)\);/.test(_WORKER_SRC) && /String\(_rpk\)\.indexOf\('security'\) !== 0/.test(_WORKER_SRC) && !/_actuallyPaidCents\(dd\)\) - _depRev/.test(_WORKER_SRC), 'cancel-phantom (+ deposit-hole fix): the kept-fee base is RENTAL cash only (_rentalPaidCents excludes every security* slot), capped at revenue_cents -> a REFUNDABLE deposit can no longer be booked as a phantom cancellation fee on a $0-rental no-show');
+  // ---- 2026-11-08 Wave-2 audit fixes (sync availability + notifications) ----
+  ok((_WORKER_SRC.match(/\(_ainfo && Array\.isArray\(_ainfo\.blackouts\)\) \? _ainfo\.blackouts/g) || []).length >= 2 && /\(_seInfo && Array\.isArray\(_seInfo\.blackouts\)\) \? _seInfo\.blackouts/.test(_WORKER_SRC), 'sync-blackouts: _confirmSlotFull + self-extend read the canonical blackouts from the info BLOB (synced by the mirror), not the never-written blackouts COLUMN -> the maintenance-blackout gate actually fires at confirm/self-extend (no double-book onto a blocked window)');
+  ok((_WORKER_SRC.match(/Number\(body\.data\._t\) > Date\.now\(\) \+ 600000/g) || []).length >= 2, 'sync-savedAt: an incoming booking data._t is future-clamped to now+10min on BOTH the PUT and POST-as-update branches so a clock-skewed device cannot poison newest-wins and strip later genuine edits');
+  ok(/serverD\.abandonNudgedAt != null && clientD\.abandonNudgedAt == null/.test(_WORKER_SRC), 'notif-abandon: _graftServerPay grafts the abandoned-nudge dedup marker (server-authoritative like autoSent) so a stale owner save cannot erase it and re-trigger a duplicate nudge');
 }
 
 // ---- RBAC forge-payment (security): the generic bookEdit-gated /api/data/bookings write must strip a client-introduced
