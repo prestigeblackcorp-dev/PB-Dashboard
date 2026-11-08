@@ -6190,6 +6190,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(body && body\.settings && typeof body\.settings === 'object'\) _sanitizePublicSiteIds\(body\.settings\);/.test(_WORKER_SRC), 'site-builder HIGH: the profile PUT runs the id sanitizer before either settings-write branch stores the publicSite blob verbatim');
 }
 
+// ==== build fe: Wave-8 audit fix (emailed smart-receipt fees line) ====
+{
+  // Receipt-footing MED: the emailed smart-receipt itemizes fees so subtotal+fees+tax == Total (was subtotal+tax only while Total included the fees)
+  ok(/rows \+= '<tr><td style="padding:3px 0">' \+ esc\(f\.name \|\| 'Fee'\)/.test(_WORKER_SRC), 'receipt-footing MED (Wave-8): _bookingReceiptInner itemizes q.fees between the subtotal and tax rows so the emailed smart-receipt foots (visible lines sum to Total) when a money-rule fee is enabled');
+}
+
 // ==== audit400 build da: deposit-capture clamp (A072), cross-processor archive (A073), reconcile hold receipt (A077), shared-mailer suppression (A107) ====
 {
   ok(/const _capAmt = \(vInt\(body\.amountCents\) && body\.amountCents > 0\) \? Math\.min\(Math\.round\(Number\(body\.amountCents\)\), _capTot\) : _capTot;/.test(_WORKER_SRC) && /p\.captured = \{ at: Date\.now\(\), amountCents: _capAmt \}; delete p\.hold;/.test(_WORKER_SRC), 'audit400 A072: the hold-capture clamps body.amountCents to an integer <= the held amount and uses it for the Stripe call AND the record (no over-charge / fractional-cents corruption)');
