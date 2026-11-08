@@ -2356,7 +2356,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23dl';
+  var APP_VERSION='2026.7.23dm';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -6780,7 +6780,7 @@ const Atlas = (function(){
      +'</div></body></html>';
     var w=window.open('','_blank'); if(!w){ toast('Allow pop-ups to open the legal report.'); return; }
     w.document.open(); w.document.write(H); w.document.close(); try{ w.focus(); }catch(e){} }
-  function bkEvidence(id){ _genChargebackEvidence(id); }
+  function bkEvidence(id){ if(!_guard('bookEdit','Dispute evidence'))return; _genChargebackEvidence(id); }   // WAVE8 LOW (privacy): the chargeback-evidence record is built entirely from local state (customer PII + signer IP/UA/fingerprint) with no server gate -> require bookEdit to EXPORT it, matching bkRebuttalLetter; a view-only teammate can still see the booking but not package its forensic PII into a portable document
   // CHARGEBACK / FRAUD-DISPUTE EVIDENCE REPORT: a per-booking record proving the transaction was authorized + fulfilled,
   // for when a customer files a false fraud claim. Compiles the signed agreement (exact time + signer IP + device +
   // doc fingerprint), every payment (time + amount + method), every extension step (added / signed / paid) and
@@ -14027,7 +14027,7 @@ const Atlas = (function(){
     (q.extrasLines||[]).forEach(function(l){ items.push({label:l.name, amt:_r2(l.amt)}); });   // fix: _r2 (cents) not Math.round (whole dollars) -> extras foot
     if(q.disc) items.push({label:'Discount'+(b.promoCode?(' ('+b.promoCode+')'):''), amt:-_r2(q.disc), disc:true});
     if(q.fees&&q.fees.length){ q.fees.forEach(function(f){ items.push({label:f.name, amt:_r2(f.amt)}); }); } else if(_r2(q.feeTotal||0)>0){ items.push({label:'Fees', amt:_r2(q.feeTotal||0)}); }   // fix: _r2 not Math.round -> a % fee foots; single Fees line for an old stored quote that lacks the itemized array
-    var _preTax=items.reduce(function(t,it){return t+(it.amt||0);},0);items.push({label:'Sales tax ('+(Number(m.tax)||0)+'%)', amt:_r2((q.total!=null?q.total:(_preTax+(q.taxAmt||0)))-_preTax)});   // footing: tax line absorbs the <=2c per-line rounding residual so the visible items sum EXACTLY to the charged total q.total (fallback to q.taxAmt when total absent)
+    var _preTax=items.reduce(function(t,it){return t+(it.amt||0);},0);var _taxAmt=_r2((q.total!=null?q.total:(_preTax+(q.taxAmt||0)))-_preTax);var _taxPct=(q.taxPct!=null)?Number(q.taxPct):(_preTax>0?(Math.round((_taxAmt/_preTax)*10000)/100):(Number(m.tax)||0));items.push({label:'Sales tax ('+_taxPct+'%)', amt:_taxAmt});   // footing: tax line absorbs the <=2c per-line rounding residual so the visible items sum EXACTLY to the charged total q.total (fallback to q.taxAmt when total absent). WAVE8 LOW: the shown % is the EFFECTIVE rate derived from the FROZEN amounts (or a stored q.taxPct), NOT the live S.money.tax -> a historical receipt keeps the rate actually charged after the owner changes their tax rate.
     return {q:q, items:items}; }
   function _receiptHtml(b){ var money=_moneyBase; var r=_receiptItems(b), q=r.q, pm=_portalMoney(b);
     var logo=S.brand.logo?('<img src="'+esc(S.brand.logo)+'" alt="business logo" style="height:36px;border-radius:8px">'):('<div class="rcpt-logo" style="background:'+S.brand.color+'">'+esc(S.brand.initial)+'</div>');
