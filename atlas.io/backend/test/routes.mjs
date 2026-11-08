@@ -1915,6 +1915,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/function _pubUnit\(prof\)/.test(_WORKER_SRC), 'public-unit: _pubUnit(prof) = the authoritative public rate unit (money.rateModel first, legacy pubSite.config.unit only as fallback) shared by every SSR render + the availability-span math');
   ok(!/var unit = String\(cfg\.unit \|\| 'day'\)/.test(_WORKER_SRC) && !/String\(lcfg\.unit \|\| 'day'\)/.test(_WORKER_SRC) && !/String\(_pcfg\.unit \|\| 'day'\)/.test(_WORKER_SRC), 'public-unit: NO server-rendered page still reads the stale pubSite.config.unit for its displayed unit (home showcase / asset detail / SEO landing + FAQ all use _pubUnit(prof))');
   ok((_WORKER_SRC.match(/_pubUnit\(prof\)/g) || []).length >= 6, 'public-unit: _pubUnit(prof) drives the unit at every public render site (availability-span math + home showcase + asset detail + SEO landing + SEO FAQ) so the label + the span math match the per-period charge');
+  // PUBLIC-UNIT (SSR prof) -- found live 2026-11-08 on /api/book/<slug>/v/<asset> ("/hour" on a 'day' tenant): _pubUnit reads prof.money.rateModel,
+  // so the SELECTs that build the prof for the SERVER-RENDERED sub-pages (asset detail /v/, about/faq/contact) + SEO landings (/r/) MUST include the
+  // `money` column. The sub-page/SEO routes selected only brand,settings -> tenantProfile money={} -> _pubUnit fell back to the stale cfg.unit. Fixed by
+  // adding money to all four lookups (apex subdomain + custom domain, sub-pages + SEO). The home/booking page already selected money (hence "/day").
+  ok(!/subdomain,brand,settings FROM tenants WHERE subdomain=\? AND deleted_at IS NULL/.test(_WORKER_SRC), 'public-unit (SSR prof): no subdomain sub-page/SEO SELECT omits the money column (else _pubUnit falls back to the stale cfg.unit on /v/ + /r/ pages)');
+  ok(!/subdomain,brand,settings FROM tenants WHERE custom_domain=\? AND custom_domain_status='live'/.test(_WORKER_SRC), 'public-unit (SSR prof): no custom-domain sub-page/SEO SELECT omits the money column');
+  ok((_WORKER_SRC.match(/subdomain,brand,money,settings FROM tenants WHERE subdomain=\?/g) || []).length >= 2 && (_WORKER_SRC.match(/subdomain,brand,money,settings FROM tenants WHERE custom_domain=\? AND custom_domain_status='live'/g) || []).length >= 2, 'public-unit (SSR prof): the sub-page + SEO prof SELECTs (apex subdomain + custom domain) all carry money so _pubUnit resolves rateModel');
 
   // #16 the public /api/unsub endpoint is rate-limited per IP (was an unmetered public POST).
   ok(/rateLimit\(env, 'unsub:' \+/.test(_WORKER_SRC), '#16: /api/unsub is rate-limited per CF-Connecting-IP');
