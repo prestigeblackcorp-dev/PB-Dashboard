@@ -6190,6 +6190,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(body && body\.settings && typeof body\.settings === 'object'\) _sanitizePublicSiteIds\(body\.settings\);/.test(_WORKER_SRC), 'site-builder HIGH: the profile PUT runs the id sanitizer before either settings-write branch stores the publicSite blob verbatim');
 }
 
+// ==== build fg: Wave-9 audit fixes (non-ID portal-media auth, gift-return RBAC on cancel, public-booking duration cap) ====
+{
+  ok(/const _bookingId = _pm\[1\], _kind = _pm\[2\], _tenantId = key\.split/.test(_WORKER_SRC) && /\(!_isId \|\| _can\(_sctx, 'customersEdit'\)\)/.test(_WORKER_SRC), 'file/media MED (Wave-9): the /api/f serve gate matches EVERY /portal/<booking>/<kind>- key (not only id-) -> condition/pickup/return photos (and a gov-ID mislabeled as condition) require the booking session/portal-token instead of serving to any capability-URL holder; a gov-ID still needs customersEdit');
+  ok(/var _giftWouldReturn = 0;/.test(_WORKER_SRC) && /_depRefund \|\| _giftWouldReturn > 0\)/.test(_WORKER_SRC), 'cancel MED (Wave-9): cancelling a gift-funded booking (which returns the redeemed gift-card balance) requires the billing permission, not bookEdit alone -- the gate now counts _giftWouldReturn alongside cash + captured deposit');
+  ok(/if \(periods \* unitMs > 3660 \* 86400000\) return err\(400, 'Please choose a shorter booking length\.'\);/.test(_WORKER_SRC), 'public-booking LOW (Wave-9): the create path caps the booking DURATION (periods*unitMs) at ~10y so a week/month rate near the periods cap cannot create a calendar-cluttering far-future endTs');
+}
+
 // ==== build ff: Wave-8 audit fix (chargeback-evidence forensic fields reconciled from the immutable signatures row) ====
 {
   ok(/SELECT id, terms_hash, signed_at, ip, doc_hash, signer_name FROM signatures/.test(_WORKER_SRC), 'evidence-tamper MED (Wave-8): _stripUnbackedSig reads the immutable ip/doc_hash/signer_name columns so it can reconcile them onto the synced blob');
