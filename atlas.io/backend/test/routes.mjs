@@ -2057,7 +2057,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_extSigTermsStr(null, null, null, null) === '|0|0|0', '#7 ext-terms: null-safe (never throws)');
   // source: the sig row stores ext_terms_hash and _stripUnbackedSig verifies the CURRENT terms against it (legacy rows w/o a hash fall back to the existence-only check).
   ok(/ALTER TABLE signatures ADD COLUMN ext_terms_hash TEXT/.test(_WORKER_SRC), '#7: signatures.ext_terms_hash column added');
-  ok(/signed_at,ext_terms_hash\) VALUES \(\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?\)/.test(_WORKER_SRC), '#7: /extsign stores the extension terms hash on the sx row');
+  ok(/signed_at,ext_terms_hash,consent\) VALUES \(\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?\)/.test(_WORKER_SRC), '#7 + ext-consent MED: /extsign stores the extension terms hash AND the E-SIGN/UETA consent on the sx row');
   ok(/if \(_curTH !== _rowTh\) \{ _strip\(_x\); continue; \}/.test(_WORKER_SRC), '#7/MED #12: _stripUnbackedSig strips an extension whose current terms do not match its sig row (reused/forged sigId)');
   ok(/if \(_rowTh\)/.test(_WORKER_SRC), '#7/MED #12: a legacy sig row with no terms hash falls back to the existence check (still 1:1-bound), so no legitimate signature is stripped');
 
@@ -2121,7 +2121,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // matched EXACTLY (revenue_cents == quote.total*100) so a real payment that changed revenue is never wiped.
   ok((_WORKER_SRC.match(/UPDATE bookings SET revenue_cents=\? WHERE id=\? AND tenant_id=\? AND revenue_cents > \?/g) || []).length === 2 && !/SET revenue_cents=0 WHERE id=\? AND tenant_id=\? AND revenue_cents=\?/.test(_WORKER_SRC), '#c7-6 + Cancel-F2: the G5 estimate is cleared on cancel-via-edit on BOTH POST + PUT by CONDITION (clear DOWN to the captured-deposit floor: revenue_cents > _capDep), not the old exact-match that missed a quote-changed booking -> a voided/cancelled booking no longer over-reports phantom revenue while a kept damage deposit is preserved');
   ok(/if \(fd\.autoSent && fd\.autoSent\[key\]\) return false;/.test(_WORKER_SRC), 'Notif-F2: the lifecycle _claim re-checks the dedup marker on the FRESH CAS row and no-ops if already stamped, matching its _runAbandonedNudge/_runInstallmentCharges siblings (no double-send if two cron ticks overlap)');
-  ok(/custom_domain=NULL, custom_domain_status=NULL, updated_at=\? WHERE custom_domain_status='pending' AND updated_at < \?/.test(_WORKER_SRC), 'domain-squat: a never-verified PENDING custom_domain is released after 14d of no tenant activity so a reserved-but-unverifiable name cannot block the real owner forever (the per-tenant _atlas-verify TXT remains the anti-takeover binding)');
+  ok(/custom_domain=NULL, custom_domain_status=NULL, custom_domain_at=NULL, updated_at=\? WHERE custom_domain_status='pending' AND COALESCE\(custom_domain_at, updated_at\) < \?/.test(_WORKER_SRC), 'domain-squat: a never-verified PENDING custom_domain is released after 14d, keyed on COALESCE(custom_domain_at, updated_at) (MED #2: stable connect-time stamp, not activity-bumped updated_at) so a reserved-but-unverifiable name cannot block the real owner forever (the per-tenant _atlas-verify TXT remains the anti-takeover binding)');
   ok(/_g5xst === 'cancelled' \|\| _g5xst === 'pending' \|\| _g5xst === 'voided'/.test(_WORKER_SRC), '#c7-6: clears only when the booking is set to a NON-committed status');
 }
 
@@ -6100,6 +6100,26 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/ALTER TABLE promo_uses ADD COLUMN owner_n INTEGER DEFAULT 0/.test(_WORKER_SRC), 'Gift-1: promo_uses.owner_n column added idempotently in ensurePlatformSchema (backfills existing rows to 0 -> byte-identical gate until an owner redemption lands)');
   ok(/async function _promoOwnerClaim\(env, tenant, data\)/.test(_WORKER_SRC) && /UPDATE promo_uses SET owner_n=COALESCE\(owner_n,0\)\+1 WHERE tenant_id=\? AND code=\?/.test(_WORKER_SRC), 'Gift-1: _promoOwnerClaim increments the server-authoritative owner_n for an owner-entered promo redemption');
   ok(/await _promoOwnerClaim\(env, ctx\.tenant_id, body\.data\); \} catch \(e\) \{\} \}   \/\/ Gift-1: count an owner-entered CAPPED-promo redemption server-side on CREATE only/.test(_WORKER_SRC), 'Gift-1: _promoOwnerClaim is invoked on the booking genuine-INSERT path only (idempotent -- the re-POST-as-update branch returned above), never on PUT, so a booking is counted exactly once and a public /book redemption (different handler) is never double counted');
+}
+
+// ==== build ex: Wave-3 subsystem-audit fixes (portal_token leak, domain-squat #1/#2, extension e-sign consent, QB/Xero deposit-as-income, cancel-clamp prefix) ====
+{
+  // Identity/KYC HIGH: a VIEW-only bookings reader must not receive portal_token (unlocks KYC gov-ID scans + /sign) from the generic read
+  ok(/function _stripPortalTok\(b\)/.test(_WORKER_SRC) && /const _hidePT = \(coll === 'bookings' && !_can\(ctx, 'bookEdit'\)\);/.test(_WORKER_SRC), 'portal_token HIGH: the generic GET /api/data strips portal_token (column + legacy data-blob copy) for a sub-bookEdit reader -- the gated /portal-link route already requires bookEdit, so owner/bookEdit are unaffected');
+  ok(/if \(one && _hidePT\) _stripPortalTok\(one\);/.test(_WORKER_SRC) && /if \(_hidePT\) _items\.forEach\(_stripPortalTok\);/.test(_WORKER_SRC), 'portal_token HIGH: the strip is applied to BOTH the single-row and list read responses');
+  // Multi-site MED #2: the primary squat-release cron keys on a stable connect-time stamp, not account-activity-bumped updated_at
+  ok(/ALTER TABLE tenants ADD COLUMN custom_domain_at INTEGER/.test(_WORKER_SRC), 'domain-squat #2: tenants.custom_domain_at column added (stamped at the user connect)');
+  ok(/WHERE custom_domain_status='pending' AND COALESCE\(custom_domain_at, updated_at\) < \?/.test(_WORKER_SRC), 'domain-squat #2: the 14d release cron keys on COALESCE(custom_domain_at, updated_at) so an active squatter cannot keep a reservation alive by bumping updated_at with unrelated saves');
+  ok(/custom_domain_status='pending', updated_at=\?, custom_domain_at=\? WHERE id=\? AND NOT EXISTS/.test(_WORKER_SRC), 'domain-squat #2: the user connect stamps custom_domain_at');
+  // Multi-site MED #1: site_domains (sub-site) gets the release sweep it lacked
+  ok(/DELETE FROM site_domains WHERE status='pending' AND created_at IS NOT NULL AND created_at < \?/.test(_WORKER_SRC), 'domain-squat #1: a never-verified pending SUB-site reservation is released after 14d (site_domains had no sweep -> permanent block)');
+  // Contracts MED #1: extension-addendum signatures capture + store E-SIGN/UETA consent like base + co-signer
+  ok(/var _xEsign = \(typeof body\.esignConsent !== 'undefined'\) \? !!body\.esignConsent : !!body\.agree;/.test(_WORKER_SRC) && /INSERT INTO signatures \(id,tenant_id,booking_id,doc_hash,doc_text,signer_name,sig,ip,ua,signed_at,ext_terms_hash,consent\)/.test(_WORKER_SRC), 'ext-consent MED: /extsign captures the E-SIGN/UETA consent and stores it in the signatures.consent column (parity with base /sign + co-sign)');
+  ok(/id="xe_'\+x\.id\+'"/.test(_WORKER_SRC) && /esignConsent:ec/.test(_WORKER_SRC), 'ext-consent MED: the server-rendered portal extension form shows the e-sign consent checkbox and posts esignConsent');
+  // Deposits MED #1: a refundable security deposit is QB/Xero income only to the extent CAPTURED; refunds netted
+  ok(/if \(String\(k\)\.split\('#'\)\[0\] === 'security' \|\| p\.kind === 'security'\) \{ s \+= Math\.max\(0, Math\.round\(Number\(p\.captured && p\.captured\.amountCents\) \|\| 0\)\); continue; \}/.test(_WORKER_SRC), 'QB-deposit MED: _qbPaidCents books a security deposit as income ONLY at its captured amount (not the full refundable amountCents), so a released/refunded deposit is never phantom income');
+  // Deposits LOW #3: the Cancel-F2 G5 clamp uses the prefix check (an archived security#<pi> is not a rental payment) + a multi-slot captured-deposit floor
+  ok((_WORKER_SRC.match(/return p && !p\.hold && String\(k\)\.split\('#'\)\[0\] !== 'security';/g) || []).length >= 2, 'cancel-clamp LOW: both Cancel-F2 twins (_g5xonl/_g5yonl) test for a real rental payment by PREFIX so an archived security#<pi> slot no longer defeats the phantom-revenue clear');
 }
 
 // ==== audit400 build da: deposit-capture clamp (A072), cross-processor archive (A073), reconcile hold receipt (A077), shared-mailer suppression (A107) ====
