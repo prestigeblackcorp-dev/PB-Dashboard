@@ -13675,6 +13675,7 @@ function doReset(){
         if (method === 'PUT' && id) {
           const owns = await env.DB.prepare(`SELECT id FROM ${coll} WHERE id=? AND tenant_id=?`).bind(id, ctx.tenant_id).first();
           if (!owns) return err(404, 'Not found.');           // cross-tenant writes are denied here
+          try {   // DBG-TEMP: surface the exact write-path throw (the top-level catch returns a generic 500) -- remove after diagnosis
           const body = await req.json().catch(() => ({}));
           if (coll === 'charges' && vStr(body.booking_id, 40)) { const _bok = await env.DB.prepare('SELECT id FROM bookings WHERE id=? AND tenant_id=?').bind(body.booking_id, ctx.tenant_id).first(); if (!_bok) delete body.booking_id; }   // defense-in-depth: never let a charge reference another tenant's booking id
           // Payments P2: stale-push guard on the PUT path too (the client mirrors bookings PUT-FIRST, so this is the live vector). Without it an OLDER client blob overwrites a NEWER server data blob -- reverting webhook-set charges[].paidOnline/paidAt + portal *PaidAt, re-showing a PAID charge as payable (double-charge exposure). Newest-wins on data._t, mirroring the POST guard + client merge.
@@ -13701,6 +13702,7 @@ function doReset(){
           if (coll === 'bookings' && body.data && typeof body.data === 'object') { var _g5yst = String(body.data.status || '').toLowerCase(); if (_g5yst === 'cancelled' || _g5yst === 'pending' || _g5yst === 'voided') { var _g5yonl = body.data.paid && Object.keys(body.data.paid).some(function (k) { var p = body.data.paid[k]; return p && !p.hold && k !== 'security'; }); var _g5yest = Math.round(Number((body.data.quote && body.data.quote.total) || 0) * 100); if (!_g5yonl && _g5yest > 0) { try { await env.DB.prepare('UPDATE bookings SET revenue_cents=0 WHERE id=? AND tenant_id=? AND revenue_cents=?').bind(id, ctx.tenant_id, _g5yest).run(); } catch (e) {} } } }   // full-audit c7#6: (see the POST branch) drop the G5 cash-revenue estimate when a booking is cancelled/un-committed via the generic edit path -- the PUT path is where the client flips status. Clears ONLY the untouched estimate.
           await audit(env, ctx, req, coll + '.update', { id });
           return json(_staleP ? { ok: true, id, stale: true, serverT: _staleTP } : { ok: true });   // sync data-loss fix: signal a partial stale-drop too (data blob was stale but a scalar-only field still updated)
+          } catch (_dw) { try { _captureErr(env, _dw, { where: 'data_put', coll: coll }); } catch (e) {} return err(500, 'DBG_PUT[' + coll + ']: ' + String((_dw && _dw.message) || _dw || 'x').slice(0, 140)); }   // DBG-TEMP
         }
         if (method === 'DELETE' && id) {
           const r = await env.DB.prepare(`DELETE FROM ${coll} WHERE id=? AND tenant_id=?`).bind(id, ctx.tenant_id).run();
