@@ -6155,6 +6155,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/return s2 \+ \(\(r && !r\.giftReturnedAt\) \? \(Number\(r\.amt\) \|\| 0\) : 0\);/g) || []).length === 2, 'gift LOW: _portalDue + the receipt exclude a giftReturnedAt redemption from the applied-credit sum (robust against any future revive/non-terminal-return granting phantom credit)');
   // Gift/money LOW: /cancel blocks a voided/completed booking (would reverse void semantics / refund a finished rental)
   ok(/if \(_cxT === 'voided' \|\| _cxTd === 'voided' \|\| _cxT === 'completed' \|\| _cxTd === 'completed'\) return json\(\{ ok: false, reason: 'terminal'/.test(_WORKER_SRC), 'gift/money LOW: booking /cancel is blocked on a voided/completed booking (re-cancel of a cancelled booking stays the idempotent no-op)');
+  // Pricing LOW (promo shown==charged): the embedded public-page quote computes the promo discount in INTEGER CENTS, round-then-subtract, matching the server _promoApply (jsc-sweep verified bit-identical across 810,900 cases)
+  ok(/var _aac=Math\.round\(afterAuto\*100\),_pdc=0;.*_pdc=_promo\.type==='pct'\?Math\.round\(_aac\*_promo\.value\/100\):Math\.round\(\(Number\(_promo\.value\)\|\|0\)\*100\);/.test(_WORKER_SRC), 'pricing LOW: the public-page promo discount is integer-cent round-then-subtract (bit-identical to the server charge), closing the 1-2c shown-vs-charged divergence on promo bookings');
 }
 
 // ==== audit400 build da: deposit-capture clamp (A072), cross-processor archive (A073), reconcile hold receipt (A077), shared-mailer suppression (A107) ====
