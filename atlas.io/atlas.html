@@ -2356,7 +2356,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23dk';
+  var APP_VERSION='2026.7.23dl';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -6791,6 +6791,7 @@ const Atlas = (function(){
     var when=function(ms){ if(!ms)return '&mdash;'; try{ return E(_stamp(ms)); }catch(e){ return '&mdash;'; } };
     var rk=function(k,v){ return '<tr><td class="k">'+k+'</td><td class="v">'+(v==null||v===''?'&mdash;':v)+'</td></tr>'; };
     var p=_portal(b)||{}, tr=b.sigTrail||{}, q=b.quote||{}, dev=p.signDevice||{};
+    var _evTerms=(p.signedAt&&tr.terms&&typeof tr.terms==='object'&&tr.terms.a!=='__terms_drifted__'&&(Number(tr.terms.t)||0)>=0)?tr.terms:null;   // WAVE8 audit (legal): the "Contract total" in a chargeback-rebuttal record must be the amount the customer SIGNED for (sigTrail.terms.t cents), not the live owner-editable quote -- a post-signing edit must not silently restate the authorized amount handed to a card issuer
     var sigIp=tr.ip||dev.ip||'';
     var chById={}; var allCh=_charges(b); allCh.forEach(function(c){ if(c&&c.id) chById[c.id]=c; });
     var payRows='';
@@ -6834,7 +6835,7 @@ const Atlas = (function(){
      +'<div class="hd"><div class="brand">'+E(brand)+'</div><div class="title">Transaction Evidence Record &mdash; Chargeback / Fraud-Dispute Rebuttal</div><div class="gen">Generated '+when(Date.now())+' &middot; Reference '+E(ref)+' &middot; <span class="badge">'+(authorized?'AUTHORIZED &amp; SIGNED':'AUTHORIZATION INCOMPLETE')+'</span></div></div>'
      +'<div class="no-print"><button onclick="window.print()">Print / Save as PDF</button></div>'
      +'<div class="note">This record documents that the transaction below was <b>authorized by the customer and fulfilled</b>. It reproduces the electronically signed agreement (with exact timestamp and signer IP where captured), every payment received, every extension the customer agreed to, and condition evidence on file &mdash; the evidence a card issuer requests to reverse a disputed ("fraud") chargeback.</div>'
-     +'<h2>Transaction</h2><table>'+rk('Renter',E(b.cust||''))+rk('Email / Phone',E((b.custEmail||'')+(b.phone?('  &middot;  '+b.phone):'')))+rk(cap(S.fleet.noun),E(b.asset||''))+rk('When',E(_bkWhen(b)))+rk('Length',E(b.periods+' '+_bkUnit(b)))+rk('Booked on',when(b.createdAt))+rk('Contract total','<b>'+mny(q.total||0)+'</b>')+'</table>'
+     +'<h2>Transaction</h2><table>'+rk('Renter',E(b.cust||''))+rk('Email / Phone',E((b.custEmail||'')+(b.phone?('  &middot;  '+b.phone):'')))+rk(cap(S.fleet.noun),E(b.asset||''))+rk('When',E(_bkWhen(b)))+rk('Length',E(b.periods+' '+_bkUnit(b)))+rk('Booked on',when(b.createdAt))+rk('Contract total','<b>'+(_evTerms?mny((Number(_evTerms.t)||0)/100):mny(q.total||0))+'</b>'+((_evTerms&&_bkTermsDriftedC(b))?' <span class="muted">(amount as signed)</span>':''))+'</table>'
      +'<h2>Proof of Authorization &mdash; Signed Agreement</h2><table>'+rk('Signature',sigHtml)+rk('Signed at (exact)','<b>'+(p&&p.signedAt?when(p.signedAt):'&mdash;')+'</b>')+rk('Signer',E((p&&p.signerName)||''))+rk('Signer IP address',E(sigIp)||'<span class="muted">not recorded</span>')+rk('Signer device',E(dev.ua||'')||'<span class="muted">not recorded</span>')+rk('Document fingerprint (SHA-256)',E(tr.docHash||'')||'<span class="muted">not recorded</span>')+rk('ID verification',verify)+'</table>'
      +'<h2>Payments Received (proof of payment)</h2><table><tr><th>Date / time</th><th>Item</th><th>Method</th><th class="r">Amount</th></tr>'+payRows+'<tr class="tot"><td colspan="3" class="r">Total received</td><td class="r">'+totalStr+'</td></tr></table>'
      +'<h2>Extensions &mdash; Additional Authorized Charges</h2><table><tr><th>#</th><th>Added</th><th>New term</th><th class="r">Charge</th><th>Signed</th><th>Paid</th></tr>'+extRows+'</table>'
@@ -11152,7 +11153,7 @@ const Atlas = (function(){
       if(_disp.length) out.push({ic:'card',t:(_disp.length===1?('Chargeback under review on '+_disp[0].id):(_disp.length+' bookings have a chargeback under review')),s:'Respond with evidence in Stripe \u{2014} the disputed amount is held until it resolves.',book:(_disp.length===1?_disp[0].id:''),nav:(_disp.length===1?'':'bookings')});
       var _nr=books.filter(function(b){ return b && b.review && b.review.rating && !b.review.reply && !b.review.hidden; });   // NEW ACTIVITY: a customer review awaiting the owner's public reply
       if(_nr.length) out.push({ic:'star',t:(_nr.length===1?('New '+_nr[0].review.rating+'-star review from '+String((_nr[0].cust||'a customer')).split(' ')[0]):(_nr.length+' new reviews to reply to')),s:'A public reply builds trust with future renters.',nav:'analytics'});
-      var pend=books.filter(function(b){return b&&(b.status==='pending'||b.status==='request');});
+      var pend=books.filter(function(b){ if(!b) return false; var _st=String(b.status||'').toLowerCase(); return _st==='pending'||_st==='request'; });   // WAVE8 audit (owner action queue): statuses are canonicalized to Title Case on read (c14[11]), so this exact-lowercase check never matched 'Pending' -> booking requests awaiting confirmation were silently absent from the notification bell. Compare case-insensitively.
       if(pend.length) out.push({ic:'cal',t:pend.length+' '+_fterm(pend.length===1?'book':'books')+' awaiting confirmation',s:'Confirm to put '+(pend.length===1?'it':'them')+' on the calendar.',nav:'bookings'});
       var idle=assets.filter(function(a){return a&&Number(a.util||0)<50;});
       if(assets.length&&idle.length) out.push({ic:'trend',t:idle.length+' '+(idle.length===1?S.fleet.noun:S.fleet.nouns)+' under 50% '+_fterm('occ'),s:'Ask Atlas.io to draft a promo to fill them.',ai:1});
@@ -14094,7 +14095,13 @@ const Atlas = (function(){
     var _renterSrc=(_rec&&/^data:image\//.test(String(_rec.sig||'')))?{drawn:_rec.sig}:{name:_renterName,font:'Allura'};
     var _renterPng=_signed?(await _sigPng(_renterSrc,300)):'';
     var _repPng=_repSig?(await _sigPng(_repSig,300)):'';
-    var blocks=[{h:S.brand.name},{small:'Rental Agreement - '+(b.id||'')+' - generated '+_stamp(Date.now())},{hr:1},{kv:['Customer',b.cust||'-']},{kv:['Asset',b.asset||'-']},{kv:['Dates',_bkWhen(b)]},{kv:['Total',_moneyBase(((b.quote||{}).total)||0)]},{sp:6},{h:'Agreement'}];
+    var _snap=(_signed&&b.sigTrail&&b.sigTrail.terms&&typeof b.sigTrail.terms==='object'&&b.sigTrail.terms.a!=='__terms_drifted__'&&(Number(b.sigTrail.terms.t)||0)>=0)?b.sigTrail.terms:null;   // WAVE8 audit (legal): a SIGNED agreement PDF must state the terms as SIGNED (asset/window/total snapshotted into sigTrail.terms {a,p,t,d,s,s0,e0} at signing), NEVER the live owner-editable quote -- else editing the booking after signing silently reprints a signed instrument asserting a total/dates the renter never agreed to
+    var _agAsset=_snap?(String(_snap.a||'')||(b.asset||'-')):(b.asset||'-');
+    var _agWhen=(_snap&&_snap.s0)?_bkWhen({startTs:_snap.s0,endTs:_snap.e0,time:b.time}):_bkWhen(b);
+    var _agTotal=_snap?_moneyBase((Number(_snap.t)||0)/100):_moneyBase(((b.quote||{}).total)||0);
+    var blocks=[{h:S.brand.name},{small:'Rental Agreement - '+(b.id||'')+' - generated '+_stamp(Date.now())},{hr:1},{kv:['Customer',(_renterName||b.cust||'-')]},{kv:['Asset',_agAsset]},{kv:['Dates',_agWhen]},{kv:['Total',_agTotal]}];
+    if(_signed&&_bkTermsDriftedC(b)) blocks.push({small:'The customer, asset, dates and total above are the terms captured at signing. This booking was modified after it was signed; an updated signature may be required to cover the current terms.'});
+    blocks.push({sp:6},{h:'Agreement'});
     String(agr).split('\n').forEach(function(ln){ if(ln.trim()==='') blocks.push({sp:6}); else blocks.push({p:ln}); });
     blocks.push({sp:12},{h:'Signatures'});
     // --- Renter ---
