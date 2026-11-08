@@ -2356,7 +2356,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23do';
+  var APP_VERSION='2026.7.23dp';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -2553,8 +2553,8 @@ const Atlas = (function(){
     if(!anyPaid) return 0;
     if(typeof b.revCents==='number'){ var rc=_r2(b.revCents/100); if(rc<ev) ev=Math.max(0,rc); }   // net refunds: the server-reconciled collected figure lowers a refunded booking
     return _r2(Math.max(0, Math.min(rt, ev))); }
-  function _loySpend(email,name){ var key=_loyKey(email), nm=(name||'').toLowerCase();
-    return (DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && ((b.custEmail&&b.custEmail.toLowerCase()===key)||(b.cust&&b.cust.toLowerCase()===nm)); }).reduce(function(s,b){ return s+_loyPaid(b); },0); }   // was gross quote.total (incl. unpaid/refunded) -> now PAID rental spend only
+  function _loySpend(email,name){ var ck=_loyMemberKey(email,name); if(!ck) return 0;
+    return (DATA.bookings||[]).filter(function(b){ return _isCommitted(b) && _loyMemberKey(b.custEmail,b.cust)===ck; }).reduce(function(s,b){ return s+_loyPaid(b); },0); }   // was gross quote.total -> PAID rental spend only.   // WAVE13 MED: match spend by the SAME canonical member key (_loyMemberKey: email-else-name) the redeemed/bonus counters use, NOT the old email-OR-name. The OR-match MERGED two DIFFERENT customers sharing a name -> an attacker booking under a big-spender's NAME with their own email inherited the big-spender's name-matched points, so an owner trusting the UI redeemed an unearned coupon (and every same-named customer's balance was mis-stated). Keying both sides by _loyMemberKey fails SAFE (a name-only booking no longer merges into an emailed profile).
   function _loyEarned(email,name){ return Math.floor(_loySpend(email,name)*(_loy().perDollar||1)); }
   function _loyPoints(email,name){ var m=_loyMember(email,name); if(m.off) return 0; return Math.max(0, _loyEarned(email,name)+(m.bonus||0)-(m.redeemed||0)); }
   function _loyCode(email,name){ var base=String(name||email||'GUEST').replace(/[^a-z0-9]/gi,'').toUpperCase().slice(0,6)||'FRIEND'; var s=_loyKey(email)||String(name||''); var h=0; for(var i=0;i<s.length;i++){ h=(h*31+s.charCodeAt(i))>>>0; } return base+('00'+(h%1000)).slice(-3); }
