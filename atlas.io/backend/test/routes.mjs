@@ -6190,6 +6190,14 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(body && body\.settings && typeof body\.settings === 'object'\) _sanitizePublicSiteIds\(body\.settings\);/.test(_WORKER_SRC), 'site-builder HIGH: the profile PUT runs the id sanitizer before either settings-write branch stores the publicSite blob verbatim');
 }
 
+// ==== build fj: Wave-12 audit fixes (full-export over-privilege HIGH, frameable-CSP + savedCard-in-export + blackout-reversed LOW) ====
+{
+  ok(/if \(!\(ctx\.isOwner \|\| \(_can\(ctx, 'customersEdit'\) && _can\(ctx, 'settings'\)\)\)\) return err\(403, 'You do not have permission to export this data\.'\);/.test(_WORKER_SRC), 'export HIGH (Wave-12): the full-account export (ledger + team roster + all KYC + signatures) requires BOTH customersEdit AND settings -> owner/manager only. customersEdit ALONE inherits from the coarse customers module, so a desk/ops role could one-click exfiltrate the whole business.');
+  ok(/if \(_frameable && k === 'Content-Security-Policy'\) \{ if \(!resp\.headers\.has\(k\)\) resp\.headers\.set\(k, "object-src 'none'; base-uri 'self'"\); continue; \}/.test(_WORKER_SRC), 'public-page LOW (Wave-12): a frameable public page keeps object-src/base-uri CSP (only the anti-framing directives are dropped), instead of shipping with NO CSP at all');
+  ok((_WORKER_SRC.match(/if \(_xd\.savedCard != null\) \{ delete _xd\.savedCard; _ch = true; \}/g) || []).length >= 2, 'export LOW (Wave-12): both the tenant self-export AND the admin backup strip data.savedCard (Stripe customer/pm refs + last4) from exported booking blobs -- a card-on-file reference does not belong in a portability/backup file');
+  ok(/if \(isFinite\(_bf\) && isFinite\(_bt\) && _bf > _bt\) \{ var _bsw = _bf; _bf = _bt; _bt = _bsw; \}/.test(_WORKER_SRC), 'availability LOW (Wave-12): server _blkWin normalizes a reversed from>to blackout BEFORE the day-boundary snap (matching the client), so a reversed range cannot yield s>e and mis-evaluate the overlap test');
+}
+
 // ==== build fi: Wave-11 audit fixes (customer RTBF resurrection HIGH, team actor-rank MED, SSO invite-consume LOW/MED) ====
 {
   ok(/async function _custEraseGuard\(env, tenantId, id, email, phone\)/.test(_WORKER_SRC) && (_WORKER_SRC.match(/await _custEraseGuard\(env, ctx\.tenant_id, (?:rid|id), body\.email, body\.phone\)/g) || []).length >= 2, 'customer RTBF HIGH (Wave-11): _custEraseGuard guards BOTH generic /api/data/customers UPDATE paths (POST-as-update + PUT) so a stale device re-sync cannot resurrect an erased (GDPR/CCPA) customer PII -- the class _pbSyncWrite already closed, left open on the main owner-dashboard path');
@@ -6295,7 +6303,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   await _bookingKtRestore(_mkEnvBk2(_srvConfirmed), 'T1', 'BK9', _legitDemote);
   ok(_legitDemote.status === 'pending', 're-audit #1: a GENUINE owner un-confirm (strictly-newer _kt.status) is still honored (backstop does not over-block)');
   ok(/if \(_colBlocking\(_cur\.status\) && _inDemote && !_pushNewerStatus\)/.test(_WORKER_SRC), 're-audit #1: _bookingKtRestore has the committed-status backstop');
-  ok(/if \(_xd && _xd\.portalToken != null\) \{ delete _xd\.portalToken/.test(_WORKER_SRC) && !/quote: q, portalToken: token, status/.test(_WORKER_SRC), 're-audit #2 (CRITICAL): exports strip the data-blob portalToken AND intake no longer persists it');
+  ok(/if \(_xd\.portalToken != null\) \{ delete _xd\.portalToken; _ch = true; \}/.test(_WORKER_SRC) && !/quote: q, portalToken: token, status/.test(_WORKER_SRC), 're-audit #2 (CRITICAL): exports strip the data-blob portalToken AND intake no longer persists it');   // Wave-12: strip restructured to also drop savedCard (see the fj guard block)
   ok(/d\.paid\[_pkKey\]\.pi \|\| d\.paid\[_pkKey\]\.paypal \|\| d\.paid\[_pkKey\]\.square \|\| d\.paid\[_pkKey\]\.coinbase/.test(_WORKER_SRC), 're-audit #5: the Stripe credit archive guard covers all four processors (completes A073)');
   ok((_WORKER_SRC.match(/to: 'sub_cleared_gone'/g) || []).length === 3, 're-audit #11/#12: all THREE sub-reconcile sweeps (trials + past_due + active) clear a both-mode-404 dead sub (completes A094)');
   ok(/re-audit HIGH #21/.test(_WORKER_SRC) && /_applyErasure\(row\.data\); row\.data\._erased = true;/.test(_WORKER_SRC), 're-audit #21: the PB-mirror bookings path re-redacts a tombstoned (erased) customer identity (completes A045 for bookings)');
