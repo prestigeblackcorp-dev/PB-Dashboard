@@ -6120,6 +6120,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(String\(k\)\.split\('#'\)\[0\] === 'security' \|\| p\.kind === 'security'\) \{ s \+= Math\.max\(0, Math\.round\(Number\(p\.captured && p\.captured\.amountCents\) \|\| 0\)\); continue; \}/.test(_WORKER_SRC), 'QB-deposit MED: _qbPaidCents books a security deposit as income ONLY at its captured amount (not the full refundable amountCents), so a released/refunded deposit is never phantom income');
   // Deposits LOW #3: the Cancel-F2 G5 clamp uses the prefix check (an archived security#<pi> is not a rental payment) + a multi-slot captured-deposit floor
   ok((_WORKER_SRC.match(/return p && !p\.hold && String\(k\)\.split\('#'\)\[0\] !== 'security';/g) || []).length >= 2, 'cancel-clamp LOW: both Cancel-F2 twins (_g5xonl/_g5yonl) test for a real rental payment by PREFIX so an archived security#<pi> slot no longer defeats the phantom-revenue clear');
+  // Deposits MED #2 (build ey): the G5 estimate-replace preserves a captured deposit's booked revenue
+  ok(/function _capturedDepCents\(d\)/.test(_WORKER_SRC), 'deposit-estbase MED #2: _capturedDepCents helper sums CAPTURED security-deposit revenue (live + archived security#<pi>)');
+  ok((_WORKER_SRC.match(/\? \(_priorReal \+ _capturedDepCents\(d\)\) : \(Number\(row\.revenue_cents\) \|\| 0\)/g) || []).length === 6, 'deposit-estbase MED #2: ALL 6 credit-path estimate-replace sites add the captured-deposit floor to _priorReal so a first online core payment on a cash/G5 booking cannot drop a captured deposit from revenue_cents');
 }
 
 // ==== audit400 build da: deposit-capture clamp (A072), cross-processor archive (A073), reconcile hold receipt (A077), shared-mailer suppression (A107) ====
