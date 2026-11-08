@@ -2119,7 +2119,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // ---- FULL-SYSTEM AUDIT batch 12n (build 12n): G5-clear-on-cancel (c7#6). ----
   // A G5 cash-revenue ESTIMATE is cleared when a booking is set to a non-committed status via the generic edit path (POST+PUT),
   // matched EXACTLY (revenue_cents == quote.total*100) so a real payment that changed revenue is never wiped.
-  ok((_WORKER_SRC.match(/UPDATE bookings SET revenue_cents=0 WHERE id=\? AND tenant_id=\? AND revenue_cents=\?/g) || []).length === 2, '#c7-6: the G5 estimate is cleared on cancel-via-edit on BOTH the POST + PUT paths, matched exactly (a real payment is never wiped)');
+  ok((_WORKER_SRC.match(/UPDATE bookings SET revenue_cents=\? WHERE id=\? AND tenant_id=\? AND revenue_cents > \?/g) || []).length === 2 && !/SET revenue_cents=0 WHERE id=\? AND tenant_id=\? AND revenue_cents=\?/.test(_WORKER_SRC), '#c7-6 + Cancel-F2: the G5 estimate is cleared on cancel-via-edit on BOTH POST + PUT by CONDITION (clear DOWN to the captured-deposit floor: revenue_cents > _capDep), not the old exact-match that missed a quote-changed booking -> a voided/cancelled booking no longer over-reports phantom revenue while a kept damage deposit is preserved');
+  ok(/if \(fd\.autoSent && fd\.autoSent\[key\]\) return false;/.test(_WORKER_SRC), 'Notif-F2: the lifecycle _claim re-checks the dedup marker on the FRESH CAS row and no-ops if already stamped, matching its _runAbandonedNudge/_runInstallmentCharges siblings (no double-send if two cron ticks overlap)');
+  ok(/custom_domain=NULL, custom_domain_status=NULL, updated_at=\? WHERE custom_domain_status='pending' AND updated_at < \?/.test(_WORKER_SRC), 'domain-squat: a never-verified PENDING custom_domain is released after 14d of no tenant activity so a reserved-but-unverifiable name cannot block the real owner forever (the per-tenant _atlas-verify TXT remains the anti-takeover binding)');
   ok(/_g5xst === 'cancelled' \|\| _g5xst === 'pending' \|\| _g5xst === 'voided'/.test(_WORKER_SRC), '#c7-6: clears only when the booking is set to a NON-committed status');
 }
 
