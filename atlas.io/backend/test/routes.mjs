@@ -6179,6 +6179,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/FROM tenants WHERE deleted_at IS NULL AND id > \? ORDER BY id LIMIT 300/.test(_WORKER_SRC) && /_pcfgSet\(env, 'waitlist_cursor', _sweepNextCursor\(trows, 300\)\)/.test(_WORKER_SRC), 'lifecycle MED: the waitlist notify cron paginates tenants by a rotating cursor so tenants beyond the first 300 are not permanently starved of freed-slot notifications');
 }
 
+// ==== build fd: Wave-7 audit fixes (owner-email invite escalation HIGH, publicSite-id owner-session XSS) ====
+{
+  // Owner-tier HIGH: team-invite + accept-invite reserve platform-owner emails (parity with signup/SSO/reset)
+  ok(/if \(_isOwnerEmail\(env, email\)\) \{ _denyAudit\(env, _ectx, req, ctx, 'rbac\.denied', \{ route: 'team\.invite'/.test(_WORKER_SRC), 'owner-tier HIGH: /api/team/invite rejects a PLATFORM-OWNER email (isOwner resolves by email) so an unclaimed backup/root owner slot cannot be invited + accepted into an isOwner=TRUE session');
+  ok(/if \(_isOwnerEmail\(env, u\.email\)\) return err\(403, 'That email address is reserved and cannot be used for a team invite\.'\);/.test(_WORKER_SRC), 'owner-tier HIGH: /api/auth/accept-invite also rejects an owner-email invite row (defense-in-depth against a pre-existing squat)');
+  ok(/UPDATE users SET pw_hash=\?,pw_salt=\?,email_verified=1,invite_token=NULL,status='active' WHERE id=\?/.test(_WORKER_SRC), 'owner-tier LOW: the owner-claim reset also nulls a stale invite_token + activates the row so a squat token cannot re-seize after the owner claims');
+  // AI-site-builder HIGH: nested publicSite/publicSites ids are charset-enforced server-side on write
+  ok(/function _sanitizePublicSiteIds\(settings\)/.test(_WORKER_SRC) && /function _pubIdClean\(v\) \{ return String\(v == null \? '' : v\)\.replace\(\/\[\^A-Za-z0-9_-\]\/g, ''\)/.test(_WORKER_SRC), 'site-builder HIGH: _sanitizePublicSiteIds strips every nested publicSite/publicSites id to [A-Za-z0-9_-] so a crafted id cannot break out of the builder onclick="...(\x27+esc(id)+\x27)" handler -> owner-session XSS');
+  ok(/if \(body && body\.settings && typeof body\.settings === 'object'\) _sanitizePublicSiteIds\(body\.settings\);/.test(_WORKER_SRC), 'site-builder HIGH: the profile PUT runs the id sanitizer before either settings-write branch stores the publicSite blob verbatim');
+}
+
 // ==== audit400 build da: deposit-capture clamp (A072), cross-processor archive (A073), reconcile hold receipt (A077), shared-mailer suppression (A107) ====
 {
   ok(/const _capAmt = \(vInt\(body\.amountCents\) && body\.amountCents > 0\) \? Math\.min\(Math\.round\(Number\(body\.amountCents\)\), _capTot\) : _capTot;/.test(_WORKER_SRC) && /p\.captured = \{ at: Date\.now\(\), amountCents: _capAmt \}; delete p\.hold;/.test(_WORKER_SRC), 'audit400 A072: the hold-capture clamps body.amountCents to an integer <= the held amount and uses it for the Stripe call AND the record (no over-charge / fractional-cents corruption)');
