@@ -1313,7 +1313,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // (_actuallyPaidCents), not raw revenue_cents -- which on a NEVER-PAID committed booking still holds the G5 full-quote
 // estimate, so "Keep the deposit/50%" on a $0-collected no-show booked a phantom fee as revenue. ----
 {
-  ok(/var _rentalRev = Math\.max\(0, Math\.min\(\(Number\(rr\.revenue_cents\) \|\| 0\), _rentalPaidCents\)\);/.test(_WORKER_SRC) && /String\(_rpk\)\.indexOf\('security'\) !== 0/.test(_WORKER_SRC) && !/_actuallyPaidCents\(dd\)\) - _depRev/.test(_WORKER_SRC), 'cancel-phantom (+ deposit-hole fix): the kept-fee base is RENTAL cash only (_rentalPaidCents excludes every security* slot), capped at revenue_cents -> a REFUNDABLE deposit can no longer be booked as a phantom cancellation fee on a $0-rental no-show');
+  ok(/var _rentalRev = Math\.max\(0, Math\.min\(\(Number\(rr\.revenue_cents\) \|\| 0\), _rentalPaidCents\)\);/.test(_WORKER_SRC) && /String\(_rpk\)\.indexOf\('security'\) === 0/.test(_WORKER_SRC) && !/_actuallyPaidCents\(dd\)\) - _depRev/.test(_WORKER_SRC), 'cancel-phantom (+ deposit-hole fix): the kept-fee base is RENTAL cash only (_rentalPaidCents excludes every security* slot), capped at revenue_cents -> a REFUNDABLE deposit can no longer be booked as a phantom cancellation fee on a $0-rental no-show');   // Wave-13: the loop was inverted to a `continue` guard (=== 0) when crypto was split out
   // ---- 2026-11-08 Wave-2 audit fixes (sync availability + notifications) ----
   ok((_WORKER_SRC.match(/\(_ainfo && Array\.isArray\(_ainfo\.blackouts\)\) \? _ainfo\.blackouts/g) || []).length >= 2 && /\(_seInfo && Array\.isArray\(_seInfo\.blackouts\)\) \? _seInfo\.blackouts/.test(_WORKER_SRC), 'sync-blackouts: _confirmSlotFull + self-extend read the canonical blackouts from the info BLOB (synced by the mirror), not the never-written blackouts COLUMN -> the maintenance-blackout gate actually fires at confirm/self-extend (no double-book onto a blocked window)');
   ok((_WORKER_SRC.match(/Number\(body\.data\._t\) > Date\.now\(\) \+ 600000/g) || []).length >= 2, 'sync-savedAt: an incoming booking data._t is future-clamped to now+10min on BOTH the PUT and POST-as-update branches so a clock-skewed device cannot poison newest-wins and strip later genuine edits');
@@ -5271,7 +5271,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 
 // ==== 13r: PB-parity G15 -- cancel ledger reflects the server's AUTHORITATIVE kept amount (a failed-refund shortfall no longer falls out of the books) ====
 {
-  ok(/_keptRentalCents = Math\.min\(keepCents, _rentalRev\) \+ _refundShortfall;/.test(_WORKER_SRC), 'G15: the cancel CAS captures the authoritative kept-rental (fee clamped to collected + failed-refund shortfall, excl. a kept damage deposit)');
+  ok(/_keptRentalCents = Math\.min\(keepCents, _rentalRev\) \+ _refundShortfall \+ _cryptoKeptCents;/.test(_WORKER_SRC), 'G15: the cancel CAS captures the authoritative kept-rental (fee clamped to collected + failed-refund shortfall + un-refundable crypto, excl. a kept damage deposit)');   // Wave-13: + _cryptoKeptCents (see the fk guard block)
   ok(/return json\(\{ ok: true, refundedCents: refundedCents, released: released, keptCents: _keptRentalCents \}\)/.test(_WORKER_SRC), 'G15: /cancel returns keptCents so the client ledger reconciles to what Stripe really retained');
   const _ATLAS_SRC13r = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
   const _INDEX_SRC13r = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
@@ -6188,6 +6188,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // AI-site-builder HIGH: nested publicSite/publicSites ids are charset-enforced server-side on write
   ok(/function _sanitizePublicSiteIds\(settings\)/.test(_WORKER_SRC) && /function _pubIdClean\(v\) \{ return String\(v == null \? '' : v\)\.replace\(\/\[\^A-Za-z0-9_-\]\/g, ''\)/.test(_WORKER_SRC), 'site-builder HIGH: _sanitizePublicSiteIds strips every nested publicSite/publicSites id to [A-Za-z0-9_-] so a crafted id cannot break out of the builder onclick="...(\x27+esc(id)+\x27)" handler -> owner-session XSS');
   ok(/if \(body && body\.settings && typeof body\.settings === 'object'\) _sanitizePublicSiteIds\(body\.settings\);/.test(_WORKER_SRC), 'site-builder HIGH: the profile PUT runs the id sanitizer before either settings-write branch stores the publicSite blob verbatim');
+}
+
+// ==== build fk: Wave-13 audit fixes (identity-recognizer MED, self-delete comp-grant MED, crypto-cancel MED, crypto-dupArchive MED, restore-OWNER_ONLY + purge-tenant_dims LOW) ====
+{
+  ok(/const _claimTop = !!data\.idVerified;/.test(_WORKER_SRC), 'identity MED (Wave-13): _stripUnbackedIdVerify recognizes ANY truthy idVerified (not only canonical true/1/"true"), so a non-canonical value cannot skip the unbacked-strip and taint the chargeback/void evidence doc as "Stripe Identity"');
+  ok(/DELETE FROM comp_grants WHERE email=\?'\)\.bind\(String\(u\.email\)\.toLowerCase\(\)\)/.test(_WORKER_SRC), 'tenant-lifecycle MED (Wave-13): account SELF-delete scrubs each tenant email comp_grant (email-keyed, survives purge) so a same-email re-signup cannot inherit permanent free/gold platform access');
+  ok(/if \(_rpp\.coinbase && !_rpp\.pi && !_rpp\.square && !_rpp\.paypal\) _cryptoKeptCents \+= _rpp\.amountCents;/.test(_WORKER_SRC) && /var _keptRev = Math\.min\(keepCents, _rentalRev\) \+ _refundShortfall \+ _depRev \+ _cryptoKeptCents;/.test(_WORKER_SRC), 'crypto-cancel MED (Wave-13): a coinbase rental slot (un-refundable in-app) is split OUT of the refundable fee base and KEPT in full on cancel (not zeroed as if refunded); cryptoRefundDueCents records the off-chain refund owed. Non-crypto cancels byte-identical.');
+  ok(/_dupArch = \{ oldPi: _cbOldRef, newPi: String\(chargeCode\)\.slice\(0, 40\), kind: _pkKey, amt: amt \};/.test(_WORKER_SRC) && /amountCents: amt, d: _outD, dupArchive: \(_committed \? _dupArch : null\) \};   \/\/ WAVE13 MED/.test(_WORKER_SRC), 'crypto-dupArchive MED (Wave-13): _coinbaseCreditBooking builds + RETURNS dupArchive so the BYO webhook + reconcile sweep fire the owner double-charge alert for crypto (was dead code)');
+  ok(/\(delete\|purge\|restore\|grant\|members\|transactions/.test(_WORKER_SRC), 'tenant-lifecycle LOW (Wave-13): /api/admin/restore is in OWNER_ONLY (parity with its delete/purge/grant siblings)');
+  ok(/'tenant_visits','tenant_dims','push_subscriptions'/.test(_WORKER_SRC), 'tenant-lifecycle LOW (Wave-13): hard-purge includes tenant_dims (per-day aggregate rows) in the erasure list');
 }
 
 // ==== build fj: Wave-12 audit fixes (full-export over-privilege HIGH, frameable-CSP + savedCard-in-export + blackout-reversed LOW) ====
