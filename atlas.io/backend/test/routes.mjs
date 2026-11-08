@@ -6190,6 +6190,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(body && body\.settings && typeof body\.settings === 'object'\) _sanitizePublicSiteIds\(body\.settings\);/.test(_WORKER_SRC), 'site-builder HIGH: the profile PUT runs the id sanitizer before either settings-write branch stores the publicSite blob verbatim');
 }
 
+// ==== build ff: Wave-8 audit fix (chargeback-evidence forensic fields reconciled from the immutable signatures row) ====
+{
+  ok(/SELECT id, terms_hash, signed_at, ip, doc_hash, signer_name FROM signatures/.test(_WORKER_SRC), 'evidence-tamper MED (Wave-8): _stripUnbackedSig reads the immutable ip/doc_hash/signer_name columns so it can reconcile them onto the synced blob');
+  ok(/if \(_r && data\.portal\.signedAt\) \{/.test(_WORKER_SRC) && /if \(_r\.doc_hash != null\) data\.sigTrail\.docHash = _r\.doc_hash;/.test(_WORKER_SRC) && /if \(_r\.signer_name\) data\.portal\.signerName = _r\.signer_name;/.test(_WORKER_SRC), 'evidence-tamper MED (Wave-8): a surviving backed signature reconciles sigTrail.ip/docHash + portal.signerName from the IMMUTABLE signatures row, so a bookEdit staffer cannot PUT fabricated forensic fields into the chargeback-evidence record / agreement PDF');
+}
+
 // ==== build fe: Wave-8 audit fix (emailed smart-receipt fees line) ====
 {
   // Receipt-footing MED: the emailed smart-receipt itemizes fees so subtotal+fees+tax == Total (was subtotal+tax only while Total included the fees)
