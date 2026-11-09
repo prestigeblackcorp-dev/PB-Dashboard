@@ -1320,6 +1320,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/serverD\.abandonNudgedAt != null && clientD\.abandonNudgedAt == null/.test(_WORKER_SRC), 'notif-abandon: _graftServerPay grafts the abandoned-nudge dedup marker (server-authoritative like autoSent) so a stale owner save cannot erase it and re-trigger a duplicate nudge');
 }
 
+// ---- WAVE21 MED: a blackout added over an already-confirmed+paid booking must NOT silently demote it to pending (freeing the
+// slot) when the customer makes their NEXT payment. _confirmSlotHeal re-runs _confirmSlotFull on every money rail; its blackout
+// branch returned true unconditionally (no self/pre-existing-confirm exclusion), so a re-payment un-confirmed a paid booking.
+// Fix: the heal skips the blackout check when the booking was ALREADY blocking (newBlk===false, prior status not pending/empty);
+// the qty-overbook race heal is untouched, and a genuine NEW confirm (pre-check + reserve-payment heal) still blocks onto a
+// blackout (audit MED #11). ----
+{
+  ok(/async function _confirmSlotFull\(env, tenantId, bookingId, bd, startTs, endTs, skipBlackout\)/.test(_WORKER_SRC), 'WAVE21 MED: _confirmSlotFull takes a skipBlackout param');
+  ok(/if \(!skipBlackout && Array\.isArray\(_abl\)/.test(_WORKER_SRC), 'WAVE21 MED: the blackout-overlap block is gated on !skipBlackout (the qty-overbook count below is unaffected)');
+  ok(/async function _confirmSlotHeal\(env, tenantId, bookingId, bd, startTs, endTs, newBlk\)/.test(_WORKER_SRC), 'WAVE21 MED: _confirmSlotHeal takes a newBlk param');
+  ok(/_confirmSlotFull\(env, tenantId, bookingId, bd, _s, _e, \(newBlk === false\)\)/.test(_WORKER_SRC), 'WAVE21 MED: the heal skips the blackout branch (skipBlackout = newBlk===false) only on a payment to an ALREADY-blocking booking; a new confirm (newBlk undefined/true) still honors it');
+  ok((_WORKER_SRC.match(/_confirmSlotHeal\(env, [^,]+, [^,]+, [^,]+, [^,]+, [^,]+, \(!String\(row\.status \|\| ''\)/g) || []).length >= 5, 'WAVE21 MED: all 5 money-rail heals (Stripe/PayPal/Square/Coinbase credit + hosted-checkout webhook) pass newBlk derived from the PRIOR row.status (pending/empty = a genuine new confirm -> blackout still checked)');
+}
+
 // ---- RBAC forge-payment (security): the generic bookEdit-gated /api/data/bookings write must strip a client-introduced
 // non-hold `paid` slot the server has no record of -- a `billing`-cap bypass that let a front-desk teammate forge a "paid"
 // stamp (cover for pocketed cash). Mirrors _stripUnbackedSig / _stripUnbackedIdVerify; runs before _graftServerPay. ----
@@ -1618,7 +1632,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // wraps _confirmSlotFull, this covers every confirm path (money-credit heals + the /api/data confirm guards). ----
 {
   ok(/SELECT info, blackouts FROM assets WHERE tenant_id=\? AND id=\?/.test(_WORKER_SRC), 'confirm-blackout #11: _confirmSlotFull selects the asset blackouts column (was SELECT info only)');
-  ok(/if \(Array\.isArray\(_abl\) && _abl\.some\(function \(bl\) \{ var w = _blkWin\(bl\); return w && w\.s < Number\(endTs\) && w\.e > Number\(startTs\); \}\)\) return true;/.test(_WORKER_SRC), 'confirm-blackout #11: a confirm whose window overlaps a maintenance/blackout window is blocked (same _blkWin overlap as /book) across every confirm path via _confirmSlotFull');
+  ok(/if \(!skipBlackout && Array\.isArray\(_abl\) && _abl\.some\(function \(bl\) \{ var w = _blkWin\(bl\); return w && w\.s < Number\(endTs\) && w\.e > Number\(startTs\); \}\)\) return true;/.test(_WORKER_SRC), 'confirm-blackout #11: a NEW confirm whose window overlaps a maintenance/blackout window is blocked (same _blkWin overlap as /book) across every confirm path via _confirmSlotFull; WAVE21 MED gates it on !skipBlackout so a re-payment on an already-confirmed booking is never retroactively demoted by a blackout added later');
 }
 
 // ---- RIGHT-TO-ERASURE pagination (privacy MED #21): the customer-erase handler scanned bookings with a flat LIMIT 5000 and no
@@ -2130,7 +2144,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 {
   ok((_WORKER_SRC.match(/LOWER\(status\) NOT IN \('cancelled','completed','voided','pending'\)/g) || []).length >= 4, "#6: the overlap gates + confirm guard all exclude 'pending' (a Pending booking never blocks a slot)");
   ok((_WORKER_SRC.match(/await _confirmSlotFull\(env, ctx\.tenant_id,/g) || []).length === 2, '#6: the confirm-time double-book guard runs on BOTH the POST (walk-in) and PUT (confirm) booking-write paths');
-  ok(/async function _confirmSlotFull\(env, tenantId, bookingId, bd, startTs, endTs\)/.test(_WORKER_SRC), '#6: _confirmSlotFull helper present');
+  ok(/async function _confirmSlotFull\(env, tenantId, bookingId, bd, startTs, endTs, skipBlackout\)/.test(_WORKER_SRC), '#6: _confirmSlotFull helper present (WAVE21 MED: + skipBlackout param)');
 
   // ---- FULL-SYSTEM AUDIT batch 12n (build 12n): G5-clear-on-cancel (c7#6). ----
   // A G5 cash-revenue ESTIMATE is cleared when a booking is set to a non-committed status via the generic edit path (POST+PUT).
@@ -4756,9 +4770,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // ==== 12x: F7 -- confirm-time double-book self-heal (post-write re-check + revert) ====
 {
   // ---- source-guards: the heal is wired into all 3 confirm write paths + fail-safe ----
-  ok(/async function _confirmSlotHeal\(env, tenantId, bookingId, bd, startTs, endTs\)/.test(_WORKER_SRC), 'F7: _confirmSlotHeal exists');
+  ok(/async function _confirmSlotHeal\(env, tenantId, bookingId, bd, startTs, endTs, newBlk\)/.test(_WORKER_SRC), 'F7: _confirmSlotHeal exists (WAVE21 MED: + newBlk param)');
   ok((_WORKER_SRC.match(/await _confirmSlotHeal\(env, ctx\.tenant_id, (rid|id), body\.data, _hs[UPN], _he[UPN]\)\) return err\(409,/g) || []).length === 3, 'F7: the heal runs after the write on ALL 3 confirm paths (PUT + POST-as-update + fresh INSERT) and answers 409 when it reverted');
-  ok(/if \(!await _confirmSlotFull\(env, tenantId, bookingId, bd, _s, _e\)\) return false;/.test(_WORKER_SRC), 'F7: the heal only reverts when a re-check confirms an overbook (fail-safe: no overbook -> keep the confirm)');
+  ok(/if \(!await _confirmSlotFull\(env, tenantId, bookingId, bd, _s, _e, \(newBlk === false\)\)\) return false;/.test(_WORKER_SRC), 'F7: the heal only reverts when a re-check confirms an overbook (fail-safe: no overbook -> keep the confirm); WAVE21 MED passes skipBlackout=newBlk===false so a blackout never demotes a re-paid, already-confirmed booking');
   ok(/SELECT starts, ends FROM bookings WHERE id=\? AND tenant_id=\?/.test(_WORKER_SRC), '#CRITICAL double-book: the heal resolves the slot window from the starts/ends COLUMNS (public /book rows have no startTs in the data blob), so the payment-confirm guard actually runs on website bookings');
   ok(/body\.money && typeof body\.money === 'object' && _mbWins\('money'\)/.test(_WORKER_SRC) && /_mbWins\('brand'\)/.test(_WORKER_SRC), '#CRITICAL sync-clobber: the money + brand profile columns are gated by _mbWins (per-key newest-wins), not blind-overwritten by a stale device');
 
