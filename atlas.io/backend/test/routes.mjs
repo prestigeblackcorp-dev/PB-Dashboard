@@ -1858,6 +1858,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!/SELECT email FROM customers WHERE tenant_id=\?'\)/.test(_WORKER_SRC), 'outreach #15: no bare (unbounded) customers-by-tenant scan remains');
 }
 
+// ---- WAVE22 MED: /api/outreach/send gated on `settings` OR `customersEdit`, but customersEdit is INHERITED from the coarse
+// `customers` cap (so desk/ops teammates have it) -- while the client reserves BROADCASTS for a settings/marketing role and uses
+// customersEdit only for the 1:1 "Email this customer". So a low-privilege teammate could fire a mass email/SMS to the whole
+// (own-tenant, consented) base. Gate the broadcast paths (SMS always; email with != 1 recipient) on `settings`. ----
+{
+  ok(/if \(!_can\(ctx, 'settings'\)\) return err\(403, 'A marketing SMS broadcast needs/.test(_WORKER_SRC), 'WAVE22 MED: the SMS broadcast branch requires `settings` (a mass text is never a customersEdit 1:1 action)');
+  ok(/const _emailBroadcast = \(Array\.isArray\(b\.recipients\) \? b\.recipients\.length : 0\) !== 1;/.test(_WORKER_SRC), 'WAVE22 MED: the email branch classifies != 1 recipient as a broadcast');
+  ok(/if \(_emailBroadcast && !_can\(ctx, 'settings'\)\) return err\(403, 'A marketing email broadcast needs/.test(_WORKER_SRC), 'WAVE22 MED: an email BROADCAST requires `settings`; the single-recipient "Email this customer" still works on customersEdit');
+}
+
 // ---- audit #18: the delete-resurrection guard (flag-gated sync_tombstones_enabled, default OFF, now with an admin toggle)
 // must stay wired end-to-end -- source-guard its three parts so it can't silently rot into unreachable dead code. ----
 {
