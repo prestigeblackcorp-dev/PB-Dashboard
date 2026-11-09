@@ -2356,7 +2356,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23ds';
+  var APP_VERSION='2026.7.23dt';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -8666,7 +8666,7 @@ const Atlas = (function(){
         +'<td><span class="chip chip--info">'+esc(_roleLabel(m.role))+'</span></td>'
         +'<td style="color:var(--muted);font-size:12.5px">'+s+'</td>'
         +'<td>'+st+'</td>'
-        +'<td style="white-space:nowrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.openPerm(\''+m.id+'\')">Edit access</button> <button class="btn btn--ghost btn--sm" onclick="Atlas.previewAs(\''+m.id+'\')">Preview</button> <button class="btn btn--ghost btn--sm" onclick="Atlas.removeMember(\''+m.id+'\')">Remove</button></td></tr>'; }).join('');
+        +'<td style="white-space:nowrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.openPerm(\''+m.id+'\')">Edit access</button> '+(m.pending?('<button class="btn btn--ghost btn--sm" onclick="Atlas.resendInvite(\''+m.id+'\')">Resend</button> '):'')+'<button class="btn btn--ghost btn--sm" onclick="Atlas.previewAs(\''+m.id+'\')">Preview</button> <button class="btn btn--ghost btn--sm" onclick="Atlas.removeMember(\''+m.id+'\')">Remove</button></td></tr>'; }).join('');
     tbl.innerHTML='<thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th>Status</th><th></th></tr></thead><tbody>'+you+rows+'</tbody>';
   }
   // ---- Staff scheduling / shifts: assign shifts across the week, weekly hours per person ----
@@ -8855,45 +8855,65 @@ const Atlas = (function(){
   function setRolePreset(id,role){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; m.role=role; if(role!=='custom'&&ROLE_PRESETS[role]) m.perms=ROLE_PRESETS[role].make(); save(); _srvTeamPut(m); renderTeam(); renderSet(); openPerm(id); }   // fix: renderSet() refreshes the Settings>Team subsection too; _srvTeamPut keeps server enforcement in sync
   function setPerm(id,kind,key,val){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; m.perms=m.perms||_permsAll(false); m.perms[kind]=m.perms[kind]||{}; m.perms[kind][key]=!!val; m.role='custom'; save(); _srvTeamPut(m); renderTeam(); renderSet();   // fix: refresh Settings>Team subsection; _srvTeamPut keeps server enforcement in sync
     var sel=document.querySelector('#modal select'); if(sel) sel.value='custom'; }
+  var _inviteDraft=null;
   function inviteMember(){ if(!_guard('teamManage','Managing team'))return;
+    _inviteDraft={ name:'', email:'', role:'desk', perms:ROLE_PRESETS.desk.make() };   // fix: name is now REQUIRED, and the full access editor lives IN the invite flow so you set exactly what they can see/do BEFORE sending (was a role preset only + "fine-tune after inviting")
+    _renderInviteModal(); }
+  function _renderInviteModal(){ var d=_inviteDraft; if(!d)return; var p=d.perms||_permsAll(false);
     openModal('<div class="modal__head"><h3>Invite a teammate</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<div class="row2"><div class="field"><label>Name <span style="color:var(--muted);font-weight:400">(optional)</span></label><input class="input" id="tmName" placeholder="Taylor Reed"></div><div class="field"><label>Email</label><input class="input" id="tmEmail" type="email" placeholder="taylor@email.com" autocomplete="off"></div></div>'
-      +'<div class="field"><label>Start with role</label><select class="select" id="tmRole">'+Object.keys(ROLE_PRESETS).filter(function(k){return k!=='custom';}).map(function(k){return '<option value="'+k+'"'+(k==='desk'?' selected':'')+'>'+ROLE_PRESETS[k].label+'</option>';}).join('')+'</select><div class="hint">You can fine-tune exactly what they see and do after inviting.</div></div>'
-      +'<div class="hint" style="margin:-2px 0 12px">They get a single-use link to set their own password and sign in. Their access is limited to the role you choose &mdash; the server enforces it.</div>'
-      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveInvite()">Send invite</button></div>');
-  }
-  function saveInvite(){ if(!_guard('teamManage'))return; var name=(val('tmName')||'').trim();
-    var role=val('tmRole')||'desk', email=(val('tmEmail')||'').trim(), perms=(ROLE_PRESETS[role]?ROLE_PRESETS[role].make():_permsAll(false));
+      +'<div class="row2"><div class="field"><label>Name</label><input class="input" id="tmName" placeholder="Taylor Reed" value="'+esc(d.name||'')+'" oninput="Atlas._inviteSet(\'name\',this.value)"></div><div class="field"><label>Email</label><input class="input" id="tmEmail" type="email" placeholder="taylor@email.com" autocomplete="off" value="'+esc(d.email||'')+'" oninput="Atlas._inviteSet(\'email\',this.value)"></div></div>'
+      +'<div class="field"><label>Role preset</label><select class="select" onchange="Atlas._invitePreset(this.value)">'+Object.keys(ROLE_PRESETS).map(function(k){return '<option value="'+k+'"'+(d.role===k?' selected':'')+'>'+ROLE_PRESETS[k].label+'</option>';}).join('')+'</select><div class="hint">Start from a preset, then fine-tune exactly what they can see and do below &mdash; any manual change makes it Custom. The server enforces this.</div></div>'
+      +'<div style="font-size:13px;font-weight:750;color:var(--ink);margin:6px 0 8px">Can see</div>'
+      +PERM_MODS.map(function(mm){ return '<label class="cfg-check"><input type="checkbox" '+(p.mods[mm[0]]?'checked':'')+' onchange="Atlas._invitePerm(\'mods\',\''+mm[0]+'\',this.checked)">'+mm[1]+'</label>'; }).join('')
+      +'<div style="font-size:13px;font-weight:750;color:var(--ink);margin:16px 0 8px">Can do</div>'
+      +PERM_CAPS.map(function(cc){ return '<label class="cfg-check"><input type="checkbox" '+(p.caps[cc[0]]?'checked':'')+' onchange="Atlas._invitePerm(\'caps\',\''+cc[0]+'\',this.checked)">'+cc[1]+'</label>'; }).join('')
+      +'<div class="hint" style="margin:12px 0">They get a single-use link to set their own password and sign in. You can still change any of this later from Settings &rsaquo; Team.</div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveInvite()">Send invite</button></div>'); }
+  function _inviteSet(k,v){ if(_inviteDraft) _inviteDraft[k]=(v==null?'':String(v)); }
+  function _invitePreset(role){ if(!_inviteDraft)return; _inviteDraft.role=role; if(role!=='custom'&&ROLE_PRESETS[role]) _inviteDraft.perms=ROLE_PRESETS[role].make(); _renderInviteModal(); }
+  function _invitePerm(kind,key,v){ if(!_inviteDraft)return; _inviteDraft.perms=_inviteDraft.perms||_permsAll(false); _inviteDraft.perms[kind]=_inviteDraft.perms[kind]||{}; _inviteDraft.perms[kind][key]=!!v; _inviteDraft.role='custom'; var sel=document.querySelector('#modal select'); if(sel) sel.value='custom'; }
+  function saveInvite(){ if(!_guard('teamManage'))return;
+    var d=_inviteDraft||{}; var name=(d.name!=null?d.name:(val('tmName')||'')).trim();
+    var role=d.role||'desk', email=(d.email!=null?d.email:(val('tmEmail')||'')).trim(), perms=d.perms||(ROLE_PRESETS[role]?ROLE_PRESETS[role].make():_permsAll(false));
+    if(!name){ toast('Enter their name'); try{var _n=document.getElementById('tmName'); if(_n)_n.focus();}catch(e){} return; }   // fix: name is now REQUIRED (was optional + silently discarded on the real path)
     if(ATLAS_BACKEND && !_isDemoTenant()){   // REAL invite: create a server user + email/copy a single-use set-password link. Enforcement lives on the server.
-      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ toast('Enter a valid email to invite them'); return; }
-      _api('/api/team/invite',{method:'POST',body:{email:email, role:role, caps:perms}}).then(function(res){
+      if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ toast('Enter a valid email to invite them'); try{var _e=document.getElementById('tmEmail'); if(_e)_e.focus();}catch(e){} return; }
+      _api('/api/team/invite',{method:'POST',body:{email:email, name:name, role:role, caps:perms}}).then(function(res){   // fix: SEND the name + the granular perms (was {email,role,caps} only -> name discarded)
         if(!(res.json&&res.json.ok)){ toast((res.json&&res.json.error)||'Could not send the invite'); return; }
-        closeModal(); _srvTeamLoad().then(function(){ renderTeam(); renderSet(); }); _inviteSentModal(email, res.json.link, res.json.emailed);
+        var _id=res.json.id, _nm=name, _em=email, _pm=perms, _rl=role; _inviteDraft=null; closeModal();
+        try{ S.team=S.team||[]; var _ex=(S.team||[]).filter(function(x){return (x.id&&x.id===_id)||String(x.email||'').toLowerCase()===_em.toLowerCase();})[0]; if(_ex){ _ex.name=_nm; _ex.perms=_pm; _ex.role=_rl; _ex.pending=true; } else { S.team.push({id:_id, name:_nm, email:_em, role:_rl, perms:_pm, pending:true}); } save(); renderTeam(); renderSet(); }catch(e){}   // show the typed name + granular perms on the roster instantly, and so _srvTeamLoad keeps the name
+        _srvTeamLoad().then(function(){ renderTeam(); renderSet(); }); _inviteSentModal(_em, res.json.link, res.json.emailed, _id);
       }).catch(function(){ toast('Network error - please try again'); });
       return;
     }
-    if(!name){ toast('Enter a name'); return; }   // demo/offline: local-only roster (no server user)
-    S.team=S.team||[];
-    var dup=email?S.team.filter(function(x){return String(x.email||'').trim().toLowerCase()===email.toLowerCase();})[0]:null;   // fix: a same-email invite updates the existing member instead of creating a duplicate row
+    S.team=S.team||[];   // demo/offline: local-only roster (no server user)
+    var dup=email?S.team.filter(function(x){return String(x.email||'').trim().toLowerCase()===email.toLowerCase();})[0]:null;   // a same-email invite updates the existing member instead of creating a duplicate row
     if(dup){ dup.name=name; dup.role=role; dup.perms=perms; }
     else { S.team.push({ id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), name:name, email:email, role:role, perms:perms }); }
-    save(); closeModal(); renderTeam(); renderSet(); toast(name+' added to your team');
+    _inviteDraft=null; save(); closeModal(); renderTeam(); renderSet(); toast(name+' added to your team');
   }
   // Confirmation with a copyable single-use link (works whether or not the mailer is on).
-  function _inviteSentModal(email, link, emailed){
+  function _inviteSentModal(email, link, emailed, id){
     // #sec: when the email actually sent, the server no longer returns the accept token to us -- it lives ONLY in the
     // invitee's inbox (so it can't be self-accepted to squat an address). Show the copyable link ONLY in the mailer-down
-    // fallback, where the server still returns it so the owner can share it out-of-band.
+    // fallback, where the server still returns it so the owner can share it out-of-band. When it DID send, offer Resend.
     var _linkUI = (!emailed && link)
       ? ('<div class="field"><label>Invite link (single-use)</label><input class="input" id="invLink" readonly value="'+esc(link)+'" onclick="this.select()" style="font-size:12.5px"></div>'
          +'<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn--ghost btn--sm" onclick="Atlas.closeModal()">Done</button><button class="btn btn--primary btn--sm" onclick="Atlas.copyInviteLink()">Copy link</button></div>')
-      : ('<div style="display:flex;justify-content:flex-end"><button class="btn btn--primary btn--sm" onclick="Atlas.closeModal()">Done</button></div>');
+      : ('<div style="display:flex;gap:8px;justify-content:flex-end">'+(id?('<button class="btn btn--ghost btn--sm" onclick="Atlas.resendInvite(\''+esc(id)+'\')">Resend email</button>'):'')+'<button class="btn btn--primary btn--sm" onclick="Atlas.closeModal()">Done</button></div>');
     openModal('<div class="modal__head"><h3>Invite sent</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<p style="font-size:13.5px;line-height:1.6;margin:0 0 12px">'+(emailed?('We emailed <b>'+esc(email)+'</b> a link to set their password and join your team. For their security the link is only in their inbox.'):('Email sending is off, so copy this single-use link and send it to <b>'+esc(email)+'</b> yourself:'))+'</p>'
+      +'<p style="font-size:13.5px;line-height:1.6;margin:0 0 12px">'+(emailed?('We emailed <b>'+esc(email)+'</b> a link to set their password and join your team. If it is not there within a few minutes, ask them to check spam &mdash; or tap <b>Resend email</b> below. For their security the link lives only in their inbox.'):('Email sending is not available right now, so copy this single-use link and send it to <b>'+esc(email)+'</b> yourself:'))+'</p>'
       +_linkUI
-      +'<p class="hint" style="margin-top:12px">They set their own password, then sign in at your Atlas login. You can fine-tune exactly what they see and do any time under <b>Edit access</b>.</p>'
+      +'<p class="hint" style="margin-top:12px">They set their own password, then sign in at your Atlas login. For the most reliable delivery, connect your own sending domain under <b>Settings &rsaquo; Integrations</b>. You can change their access any time under <b>Edit access</b>.</p>'
       +'</div>');
   }
+  function resendInvite(id){ if(!_guard('teamManage'))return; var m=_member(id); if(!m||!m.email){ toast('Could not resend -- no email on file'); return; }
+    var perms=m.perms||(ROLE_PRESETS[m.role]?ROLE_PRESETS[m.role].make():_permsAll(false));
+    if(!(ATLAS_BACKEND && !_isDemoTenant() && _apiCsrf)){ toast('Resend needs a signed-in account'); return; }
+    _api('/api/team/invite',{method:'POST',body:{email:m.email, name:m.name||'', role:m.role||'desk', caps:perms}}).then(function(res){
+      if(res.json&&res.json.ok){ toast(res.json.emailed?('Invite re-sent to '+m.email):'Invite link refreshed'); if(!res.json.emailed&&res.json.link){ _inviteSentModal(m.email, res.json.link, false, id); } }
+      else { toast((res.json&&res.json.error)||'Could not resend the invite'); }
+    }).catch(function(){ toast('Network error - please try again'); }); }
   function copyInviteLink(){ var i=document.getElementById('invLink'); if(!i)return; try{ i.select(); }catch(e){} try{ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(i.value).then(function(){ toast('Link copied'); },function(){ try{document.execCommand('copy');}catch(e){} toast('Link copied'); }); return; } }catch(e){} try{ document.execCommand('copy'); toast('Link copied'); }catch(e2){ toast('Select and copy the link'); } }
   function _nameFromEmail(e){ var s=String(e||'').split('@')[0].replace(/[._-]+/g,' ').trim(); return s?s.replace(/\b\w/g,function(c){return c.toUpperCase();}):'Teammate'; }
   // Load the real team roster from the server and reconcile it into S.team (server is authoritative for id/email/role/status; keep any local display name).
@@ -8903,7 +8923,7 @@ const Atlas = (function(){
       var byId={},byEmail={}; (S.team||[]).forEach(function(m){ if(m.id)byId[m.id]=m; if(m.email)byEmail[String(m.email).toLowerCase()]=m; });
       S.team=srv.map(function(u){ var ex=byId[u.id]||byEmail[String(u.email||'').toLowerCase()]||{};
         var perms=(u.caps&&(u.caps.caps||u.caps.mods))?u.caps:(ROLE_PRESETS[u.role]?ROLE_PRESETS[u.role].make():_permsAll(false));
-        return { id:u.id, name:ex.name||_nameFromEmail(u.email), email:u.email, role:u.role, perms:perms, status:u.status, pending:!!u.pending }; });
+        return { id:u.id, name:(u.name||ex.name||_nameFromEmail(u.email)), email:u.email, role:u.role, perms:perms, status:u.status, pending:!!u.pending }; });   // fix: prefer the SERVER-stored name (now captured at invite); fall back to a locally-kept name, then the email-derived one for legacy rows
       save();
     }).catch(function(){});
   }
@@ -14681,7 +14701,7 @@ const Atlas = (function(){
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,pnlRevDrill,pnlNetDrill,pnlExpDrill,assetPnlSetPeriod,renderPnl,
     renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,webScopedLinkPick,copyScopedLink,webSiteCreate,webAutoSites,webSiteEdit,webSiteSave,webSitePubToggle,webSiteDelete,webSiteCopy,webSiteDomainModal,webSiteDomainConnect,webSiteDomainVerify,webSiteDomainDisconnect,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,webMetaImageUpload,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
-    openPerm,setRolePreset,setPerm,setMemberField,inviteMember,saveInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
+    openPerm,setRolePreset,setPerm,setMemberField,inviteMember,_renderInviteModal,_inviteSet,_invitePreset,_invitePerm,saveInvite,resendInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,_uploadDocFile,uploadDocSave,regenDoc,deleteDoc,sendAgreement,uploadSigned,genWebLegal,sigFont,sigPrev,sigDrawToggle,sigDrawClear,saveSig,setTheme,toggleMenu,closeMenu,
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
