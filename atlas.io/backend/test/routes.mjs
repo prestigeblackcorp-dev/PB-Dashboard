@@ -6190,6 +6190,11 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(body && body\.settings && typeof body\.settings === 'object'\) _sanitizePublicSiteIds\(body\.settings\);/.test(_WORKER_SRC), 'site-builder HIGH: the profile PUT runs the id sanitizer before either settings-write branch stores the publicSite blob verbatim');
 }
 
+// ==== build fl: Wave-14 audit fix (SEO /r/<city> landing shows that location's assets, not the whole fleet -- MED) ====
+{
+  ok(/var _landFiltered = _landSlug \? _allPubA\.filter\(function \(a\) \{ return slugify\(\(a && a\.loc\) \|\| ''\) === _landSlug; \}\) : _allPubA;/.test(_WORKER_SRC), 'multi-location MED (Wave-14): the /r/<city> SEO landing filters its asset grid to THIS location (slugify(a.loc) === the landing city) instead of the whole fleet -> no cross-location display leak + no near-duplicate city pages; falls back to the full fleet only when NO asset matches (misaligned tags)');
+}
+
 // ==== build fk: Wave-13 audit fixes (identity-recognizer MED, self-delete comp-grant MED, crypto-cancel MED, crypto-dupArchive MED, restore-OWNER_ONLY + purge-tenant_dims LOW) ====
 {
   ok(/const _claimTop = !!data\.idVerified;/.test(_WORKER_SRC), 'identity MED (Wave-13): _stripUnbackedIdVerify recognizes ANY truthy idVerified (not only canonical true/1/"true"), so a non-canonical value cannot skip the unbacked-strip and taint the chargeback/void evidence doc as "Stripe Identity"');
