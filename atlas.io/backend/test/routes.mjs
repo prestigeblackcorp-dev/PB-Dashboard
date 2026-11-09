@@ -6338,6 +6338,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_chargeOwedCents(_dFullCB, 'C1', 10000, true) === 10000, 'audit400 A078/A085: a FULLY refunded charge owes the full amount again -> re-collectable');
 }
 
+// ==== WAVE20 webhook refund/dispute correctness (Connect-latent hardening) ====
+// LOW-2: application_fee.refunded mirrors the charge.refunded A032 fix -- single fee-refund delta + per-refund-id key, never the
+// CUMULATIVE amount_refunded under a stable key (which under-booked every 2nd+ partial fee refund -> Atlas GMV overstated).
+// LOW-3: the dispute charge-metadata fetches use the event's VERIFIED mode (evt.livemode) like the refund path, not the operator
+// payments_test_mode flag (_platStripe), which can mis-key an individual event and 404 the charge lookup (silently skipping the
+// revenue decrement / fee reconcile). Both inert until Stripe Connect, hardened before that rail goes live. ----
+{
+  ok(/const _frf = \(obj\.refunds && obj\.refunds\.data && obj\.refunds\.data\[0\]\) \|\| null;/.test(_WORKER_SRC), 'WAVE20 LOW-2: application_fee.refunded reads the SINGLE latest fee refund (obj.refunds.data[0]), not the cumulative amount_refunded');
+  ok(/const _frk = 'feeref:' \+ \(_frf && _frf\.id \? _frf\.id/.test(_WORKER_SRC), 'WAVE20 LOW-2: it keys the dedup on the per-fee-refund id (feeref:<id>) so each partial fee refund books once with its own delta');
+  ok(/application_fee\.refunded: empty refunds list; forcing Stripe redelivery/.test(_WORKER_SRC), 'WAVE20 LOW-2: an empty refunds list forces a Stripe redelivery (_whErr) rather than booking the cumulative amount_refunded');
+  ok(/const _dpk2 = \(evt\.livemode === false && env\.PLATFORM_STRIPE_TEST_KEY\) \? env\.PLATFORM_STRIPE_TEST_KEY : \(env\.PLATFORM_STRIPE_KEY \|\| ''\);/.test(_WORKER_SRC), 'WAVE20 LOW-3: the dispute revenue-DECREMENT charge fetch keys off the event mode (evt.livemode), not the operator flag');
+  ok(/const _rpk = \(evt\.livemode === false && env\.PLATFORM_STRIPE_TEST_KEY\) \? env\.PLATFORM_STRIPE_TEST_KEY : \(env\.PLATFORM_STRIPE_KEY \|\| ''\);/.test(_WORKER_SRC), 'WAVE20 LOW-3: the dispute-WON revenue-restore charge fetch keys off the event mode (evt.livemode), not the operator flag');
+}
+
 // ==== 200-agent RE-AUDIT batch df: criticals #1 (A041 backstop) + #2 (export token) + completions #5/#11/#12/#21 ====
 {
   const _mkEnvBk2 = (stored) => ({ DB: { prepare: (sql) => { let a = []; const api = { bind: (...x) => { a = x; return api; }, first: async () => (/FROM bookings WHERE id=\? AND tenant_id=\?/.test(sql) ? stored : null) }; return api; } } });
