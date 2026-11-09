@@ -2356,7 +2356,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23dq';
+  var APP_VERSION='2026.7.23dr';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -5624,7 +5624,7 @@ const Atlas = (function(){
       +'<button class="btn btn--primary btn--full" onclick="Atlas.viewSignedDoc(\''+id+'\')">View signed copy</button>'
       +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px" onclick="Atlas.closeModal()">Done</button></div>'); }
   function viewSignedDoc(id){ var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a||!a.agreement){ toast('Nothing to view yet'); return; } var ag=a.agreement;
-    var sigHtml=''; if(ag.sig){ sigHtml=(ag.sig.type==='draw')?('<img src="'+ag.sig.data+'" alt="signature" style="max-height:72px">'):('<span class="sig-typed">'+esc(ag.sig.data)+'</span>'); }
+    var sigHtml=''; if(ag.sig){ sigHtml=(ag.sig.type==='draw')?('<img src="'+esc(ag.sig.data)+'" alt="signature" style="max-height:72px">'):('<span class="sig-typed">'+esc(ag.sig.data)+'</span>'); }
     else if(ag.status==='uploaded') sigHtml='<span style="color:var(--muted);font-size:13px">Signed copy uploaded'+(ag.file?(': '+esc(ag.file)):'')+'</span>';
     var trail=[]; if(ag.sentAt)trail.push('Sent '+_stamp(ag.sentAt)); if(ag.deliveredAt)trail.push('Delivered to '+esc(ag.deliveredTo||'')+' '+_stamp(ag.deliveredAt)); if(ag.viewedAt)trail.push('Opened by renter '+_stamp(ag.viewedAt)); if(ag.signedAt)trail.push('Signed '+_stamp(ag.signedAt)); if(ag.uploadedAt)trail.push('Uploaded '+_stamp(ag.uploadedAt));
     var priv=(ag.signDevice)?'<div style="font-size:11px;color:var(--faint);margin-top:8px;display:flex;align-items:center;gap:6px"><svg viewBox="0 0 16 16" width="12" height="12" fill="none"><path d="M8 1l5 2v4c0 3-2 5-5 6-3-1-5-3-5-6V3l5-2z" stroke="currentColor" stroke-width="1.3"/></svg>Signing device and timestamp recorded for your records (kept private).</div>':'';
@@ -8151,8 +8151,8 @@ const Atlas = (function(){
     try{ var blob=new Blob([csv],{type:'text/csv'}); var url=URL.createObjectURL(blob); var a=document.createElement('a'); a.href=url; a.download='atlas-'+name+'-'+_todayStr()+'.csv'; a.click(); setTimeout(function(){URL.revokeObjectURL(url);},1500); toast('Downloaded '+name+'.csv'); }catch(e){ toast('Download not available here'); } }
   function downloadReport(kind){ var rows,name;
     if(kind==='bookings'){ var r=_repRange(); var bks=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r.from;});   // earned rows -- reconciles 1:1 with the report card + tax CSV (pending + cancelled shown in the Bookings tab)
-      rows=[['Booking ID','Customer','Email','Asset','Start','Periods','Status','Promo','Gross','Discount','Tax','Booked Total','Collected']];   // G8: 'Booked Total' = accrual (full quote); 'Collected' = cash actually in (_bkOwedEarned: 0 rental until a real payment lands, net of refunds). The two differ for unpaid/partly-paid bookings by exactly the Balance owed -- that gap is the point.
-      bks.forEach(function(b){ var q=b.quote||{}; rows.push([b.id,b.cust,b.custEmail||'',b.asset,_csvDate(b.startTs),b.periods,b.status,b.promoCode||'',_c2(q.gross||q.subtotal||q.total||0),_c2(q.disc||0),_c2(q.taxAmt||0),_c2(q.total||0),_c2(_bkOwedEarned(b))]); });
+      rows=[['Booking ID','Customer','Email','Asset','Start','Periods','Status','Promo','Gross','Discount','Tax','Add-on charges','Booked Total','Collected']];   // G8 + WAVE15 CSV-foot: 'Booked Total' = full quote + collected add-on charges (same basis as the Reports card + Tax CSV, so the column SUM ties out); 'Add-on charges' breaks out the collected cleaning/damage/fuel/etc. charges that 'Collected' also counts; 'Collected' = cash actually in (_bkOwedEarned: 0 rental until a real payment lands, net of refunds). Booked Total - Collected = Balance owed. (Was: Booked Total = rental-only q.total while Collected already included paid charges -> Collected could EXCEED Booked Total, implying a negative balance with no column for the charge.)
+      bks.forEach(function(b){ var q=b.quote||{}, cc=_collectedCharges(b); rows.push([b.id,b.cust,b.custEmail||'',b.asset,_csvDate(b.startTs),b.periods,b.status,b.promoCode||'',_c2(q.gross||q.subtotal||q.total||0),_c2(q.disc||0),_c2(q.taxAmt||0),_c2(cc),_c2(_r2((q.total||0)+cc)),_c2(_bkOwedEarned(b))]); });
       name='bookings'; }
     else if(kind==='tax'){ var r2=_repRange(); var b2=(DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&(b.createdAt||b.startTs||0)>=r2.from;});
       var g=0,d=0,fe=0,t=0,ch=0,tot=0,coll=0,tc=0; b2.forEach(function(b){ var q=b.quote||{}, cc=_collectedCharges(b); g+=(q.gross||q.subtotal||q.total||0); d+=(q.disc||0); fe+=(q.feeTotal||0); t+=(q.taxAmt||0)+_collectedChargeTax(b); ch+=_r2(cc-_collectedChargeTax(b)); tot+=(q.total||0)+cc; coll+=_bkOwedEarned(b); tc+=_bkTax(b); });   // 'Tax (booked)' t = full accrual tax (foots to Total booked). 'Tax collected (cash)' tc = _bkTax (the SAME collected-fraction-scaled tax Net profit subtracts via _taxCollected) so the two tax figures across the app agree; a partially-paid booking owes proportional tax. The Add-on column is PRE-TAX (its booked tax lives in the Tax column) so the accrual reconciliation ties out; 'coll' = TRUE cash-in (_bkOwedEarned, net of refunds), 'tot' is the accrual booked value; they differ by the customer's outstanding balance.
@@ -13811,8 +13811,8 @@ const Atlas = (function(){
         : (isRet?'No return media yet. Add photos at drop-off to document the condition after the rental \u2014 the before/after is your proof if anything changed.':'No pre-rental media yet. Add photos or a walk-around video so the condition is documented and time-stamped for both sides.'))+'</div>'; }
     return '<div class="cond-grid">'+cm.map(function(m){
       var media = m.kind==='video'
-        ? (m.src? '<video src="'+m.src+'" controls playsinline class="cond-media"></video>' : '<div class="cond-media cond-media--ph">&#9654; Video<span>'+esc(m.name)+'</span></div>')
-        : (m.src? '<img src="'+m.src+'" class="cond-media" alt="condition photo">' : '<div class="cond-media cond-media--ph">Photo<span>'+esc(m.name)+'</span></div>');
+        ? (m.src? '<video src="'+esc(m.src)+'" controls playsinline class="cond-media"></video>' : '<div class="cond-media cond-media--ph">&#9654; Video<span>'+esc(m.name)+'</span></div>')
+        : (m.src? '<img src="'+esc(m.src)+'" class="cond-media" alt="condition photo">' : '<div class="cond-media cond-media--ph">Photo<span>'+esc(m.name)+'</span></div>');
       return '<figure class="cond-item">'+media+'<figcaption><span class="cond-when">&#128337; '+_stamp(m.at)+'</span>'+((opts.portal||_lk)?'':'<button class="cond-x" title="Remove" onclick="Atlas.bkRmCondition(\''+b.id+'\',\''+m.id+'\')">&times;</button>')+'</figcaption></figure>';
     }).join('')+'</div>'; }
   function bkAddCondition(id, phase){ var b=_getBooking(id); if(!b)return; phase=(phase==='return'?'return':'pickup'); if(_condLocked(b,phase)){ toast('This set is finalized \u2014 unlock it first to add media'); return; } var inp=document.createElement('input'); inp.type='file'; inp.accept='image/*,video/*'; inp.multiple=true;
@@ -13822,7 +13822,7 @@ const Atlas = (function(){
   function bkCompareCondition(id){ var b=_getBooking(id); if(!b){ toast('Booking not found'); return; }
     var cm=_condMedia(b), pick=cm.filter(function(m){return (m.phase||'pickup')==='pickup'&&m.kind!=='video'&&m.src;}), ret=cm.filter(function(m){return m.phase==='return'&&m.kind!=='video'&&m.src;});
     if(!pick.length && !ret.length){ toast('Add pickup or return photos first'); return; }
-    var col=function(title,arr){ return '<div class="col"><h2>'+title+' <small>('+arr.length+')</small></h2>'+(arr.length?arr.map(function(m){ return '<figure><img src="'+m.src+'" alt="condition photo"><figcaption>'+_stamp(m.at)+'</figcaption></figure>'; }).join(''):'<div class="empty">No photos</div>')+'</div>'; };
+    var col=function(title,arr){ return '<div class="col"><h2>'+title+' <small>('+arr.length+')</small></h2>'+(arr.length?arr.map(function(m){ return '<figure><img src="'+esc(m.src)+'" alt="condition photo"><figcaption>'+_stamp(m.at)+'</figcaption></figure>'; }).join(''):'<div class="empty">No photos</div>')+'</div>'; };
     var biz=(S.brand&&S.brand.name)||'Atlas Rental.io';
     var doc='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Before / After &mdash; '+esc(b.id)+'</title>'
       +'<style>*{box-sizing:border-box}body{margin:0;padding:28px;background:#eef2ef;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#14201a}'
@@ -13962,7 +13962,7 @@ const Atlas = (function(){
       +(rec.charged?('<tr><td>Recovered from renter charges (paid)</td><td class="r">'+money(rec.charged)+'</td></tr>'):'')
       +(cl.settledAmount!=null?('<tr><td>Insurer settlement</td><td class="r">'+money(cl.settledAmount)+'</td></tr>'):'')
       +'<tr class="tot"><td>Net still outstanding</td><td class="r">'+money(Math.max(0,(cl.estAmount||0)-rec.total-(cl.settledAmount||0)))+'</td></tr>';
-    var _pgrid=function(t,arr){ return arr.length?('<h2>'+t+' ('+arr.length+')</h2><div class="ph">'+arr.map(function(m){ return '<figure><img src="'+m.src+'" alt="condition photo"><figcaption>'+_stamp(m.at)+'</figcaption></figure>'; }).join('')+'</div>'):''; };
+    var _pgrid=function(t,arr){ return arr.length?('<h2>'+t+' ('+arr.length+')</h2><div class="ph">'+arr.map(function(m){ return '<figure><img src="'+esc(m.src)+'" alt="condition photo"><figcaption>'+_stamp(m.at)+'</figcaption></figure>'; }).join('')+'</div>'):''; };
     var photoHtml=_pgrid('Condition evidence &mdash; at pickup',pickPh)+_pgrid('Condition evidence &mdash; at return',retPh);
     var verified=b.idVerified?('ID verified '+_stamp(b.idVerifiedAt)):(b.idRejected?('ID rejected '+_stamp(b.idRejectedAt)):'ID not verified');
     return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Damage Claim &mdash; '+esc(b.id)+'</title>'
