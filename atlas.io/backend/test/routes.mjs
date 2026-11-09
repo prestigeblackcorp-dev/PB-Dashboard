@@ -2065,7 +2065,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/ALTER TABLE users ADD COLUMN invite_expires INTEGER/.test(_WORKER_SRC), '#2: users.invite_expires column added');
   ok(/invite_token,invite_expires,invited_by,status,email_verified,created_at/.test(_WORKER_SRC), '#2: a new invite is minted WITH an expiry (7-day TTL)');
   ok(/if \(u\.invite_expires && Date\.now\(\) > Number\(u\.invite_expires\)\) return err\(410/.test(_WORKER_SRC), '#2: accept-invite rejects an expired token (legacy NULL never expires)');
-  ok(/UPDATE users SET role=\?, caps=\?, invite_token=\?, invite_expires=\?, invited_by=\? WHERE id=\? AND status='invited'/.test(_WORKER_SRC), '#2: a pending invite is re-sendable (refresh token + TTL) instead of 409 -> avoids an expiry deadlock; an active account still 409s');
+  ok(/UPDATE users SET name=COALESCE\(NULLIF\(\?,''\), name\), role=\?, caps=\?, invite_token=\?, invite_expires=\?, invited_by=\? WHERE id=\? AND status='invited'/.test(_WORKER_SRC), '#2: a pending invite is re-sendable (refresh token + TTL + name, COALESCE-kept on a bare re-send) instead of 409 -> avoids an expiry deadlock; an active account still 409s');
 }
 
 // ---- FULL-SYSTEM AUDIT batch 12m (build 12m): Pending-availability -- DOUBLE-BOOK behavioral tests (#6). ----
@@ -4395,6 +4395,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // F6: manual money ops refuse an already-disputed slot
   ok(/\(op === 'capture' \|\| op === 'release'\) && \(p\.captured \|\| p\.released \|\| p\.refunded \|\| p\.disputed\)/.test(_WORKER_SRC), 'cycle-8 F6: capture/release refuses an already charged-back slot');
   ok(/op === 'refund' && \(p\.captured \|\| p\.released \|\| p\.disputed\)/.test(_WORKER_SRC), 'cycle-8 F6: refund refuses an already charged-back slot (no second decrement / provider double-refund)');
+  ok(/\(op === 'capture' \|\| op === 'release'\) && String\(kind\)\.split\('#'\)\[0\] !== 'security'\) return err\(400/.test(_WORKER_SRC), 'WAVE18 HIGH: /api/pay capture+release are restricted to security-class slots -> a bookEdit-only staffer (no billing) can no longer pass kind:balance/reserve to refund a RENTAL payment through the bookEdit-gated release/capture op -- that was a billing-gate BYPASS + phantom revenue (release skips the revenue decrement) + charge.refunded webhook double-stamp (refund id went unrecorded)');
+  ok(/var _refId = \(r2 && r2\.obj && r2\.obj\.id && p && p\.refunded\) \? String\(r2\.obj\.id\) : '';/.test(_WORKER_SRC), 'WAVE18: /api/pay records the refund id for ANY handler-issued refund (keyed on p.refunded being set) -> a Stripe security release / charge-mode capture-remainder refund is now deduped by the charge.refunded webhook instead of double-stamping the slot; a capture/release of a HOLD (no p.refunded) still records nothing so a PI id is never mistaken for a refund id');
 
   // ---- behavioral (mock D1); env can throw on the bookings UPDATE to exercise F1 ----
   function _mkDE(bk, opts) {
