@@ -1329,6 +1329,21 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok((_WORKER_SRC.match(/await _stripUnbackedPaid\(env/g) || []).length >= 2, 'rbac-paid: it is invoked on BOTH the mirror-update (before graft) and the CREATE path, exactly like the sig / id-verify strippers');
 }
 
+// ---- RBAC forge-charge-payment (check-in/out HIGH): marking a CHARGE paid (c.paidAt/c.paidOnline) is "recording a payment" =
+// owner-only `billing`, but the bookEdit-gated /api/data/bookings mirror let a non-billing teammate forge "paid offline" on an
+// owed charge -> HIDES A RECEIVABLE (_chargeOwedCents->0) + inflates the client Collected/Tax surfaces. _stripUnbackedChargePaid
+// reverts an unbacked offline paid-state from a non-billing writer, honoring owner/API-key writes, terminal (cancellation-fee)
+// bookings, and server-backed charges; runs BEFORE _graftServerPay. Mirrors _stripUnbackedPaid. ----
+{
+  ok(/async function _stripUnbackedChargePaid\(env, tenantId, bookingId, data, writerLacksBilling\)/.test(_WORKER_SRC), 'rbac-charge: _stripUnbackedChargePaid exists with the writerLacksBilling gate (mirrors _stripUnbackedPaid)');
+  ok(/if \(!writerLacksBilling\) return;/.test(_WORKER_SRC), 'rbac-charge: a billing-capable owner / API-key / no-user write is trusted and returns early (billing is the design gate for recording a payment)');
+  ok(/if \(_st === 'cancelled' \|\| _st === 'canceled' \|\| _st === 'voided'\) return;/.test(_WORKER_SRC), 'rbac-charge: a TERMINAL booking is exempt so the legit client-authored cancellation/void retention fee (bookEdit-gated) is never stripped');
+  ok(/if \(_scc && \(_scc\.paidAt != null \|\| _scc\.paidOnline\)\) continue;/.test(_WORKER_SRC), 'rbac-charge: a charge the server copy already has paid (online or offline) is kept (graft re-overlays it); only server-unbacked paid-state is stripped');
+  ok(/delete _cc\.paidAt; delete _cc\.paidOnline; delete _cc\.paidVia;/.test(_WORKER_SRC), 'rbac-charge: an unbacked forged paid-state reverts the charge to UNPAID (the owed line is retained, just not "paid")');
+  ok((_WORKER_SRC.match(/await _stripUnbackedChargePaid\(env/g) || []).length >= 2, 'rbac-charge: invoked on BOTH the mirror-update (inside _bookingMirrorWrite, before graft) and the CREATE path, exactly like _stripUnbackedPaid');
+  ok(/async function _bookingMirrorWrite\(env, tenantId, id, cols, vals, clientData, writerLacksBilling\)/.test(_WORKER_SRC), 'rbac-charge: _bookingMirrorWrite threads the writerLacksBilling flag so the PUT/re-POST mirror path strips a non-billing charge-payment forge');
+}
+
 // ---- /book intake data-hygiene: a raw client `b.start` ms timestamp must have an UPPER bound so a far-future junk
 // booking (e.g. year 275760) cannot be created and block availability absurdly far out. ----
 {
