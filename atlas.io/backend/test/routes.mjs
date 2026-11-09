@@ -6190,6 +6190,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(body && body\.settings && typeof body\.settings === 'object'\) _sanitizePublicSiteIds\(body\.settings\);/.test(_WORKER_SRC), 'site-builder HIGH: the profile PUT runs the id sanitizer before either settings-write branch stores the publicSite blob verbatim');
 }
 
+// ==== build fm: Wave-14 lifecycle-notification fixes (thankyou/winback on refunded/unpaid MED, balanceDue on refund-inflated balance MED, effEnd LOW) ====
+{
+  ok(/if \(_lpr > 0\) _hasRefundN = true; _netPaidN \+= Math\.max\(0, _lpp\.amountCents - _lpr\);/.test(_WORKER_SRC) && /if \(r && r\.code && !r\.giftReturnedAt && \(Number\(r\.amt\) \|\| 0\) > 0\) _netPaidN \+= Math\.round\(\(Number\(r\.amt\) \|\| 0\) \* 100\);/.test(_WORKER_SRC), 'lifecycle MED (Wave-14): _netPaidN nets refunds over d.paid (card+offline, excl. the refundable security deposit) AND counts gift-card redemptions (which never land in d.paid), so a fully-refunded or never-paid booking reads $0');
+  ok(/_effEnd \+ 40 \* DAY && !_deadN && _netPaidN > 0\)/.test(_WORKER_SRC) && /autos\.winback\.on && _effEnd && !sent\.winback && !_deadN && _netPaidN > 0\)/.test(_WORKER_SRC), 'lifecycle MED (Wave-14): thankyou + winback require _netPaidN>0 (no "thanks/come back" to a fully-refunded dispute booking or a never-paid no-show) and gate on the extension-aware _effEnd (not the raw b.ends column)');
+  ok(/!sent\.balanceDue && !_closedN && !_hasRefundN &&/.test(_WORKER_SRC), 'lifecycle MED (Wave-14): the auto balance-due dun is skipped once a REFUND has been issued on the active booking (a refund raises _portalDue dueCents, which would otherwise dun the customer for money just returned)');
+}
+
 // ==== build fl: Wave-14 audit fix (SEO /r/<city> landing shows that location's assets, not the whole fleet -- MED) ====
 {
   ok(/var _landFiltered = _landSlug \? _allPubA\.filter\(function \(a\) \{ return slugify\(\(a && a\.loc\) \|\| ''\) === _landSlug; \}\) : _allPubA;/.test(_WORKER_SRC), 'multi-location MED (Wave-14): the /r/<city> SEO landing filters its asset grid to THIS location (slugify(a.loc) === the landing city) instead of the whole fleet -> no cross-location display leak + no near-duplicate city pages; falls back to the full fleet only when NO asset matches (misaligned tags)');
