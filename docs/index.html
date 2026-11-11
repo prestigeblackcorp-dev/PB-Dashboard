@@ -5343,7 +5343,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v409';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v410';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -5790,6 +5790,7 @@ function _migrateReviewKeys(){
 // Build the cloud sync blob. The worker does a PATCH, so omitting a key leaves the cloud's copy
 // untouched \u2014 `noBookings:true` sends everything EXCEPT the (photo-heavy) bookings array, a tiny
 // payload a device in per-booking mode can always POST.
+var _cpForceWrite = false;   // true ONLY around the explicit card-processor toggle write (_pushCardProvider); keeps card_provider out of every routine sync so it can't self-toggle back
 function _syncPayload(noBookings){
   var d = {
     bookings: bookings, expenses: expenses, incomes: incomes,
@@ -5814,7 +5815,7 @@ function _syncPayload(noBookings){
     date_lock_url: DATE_LOCK_URL || '',
     balance_url: BALANCE_URL || '',
     dashboard_secret: DASHBOARD_SECRET || '',
-    card_provider: (CARD_PROVIDER === 'square') ? 'square' : 'stripe',   // active online card processor (worker reads pb_data/card_provider)
+    ...(_cpForceWrite ? { card_provider: (CARD_PROVIDER === 'square') ? 'square' : 'stripe' } : {}),   // STICKY: card_provider is written ONLY by the explicit toggle (_pushCardProvider sets _cpForceWrite), NEVER by routine sync -- so a stale 2nd device can never clobber the live processor back. Worker reads pb_data/card_provider.
     outreachTemplates: outreachTemplates,
     outreachHistory: outreachHistory,
     outreachSettings: outreachSettings,
@@ -5853,6 +5854,29 @@ function _pushMetaSync(_retry){
       return;
     }
     if (j && j.ok) { _lastSavedAt = Math.max(_lastSavedAt, Number(meta.savedAt) || 0); try{ localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString()); }catch(e){} }
+  }).catch(function(){});
+}
+// Authoritative, STICKY write of the card processor. Sent ONLY by an explicit toggle (_cpApply). Uses the small
+// meta payload (no bookings) with _cpForceWrite ON so card_provider is included this once; the body is captured
+// synchronously so the 409 retry re-sends the SAME body (still carrying card_provider). Routine syncs never write
+// card_provider, so once this lands, no other device/tab can flip the live processor back -- only another toggle.
+function _pushCardProvider(_retry){
+  if (!WORKER_URL || !navigator.onLine) return;
+  _cpForceWrite = true;
+  var body = _syncPayload(true);   // built synchronously -> includes card_provider while the flag is on
+  _cpForceWrite = false;
+  fetch(WORKER_URL + '/sync/save', {
+    method: 'POST', body: _encodeSyncBody(_safeSyncStringify(body)),
+    headers: Object.assign({ 'Content-Type': 'application/json' }, _authHeader())
+  }).then(function(r){
+    if (r.status === 409 && !_retry) return r.json().catch(function(){ return {}; }).then(function(j){
+      _lastSavedAt = Math.max(_lastSavedAt, Number(j && j.remoteSavedAt) || 0);
+      try{ localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString()); }catch(e){}
+      _pushCardProvider(true); return null;   // retry once with a winning savedAt; rebuilds body WITH card_provider
+    });
+    return r.ok ? r.json().catch(function(){ return { ok:true }; }) : null;
+  }).then(function(j){
+    if (j && j.ok) { _lastSavedAt = Math.max(_lastSavedAt, Number(body.savedAt) || 0); try{ localStorage.setItem('pb_last_cloud_save', _lastSavedAt.toString()); }catch(e){} }
   }).catch(function(){});
 }
 function _cloudSaveNow() {
@@ -16866,9 +16890,9 @@ function _cpApply(p){
   CARD_PROVIDER=p; try{ localStorage.setItem('pb_card_provider',p); }catch(e){}
   try{ _markSettingsDirty(); }catch(e){}
   try{ save(); }catch(e){}
-  try{ if(typeof flushCloudSave==='function') flushCloudSave(); }catch(e){}
+  try{ _pushCardProvider(); }catch(e){}   // authoritative, STICKY cloud write of card_provider ONLY -- routine syncs never touch it, so it can't self-toggle back
   _cpRender();
-  try{ showToast('Card processor -> '+(p==='square'?'Square':'Stripe')); }catch(e){}
+  try{ showToast('Card processor -> '+(p==='square'?'Square':'Stripe')+' (saved; stays until you switch back)'); }catch(e){}
 }
 function setCardProvider(p){
   p=(p==='square')?'square':'stripe';
@@ -19367,29 +19391,40 @@ function _evIdentitySection(b){
 }
 function _evStripeLedger(b){
   var sp=Array.isArray(b.stripePayments)?b.stripePayments:[];
+  var sq=Array.isArray(b.squarePayments)?b.squarePayments:[];
   var dp=Array.isArray(b.disputes)?b.disputes:[];
   var pc=Array.isArray(b.portalCharges)?b.portalCharges:[];
-  var usedPi={}; var rows='';
+  var usedPi={}, usedSq={}; var rows='';
   pc.forEach(function(c){ if(!c) return;
     var m=sp.filter(function(x){ return x && x.chargeRef && c.id && x.chargeRef===c.id; });
     if(!m.length) m=sp.filter(function(x){ return x && c.paidAt && x.amount && Math.abs((Number(x.amount)||0)-(Number(c.amount)||0))<0.02 && !usedPi[x.paymentIntentId]; });
     var st=m[0]||null; if(st&&st.paymentIntentId) usedPi[st.paymentIntentId]=1;
+    // Square match: chargeRef===charge id, else the amount at base / 13.25% gross / real checkout gross
+    var sm=sq.filter(function(x){ return x && x.kind!=='refund' && x.chargeRef && c.id && x.chargeRef===c.id; });
+    if(!sm.length) sm=sq.filter(function(x){ if(!x||x.kind==='refund'||!c.paidAt||!x.amount||usedSq[x.paymentId]) return false; var a=Number(x.amount)||0,cc=Number(c.amount)||0; return Math.abs(a-cc)<0.02||Math.abs(a-cc*1.1325)<0.05||Math.abs(a-cc*1.05*1.0825)<0.05; });
+    var sqt=sm[0]||null; if(sqt&&sqt.paymentId) usedSq[sqt.paymentId]=1;
+    var idCell = st?_evMono(st.paymentIntentId||st.chargeId||st.sessionId):(sqt?(_evMono(sqt.paymentId||sqt.orderId)+' <span class="muted">(Square)</span>'):'<span class="muted">&mdash;</span>');
     rows+='<tr><td>'+esc(c.description||c.desc||'Portal charge')+'</td><td class="r">'+_evFmtMoney(c.amount)+'</td><td>'+_evWhen(c.sentAt)+'</td>'
       +'<td>'+(c.paidAt?('<b>'+_evWhen(c.paidAt)+'</b>'+(c.paymentMethod?(' &middot; '+esc(c.paymentMethod)):'')):'<span class="muted">unpaid</span>')+'</td>'
-      +'<td>'+(st?_evMono(st.paymentIntentId||st.chargeId||st.sessionId):'<span class="muted">&mdash;</span>')+'</td></tr>';
+      +'<td>'+idCell+'</td></tr>';
   });
-  sp.forEach(function(st){ if(!st||(st.paymentIntentId&&usedPi[st.paymentIntentId])) return;
+  sp.forEach(function(st){ if(!st||st.kind==='refund'||(st.paymentIntentId&&usedPi[st.paymentIntentId])) return;
     rows+='<tr><td>'+esc(st.kind||'Payment')+' <span class="muted">(Stripe)</span></td><td class="r">'+_evFmtMoney(st.amount)+'</td><td class="muted">&mdash;</td>'
       +'<td><b>'+_evWhen(st.at)+'</b></td><td>'+_evMono(st.paymentIntentId||st.chargeId||st.sessionId)+'</td></tr>';
   });
-  if(!rows) rows='<tr><td colspan="5" class="muted">No Stripe transaction ids on file yet. Click "Backfill Stripe IDs" on the booking to pull them from Stripe.</td></tr>';
-  var out='<h2>Stripe Transaction Ledger &mdash; every charge, timestamped, with transaction ids</h2>'
-    +'<table class="paytbl"><tr><th>Charge</th><th class="r">Amount</th><th>Sent to portal</th><th>Paid (exact)</th><th>Stripe transaction id</th></tr>'+rows+'</table>';
+  sq.forEach(function(st){ if(!st||st.kind==='refund'||(st.paymentId&&usedSq[st.paymentId])) return;
+    rows+='<tr><td>'+esc(st.kind||'Payment')+' <span class="muted">(Square)</span></td><td class="r">'+_evFmtMoney(st.amount)+'</td><td class="muted">&mdash;</td>'
+      +'<td><b>'+_evWhen(st.at)+'</b></td><td>'+_evMono(st.paymentId||st.orderId)+'</td></tr>';
+  });
+  if(!rows) rows='<tr><td colspan="5" class="muted">No card transaction ids on file yet. For Stripe, click "Backfill Stripe IDs" on the booking; Square payments self-record once the Square webhook is live.</td></tr>';
+  var out='<h2>Card Transaction Ledger &mdash; every charge, timestamped, with transaction ids</h2>'
+    +'<table class="paytbl"><tr><th>Charge</th><th class="r">Amount</th><th>Sent to portal</th><th>Paid (exact)</th><th>Transaction id</th></tr>'+rows+'</table>';
   if(dp.length){
     var dr=dp.map(function(d){ var due=d.dueBy?('<b style="color:#b91c1c">'+_evWhen(d.dueBy)+'</b>'):'<span class="muted">&mdash;</span>';
-      return '<tr><td>'+_evMono(d.id)+'</td><td>'+esc(String(d.reason||'').replace(/_/g,' '))+'</td><td class="r">'+_evFmtMoney(d.amount)+'</td><td>'+esc(d.status||'')+'</td><td>'+due+'</td><td>'+_evMono(d.chargeId||d.paymentIntentId)+'</td></tr>'; }).join('');
+      var prov=(d.provider==='square')?' <span class="muted">(Square)</span>':'';
+      return '<tr><td>'+_evMono(d.id)+prov+'</td><td>'+esc(String(d.reason||'').replace(/_/g,' '))+'</td><td class="r">'+_evFmtMoney(d.amount)+'</td><td>'+esc(d.status||'')+'</td><td>'+due+'</td><td>'+_evMono(d.chargeId||d.paymentIntentId||d.paymentId)+'</td></tr>'; }).join('');
     out+='<h2 style="color:#b91c1c">Disputes / Chargebacks on this booking</h2>'
-      +'<div class="note" style="background:#fdf0f0;border-color:#f0caca;color:#611">Each dispute is tied to a real Stripe charge above. Respond before the evidence-due date to contest it.</div>'
+      +'<div class="note" style="background:#fdf0f0;border-color:#f0caca;color:#611">Each dispute is tied to a real charge above. Respond before the evidence-due date to contest it.</div>'
       +'<table class="paytbl"><tr><th>Dispute id</th><th>Reason</th><th class="r">Amount</th><th>Status</th><th>Evidence due</th><th>On charge</th></tr>'+dr+'</table>';
   }
   return out;
@@ -19424,34 +19459,38 @@ function _ev3ds(ca){
 }
 function _evCardAuth(b){
   var sp=Array.isArray(b.stripePayments)?b.stripePayments:[];
-  if(!sp.length) return '';
-  var withCa=sp.filter(function(x){ return x && x.cardAuth && typeof x.cardAuth==='object'; });
+  var sq=Array.isArray(b.squarePayments)?b.squarePayments:[];
+  if(!sp.length && !sq.length) return '';
+  var withCa=[];
+  sp.forEach(function(x){ if(x && x.cardAuth && typeof x.cardAuth==='object') withCa.push({st:x, prov:'Stripe', id:(x.chargeId||x.paymentIntentId||x.sessionId)}); });
+  sq.forEach(function(x){ if(x && x.kind!=='refund' && x.cardAuth && typeof x.cardAuth==='object') withCa.push({st:x, prov:'Square', id:(x.paymentId||x.orderId)}); });
   if(!withCa.length){
     return '<h2>Card Authorization &amp; Fraud Signals</h2>'
-      +'<div class="note">Card-network authorization signals (CVC, address/ZIP (AVS), 3-D Secure and Stripe Radar risk) are not yet stored for these charges. On this booking click <b>+ Stripe IDs &rarr; Look up</b> (or Backfill Stripe IDs) to pull them from Stripe, then regenerate this report.</div>';
+      +'<div class="note">Card-network authorization signals (CVC, address/ZIP (AVS), 3-D Secure and processor risk) are not yet stored for these charges. For Stripe, click <b>+ Stripe IDs &rarr; Look up</b> (or Backfill Stripe IDs); Square records them automatically once its webhook is live, then regenerate this report.</div>';
   }
-  var blocks=withCa.map(function(st){
-    var ca=st.cardAuth;
+  var blocks=withCa.map(function(w){
+    var st=w.st, ca=st.cardAuth;
     var card=(ca.brand?esc(String(ca.brand)):'Card')+(ca.last4?(' &bull;&bull;&bull;&bull; '+esc(String(ca.last4))):'')
       +(ca.funding?(' <span class="muted">('+esc(String(ca.funding))+')</span>'):'')
       +(ca.cardCountry?(' <span class="muted">issued '+esc(String(ca.cardCountry))+'</span>'):'');
     var contact=[ca.billingName,ca.billingEmail,ca.billingPhone].filter(Boolean).map(function(x){return esc(String(x));}).join(' &middot; ');
     var addr=[ca.billingPostal,ca.billingCountry].filter(Boolean).map(function(x){return esc(String(x));}).join(', ');
     return '<table style="margin-bottom:6px">'
-      +'<tr><td class="k">Charge</td><td class="v"><b>'+_evFmtMoney(st.amount)+'</b>'+(st.at?(' &middot; '+_evWhen(st.at)):'')+' &middot; '+_evMono(st.chargeId||st.paymentIntentId||st.sessionId)+'</td></tr>'
+      +'<tr><td class="k">Charge</td><td class="v"><b>'+_evFmtMoney(st.amount)+'</b>'+(st.at?(' &middot; '+_evWhen(st.at)):'')+' &middot; '+_evMono(w.id)+' <span class="muted">('+w.prov+')</span></td></tr>'
       +'<tr><td class="k">Card used</td><td class="v">'+card+'</td></tr>'
       +'<tr><td class="k">CVC check (security code)</td><td class="v">'+_evChk(ca.cvcCheck)+'</td></tr>'
       +'<tr><td class="k">Billing ZIP / postal (AVS)</td><td class="v">'+_evChk(ca.zipCheck)+'</td></tr>'
       +'<tr><td class="k">Billing street address (AVS)</td><td class="v">'+_evChk(ca.addressCheck)+'</td></tr>'
       +'<tr><td class="k">3-D Secure authentication</td><td class="v">'+_ev3ds(ca)+'</td></tr>'
-      +'<tr><td class="k">Stripe Radar risk</td><td class="v">'+_evRisk(ca)+'</td></tr>'
+      +'<tr><td class="k">'+(w.prov==='Square'?'Square risk evaluation':'Stripe Radar risk')+'</td><td class="v">'+_evRisk(ca)+'</td></tr>'
       +(ca.networkStatus?('<tr><td class="k">Card network status</td><td class="v">'+esc(String(ca.networkStatus).replace(/_/g,' '))+'</td></tr>'):'')
+      +(ca.entryMethod?('<tr><td class="k">Entry method</td><td class="v">'+esc(String(ca.entryMethod).replace(/_/g,' '))+'</td></tr>'):'')
       +(contact?('<tr><td class="k">Billing contact on card</td><td class="v">'+contact+'</td></tr>'):'')
       +(addr?('<tr><td class="k">Billing address on card</td><td class="v">'+addr+'</td></tr>'):'')
       +'</table>';
   }).join('');
-  return '<h2>Card Authorization &amp; Fraud Signals &mdash; Stripe</h2>'
-    +'<div class="note">These are the card-network verification results Stripe recorded <b>at the moment each charge was authorized</b> &mdash; not reconstructed afterward. A <b>CVC Pass</b> shows whoever paid physically held the card (they entered the security code printed on it); an <b>address/ZIP (AVS) Pass</b> shows they knew the cardholder&rsquo;s billing address; <b>3-D Secure Authenticated</b> means the cardholder&rsquo;s own bank verified them during checkout (shifting fraud liability to the issuer); and a <b>Normal</b> Stripe Radar result means Stripe&rsquo;s fraud system detected no signs of unauthorized use. Together these establish that the person who made this payment was the legitimate cardholder.</div>'
+  return '<h2>Card Authorization &amp; Fraud Signals</h2>'
+    +'<div class="note">These are the card-network verification results the processor recorded <b>at the moment each charge was authorized</b> &mdash; not reconstructed afterward. A <b>CVC Pass</b> shows whoever paid physically held the card (they entered the security code printed on it); an <b>address/ZIP (AVS) Pass</b> shows they knew the cardholder&rsquo;s billing address; <b>3-D Secure Authenticated</b> means the cardholder&rsquo;s own bank verified them during checkout (shifting fraud liability to the issuer); and a <b>Normal</b> risk result means the processor&rsquo;s fraud system detected no signs of unauthorized use. Together these establish that the person who made this payment was the legitimate cardholder.</div>'
     +blocks;
 }
 // Every signature on file for this booking -- the CURRENT customer signature plus any EARLIER versions
@@ -19593,12 +19632,16 @@ function _genDisputeCoverNote(id){
   var _ps=(typeof _evPrimarySig==='function')?_evPrimarySig(b):null;
   var v=b.verify||{};
   var sp=Array.isArray(b.stripePayments)?b.stripePayments:[];
+  var sq=Array.isArray(b.squarePayments)?b.squarePayments.filter(function(x){return x&&x.kind!=='refund';}):[];
   var disputes=Array.isArray(b.disputes)?b.disputes:[];
   var _term={won:1,lost:1,charge_refunded:1,warning_closed:1};
   var dsp=disputes.filter(function(d){return d&&!_term[String(d.status||'').toLowerCase()];})[0]||disputes[0]||null;
   var ids=[]; var pushId=function(x){ if(x&&ids.indexOf(x)<0) ids.push(x); };
   sp.forEach(function(x){ if(x){ pushId(x.paymentIntentId); pushId(x.chargeId); } });
-  if(dsp){ pushId(dsp.paymentIntentId); pushId(dsp.chargeId); }
+  if(!sp.length) sq.forEach(function(x){ if(x){ pushId(x.paymentId); pushId(x.orderId); } });   // Square transaction ids when the disputed charge was Square
+  if(dsp){ pushId(dsp.paymentIntentId); pushId(dsp.chargeId); pushId(dsp.paymentId); }
+  // Processor of the disputed charge -> keeps the letter factually correct. (ID verification is ALWAYS Stripe Identity, left as "Stripe Identity" below regardless of PROC.)
+  var PROC=(dsp&&dsp.provider==='square')?'Square':(dsp&&dsp.provider==='stripe')?'Stripe':(sp.length?'Stripe':(sq.length?'Square':'Stripe'));
   var pays=[]; try{ pays=(typeof _paymentsReceived==='function'?_paymentsReceived(b):[])||[]; }catch(e){}
   var lastPaid=pays.reduce(function(m,p){ return Math.max(m, Number(p&&p.ts)||0); },0);
   var amount=(dsp&&dsp.amount)?dsp.amount:totalRevenue(b);
@@ -19627,12 +19670,13 @@ function _genDisputeCoverNote(id){
   P.push('PRESTIGE BLACK RENTALS \u2014 DISPUTE / CHARGEBACK RESPONSE');
   P.push('Merchant: Prestige Black Rentals, Dallas\u2013Fort Worth, TX\nContact: prestigeblackcorp@gmail.com, (214) 207-2481');
   var _dspSp=dsp?sp.filter(function(x){ return x && (x.chargeId===dsp.chargeId||x.paymentIntentId===dsp.paymentIntentId); })[0]:null;
-  var chargeAt=(_dspSp&&_dspSp.at)?_dspSp.at:((sp[0]&&sp[0].at)?sp[0].at:lastPaid);
+  var _dspSq=(!_dspSp&&dsp)?sq.filter(function(x){ return x && dsp.paymentId && x.paymentId===dsp.paymentId; })[0]:null;
+  var chargeAt=(_dspSp&&_dspSp.at)?_dspSp.at:((_dspSq&&_dspSq.at)?_dspSq.at:((sp[0]&&sp[0].at)?sp[0].at:((sq[0]&&sq[0].at)?sq[0].at:lastPaid)));
   var dspOpened=dsp?(dsp.createdAt||dsp.created||dsp.at||0):0;
   // Card-authorization proof for the DISPUTED charge (worker-captured stripePayments[].cardAuth): a plain-text
   // sentence that states ONLY the checks that actually passed -- never fabricated. Empty (letter unchanged) when
   // no cardAuth is on file. Proves the payer was the real cardholder (CVC/AVS match, 3-D Secure, Radar normal).
-  var _ca=(_dspSp&&_dspSp.cardAuth)||((sp.filter(function(x){return x&&x.cardAuth;})[0]||{}).cardAuth)||null;
+  var _ca=(_dspSp&&_dspSp.cardAuth)||(_dspSq&&_dspSq.cardAuth)||((sp.filter(function(x){return x&&x.cardAuth;})[0]||{}).cardAuth)||((sq.filter(function(x){return x&&x.cardAuth;})[0]||{}).cardAuth)||null;
   var caSentence='';
   if(_ca){
     var _L=function(x){ return String(x==null?'':x).toLowerCase(); };
@@ -19644,20 +19688,20 @@ function _genDisputeCoverNote(id){
     var _rn=_L(_ca.riskLevel)==='normal';
     var _cd=(_ca.brand||'the card')+(_ca.last4?(' ending '+_ca.last4):'');
     if(_cc.length||_t3||_rn){
-      caSentence=' Stripe card-network verification at the time of payment confirms the payer was the legitimate cardholder';
+      caSentence=' '+PROC+' card-network verification at the time of payment confirms the payer was the legitimate cardholder';
       var _bits=[];
       if(_cc.length) _bits.push(_cc.join(', '));
       if(_t3) _bits.push('the charge was authenticated by the cardholder\'s own bank via 3-D Secure'+(_ca.threeDSVersion?(' '+_ca.threeDSVersion):''));
       if(_bits.length) caSentence+=': '+_bits.join('; ');
       caSentence+='.';
-      if(_rn) caSentence+=' Stripe Radar, our fraud-screening system, scored the charge as normal risk with no indicators of unauthorized use.';
+      if(_rn) caSentence+=' '+PROC+'\'s fraud-screening system scored the charge as normal risk with no indicators of unauthorized use.';
       caSentence+=' The payment was made with '+_cd+(_ca.billingName?(' in the name of '+_ca.billingName):'')+'.';
     }
   }
   P.push('Dispute / case #: '+(dsp&&dsp.id?dsp.id:'[run "+ Stripe IDs" then Look up to pull the dispute id from Stripe]')+
-         (dspOpened?('\nDispute opened (Stripe, exact): '+DT(dspOpened,true)):'')+
-         (dsp&&dsp.dueBy?('\nEvidence due (Stripe): '+DT(dsp.dueBy,true)):'')+
-         '\nStripe payment id(s): '+(ids.length?ids.join(', '):'[add via "+ Stripe IDs" then Look up, or copy pi_/ch_ from Stripe]')+
+         (dspOpened?('\nDispute opened ('+PROC+', exact): '+DT(dspOpened,true)):'')+
+         (dsp&&dsp.dueBy?('\nEvidence due ('+PROC+'): '+DT(dsp.dueBy,true)):'')+
+         '\n'+PROC+' payment id(s): '+(ids.length?ids.join(', '):(PROC==='Square'?'[Square records them automatically once its webhook is live]':'[add via "+ Stripe IDs" then Look up, or copy pi_/ch_ from Stripe]'))+
          '\nAmount disputed: '+mny(amount)+
          (chargeAt?('\nCharge date (Stripe, exact): '+DT(chargeAt,true)):'')+
          '\nBooking reference: '+(b.id||'')+
@@ -19666,7 +19710,7 @@ function _genDisputeCoverNote(id){
   if(isRide){
     P.push('To whom it may concern,');
     P.push('We are responding to the dispute filed against the transaction above. This was a legitimate, cardholder-authorized transportation service that was requested and fully delivered. The attached Transaction Evidence Record supports every point below.');
-    P.push('1. The cardholder booked and authorized the service. '+(b.name||'The customer')+' requested chauffeur / transportation service'+(pickupWhen?(' for '+pickupWhen):'')+' and authorized the fare of '+mny(amount)+' through our secure Stripe checkout'+(ids.length?(' (transaction '+ids[0]+')'):'')+'.'+caSentence);
+    P.push('1. The cardholder booked and authorized the service. '+(b.name||'The customer')+' requested chauffeur / transportation service'+(pickupWhen?(' for '+pickupWhen):'')+' and authorized the fare of '+mny(amount)+' through our secure '+PROC+' checkout'+(ids.length?(' (transaction '+ids[0]+')'):'')+'.'+caSentence);
     P.push('2. The customer is identified. The booking was placed under '+(b.name||'')+(contact?(', '+contact):'')+(idLine?('; identity verified: '+idLine+(v.idName?(', '+v.idName):'')):'')+'. This was not anonymous or unauthorized use of the card.');
     P.push('3. The service was performed. The trip was completed on '+(DT(b.pickupDate||b.date)||'[service date]')+'. Dispatch, pickup and drop-off details for the ride are retained on the booking record'+((b.address||b.dropoffAddress)?(' ('+[b.address,b.dropoffAddress].filter(Boolean).join(' \u2192 ')+')'):'')+'.');
     P.push('4. Terms were disclosed and agreed. The fare, and any applicable stop or wait charges, were disclosed at booking and accepted before payment. The disputed amount matches the agreed fare; there was no duplicate or undisclosed charge.');
@@ -19674,7 +19718,7 @@ function _genDisputeCoverNote(id){
   } else if(!signed){
     P.push('To whom it may concern,');
     P.push('We are responding to the dispute filed against the transaction above. This charge was a cardholder-authorized, non-refundable date-lock (booking-reservation) fee, and the reservation it paid for was provided in full. The attached Transaction Evidence Record substantiates every point below.');
-    P.push('1. The cardholder personally authorized the charge. '+(b.name||'The customer')+' booked the '+(b.vehicle||'vehicle')+((b.pickupDate||b.date)?(' for '+DT(b.pickupDate||b.date)):'')+' and paid a '+mny(amount)+' date-lock fee through our secure Stripe checkout'+(ids.length?(' (transaction '+ids.join(', ')+')'):'')+'.'+(idLine?(' The renter also completed Stripe Identity government-ID verification'+(verifiedOn?(' on '+verifiedOn):'')+' ('+idLine+(v.idName?(', '+v.idName):'')+'), confirming this was not unauthorized use of the card.'):'')+caSentence);
+    P.push('1. The cardholder personally authorized the charge. '+(b.name||'The customer')+' booked the '+(b.vehicle||'vehicle')+((b.pickupDate||b.date)?(' for '+DT(b.pickupDate||b.date)):'')+' and paid a '+mny(amount)+' date-lock fee through our secure '+PROC+' checkout'+(ids.length?(' (transaction '+ids.join(', ')+')'):'')+'.'+(idLine?(' The renter also completed Stripe Identity government-ID verification'+(verifiedOn?(' on '+verifiedOn):'')+' ('+idLine+(v.idName?(', '+v.idName):'')+'), confirming this was not unauthorized use of the card.'):'')+caSentence);
     P.push('2. The date-lock is the product that was delivered. The '+mny(dlAmt)+' date-lock is a booking-reservation fee: it secures the dates the renter selected and takes the vehicle off the market for every other customer. It is disclosed at checkout and in the booking-confirmation email as a non-refundable reservation fee that is credited toward the rental total at pickup.');
     P.push('3. The non-refundable terms were disclosed and accepted before payment. Our cancellation and date-lock policy, shown at checkout and accepted when the cardholder paid, states that the date-lock is fully earned when paid and is NON-REFUNDABLE for a customer-initiated cancellation, a no-show, a late cancellation, or a failure by the customer to complete identity verification or to sign the rental agreement. It is refundable only if Prestige Black cancels or cannot provide the vehicle, or where required by law.');
     P.push('4. This cancellation is exactly the non-refundable scenario that was agreed to. The cardholder chose to cancel and did not sign the rental agreement. Prestige Black held the reserved dates and turned other customers away in reliance on this date-lock. The reservation service that the fee pays for was provided in full; a later decision by the cardholder not to proceed does not make an earned, clearly disclosed fee refundable.');
@@ -19683,7 +19727,7 @@ function _genDisputeCoverNote(id){
   } else {
     P.push('To whom it may concern,');
     P.push('We are responding to the dispute filed against the transaction above. This was a legitimate, cardholder-authorized vehicle-rental transaction that was fully performed. The attached Transaction Evidence Record substantiates every point below.');
-    P.push('1. The cardholder personally authorized the charge. The renter, '+(b.name||'')+', booked the '+(b.vehicle||'vehicle')+((b.pickupDate||b.date)?(' for '+DT(b.pickupDate||b.date)+(b.dropoffDate?(' \u2192 '+DT(b.dropoffDate)):'')):'')+' and agreed to the total of '+mny(totalRevenue(b))+'. Payment was made through our secure Stripe checkout'+(ids.length?(' (transaction '+ids.join(', ')+')'):'')+'.'+caSentence);
+    P.push('1. The cardholder personally authorized the charge. The renter, '+(b.name||'')+', booked the '+(b.vehicle||'vehicle')+((b.pickupDate||b.date)?(' for '+DT(b.pickupDate||b.date)+(b.dropoffDate?(' \u2192 '+DT(b.dropoffDate)):'')):'')+' and agreed to the total of '+mny(totalRevenue(b))+'. Payment was made through our secure '+PROC+' checkout'+(ids.length?(' (transaction '+ids.join(', ')+')'):'')+'.'+caSentence);
     P.push('2. '+(idLine?('Identity was verified \u2014 this was not unauthorized card use. Before releasing the vehicle we verified the renter\u2019s government ID: '+idLine+(v.idName?(', name '+v.idName):'')+(verifiedOn?(', on '+verifiedOn):'')+'. The name on the verified ID matches the booking and the signed '+dl+'.'):('The renter is identified. The booking was placed under '+(b.name||'')+(contact?(', '+contact):'')+', who signed the '+dl+' below.')));
     P.push('3. A binding '+dl+' was electronically signed. '+(signedOn?('The renter signed our '+docType+' on '+signedOn+(b.customerSigIP?(' from IP '+b.customerSigIP):'')+'. The signature image, exact timestamp and full '+dl+' text are reproduced in the attached Evidence Report under "Signed Documents On File".'):('A signed '+dl+' is on file for this booking and is reproduced in the attached Evidence Report.')));
     P.push('4. The renter took possession of the vehicle. '+(wasDelivered?('The vehicle was delivered to the renter'+(pickupWhen?(' on '+pickupWhen):'')+(b.address?(', '+b.address):'')+'.'):('Pickup'+(pickupWhen?(' occurred on '+pickupWhen):' occurred')+(b.address?(', '+b.address):'')+', where the renter took possession of the vehicle.'))+((ciN||coN)?(' Condition photos time-stamped at handover'+(coN?' and return':'')+' are retained on the booking ('+ciN+' pickup / '+coN+' return) and are included in the Evidence Report.'):''));
@@ -19691,7 +19735,7 @@ function _genDisputeCoverNote(id){
     P.push('Because the cardholder was '+(idLine?'identity-verified, ':'')+'personally signed the '+dl+', took possession of the vehicle, and paid an amount they expressly agreed to, we respectfully request that this dispute be resolved in the merchant\u2019s favor.');
   }
   P.push('Sincerely,\nPrestige Black Rentals');
-  P.push('EVIDENCE ATTACHED:\n\u2022 Transaction Evidence Record (signatures, ID verification, Stripe id ledger, extensions, timeline)'+(signed?('\n\u2022 Signed '+docType+' with signature image + timestamp'):'\n\u2022 Disclosed non-refundable date-lock and cancellation policy (shown at checkout and in the booking-confirmation email)')+(idLine?'\n\u2022 Government-ID verification record':'')+'\n\u2022 Stripe Transaction Ledger (pi_/ch_ ids, amounts, paid/disputed timestamps)'+((ciN||coN)?('\n\u2022 Condition photos at pickup'+(coN?' and return':'')+' (embedded in the Evidence Report)'):'')+(isRide?'\n\u2022 Dispatch / pickup-dropoff details for the ride':''));
+  P.push('EVIDENCE ATTACHED:\n\u2022 Transaction Evidence Record (signatures, ID verification, Stripe id ledger, extensions, timeline)'+(signed?('\n\u2022 Signed '+docType+' with signature image + timestamp'):'\n\u2022 Disclosed non-refundable date-lock and cancellation policy (shown at checkout and in the booking-confirmation email)')+(idLine?'\n\u2022 Government-ID verification record':'')+'\n\u2022 Card Transaction Ledger ('+PROC+' transaction ids, amounts, paid/disputed timestamps)'+((ciN||coN)?('\n\u2022 Condition photos at pickup'+(coN?' and return':'')+' (embedded in the Evidence Report)'):'')+(isRide?'\n\u2022 Dispatch / pickup-dropoff details for the ride':''));
   if(dsp&&dsp.dueBy){ P.push('NOTE: Stripe evidence is due by '+DT(dsp.dueBy,true)+'. Submit before then.'); }
   var txt=P.join('\n\n');
   var paras=P.map(function(t,i){ var cls=(i===0)?'h1':(i===1?'sub':((/^EVIDENCE ATTACHED|^NOTE:/).test(t)?'idx':'p')); return '<div class="'+cls+'">'+E(t).replace(/\n/g,'<br>')+'</div>'; }).join('');
