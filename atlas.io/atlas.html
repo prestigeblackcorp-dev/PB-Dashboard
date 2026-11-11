@@ -2196,6 +2196,7 @@ const Atlas = (function(){
       if(r[2].json && typeof r[2].json.referralEnabled==='boolean'){ _refEnabled=r[2].json.referralEnabled; }   // REFERRAL: adopt the platform master switch so the "Refer & earn" card shows only when the owner has turned it on
       if(r[2].json && typeof r[2].json.cryptoEnabled==='boolean'){ _cryptoEnabled=r[2].json.cryptoEnabled; }   // CRYPTO: show the pay-with-crypto buttons only when the owner has connected Coinbase Commerce (COINBASE_COMMERCE_KEY)
       if(r[2].json && ('domainRenewal' in r[2].json)){ try{ var _dvR=r[2].json.domainRenewal||null; var _dwb=_lsGet('atlas_tenant_'+tid,null); if(_dwb){ _dwb.domainRenewal=_dvR; _lsSet('atlas_tenant_'+tid,_dwb); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.domainRenewal=_dvR; } }catch(e){} }   // #282: adopt server-authoritative billed-domain (self-cancellable yearly renewal); null once cancelled -> Add-ons control clears on next hydrate
+      if(r[2].json && ('emailUsage' in r[2].json)){ try{ var _euR=r[2].json.emailUsage||null; var _eub=_lsGet('atlas_tenant_'+tid,null); if(_eub){ _eub.emailUsage=_euR; _lsSet('atlas_tenant_'+tid,_eub); } if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ S.emailUsage=_euR; } }catch(e){} }   // WAVE32: adopt server-authoritative MONTHLY email usage {allowance,used,remaining,purchased,addon} for the billing meter -- same pattern as credits/website above
       if(r[2].json && Array.isArray(r[2].json.siteDomains)){ try{ _siteDomains=r[2].json.siteDomains; if(typeof renderWebsite==='function' && document.getElementById('webPrev')) renderWebsite(); }catch(e){} }   // Phase 2b: per-sub-site custom domains for the "Your sites" UI (display + verify state); re-render if the Website tab is open
       if(r[2].json){ try{ if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ if('assetCap' in r[2].json) S.assetCap=r[2].json.assetCap; if(typeof r[2].json.assetUnlockCents==='number') S.assetUnlockCents=r[2].json.assetUnlockCents; if(typeof r[2].json.assetUnlockUnits==='number') S.assetUnlockUnits=r[2].json.assetUnlockUnits; if(Array.isArray(r[2].json.assetUnlocks)) S.assetUnlocks=r[2].json.assetUnlocks; if(typeof renderFleet==='function' && document.getElementById('assetGrid')) renderFleet(); } }catch(e){} }   // per-asset unlock: adopt server plan cap + $11.99/mo unlocks so the Fleet lock UI is authoritative; re-render if the fleet is open
       if(r[2].json && r[2].json.tier){ try{ if(typeof S!=='undefined'&&S&&store.session()&&store.session().tenantId===tid){ var _svT=String(r[2].json.tier||'').toLowerCase(); var _svTok=(typeof TIERS!=='undefined')&&TIERS.filter(function(x){return x.id===_svT;}).length>0; if(_svTok && _svT!==S.tier && _sessEmail()!==OWNER_EMAIL && !_compGrantFor(_sessEmail()) && !_isComp()){ var _tbT=_lsGet('atlas_tenant_'+tid,null); if(_tbT){ _tbT.tier=_svT; _lsSet('atlas_tenant_'+tid,_tbT); } S.tier=_svT; var _scT=document.getElementById('modalScrim'); if(S.onboarded && typeof buildApp==='function'){ if(_scT&&_scT.classList.contains('on')){ _livePollDeferredBuild=true; } else { try{ buildApp(); }catch(e){} } } } } }catch(e){} }   // adopt server-authoritative plan TIER (the tier COLUMN the client cannot write) so asset/location caps + credits + upgrade targeting reflect the real plan; NEVER downgrades a comp/owner account (email-driven, also re-forced by _grantOwnerIfNeeded); defers the rebuild under an open modal (mirrors the live-poll pattern)
@@ -2318,14 +2319,14 @@ const Atlas = (function(){
   const SWATCHES=['#1E6E4E','#2563EB','#7C3AED','#DB2777','#DC2626','#EA580C','#CA8A04','#0891B2','#4F46E5','#059669','#1E293B','#B45309'];
   // Subscription tiers (monthly, low prices). vehicles/locations = caps; credits = FREE Atlas.io credits per week.
   const TIERS=[
-    {id:'starter',   name:'Starter',              price:49.99,vehicles:10,       locations:1,        credits:300,  blurb:'Up to 10 assets'},
-    {id:'pro',       name:'Pro',                  price:199,  vehicles:50,       locations:3,        credits:1000, blurb:'Up to 50 assets'},
-    {id:'enterprise',name:'Enterprise',           price:499,  vehicles:150,      locations:99,       credits:3000, blurb:'Up to 150 assets, multiple locations'},
-    {id:'business',  name:'Business',             price:799,  vehicles:500,      locations:99,       credits:4500, blurb:'Up to 500 assets, multiple locations'},
-    {id:'unlimited', name:'Enterprise Unlimited', price:1499, vehicles:Infinity, locations:Infinity, credits:10000, blurb:'Unlimited assets + locations'},
-    {id:'diamond',   name:'Diamond',              price:0,    vehicles:Infinity, locations:Infinity, credits:Infinity, blurb:'Owner / Admin \u2014 limitless', owner:true},
-    {id:'gold',      name:'Gold',                 price:0,    vehicles:Infinity, locations:Infinity, credits:1000, blurb:'Complimentary \u2014 all features', comp:true, permanent:true}, // early-tester comp: never auto-expires or downgrades (owner must explicitly compRevoke to remove it); 1000 credits/wk TESTER CAP (must match worker TIER_CREDITS.gold), vs Starter's 300
-    {id:'freecomp',  name:'Free access',          price:0,    vehicles:Infinity, locations:Infinity, credits:1000, blurb:'Free \u2014 full access', comp:true}
+    {id:'starter',   name:'Starter',              price:49.99,vehicles:10,       locations:1,        credits:300,  emails:1000,    blurb:'Up to 10 assets'},
+    {id:'pro',       name:'Pro',                  price:199,  vehicles:50,       locations:3,        credits:1000, emails:5000,    blurb:'Up to 50 assets'},
+    {id:'enterprise',name:'Enterprise',           price:499,  vehicles:150,      locations:99,       credits:3000, emails:20000,   blurb:'Up to 150 assets, multiple locations'},
+    {id:'business',  name:'Business',             price:799,  vehicles:500,      locations:99,       credits:4500, emails:40000,   blurb:'Up to 500 assets, multiple locations'},
+    {id:'unlimited', name:'Enterprise Unlimited', price:1499, vehicles:Infinity, locations:Infinity, credits:10000, emails:100000,  blurb:'Unlimited assets + locations'},
+    {id:'diamond',   name:'Diamond',              price:0,    vehicles:Infinity, locations:Infinity, credits:Infinity, emails:Infinity, blurb:'Owner / Admin \u2014 limitless', owner:true},
+    {id:'gold',      name:'Gold',                 price:0,    vehicles:Infinity, locations:Infinity, credits:1000, emails:5000,    blurb:'Complimentary \u2014 all features', comp:true, permanent:true}, // early-tester comp: never auto-expires or downgrades (owner must explicitly compRevoke to remove it); 1000 credits/wk TESTER CAP (must match worker TIER_CREDITS.gold), vs Starter's 300. emails/mo must match worker TIER_EMAILS.
+    {id:'freecomp',  name:'Free access',          price:0,    vehicles:Infinity, locations:Infinity, credits:1000, emails:5000,    blurb:'Free \u2014 full access', comp:true}
   ];
   // The owner/admin account. Logging in with this email auto-grants the limitless Diamond tier + owner tools.
   var OWNER_EMAIL='prestigeblackcorp@gmail.com';
@@ -2364,6 +2365,7 @@ const Atlas = (function(){
       +'</div>';
     document.body.appendChild(e); e.classList.add('on'); }
   const CREDIT_PACKS=[ {credits:500,price:25}, {credits:2000,price:80}, {credits:5000,price:175} ];  // Atlas.io top-ups (any tier)
+  const EMAIL_PACKS=[ {emails:1000,price:5}, {emails:5000,price:20}, {emails:25000,price:75} ];  // WAVE32: one-off email top-ups (any tier); non-expiring, used only after the monthly allowance. MUST mirror worker EMAIL_PACK_CENTS. PROPOSED pricing -- tune to margin.
   // FOUNDER PROGRAM: first 1000 accounts get a PERPETUAL 50% off every Atlas charge. Server is authoritative at checkout;
   // this state (hydrated from /api/tenant/profile + /api/founder/status) only drives the matching price DISPLAY + the offer banner.
   var _founderInfo = { program:false, mine:false, open:false, remaining:0 };
@@ -2372,7 +2374,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23eh';
+  var APP_VERSION='2026.7.23ei';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -9600,7 +9602,7 @@ const Atlas = (function(){
         <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
           <div style="flex:1;min-width:180px"><div style="font-size:26px;font-weight:850;color:var(--ink)" class="tnum">${_c.toLocaleString()}</div><div style="font-size:12.5px;color:var(--muted)">credits available &middot; ${_t.credits.toLocaleString()} free every week on ${esc(_t.name)}</div></div>
           <button class="btn btn--primary btn--sm" onclick="Atlas.openCredits()">Buy credits</button></div>
-      </div>` + _addonsBillingHtml() + _referralCardHtml();
+      </div>` + _emailMeterHtml() + _addonsBillingHtml() + _referralCardHtml();
       if(_refEnabled) _referralLoad();
     }
     else if(setCur==='support'){ b.innerHTML = `
@@ -11924,6 +11926,27 @@ const Atlas = (function(){
     if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ closeModal(); _billingCheckout('credits',{pack:String(p.credits)}); return; }
     if(!S.card){ toast('Choose a plan first to save a card'); openPlans(); return; }
     _addCredits(p.credits); closeModal(); renderTrialBox(); buildAio(); if(setCur==='billing')renderSet(); toast('+'+p.credits.toLocaleString()+' credits ($'+p.price+' to '+S.card.brand+' ..'+S.card.last4+')'); }
+  // WAVE32: email allowance meter + one-off top-up packs (mirror the credits meter/buy flow). Server emailUsage is authoritative (hydrated); falls back to the tier allowance before first hydrate.
+  function _emailMeter(){ var u=(S&&S.emailUsage)||null, t=_curTier(); var allow=(t&&typeof t.emails==='number')?t.emails:5000;
+    if(u&&typeof u.allowance==='number'){ return {allowance:u.allowance, remaining:(typeof u.remaining==='number'?u.remaining:u.allowance), used:(typeof u.used==='number'?u.used:0), purchased:(typeof u.purchased==='number'?u.purchased:0), addon:(typeof u.addon==='number'?u.addon:0)}; }
+    return {allowance:allow, remaining:allow, used:0, purchased:0, addon:0}; }
+  function _emailMeterHtml(){ var m=_emailMeter(), t=_curTier();
+    var rem=(m.allowance===Infinity)?'Unlimited':((m.remaining)||0).toLocaleString();
+    var allow=(m.allowance===Infinity)?'unlimited':(((t&&typeof t.emails==='number'&&t.emails!==Infinity)?t.emails:m.allowance)||0).toLocaleString()+'/mo';
+    var addon=(m.addon>0)?(' &middot; +'+m.addon.toLocaleString()+' add-on'):'';
+    var pur=(m.purchased>0)?(' &middot; '+m.purchased.toLocaleString()+' top-up left'):'';
+    return '<div class="set-block"><h3>Email allowance</h3><div class="desc">Booking confirmations, receipts, reminders and marketing all draw from your monthly email allowance. It refills on the 1st; top up anytime.</div>'
+      +'<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap"><div style="flex:1;min-width:180px"><div style="font-size:26px;font-weight:850;color:var(--ink)" class="tnum">'+rem+'</div><div style="font-size:12.5px;color:var(--muted)">emails left this month &middot; '+allow+' on '+esc(t.name)+addon+pur+'</div></div>'
+      +(m.allowance===Infinity?'':'<button class="btn btn--primary btn--sm" onclick="Atlas.openEmailPacks()">Buy emails</button>')+'</div></div>'; }
+  function openEmailPacks(){ var m=_emailMeter();
+    openModal('<div class="modal__head"><h3>Email top-ups</h3>'+_xBtn()+'</div>'
+      +'<div class="modal__body"><div style="text-align:center"><div style="font-size:32px;font-weight:850;color:var(--ink)" class="tnum">'+((m.allowance===Infinity)?'Unlimited':((m.remaining)||0).toLocaleString())+'</div><div style="font-size:13px;color:var(--muted)">emails left this month &middot; '+((m.allowance===Infinity)?'unlimited':(((m.allowance)||0).toLocaleString()+'/mo'))+'</div></div>'
+      +'<div style="font-size:13px;font-weight:700;color:var(--ink);margin:18px 0 8px">Need more? Add a one-off pack</div>'
+      +EMAIL_PACKS.map(function(p,i){ return '<div style="display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><div style="flex:1"><b style="color:var(--ink)">'+p.emails.toLocaleString()+' emails</b><div style="font-size:11.5px;color:var(--muted)">$'+((_isFounder()?_fHalf(p.price):p.price)/p.emails*1000).toFixed(2)+' per 1,000'+(_isFounder()?' &middot; founder':'')+'</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.buyEmails('+i+')">'+_fDisp(p.price)+'</button></div>'; }).join('')
+      +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px">Top-up emails never expire and are used only after your monthly allowance. Pricing is provisional.</p></div>'); }
+  function buyEmails(i){ if(!_guard('billing','Managing billing'))return; var p=EMAIL_PACKS[i]; if(!p) return;
+    if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ closeModal(); _billingCheckout('email_pack',{pack:String(p.emails)}); return; }
+    toast('Email top-ups need a live billing account -- choose a plan first'); }
   /* ---- PLAN GUARDRAILS: vehicle cap + prorated upgrades + paid-feature gating (Phase 2) ---- */
   function _tierIndex(id){ for(var i=0;i<TIERS.length;i++){ if(TIERS[i].id===id) return i; } return 0; }
   function _nextTierUp(){ var maxI=0; for(var i=0;i<TIERS.length;i++){ if(!TIERS[i].owner && !TIERS[i].comp) maxI=i; }   // fix: clamp to the last SELLABLE tier so 'unlimited' never leaks the owner-only Diamond (or comp Gold) tier
@@ -14800,7 +14823,7 @@ const Atlas = (function(){
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
     setBrandName,setBizTz,setBrandColor,setBrandColorHex,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,revOptApply,revOptAsk,setAutoPrice,autoPriceRevertAll,autoPriceRevertOne,
-    goAuth,authSubmit,authTogglePass,ssoLogin,setMoneyStack,bkSaveCard,bkChargeCard,_bkRecordPaySubmit,bkRecordPayment,setTipping,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,buyAddon,removeAddon,_cryptoCheckout,_cryptoPlanPrompt,_cryptoPlanGo,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
+    goAuth,authSubmit,authTogglePass,ssoLogin,setMoneyStack,bkSaveCard,bkChargeCard,_bkRecordPaySubmit,bkRecordPayment,setTipping,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,openEmailPacks,buyEmails,buyAddon,removeAddon,_cryptoCheckout,_cryptoPlanPrompt,_cryptoPlanGo,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,bkAddCoSigner,_bkCoSignerSubmit,bkCoSignerLink,bkRmCoSigner,bkContractPdf,bkViewAgreement,bkSendAgreement,bkReceiptPdf,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkAssign,bkSetView,bkCalNav,exportBkIcs,viewCustomer,saveCustNote,emailCustomer,eraseCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,addLead,saveLead,leadStage,leadToBooking,rmLead,bkAddCondition,bkRmCondition,bkFinalizeCondition,bkUnlockCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkVoidFlow,doVoid,unvoidBooking,bkVoidReport,bkEvidence,bkRebuttalLetter,_rebutCopy,_rebutPrint,bkOrphanDisputes,_orphanLink,_orphanDismiss,bkPortalLink,bkPortalRevoke,bkIdvNudge,bkExtendFlow,bkExtendAmt,bkExtendPreview,bkExtendSave,bkExtRemove,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkRequireResign,bkSignHistory,bkActivityLog,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,_mtOverage,bkFuel,saveFuel,_flHint,bkLate,saveLate,_ltHint,bkDriver,saveDriver,bkRmDriver,bkInsurance,saveInsurance,bkBlacklistToggle,blacklistBlockToggle,holdAuth,holdRelease,holdCapture,holdReturn,doCapture,bkCheckIn,doCheckIn,bkCloseOut,doCloseOut,_coCalc,
