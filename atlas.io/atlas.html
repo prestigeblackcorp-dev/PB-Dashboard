@@ -2372,7 +2372,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23ec';
+  var APP_VERSION='2026.7.23ee';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -6344,7 +6344,7 @@ const Atlas = (function(){
     if(cfg.durationMode==='end'){ var ed=val('bkEnd'), etime=cfg.time?(val('bkEndT')||'12:00'):'12:00';
       var endTs=ed? _wallToUtcMs(ed,etime,_bizTz) : startTs+_periodMs();   // audit #20: anchor in the BUSINESS tz (matches the start above + /book)
       if(endTs<=startTs) endTs=startTs+_periodMs();
-      return { startTs:startTs, endTs:endTs, periods:_derivePeriods(startTs,endTs), time:cfg.time }; }
+      return { startTs:startTs, endTs:endTs, periods:_derivePeriods(startTs,endTs,_bkFormUnit), time:cfg.time }; }   // WAVE25: derive length in the booking's OWN unit on edit (see _bkFormUnit) so a window unchanged from the original re-reads to the SAME periods -- no silent re-price
     var per=Math.max(1,parseFloat(val('bkPeriods'))||1);
     return { startTs:startTs, endTs:startTs+per*_periodMs(), periods:per, time:cfg.time };
   }
@@ -6372,6 +6372,7 @@ const Atlas = (function(){
     var b=existing||{cust:'',custEmail:'',phone:'',asset:assets[0]||'',periods:3,extras:[],discount:{type:'none',value:0},notes:'',status:'Confirmed'};
     _bkDraft={ extras:(b.extras||[]).map(function(x){return {id:x.id,name:x.name,price:x.price,per:x.per,qty:x.qty||1,custom:x.custom,protection:x.protection,planId:x.planId,protSnap:x.protSnap};}) };   // keep protection+planId (+ protSnap frozen coverage terms, c12[2]) so editing a booking never drops/double-charges coverage or loses the purchase-time coverage snapshot
     _bkPromo=null;   // clear any promo left over from a previously-abandoned form; without this a code applied then cancelled would bleed onto the next New Booking (stamp promoCode + burn a cap slot with $0 discount). On edit, an existing booking keeps its stored promoCode/quote untouched.
+    _bkFormUnit=existing?_bkUnitRm(existing):((S.money&&S.money.rateModel)||'day');   // WAVE25: lock the duration unit to the booking being edited (its own, inferred from its window+periods), else the tenant's current rate model for a new booking. _bkUnitRm falls back to the tenant model when the window is ambiguous, so a NEW booking and a same-unit edit stay byte-identical.
     var disc=b.discount||{type:'none',value:0}, unit=_perUnitOne(), cfg=_bookingCfg();
     var assetField=_noAssets
       ? '<div class="field"><label>'+cap(S.fleet.noun)+'</label><div class="bk-lenhint" style="margin:0">No '+esc(S.fleet.nouns)+' yet &mdash; <span class="link" style="cursor:pointer;font-weight:600" onclick="Atlas.closeModal();Atlas.go(\'fleet\')">add your first '+esc(S.fleet.noun)+'</span> to take a booking.</div></div>'
@@ -6485,7 +6486,7 @@ const Atlas = (function(){
     else _logEvent('booking','Booking '+b.id+' created: '+b.cust+' / '+b.asset+' / '+money(q.total),{booking:b.id,total:_r2(q.total)});
     if(_newRedeem) _logEvent('promo','Promo '+_bkPromo.code+' redeemed on '+b.id,{code:_bkPromo.code,booking:b.id});
     _bkPromo=null;
-    closeModal(); renderOverview(); renderBookings(); renderCustomers(); _bkBadge();   // fix: refresh Customers panel so new customers / Trips / Spent update live
+    closeModal(); try{DATA.customers=_customersFromBookings();}catch(_e){} renderOverview(); renderBookings(); renderCustomers(); _bkBadge();   // WAVE26: rebuild the customer index from bookings BEFORE re-rendering (renderCustomers reads DATA.customers, which is only materialized on boot) so an edited/renamed booking's customer shows live, not a stale/orphaned entry; + refresh Customers panel so new customers / Trips / Spent update live
     toast(editId?'Booking updated':'Booking created &mdash; '+money(q.total));
   }
   // Booking Command Bar: the single most important next step for a booking, by status. ONE source of truth --
@@ -7485,6 +7486,7 @@ const Atlas = (function(){
   function _extrasCatalogFor(name){ var a=(DATA.assets||[]).filter(function(x){return x.name===name;})[0]; if(a && Array.isArray(a.extraIds)){ var set={}; a.extraIds.forEach(function(id){set[id]=1;}); return _extrasCatalog().filter(function(e){return set[e.id];}); } return _extrasCatalog(); }   // per-asset offered extras = subset of the global catalog; no a.extraIds means inherit every extra
   function _bkReadDiscount(){ var t=val('bkDiscType')||'none', v=parseFloat(val('bkDiscVal'))||0; return {type:t,value:v}; }
   var _bkPromo=null;
+  var _bkFormUnit=null;   // WAVE25: the rate-model UNIT a booking is priced in -- the booking's OWN unit on edit, the tenant's current one on a new booking. Locks edit-time period derivation (_bkReadWhen) to the booking's unit so editing a booking created under a different rate model (e.g. an hourly booking while the tenant is now per-day) does NOT silently re-derive its length in the current unit and re-price it. A008 locks the base RATE across an edit; this locks the DURATION unit. Reset every time _bookingForm opens.
   function applyBkPromo(){ var code=(val('bkPromo')||'').trim().toUpperCase(); var msg=document.getElementById('bkPromoMsg');
     if(!code){ _bkPromo=null; if(msg)msg.innerHTML=''; return; }
     var w=_bkReadWhen(); var p=_findPromo(code); var res=_validatePromo(p, w.periods);
@@ -7499,7 +7501,7 @@ const Atlas = (function(){
   function _bkUsesTime(){ return _bookingCfg().time; }
   function _bkUsesEnd(){ return _bookingCfg().durationMode==='end'; }
   // Derive how many periods (days/hours/weeks) a start->end span covers, per the pricing model. Always >= 1.
-  function _derivePeriods(startTs, endTs){ var ms=Math.max(0,(endTs||0)-(startTs||0)); var rm=S.money.rateModel;
+  function _derivePeriods(startTs, endTs, unit){ var ms=Math.max(0,(endTs||0)-(startTs||0)); var rm=unit||S.money.rateModel;   // WAVE25: optional explicit unit (the booking's own, on edit) -- omitted callers keep the tenant rate model, byte-identical
     if(rm==='hour') return Math.max(1, Math.ceil(ms/3600000));   // hourly billing has no grace concept -- each hour is a period
     // G9 (PB-parity): day/week/month quote length honors the owner's late-return GRACE window, so a return a few MINUTES past a
     // period boundary is not billed a whole extra day/week/month (a bare ceil did exactly that -- charging a full day for being 1
