@@ -5978,7 +5978,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/var ip=!v&&!rj&&b\.portal&&b\.portal\.idv&&b\.portal\.idv\.status==='processing';/.test(_ATLAS_SRC13Y), 'K3: the booking card shows an "ID check in progress" state when the renter has started Stripe Identity');
   ok(/var idvOn=!!\(S\.idv&&S\.idv\.enabled&&\(!S\.idv\.provider\|\|S\.idv\.provider==='stripe'\)\);/.test(_ATLAS_SRC13Y), 'K2: the Ask-to-verify button is gated on automatic Stripe Identity being turned on for the tenant');
   ok(/onclick="Atlas\.bkIdvNudge\(/.test(_ATLAS_SRC13Y) && /function bkIdvNudge\(id\)\{/.test(_ATLAS_SRC13Y), 'K2: the card has an Ask-to-verify / Resend-verify-link button wired to bkIdvNudge');
-  ok(/bkPortalLink,bkPortalRevoke,bkIdvNudge,bkExtendFlow,/.test(_ATLAS_SRC13Y), 'K2: bkIdvNudge is exported on the Atlas API object');
+  ok(/bkPortalLink,bkPortalRevoke,bkIdvNudge,/.test(_ATLAS_SRC13Y), 'K2: bkIdvNudge is exported on the Atlas API object');
   ok(_ATLAS_SRC13Y === _INDEX_SRC13Y, 'K2/K3: atlas.html and index.html remain byte-identical');
 }
 
