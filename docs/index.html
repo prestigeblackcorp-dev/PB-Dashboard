@@ -5350,7 +5350,7 @@ var _cloudSaving = false; // guard: prevent concurrent _cloudSaveNow calls from 
 var _cloudSaveTimer = null; // debounce timer \u2014 batches rapid save() calls into one request
 var _pendingCloudSave = false; // true when a save is queued but not yet confirmed \u2014 lets flushCloudSave know there's work
 var _lastSyncErr = ''; // last sync failure reason (HTTP status / worker msg / network), surfaced when the red Sync dot is tapped
-var PB_BUILD = 'v412';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
+var PB_BUILD = 'v413';  // bumped with each deploy; stamped into the sync toast so we can confirm which build a device is actually running
 var PB_SW = 'pb-v336';  // sw.js CACHE tag, bumped in LOCKSTEP with it; the <head> version-checker hard-reloads when the live sw.js tag differs from this (keeps stale devices -- e.g. the iPad PWA -- current)
 
 /* \u2550\u2550\u2550 BIG-DATA STORAGE \u2192 IndexedDB (removes the ~5MB localStorage cap) \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
@@ -12805,10 +12805,22 @@ function _mapsLink(addr, label){
   '</a>';
 }
 
+// --- Delivery kind label: $120 = one-way (drop-off only), $220 = round-trip (deliver + pick up).
+// Honors an explicit b.deliveryType if a booking ever stores one; otherwise infers from the fee.
+function _delvKind(b){
+  var t=String((b&&b.deliveryType)||'').toLowerCase();
+  if(t==='oneway'||t==='one-way') return 'one-way';
+  if(t==='delivery'||t==='roundtrip'||t==='round-trip') return 'round-trip';
+  var amt=Number(b&&b.delivery)||0;
+  if(amt===120) return 'one-way';
+  if(amt===220) return 'round-trip';
+  return '';
+}
+function _delvSuffix(b){ var k=_delvKind(b); return k?(' ('+k+')'):''; }
 function tripCard(b, showCountdown){
   var cd=countdownLabel(b.pickupDate||b.date);
   var addonsArr=[];
-  if(b.delivery)    addonsArr.push('\uD83D\uDE97 Delivery '+$$(b.delivery));
+  if(b.delivery)    addonsArr.push('\uD83D\uDE97 Delivery'+_delvSuffix(b)+' '+$$(b.delivery));
   if(b.stop)        addonsArr.push('\uD83D\uDCCD Extra Stop '+$$(b.stop));
   if(b.wait)        addonsArr.push('\u23F1 Extra Wait '+$$(b.wait));
   if(b.unlimited)   addonsArr.push((b.doubleMiles?'2\u00D7 Double Miles ':'\u221E Unlimited ')+$$(b.unlimited));
@@ -12955,7 +12967,7 @@ function tripCard(b, showCountdown){
   // pills above (avoids a redundant "Pickup/Drop-off" pill on chauffeur point-to-point bookings).
   if(b.address && b.address!==b.pickupAddress && b.address!==b.dropoffAddress
      && !(b.type==='chauffeur' && (b.pickupAddress || b.dropoffAddress))){
-    addrBlock += _mapsLink(b.address, (Number(b.delivery)>0) ? '\uD83D\uDE9A Delivery' : (b.type==='chauffeur' ? '\uD83D\uDCCD Pickup/Drop-off' : '\uD83D\uDCCD Address'));
+    addrBlock += _mapsLink(b.address, (Number(b.delivery)>0) ? '\uD83D\uDE9A Delivery'+_delvSuffix(b) : (b.type==='chauffeur' ? '\uD83D\uDCCD Pickup/Drop-off' : '\uD83D\uDCCD Address'));
   }
 
   // Vehicle image thumbnail
@@ -13301,7 +13313,7 @@ function openBookingDetail(id){
   var idCarried=!idOk&&!!v.carriedFromBooking;
   var addonsHtml='';
   var addonFields=[
-    {label:'Delivery',val:b.delivery},{label:'Extra Stop',val:b.stop},{label:'Extra Wait',val:b.wait},{label:(b.doubleMiles?'Double Miles':'Unlimited Miles')+' ('+$$(b.unlimited)+'/'+_durUnit(b)+' \u00D7 '+(b.days||1)+_durUnit(b).charAt(0)+')',val:(Number(b.unlimited)||0)*(Number(b.days)||1)},
+    {label:'Delivery'+_delvSuffix(b),val:b.delivery},{label:'Extra Stop',val:b.stop},{label:'Extra Wait',val:b.wait},{label:(b.doubleMiles?'Double Miles':'Unlimited Miles')+' ('+$$(b.unlimited)+'/'+_durUnit(b)+' \u00D7 '+(b.days||1)+_durUnit(b).charAt(0)+')',val:(Number(b.unlimited)||0)*(Number(b.days)||1)},
     {label:'Pet Fee',val:b.pet},{label:'Photoshoot',val:b.photo},
     {label:'Champagne',val:b.champagne},{label:'Red Carpet Arrival',val:b.redcarpet},{label:'Decor',val:b.decor},{label:'Bouquet',val:b.bouquet}
   ];
@@ -13849,7 +13861,7 @@ function renderCalendar(){
         var chips=[];
         if(!mob){
           if(hasPhoto) chips.push('<span class="cal-chip photo">\uD83D\uDCF7</span>');
-          if(b.delivery) chips.push('<span class="cal-chip delivery">\uD83D\uDCE6 Delivery</span>');
+          if(b.delivery) chips.push('<span class="cal-chip delivery">\uD83D\uDCE6 Delivery'+_delvSuffix(b)+'</span>');
           if(b.unlimited) chips.push('<span class="cal-chip unlimited">'+(b.doubleMiles?'2\u00D7 Double':'\u221E Unlim')+'</span>');
           if(b.broker) chips.push('<span class="cal-chip broker" title="Broker: '+esc(b.broker)+'">\uD83E\uDD1D '+esc(b.broker.split(' ')[0])+'</span>');
           else if(b.source) chips.push('<span class="cal-chip source" title="Source: '+esc(b.source)+'">'+esc(b.source.split(' ')[0])+'</span>');
@@ -18890,7 +18902,7 @@ function sendReceiptEmail(b){
   var ref='PBR-'+String(b.id||'').slice(-6).toUpperCase();
   // --- Trip summary (what the trip cost) ---
   var addons=[];
-  if(Number(b.delivery)>0) addons.push({label:'Delivery',val:b.delivery});
+  if(Number(b.delivery)>0) addons.push({label:'Delivery'+_delvSuffix(b),val:b.delivery});
   if(Number(b.stop)>0) addons.push({label:'Extra Stop',val:b.stop});
   if(Number(b.wait)>0) addons.push({label:'Extra Wait',val:b.wait});
   if(Number(b.unlimited)>0) addons.push({label:(b.doubleMiles?'Double Miles':'Unlimited Miles'),val:b.unlimited});
