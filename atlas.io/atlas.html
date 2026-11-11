@@ -2375,7 +2375,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23ek';
+  var APP_VERSION='2026.7.23el';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -6516,6 +6516,7 @@ const Atlas = (function(){
       +'<div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap">'
       +'<button class="btn btn--primary" style="flex:1 1 auto;min-width:150px" onclick="Atlas.setBookingStatus(\''+b.id+'\',\''+st[0]+'\')">'+esc(st[1])+' &rarr;</button>'
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkPortalLink(\''+b.id+'\')">Portal link</button>'
+      +((b.portal&&b.portal.signedAt)?'':'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkSendSignLink(\''+b.id+'\')" title="Email the renter their rental agreement to review and sign">Email agreement</button>')
       +'<button class="btn btn--ghost btn--sm" onclick="Atlas.openReceipt(\''+b.id+'\')">Receipt</button>'
       +'</div><div style="font-size:12px;color:var(--muted);margin-top:7px"><b style="color:var(--body);font-weight:600">Next:</b> '+st[2]+'</div></div>'; }
     var term={'Completed':'This rental is complete.','Cancelled':'This booking was cancelled.','Voided':'This contract was voided &mdash; money kept, '+esc((S&&S.fleet&&S.fleet.noun)||'unit')+' freed.'}[b.status]||('Status: '+esc(b.status||''));
@@ -6574,6 +6575,12 @@ const Atlas = (function(){
           :rj?(nudge+'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkToggleVerify(\''+b.id+'\')">Mark verified</button><button class="btn btn--ghost btn--sm" onclick="Atlas.bkClearVerify(\''+b.id+'\')">Clear</button>')
           :(nudge+'<button class="btn btn--ghost btn--sm" onclick="Atlas.bkToggleVerify(\''+b.id+'\')">Mark verified</button><button class="btn btn--ghost btn--sm" style="color:var(--danger)" onclick="Atlas.bkRejectVerify(\''+b.id+'\')">Reject</button>');
         return '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:9px 12px;margin-bottom:14px"><span class="chip '+chipCls+'"><span class="dot"></span>'+chipTxt+'</span><span style="flex:1;min-width:0;font-size:12px;color:var(--muted)">'+sub+'</span>'+btns+'</div>'; })()
+      +(function(){ var signed=!!(b.portal&&b.portal.signedAt);
+        return '<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:14px">'
+          +'<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap"><span class="chip '+(signed?'chip--ok':'chip--muted')+'"><span class="dot"></span>'+(signed?'Rental agreement signed':'Agreement not signed')+'</span>'
+          +'<span style="flex:1;min-width:0;font-size:12px;color:var(--muted)">'+(signed?('by '+esc((b.portal&&b.portal.signerName)||b.cust||'customer')+' '+_stamp(b.portal&&b.portal.signedAt)):'Email the signing link so the customer can review and sign.')+'</span>'
+          +(signed?'':'<button class="btn btn--primary btn--sm" onclick="Atlas.bkSendSignLink(\''+b.id+'\')">Email agreement to sign</button>')+'</div>'
+          +(signed?'<div id="bkSigImg" style="margin-top:10px;font-size:12px;color:var(--muted)">Loading signature...</div>':'')+'</div>'; })()   /* WAVE34b: signed status + the actual signature, loaded live (like PB dash) */
       +'<div class="mp" style="margin-bottom:14px">'
       +'<div class="mp-row"><span>'+cap(_adNoun())+'</span><span style="color:var(--ink);font-weight:600">'+esc(b.asset)+'</span></div>'
       +'<div class="mp-row"><span>'+(b.endTs?'When':'Dates')+'</span><span class="tnum" style="text-align:right;max-width:62%">'+_bkWhen(b)+(_bkExtPeriods(b)>0?(' <span style="color:var(--brand-600);font-weight:600">(+'+_bkExtPeriods(b)+' '+_perUnit()+')</span>'):'')+'</span></div>'
@@ -6653,13 +6660,16 @@ const Atlas = (function(){
       +'<div style="display:flex;gap:10px;flex-wrap:wrap">'+a+'</div>'
       +'<div style="display:flex;gap:10px;margin-top:10px"><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openReceipt(\''+b.id+'\')">Receipt</button><button class="btn btn--ghost btn--full btn--sm" onclick="Atlas.openPortal(\''+b.id+'\')">Customer portal</button></div>'
       +'<div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap"><button class="btn btn--ghost btn--full btn--sm" style="color:#5aa9e6;border-color:rgba(56,132,204,.4)" onclick="Atlas.bkEvidence(\''+b.id+'\')" title="Downloadable proof this transaction was authorized + fulfilled, to defend a false chargeback">&#128737; Fraud / chargeback evidence report</button><button class="btn btn--ghost btn--full btn--sm" style="color:#5aa9e6;border-color:rgba(56,132,204,.4)" onclick="Atlas.bkRebuttalLetter(\''+b.id+'\')" title="Draft an editable rebuttal cover letter to submit with the evidence report">&#9997; Dispute rebuttal letter</button></div></div>');
+    try{ _bkLoadSig(b.id); }catch(_e){}   // WAVE34b: live-load the signature image into #bkSigImg once the modal is in the DOM
   }
   function setBookingStatus(id,st){ if(!_guard('bookEdit','Updating bookings'))return; var b=_getBooking(id); if(!b)return;
+    var _prevSt=b.status;   // WAVE34b: remember prior status for the auto-send-on-confirm hook below
     if((st==='Confirmed'||st==='On rent') && b.status!==st){   // B1: confirming/activating HOLDS the slot; the server hard-rejects a slot clash with 409. Warn (overridable, matching createBooking) BEFORE the optimistic flip so the owner never unknowingly double-books -- the _srvMirror 4xx handler then surfaces the server's authoritative rejection instead of silently looping.
       var _cf=(typeof _availabilityConflict==='function')?_availabilityConflict(b.asset,b.startTs,b.endTs,b.id):null;
       if(_cf && !confirm(esc(b.asset)+' is '+(_cf.type==='blackout'?('blocked off for those dates'+(_cf.reason?(' ('+_cf.reason+')'):'')):(_cf.type==='maintenance'?('marked out of service'+(_cf.reason?(' ('+_cf.reason+')'):'')):('already booked for those dates'+(_cf.reason?(' ('+_cf.reason+')'):''))))+'.\n\nMark it '+st+' anyway? (the server may still refuse a true double-book)')) return;
     }
     b.status=st; if(st==='Completed'){ try{ _loyOnComplete(b); }catch(e){} } _upsertBooking(b); _logEvent('booking','Booking '+b.id+' marked '+st,{booking:b.id,status:st}); closeModal(); renderOverview(); renderBookings(); renderCustomers();   // fix: refresh Customers panel (Trips/Spent/last-active) live
+    if(st==='Confirmed' && _prevSt!=='Confirmed' && !b.idVerified && S.idv && S.idv.enabled && (!S.idv.provider||S.idv.provider==='stripe') && S.idv.autoSendOnConfirm && typeof ATLAS_BACKEND!=='undefined' && ATLAS_BACKEND && _apiCsrf){ try{ _api('/api/bookings/'+encodeURIComponent(id)+'/idv-nudge',{method:'POST',body:{}}).then(function(){}).catch(function(){}); }catch(e){} }   // WAVE34b: auto-email the renter their portal + verify link the moment a booking is confirmed (owner opt-in in Settings > Identity verification)
     var bb=document.getElementById('bookBadge'); if(bb)bb.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled'&&x.status!=='Voided';}).length; toast('Booking '+st.toLowerCase()); }
   function deleteBooking(id){ if(!_guard('bookEdit','Deleting bookings'))return; if(!confirm('Delete this booking permanently?'))return; _delBooking(id); closeModal(); renderOverview(); renderBookings(); renderCustomers(); _bkBadge(); toast('Booking deleted'); }   // fix: refresh Customers panel live
   // Booking G2: act on a customer's portal change-request in-app (was only visible in an email). Turn it into a charge (reuses Send a charge) or dismiss it.
@@ -7010,6 +7020,24 @@ const Atlas = (function(){
       else if(j.already==='verified'){ toast('This renter is already verified'); }
       else if(j.reason==='no_mailer'){ toast(j.message||'Connect an email sender first, or copy the portal link and send it yourself.'); }
       else toast(j.error||j.message||'Could not send the verify link'); }).catch(function(){ toast('Network error'); }); }
+  // WAVE34b: owner one-click "email the rental agreement / signing link to the renter". Twin of bkIdvNudge; the worker mints the portal token + sends from the booking's per-business identity.
+  function bkSendSignLink(id){ if(!_guard('bookEdit','Sending the agreement'))return; if(!ATLAS_BACKEND||!_apiCsrf){ toast('Connect your Atlas backend to email the agreement.'); return; }
+    var b=_getBooking(id); var to=String((b&&b.custEmail)||'').trim();
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)){ toast('No customer email on file -- add one on the booking first'); return; }
+    if(!confirm('Email the rental agreement signing link to '+to+'?')) return;
+    toast('Sending agreement...');
+    _api('/api/bookings/'+encodeURIComponent(id)+'/send-sign-link',{method:'POST',body:{}}).then(function(res){ var j=res.json||{};
+      if(j.ok&&j.sent){ toast('Agreement emailed to '+(j.to||to)); }
+      else if(j.reason==='no_mailer'){ toast(j.message||'Connect an email sender first, or copy the portal link and send it yourself.'); }
+      else toast(j.error||j.message||'Could not send the agreement right now'); }).catch(function(){ toast('Network error'); }); }
+  // WAVE34b: live-load the renter's actual signature into the open booking view (like the PB dashboard) -- fills #bkSigImg from the immutable signature record.
+  function _bkLoadSig(id){ try{ if(typeof ATLAS_BACKEND==='undefined'||!ATLAS_BACKEND) return; if(!document.getElementById('bkSigImg')) return;
+    _api('/api/bookings/'+encodeURIComponent(id)+'/signature').then(function(r){ var j=(r&&r.json)||{}; var el=document.getElementById('bkSigImg'); if(!el) return;
+      if(j.ok&&j.signed&&j.record){ var rec=j.record, sig=String(rec.sig||'');
+        var mark=/^data:image\//.test(sig)?('<img src="'+esc(sig)+'" alt="signature" style="max-height:62px;max-width:230px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:4px">'):('<span style="font-family:Georgia,\'Times New Roman\',cursive;font-size:22px;color:var(--ink)">'+esc(rec.signerName||sig)+'</span>');
+        el.innerHTML=mark+'<div style="font-size:11px;color:var(--muted);margin-top:6px">Signed by <b style="color:var(--body)">'+esc(rec.signerName||'')+'</b> &middot; '+_stamp(rec.signedAt)+(rec.ip?(' &middot; IP '+esc(rec.ip)):'')+'<br>Document fingerprint '+esc(String(rec.docHash||'').slice(0,16))+'...</div>'; }
+      else { el.innerHTML='<div style="font-size:12px;color:var(--muted)">No signature on file yet.</div>'; }
+    }).catch(function(){ var el=document.getElementById('bkSigImg'); if(el) el.innerHTML='<div style="font-size:12px;color:var(--muted)">Could not load the signature.</div>'; }); }catch(e){} }
   // #14 SECURITY: owner kill-switch for a booking's customer portal link. Revoking makes the shared link stop opening
   // the portal AND stop unlocking the customer's ID/license photo immediately (server _portalLive honors d.portalRevoked).
   // Reversible -- restore re-enables the SAME link. Use when a link was forwarded, screenshotted, or sent to the wrong person.
@@ -7988,8 +8016,9 @@ const Atlas = (function(){
   function renderCustomers(){
     var _ct=document.getElementById('custTbl'); if(!_ct)return;   // fix: self-guard so booking mutators can call this safely (incl. website-preview context)
     var _allBk=_bookings();   // PERF: read + parse the bookings blob ONCE, then pass it to every _custStats (was a full parse per customer)
+    var _verSet={}; try{ _allBk.forEach(function(b){ if(b&&b.idVerified){ if(b.custEmail)_verSet[String(b.custEmail).toLowerCase()]=1; if(b.cust)_verSet['n:'+b.cust]=1; } }); }catch(_e){}   // WAVE34b: customers with any ID-verified booking -> verified badge on the list row
     _ct.innerHTML=`<thead><tr><th>${cap(_custNoun())}</th><th>${cap(_fterm('books'))}</th><th>Total spent</th><th>Last active</th><th></th></tr></thead><tbody>`+
-      (DATA.customers.length ? DATA.customers.map((c,i)=>{ var _cs=_custStats(c.name,c.email,_allBk); return `<tr><td data-label="${cap(_custNoun())}"><div class="cust"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b><div style="font-size:12px;color:var(--muted)">${esc(c.email)}</div></div></div></td>
+      (DATA.customers.length ? DATA.customers.map((c,i)=>{ var _cs=_custStats(c.name,c.email,_allBk); var _cv=!!(_verSet[String(c.email||'').toLowerCase()]||_verSet['n:'+c.name]); return `<tr><td data-label="${cap(_custNoun())}"><div class="cust"><span class="avatar">${esc(c.name[0])}</span><div><b>${esc(c.name)}</b>${_cv?' <span class="chip chip--ok" title="ID verified" style="font-size:9px;padding:0 5px;vertical-align:1.5px"><span class="dot"></span>ID</span>':''}<div style="font-size:12px;color:var(--muted)">${esc(c.email)}</div></div></div></td>
       <td class="tnum" data-label="${cap(_fterm('books'))}">${_cs.trips}</td><td class="tnum" data-label="Total spent"><b>${money(_cs.spent)}</b></td><td class="tnum" data-label="Last active">${c.last} ago</td>
       <td data-label=""><button class="btn btn--ghost btn--sm" onclick="Atlas.viewCustomer(${i})">View</button></td></tr>`; }).join('') : `<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:22px 8px">No ${esc(_custNoun(true))} yet &mdash; they appear here automatically after their first booking.</td></tr>`)+`</tbody>`;
     _renderLeadCard(); _renderWaitCard();
@@ -11370,7 +11399,7 @@ const Atlas = (function(){
   // webhook to configure. Manual upload stays as the always-free fallback; Persona/Onfido/Veriff connect BYO. Honest by
   // construction: the card only reports "on" when a provider can actually run, and the automated in-portal flow is Stripe.
   var _idvSrv={loaded:false,stripeConnected:false,connected:{}};
-  function _idvCfg(){ var c=(S&&S.idv)||{}; return {enabled:!!c.enabled, provider:c.provider||'manual'}; }
+  function _idvCfg(){ var c=(S&&S.idv)||{}; return {enabled:!!c.enabled, provider:c.provider||'manual', autoSend:!!c.autoSendOnConfirm, autoCarry:!!c.autoCarryReturning}; }   // WAVE34b: surface the auto-send-on-confirm + remember-returning toggles
   function _idvStatusLoad(){ try{ if(!ATLAS_BACKEND||typeof _api!=='function') return; _api('/api/tenant/idv/status').then(function(r){ var j=r&&r.json; if(j&&j.ok){ _idvSrv={loaded:true,stripeConnected:!!j.stripeConnected,atlasManaged:!!j.atlasManaged,connected:j.connected||{}}; var el=document.getElementById('idvState'); if(el) el.innerHTML=_idvStateHtml(); } }).catch(function(){}); }catch(e){} }
   function _idvStateHtml(){
     var cfg=_idvCfg(), prov=cfg.provider, on=cfg.enabled;
@@ -11388,6 +11417,7 @@ const Atlas = (function(){
     if(prov==='stripe'){
       if(stripeReady){
         var _mgd=(_idvSrv.atlasManaged && !_idvSrv.stripeConnected && !(S.integrations&&S.integrations.stripe)); body='<label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-size:14px;font-weight:600"><input type="checkbox" '+(on?'checked':'')+' onchange="Atlas.idvToggle(this.checked)" style="margin-top:2px;width:18px;height:18px"><span>Ask every new renter to verify their ID in their booking portal</span></label>'
+          +(on?('<label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-size:13px;margin-top:12px"><input type="checkbox" '+(cfg.autoSend?'checked':'')+' onchange="Atlas.idvSetAutoSend(this.checked)" style="margin-top:2px;width:16px;height:16px"><span>Auto-email the renter their verify link the moment a booking is <b>confirmed</b> <span style="color:var(--muted);font-weight:400">&mdash; with portal access</span></span></label>'+'<label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-size:13px;margin-top:10px"><input type="checkbox" '+(cfg.autoCarry?'checked':'')+' onchange="Atlas.idvSetAutoCarry(this.checked)" style="margin-top:2px;width:16px;height:16px"><span>Remember returning verified customers <span style="color:var(--muted);font-weight:400">&mdash; skip re-verifying a known renter while their ID is still valid</span></span></label>'):'')
           +'<div class="bk-lenhint" style="margin:10px 0 0">'+(on?'<b style="color:var(--ok,#12813f)">On.</b> New bookings get a &ldquo;Verify my ID&rdquo; step. You are emailed the moment each renter passes, with their ID expiry saved on the booking. A verified renter is carried forward, so they are not re-asked next time while their ID is still valid.':'Ready. Flip the switch above whenever you want renters to start verifying.')+'</div>'+(_mgd?'<div class="bk-lenhint" style="margin:8px 0 0">These checks run on <b>your Atlas processing account</b> &mdash; no separate Stripe key to connect. Verification fees appear on your Atlas processor.</div>':'');
       } else {
         body='<div class="bk-lenhint" style="margin:0;border-color:#c9a227"><b>One quick step first.</b> Stripe Identity uses your Stripe account, so connect Stripe under <b>Payments &amp; POS</b> above (you probably already use it to get paid). Then switch this on here &mdash; that is the whole setup.</div>';
@@ -11405,6 +11435,8 @@ const Atlas = (function(){
   }
   function idvSetProvider(p){ if(!_canMod('settings'))return; if(!S.idv)S.idv={}; if(p==='other'){ if(['persona','onfido','veriff'].indexOf(S.idv.provider)<0) S.idv.provider='persona'; } else { S.idv.provider=p; if(p==='manual') S.idv.enabled=false; } save(); renderSet(); }
   function idvToggle(on){ if(!_canMod('settings'))return; if(!S.idv)S.idv={}; if(!S.idv.provider||S.idv.provider==='manual')S.idv.provider='stripe'; S.idv.enabled=!!on; save(); renderSet(); toast(on?'Automatic ID verification is ON \u2014 new renters will be asked to verify':'Automatic ID verification is off'); }
+  function idvSetAutoSend(on){ if(!_canMod('settings'))return; if(!S.idv)S.idv={}; S.idv.autoSendOnConfirm=!!on; save(); toast(on?'Verify links will auto-send when a booking is confirmed':'Auto-send on confirm is off'); }   // WAVE34b
+  function idvSetAutoCarry(on){ if(!_canMod('settings'))return; if(!S.idv)S.idv={}; S.idv.autoCarryReturning=!!on; save(); toast(on?'Returning verified customers will be remembered':'Returning-customer memory is off'); }   // WAVE34b (server reads settings.idv.autoCarryReturning for the auto-carry gate)
   const GUIDES={
     stripe:['Create or sign in to your <b>Stripe</b> account at <code>stripe.com</code>.','In Stripe, open <b>Developers &rarr; API keys</b>.','Copy your <b>Publishable key</b> and <b>Secret key</b>.','Paste them below. At go-live your keys are sent encrypted to your backend and used for real charges &mdash; nothing is charged until then.'],
     email:['Choose your provider (Resend, SendGrid or SMTP).','Create an API key in your provider\'s dashboard.','Add a verified sender address (e.g. <code>bookings@yourco.com</code>).','Paste the API key below.','Send yourself a test confirmation email.'],
@@ -14864,7 +14896,7 @@ const Atlas = (function(){
     goAuth,authSubmit,authTogglePass,ssoLogin,setMoneyStack,bkSaveCard,bkChargeCard,_bkRecordPaySubmit,bkRecordPayment,setTipping,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,openEmailPacks,buyEmails,buyEmailAddon,buyAddon,removeAddon,_cryptoCheckout,_cryptoPlanPrompt,_cryptoPlanGo,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,bkAddCoSigner,_bkCoSignerSubmit,bkCoSignerLink,bkRmCoSigner,bkContractPdf,bkViewAgreement,bkSendAgreement,bkReceiptPdf,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkAssign,bkSetView,bkCalNav,exportBkIcs,viewCustomer,saveCustNote,emailCustomer,eraseCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,addLead,saveLead,leadStage,leadToBooking,rmLead,bkAddCondition,bkRmCondition,bkFinalizeCondition,bkUnlockCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
-    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkVoidFlow,doVoid,unvoidBooking,bkVoidReport,bkEvidence,bkRebuttalLetter,_rebutCopy,_rebutPrint,bkOrphanDisputes,_orphanLink,_orphanDismiss,bkPortalLink,bkPortalRevoke,bkIdvNudge,bkExtendFlow,bkExtendAmt,bkExtendPreview,bkExtendSave,bkExtRemove,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkRequireResign,bkSignHistory,bkActivityLog,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,_mtOverage,bkFuel,saveFuel,_flHint,bkLate,saveLate,_ltHint,bkDriver,saveDriver,bkRmDriver,bkInsurance,saveInsurance,bkBlacklistToggle,blacklistBlockToggle,holdAuth,holdRelease,holdCapture,holdReturn,doCapture,bkCheckIn,doCheckIn,bkCloseOut,doCloseOut,_coCalc,
+    bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkVoidFlow,doVoid,unvoidBooking,bkVoidReport,bkEvidence,bkRebuttalLetter,_rebutCopy,_rebutPrint,bkOrphanDisputes,_orphanLink,_orphanDismiss,bkPortalLink,bkPortalRevoke,bkIdvNudge,bkSendSignLink,idvSetAutoSend,idvSetAutoCarry,bkExtendFlow,bkExtendAmt,bkExtendPreview,bkExtendSave,bkExtRemove,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkRequireResign,bkSignHistory,bkActivityLog,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,_mtOverage,bkFuel,saveFuel,_flHint,bkLate,saveLate,_ltHint,bkDriver,saveDriver,bkRmDriver,bkInsurance,saveInsurance,bkBlacklistToggle,blacklistBlockToggle,holdAuth,holdRelease,holdCapture,holdReturn,doCapture,bkCheckIn,doCheckIn,bkCloseOut,doCloseOut,_coCalc,
     bkClaimOpen,bkClaimEdit,saveClaim,bkClaimStatus,bkClaimRemove,bkClaimPacket,
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,setGiftRedeem,
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
