@@ -2375,7 +2375,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23ej';
+  var APP_VERSION='2026.7.23ek';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -3008,12 +3008,12 @@ const Atlas = (function(){
   // Generic optional extras a customer can add to a booking. per:'unit' = charged per day/hour/week; per:'flat' = one-time.
   // Fully editable -- operators change these, and can add one-off custom extras right on any booking.
   const DEFAULT_EXTRAS=[
-    { id:'delivery',  name:'Delivery & pickup',  price:75, per:'flat' },
-    { id:'setup',     name:'Setup & teardown',   price:50, per:'flat' },
-    { id:'protection',name:'Damage protection',  price:29, per:'unit' },
-    { id:'rush',      name:'Rush / same-day',    price:40, per:'flat' },
-    { id:'cleaning',  name:'Cleaning',           price:35, per:'flat' }
-  ];
+    { id:'delivery',  name:'Delivery & pickup',  price:75, per:'flat', desc:'We bring the rental to your location and collect it after -- no trip to us required.' },
+    { id:'setup',     name:'Setup & teardown',   price:50, per:'flat', desc:'Our team sets everything up on arrival and packs it back down at the end.' },
+    { id:'protection',name:'Damage protection',  price:29, per:'unit', desc:'Reduces your out-of-pocket liability for accidental damage during the rental.' },
+    { id:'rush',      name:'Rush / same-day',    price:40, per:'flat', desc:'Priority same-day turnaround when you need it fast.' },
+    { id:'cleaning',  name:'Cleaning',           price:35, per:'flat', desc:'Return it as-is -- we handle the cleaning for you.' }
+  ];   // WAVE34: each extra now carries an optional `desc` (short-but-detailed, shown to customers + in the Add-ons catalog)
   function defaultMoney(){ return {
     rateModel:'day', baseRate:150, tax:0,
     deposit:{ mode:'full', pct:50, amount:0 },      // #290 RESERVE / down-payment to book (captured, counts as revenue, reduces balance): full | percent(pct) | fixed($amount) | none
@@ -3026,7 +3026,7 @@ const Atlas = (function(){
     //   durationMode:'length' -> guest enters how many days/hours; 'end' -> guest picks an end date, length auto-calculated
     //   fields          -> which optional fields the form collects
     booking:{ time:true, durationMode:'end', fields:{ phone:true, notes:true } },   // default for a rental: capture pickup date+time, return (end) date+time; operators can switch to a simple day-count in Settings > Bookings
-    extras:DEFAULT_EXTRAS.map(function(e){ return {id:e.id,name:e.name,price:e.price,per:e.per}; }),
+    extras:DEFAULT_EXTRAS.map(function(e){ return {id:e.id,name:e.name,price:e.price,per:e.per,desc:e.desc||''}; }),
     rules:[  // GENERIC examples, all OFF so the base stays clean -- operators toggle, edit, or add their own.
              // A business-specific fee (e.g. a 13.25% card charge) is theirs to add here, never a default.
       { id:'delivery', name:'Delivery fee',        kind:'flat',    value:75, taxable:false, on:false },
@@ -4084,14 +4084,15 @@ const Atlas = (function(){
     else if(path==='fields.notes') bk.fields.notes=!!v;
     save(); renderSet();
   }
-  function _ensureExtras(){ if(!S.money.extras) S.money.extras=DEFAULT_EXTRAS.map(function(e){return {id:e.id,name:e.name,price:e.price,per:e.per};}); return S.money.extras; }
+  function _ensureExtras(){ if(!S.money.extras) S.money.extras=DEFAULT_EXTRAS.map(function(e){return {id:e.id,name:e.name,price:e.price,per:e.per,desc:e.desc||''};}); try{ S.money.extras.forEach(function(e){ if(e && e.desc==null) e.desc=''; }); }catch(_e){}  return S.money.extras; }   // WAVE34: backfill desc='' on existing tenants' extras (no destructive migration)
   function _catExtrasHtml(){ return _extrasCatalog().map(function(e){
     return '<div class="cat-ex" data-ex="'+e.id+'">'
       +'<input class="input" value="'+esc(e.name)+'" oninput="Atlas.catSetExtra(\''+e.id+'\',\'name\',this.value)">'
       +'<div class="rule-input"><span>$</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+e.price+'" oninput="Atlas.catSetExtra(\''+e.id+'\',\'price\',this.value)"></div>'
       +'<select class="select" onchange="Atlas.catSetExtra(\''+e.id+'\',\'per\',this.value)">'+_extraPerOptions(e.per)+'</select>'
       +'<button class="ex-rm" title="Remove" onclick="Atlas.catRemoveExtra(\''+e.id+'\')"><svg viewBox="0 0 16 16" fill="none" style="width:15px;height:15px"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>'
-      +'</div>'; }).join(''); }
+      +'</div>'
+      +'<input class="input" style="margin:-4px 0 12px;font-size:12px" placeholder="Short description customers see (optional)" value="'+esc(e.desc||'')+'" oninput="Atlas.catSetExtra(\''+e.id+'\',\'desc\',this.value)">'; }).join(''); }   // WAVE34: per-extra customer-facing description
   function catSetExtra(id,f,v){ if(!_guard('pricing','Changing extras'))return; var e=_ensureExtras().filter(function(x){return x.id===id;})[0]; if(!e)return; e[f]=(f==='price')?(parseFloat(v)||0):v; save(); _updBkModelPrev(); }
   function catAddExtra(){ if(!_guard('pricing','Changing extras'))return; _ensureExtras().push({id:'x'+Date.now().toString(36)+Math.random().toString(36).slice(2,5),name:'New extra',price:25,per:'flat'}); save(); renderSet(); }
   function catRemoveExtra(id){ if(!_guard('pricing','Changing extras'))return; S.money.extras=_ensureExtras().filter(function(x){return x.id!==id;}); save(); renderSet(); }
@@ -7491,6 +7492,23 @@ const Atlas = (function(){
   function _bkBadge(){ var el=document.getElementById('bookBadge'); if(el) el.textContent=_bookings().filter(function(x){return x.status!=='Completed'&&x.status!=='Cancelled'&&x.status!=='Voided';}).length; }
   function _extrasCatalog(){ return (S.money && S.money.extras && S.money.extras.length) ? S.money.extras : DEFAULT_EXTRAS; }
   function _extrasCatalogFor(name){ var a=(DATA.assets||[]).filter(function(x){return x.name===name;})[0]; if(a && Array.isArray(a.extraIds)){ var set={}; a.extraIds.forEach(function(id){set[id]=1;}); return _extrasCatalog().filter(function(e){return set[e.id];}); } return _extrasCatalog(); }   // per-asset offered extras = subset of the global catalog; no a.extraIds means inherit every extra
+  // WAVE34: unified Add-ons & upgrades CATALOG -- extras (S.money.extras) + coverage tiers (S.money.protection.plans) in ONE sortable, searchable, described directory (Settings > Add-ons & upgrades).
+  var _catView={sort:'name',filter:'all',q:''};
+  function _catItems(){ var out=[];
+    _extrasCatalog().forEach(function(e){ out.push({kind:'extra',type:'Add-on',id:e.id,name:e.name||'',price:Number(e.price)||0,perLabel:_extraPerLabel(e.per),desc:e.desc||'',deductible:0}); });
+    var P=_protection(); if(P&&P.on){ (P.plans||[]).forEach(function(p){ out.push({kind:'prot',type:'Coverage',id:p.id,name:p.name||'',price:Number(p.price)||0,perLabel:_protPerLabel(p.per),desc:p.covers||'',deductible:Number(p.deductible)||0}); }); }
+    return out; }
+  function _catalogRowsHtml(){ var items=_catItems(), q=(_catView.q||'').toLowerCase();
+    items=items.filter(function(it){ if(_catView.filter==='extra'&&it.kind!=='extra')return false; if(_catView.filter==='prot'&&it.kind!=='prot')return false; if(q&&(it.name+' '+it.desc).toLowerCase().indexOf(q)<0)return false; return true; });
+    items.sort(function(a,b){ if(_catView.sort==='price')return a.price-b.price; if(_catView.sort==='type')return (a.type.localeCompare(b.type))||a.name.localeCompare(b.name); return a.name.localeCompare(b.name); });
+    if(!items.length) return '<div style="color:var(--muted);font-size:13px;padding:16px 0">No add-ons or upgrades match your filter.</div>';
+    return items.map(function(it){ return '<div style="display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--line-2)">'
+      +'<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="color:var(--ink);font-size:14px">'+esc(it.name||'Untitled')+'</b><span class="chip '+(it.kind==='prot'?'chip--warn':'chip--ok')+'" style="font-size:10px;padding:1px 7px">'+it.type+'</span></div>'
+      +(it.desc?('<div style="font-size:12.5px;color:var(--muted);margin-top:3px;line-height:1.45">'+esc(it.desc)+'</div>'):'<div style="font-size:12px;color:var(--warn);margin-top:3px">Add a description so customers know what this is.</div>')
+      +(it.deductible?('<div style="font-size:11.5px;color:var(--muted);margin-top:3px">'+money(it.deductible)+' deductible</div>'):'')+'</div>'
+      +'<div style="text-align:right;white-space:nowrap"><div style="font-weight:800;color:var(--ink);font-size:14px">'+money(it.price)+'</div><div style="font-size:11px;color:var(--muted)">'+esc(it.perLabel)+'</div></div></div>'; }).join(''); }
+  function catSetView(f,v){ _catView[f]=v; var el=document.getElementById('catBody'); if(el) el.innerHTML=_catalogRowsHtml(); }   // client-side sort/filter/search over the two config arrays -- no backend call
+  function catEdit(kind){ setCur=(kind==='prot')?'money':'bookings'; renderSet(); if(kind!=='prot'){ setTimeout(function(){ try{ var el=document.querySelector('[data-bkb="extras"]'); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }catch(e){} }, 80); } }
   function _bkReadDiscount(){ var t=val('bkDiscType')||'none', v=parseFloat(val('bkDiscVal'))||0; return {type:t,value:v}; }
   var _bkPromo=null;
   var _bkFormUnit=null;   // WAVE25: the rate-model UNIT a booking is priced in -- the booking's OWN unit on edit, the tenant's current one on a new booking. Locks edit-time period derivation (_bkReadWhen) to the booking's unit so editing a booking created under a different rate model (e.g. an hourly booking while the tenant is now per-day) does NOT silently re-derive its length in the current unit and re-price it. A008 locks the base RATE across an edit; this locks the DURATION unit. Reset every time _bookingForm opens.
@@ -9097,7 +9115,7 @@ const Atlas = (function(){
   function roundRect(ctx,x,y,w,h,r){r=Math.max(0,Math.min(r,Math.abs(w)/2,Math.abs(h)/2));ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
   /* ---- settings ---- */
-  const SET=[['branding','Branding'],['money','Money rules'],['bookings','Bookings'],['legal','Contracts &amp; Legal'],['comms','Messaging'],['integrations','Integrations'],['portal','Member portal'],['team','Team'],['security','Security'],['billing','Plan &amp; billing'],['support','Help &amp; feedback']];
+  const SET=[['branding','Branding'],['money','Money rules'],['bookings','Bookings'],['catalog','Add-ons &amp; upgrades'],['legal','Contracts &amp; Legal'],['comms','Messaging'],['integrations','Integrations'],['portal','Member portal'],['team','Team'],['security','Security'],['billing','Plan &amp; billing'],['support','Help &amp; feedback']];
   let setCur='branding';
   function _setTabs(){ var _st=SET.filter(function(s){ return s[0]!=='billing' || _canCap('billing'); }); return _isOwnerAcct()? [['owner','Owner console']].concat(_st) : _st; }   // owner console is EMAIL-gated (OWNER_EMAIL only), never tier -- a client-spoofed diamond tier cannot surface it. audit c1 [18]: hide the Plan & billing tab from a role without the billing cap (owner/billing-capable see it) -- it was shown then server-blocked.
   function buildSettings(){
@@ -9430,6 +9448,17 @@ const Atlas = (function(){
       <div class="set-block" data-bkb="prev"><h3>Preview</h3><div class="desc">Exactly what your booking form will ask &mdash; it updates live as you change the settings above.</div>
         <div class="bk-model-prev" id="bkModelPrev">${_bkModelPreviewHtml()}</div>
         <button class="btn btn--primary btn--sm" style="margin-top:14px" onclick="Atlas.newBooking()">Open the real booking form</button>
+      </div>`;
+    }
+    else if(setCur==='catalog'){ b.innerHTML=`
+      <div class="set-block"><h3>Add-ons &amp; upgrades</h3><div class="desc">Every optional extra and coverage upgrade a customer can add to a booking, in one place. Give each a short, clear description &mdash; it shows to customers on your booking page.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 2px">
+          <input class="input" style="flex:1;min-width:150px" placeholder="Search add-ons &amp; upgrades..." oninput="Atlas.catSetView('q',this.value)">
+          <select class="select" style="width:auto" onchange="Atlas.catSetView('filter',this.value)"><option value="all">All types</option><option value="extra">Add-ons</option><option value="prot">Coverage / upgrades</option></select>
+          <select class="select" style="width:auto" onchange="Atlas.catSetView('sort',this.value)"><option value="name">Sort: Name</option><option value="price">Sort: Price</option><option value="type">Sort: Type</option></select>
+        </div>
+        <div id="catBody">${_catalogRowsHtml()}</div>
+        <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><button class="btn btn--ghost btn--sm" onclick="Atlas.catEdit('extra')">Manage add-ons</button><button class="btn btn--ghost btn--sm" onclick="Atlas.catEdit('prot')">Manage coverage tiers</button></div>
       </div>`;
     }
     else if(setCur==='legal'){ var lg=_legal();
@@ -11949,7 +11978,7 @@ const Atlas = (function(){
       +(m.addon>0
         ? '<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><b style="color:var(--ink)">+'+m.addon.toLocaleString()+' emails / month</b><div style="font-size:11.5px;color:var(--muted)">Active add-on &middot; manage or cancel in the billing portal</div></div>'
         : EMAIL_ADDONS.map(function(p,i){ return '<div style="display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><div style="flex:1"><b style="color:var(--ink)">+'+p.emails.toLocaleString()+' emails / month</b><div style="font-size:11.5px;color:var(--muted)">'+_fDisp(p.price)+'/mo &middot; $'+((_isFounder()?_fHalf(p.price):p.price)/p.emails*1000).toFixed(2)+' per 1,000'+(_isFounder()?' &middot; founder':'')+'</div></div><button class="btn btn--ghost btn--sm" onclick="Atlas.buyEmailAddon('+i+')">'+_fDisp(p.price)+'/mo</button></div>'; }).join(''))
-      +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px">Top-up emails never expire and are used only after your monthly allowance. Monthly add-ons renew until cancelled. Pricing is provisional.</p></div>'); }
+      +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px">Top-up emails never expire and are used only after your monthly allowance. Monthly add-ons renew until cancelled.</p></div>'); }
   function buyEmails(i){ if(!_guard('billing','Managing billing'))return; var p=EMAIL_PACKS[i]; if(!p) return;
     if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ closeModal(); _billingCheckout('email_pack',{pack:String(p.emails)}); return; }
     toast('Email top-ups need a live billing account -- choose a plan first'); }
@@ -14840,7 +14869,7 @@ const Atlas = (function(){
     issueGift,saveGift,deleteGift,giftCert,giftEdit,saveGiftEdit,bkApplyGift,bkRemoveGift,setGiftRedeem,
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,liveTour,tourNext,tourBack,tourEnd,
-    setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,bkBuilderTour,addLocation,removeLocation,editLocation,saveLocationEdit,
+    setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,catSetView,catEdit,bkBuilderTour,addLocation,removeLocation,editLocation,saveLocationEdit,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,_vehPhotoPick,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetPhotoAdd,assetPhotoRmGallery,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,ovCustomizeKpis,ovCustomizeAna,ovKpiToggle,ovKpiMove,ovKpiSave,ovKpiDragStart,ovKpiDrop,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,setOvScope,_anaDrillSet,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,blockDaysQuick,maintUnblock,
