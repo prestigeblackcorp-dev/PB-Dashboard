@@ -2356,7 +2356,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23dv';
+  var APP_VERSION='2026.7.23dw';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -5826,13 +5826,14 @@ const Atlas = (function(){
   // Add-on charges the customer actually PAID through the portal (cleaning, damage, extra day). These are real income on top
   // of the rental. Refundable deposit HOLDS are NOT charges (separate authorize), so they never leak in here. Unpaid charges
   // are not counted (cash-collected basis for add-ons). Owner picked "count everywhere" -> folded into _bkEarned below.
-  function _collectedCharges(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+(c&&c.paidAt?_r2(c.amount||0):0); },0); }
+  function _chargeNetDollars(b,c){ if(!b||!c||!c.paidAt) return 0; var cents=Math.round((Number(c.amount)||0)*100); var s=(b.paid&&b.paid['charge:'+c.id])||null; if(s){ var _ref=Math.max(0,Math.round(Number(s.refunded&&s.refunded.amountCents)||0)); var _dd=s.disputed?(s.disputed.decrementedCents!=null?s.disputed.decrementedCents:s.disputed.amountCents):0; var _disp=Math.max(0,Math.round(Number(_dd)||0)); cents=Math.max(0,cents-_ref-_disp); } return _r2(cents/100); }   // WAVE23 MED: net the refunded/disputed portion of an ONLINE charge's server slot (d.paid['charge:'+id]) -- the charge helpers were refund-BLIND (counted c.paidAt at full amount even after the slot was refunded), over-stating Collected + sales tax on every surface. Mirrors the worker _qbPaidCents netting; a charge with no slot (offline/unsynced) nets nothing (full amount), unchanged.
+  function _collectedCharges(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+(c&&c.paidAt?_chargeNetDollars(b,c):0); },0); }
   // Payments G7: charges paid OFFLINE / locally (meter bill, installment, deposit-capture, preview widget) set c.paidAt WITHOUT a Stripe webhook, so they are NOT in the server revenue_cents. When _bkEarned uses revCents it must add these back (a portal-paid charge is stamped c.paidOnline=true and already counted, so it's excluded here).
-  function _offlineCollectedCharges(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+((c&&c.paidAt&&!c.paidOnline)?_r2(c.amount||0):0); },0); }
+  function _offlineCollectedCharges(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+((c&&c.paidAt&&!c.paidOnline)?_chargeNetDollars(b,c):0); },0); }
   // Tax embedded in a gross taxable collected charge (charge.amount is tax-inclusive so it shares the revenue basis). Threads
   // payment-widget + owner charge tax into the tax CSV, accounting CSV + reports, so a payment widget moves EVERY number.
-  function _chargeTax(c){ var t=(S.money.tax||0)/100; if(!c||!c.paidAt||!c.taxable||t<=0)return 0; return _r2((c.amount||0)*t/(1+t)); }   // audit c5 [16]: round the embedded sales tax to the CENT (amounts are dollars) -- Math.round() rounded to whole DOLLARS, mis-stating collected tax on the Tax CSV / KPIs by up to ~$0.50 per taxable charge
-  function _collectedChargeTax(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+_chargeTax(c); },0); }
+  function _chargeTax(c, amt){ var t=(S.money.tax||0)/100; if(!c||!c.paidAt||!c.taxable||t<=0)return 0; var g=(amt!=null?Number(amt):(Number(c.amount)||0)); return _r2(g*t/(1+t)); }   // audit c5 [16]: round the embedded sales tax to the CENT (amounts are dollars) -- Math.round() rounded to whole DOLLARS, mis-stating collected tax on the Tax CSV / KPIs by up to ~$0.50 per taxable charge   // WAVE23 MED: optional amt = the NET-of-refund collected dollars so a refunded taxable charge no longer over-states remitted tax
+  function _collectedChargeTax(b){ return (b&&b.charges?b.charges:[]).reduce(function(s,c){ return s+_chargeTax(c,_chargeNetDollars(b,c)); },0); }
   // Realized revenue for a committed booking = the rental total (accrual) + any add-on charges collected. Used by every
   // REVENUE/INCOME rollup (Overview KPI, Analytics, Reports, source split, drill-downs, tax/QuickBooks) so they all tie out.
   // NOTE: customer "spend" + loyalty deliberately stay on _bkTotal (rental only) -- you don't reward points on a damage fee.
@@ -8166,7 +8167,7 @@ const Atlas = (function(){
         var tax=_r2(q.taxAmt||0), fee=_r2(q.feeTotal||0);
         rows.push([b.cust||'',b.id,_dt,(b.asset||S.fleet.noun)+' rental',1,_c2(sub),_c2(tax),_c2(sub+tax),'200']);   // per-line: UnitAmount + TaxAmount == LineTotal
         if(fee>0) rows.push([b.cust||'',b.id,_dt,'Fees & surcharges',1,_c2(fee),0,_c2(fee),'200']);
-        (b.charges||[]).forEach(function(c){ if(c.paidAt){ var ca=_r2(c.amount||0), ctx=_r2(_chargeTax(c)); rows.push([b.cust||'',b.id,_csvDate(c.paidAt),(c.label||'Add-on charge'),1,_c2(ca-ctx),_c2(ctx),_c2(ca),'200']); } }); });   // each collected charge = its own balancing invoice line (UnitAmount+Tax=LineTotal), taxable ones split out the tax
+        (b.charges||[]).forEach(function(c){ if(c.paidAt){ var ca=_chargeNetDollars(b,c), ctx=_r2(_chargeTax(c,ca)); if(ca>0) rows.push([b.cust||'',b.id,_csvDate(c.paidAt),(c.label||'Add-on charge'),1,_c2(ca-ctx),_c2(ctx),_c2(ca),'200']); } }); });   // WAVE23 MED: emit the NET-of-refund amount (and skip a fully-refunded charge) so the accounting CSV doesn't re-report a refunded add-on sale + its tax with no offsetting credit   // each collected charge = its own balancing invoice line (UnitAmount+Tax=LineTotal), taxable ones split out the tax
       name='accounting-quickbooks-xero'; }
     else { var _biz=(S.brand&&S.brand.name)||'Your business';
       rows=[['Atlas Rental.io - Activity Log (audit record)'],['Business',_biz],['Generated',_stamp(Date.now())],
