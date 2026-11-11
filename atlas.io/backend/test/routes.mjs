@@ -4442,7 +4442,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/var _clawed = _hasDisp && _settled <= 0 && _giftC <= 0 && !d\.paidAt;/.test(_WORKER_SRC), 'cycle-8 F5: a fully charged-back booking cannot clear the review gate via stale portal *PaidAt markers');
   // F6: manual money ops refuse an already-disputed slot
   ok(/\(op === 'capture' \|\| op === 'release'\) && \(p\.captured \|\| p\.released \|\| p\.refunded \|\| p\.disputed\)/.test(_WORKER_SRC), 'cycle-8 F6: capture/release refuses an already charged-back slot');
-  ok(/op === 'refund' && \(p\.captured \|\| p\.released \|\| p\.disputed\)/.test(_WORKER_SRC), 'cycle-8 F6: refund refuses an already charged-back slot (no second decrement / provider double-refund)');
+  ok(/op === 'refund' && !_retCap && \(p\.captured \|\| p\.released \|\| p\.disputed\)/.test(_WORKER_SRC), 'cycle-8 F6: refund refuses an already charged-back/released/captured slot (no second decrement / provider double-refund) -- WAVE23 excepts a captured SECURITY deposit being deliberately RETURNED (_retCap), which refunds the kept amount AND decrements the booked revenue');
   ok(/\(op === 'capture' \|\| op === 'release'\) && String\(kind\)\.split\('#'\)\[0\] !== 'security'\) return err\(400/.test(_WORKER_SRC), 'WAVE18 HIGH: /api/pay capture+release are restricted to security-class slots -> a bookEdit-only staffer (no billing) can no longer pass kind:balance/reserve to refund a RENTAL payment through the bookEdit-gated release/capture op -- that was a billing-gate BYPASS + phantom revenue (release skips the revenue decrement) + charge.refunded webhook double-stamp (refund id went unrecorded)');
   ok(/var _refId = \(r2 && r2\.obj && r2\.obj\.id && p && p\.refunded\) \? String\(r2\.obj\.id\) : '';/.test(_WORKER_SRC), 'WAVE18: /api/pay records the refund id for ANY handler-issued refund (keyed on p.refunded being set) -> a Stripe security release / charge-mode capture-remainder refund is now deduped by the charge.refunded webhook instead of double-stamping the slot; a capture/release of a HOLD (no p.refunded) still records nothing so a PI id is never mistaken for a refund id');
 
@@ -6382,6 +6382,21 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/application_fee\.refunded: empty refunds list; forcing Stripe redelivery/.test(_WORKER_SRC), 'WAVE20 LOW-2: an empty refunds list forces a Stripe redelivery (_whErr) rather than booking the cumulative amount_refunded');
   ok(/const _dpk2 = \(evt\.livemode === false && env\.PLATFORM_STRIPE_TEST_KEY\) \? env\.PLATFORM_STRIPE_TEST_KEY : \(env\.PLATFORM_STRIPE_KEY \|\| ''\);/.test(_WORKER_SRC), 'WAVE20 LOW-3: the dispute revenue-DECREMENT charge fetch keys off the event mode (evt.livemode), not the operator flag');
   ok(/const _rpk = \(evt\.livemode === false && env\.PLATFORM_STRIPE_TEST_KEY\) \? env\.PLATFORM_STRIPE_TEST_KEY : \(env\.PLATFORM_STRIPE_KEY \|\| ''\);/.test(_WORKER_SRC), 'WAVE20 LOW-3: the dispute-WON revenue-restore charge fetch keys off the event mode (evt.livemode), not the operator flag');
+}
+
+// ==== WAVE23 "fix all": in-app captured-deposit return, QB/Xero refund-reversal (degrade-safe), pricing rateMult fallback ====
+{
+  // deposit LOW-1: an in-app RETURN of a captured security deposit -> refund the kept amount, decrement the revenue the capture booked, clear capturedRev.
+  ok(/var _retCap = \(op === 'refund' && String\(kind\)\.split\('#'\)\[0\] === 'security' && p\.captured/.test(_WORKER_SRC), 'WAVE23 deposit: a captured security deposit can be RETURNED in-app via the billing-gated refund op (was terminal-blocked -> owner forced to Stripe where the webhook can\'t decrement)');
+  ok(/var _refThisOp = _retCap \? _retAmt :/.test(_WORKER_SRC), 'WAVE23 deposit: a captured-deposit return DECREMENTS revenue_cents by the returned amount (the capture had booked it), dedup-guarded by _dupRef');
+  ok(/var _ckR = 'cap:' \+ \(p\.pi \|\| p\.square \|\| p\.paypal \|\| ''\); if \(Array\.isArray\(dd\.capturedRev\)\) dd\.capturedRev = dd\.capturedRev\.filter/.test(_WORKER_SRC), 'WAVE23 deposit: the return REMOVES the capturedRev entry so a later chargeback can\'t re-claw the already-returned revenue');
+  ok(/_ectx\.waitUntil\(_qbSyncBooking\(env, ctx\.tenant_id, \{ id: body\.booking \}\)\)/.test(_WORKER_SRC), 'WAVE23 integrations: a /api/pay op (refund/return/capture) triggers the accounting sync so QB/Xero posts the reversal / up-sync');
+  // integrations MED: QB/Xero post a reversal on a NEGATIVE sync delta (refund/cancel/returned deposit), degrade-safe (restore the mark on POST failure).
+  ok(/if \(_syncDelta < 0 && \(d\.qbSyncedAt \|\| d\.qbRef\)\)/.test(_WORKER_SRC) && /refundreceipt\?minorversion=65/.test(_WORKER_SRC), 'WAVE23 integrations MED: _qbSyncBooking posts a QBO RefundReceipt on a negative delta + lowers the high-water mark (degrade-safe; restores on failure)');
+  ok(/if \(_syncDelta < 0 && \(d\.xeroSyncedAt \|\| d\.xeroRef\)\)/.test(_WORKER_SRC) && /Type: 'ACCRECCREDIT'/.test(_WORKER_SRC), 'WAVE23 integrations MED: _xeroSyncBooking posts an ACCRECCREDIT credit note on a negative delta + lowers the mark (degrade-safe twin of QB)');
+  // pricing LOW: /availability returns rateMult on EVERY path (incl. the rate-limited + no-start early returns) so the booking form never shows an un-multiplied estimate.
+  ok(/return json\(\{ ok: true, available: null, reason: '', rateMult: _rmDeg \}\)/.test(_WORKER_SRC), 'WAVE23 pricing LOW: the rate-limited /availability path still returns the smart-pricing rateMult (cheap pure compute, no DB)');
+  ok(/return json\(\{ ok: true, available: null, reason: '', rateMult: 1 \}\)/.test(_WORKER_SRC), 'WAVE23 pricing LOW: the no-asset/no-start /availability path returns rateMult:1 so the form consumer never leaves _rmult stale');
 }
 
 // ==== 200-agent RE-AUDIT batch df: criticals #1 (A041 backstop) + #2 (export token) + completions #5/#11/#12/#21 ====
