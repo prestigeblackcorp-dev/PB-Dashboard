@@ -1672,7 +1672,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 {
   ok(/var _csEsign = \(typeof _csBody\.esignConsent !== 'undefined'\)/.test(_WORKER_SRC), 'cosign ESIGN #L4: the co-signer must give a SEPARATE intent-to-sign consent (fallback to the agree checkbox for a pre-update page, like the base signer)');
   ok(/INSERT INTO signatures \(id,tenant_id,booking_id,doc_hash,doc_text,signer_name,sig,ip,ua,signed_at,terms_hash,consent\) VALUES \(\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?,\?\)'\)\.bind\(_csSigId/.test(_WORKER_SRC), 'cosign ESIGN #L4: the co-signer signature row stores the E-SIGN/UETA consent statement (consent column), matching the base /sign');
-  ok(/'api_keys','tenant_visit_uniques','site_domains'\]/.test(_WORKER_SRC), 'purge #L11/#12: the tenant purge also removes tenant_visit_uniques (visitor IP hashes) + site_domains (custom-domain map) -- no PII or dangling domain left behind for a purged tenant');
+  ok(/'api_keys','tenant_visit_uniques','site_domains','email_domains'\]/.test(_WORKER_SRC), 'purge #L11/#12: the tenant purge also removes tenant_visit_uniques (visitor IP hashes) + site_domains + email_domains (custom-domain + sending-domain maps) -- no PII or dangling domain left behind for a purged tenant');
 }
 
 // ---- ToS-accept RBAC + push-unsubscribe auth (LOW #6, #10). #6: /api/policy/accept recorded a tenant-wide ToS acceptance for
