@@ -1311,7 +1311,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.08.15hr';
+var ATLAS_EXPECT_BUILD='2026.08.15hs';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
@@ -2200,9 +2200,33 @@ function _entRenderToggles(e,owner){ var el=$('entTogglesBody'); if(!el) return;
   h+=(owner?('<label style="display:flex;align-items:center;gap:7px;font-size:12.5px;margin:2px 0 2px"><input type="checkbox" id="founderToggle" '+(e.founder_program?'checked':'')+' onchange="toggleFounderProgram(this.checked)"> Enable the founding-member program <span class="mut">'+(e.founder_program?'(on)':'(off)')+' &middot; '+nfmt(e.founder_count||0)+'/1000 claimed</span></label>'):('<div class="mut" style="font-size:12.5px;margin:2px 0 2px">Founding-member program: <b>'+(e.founder_program?'on':'off')+'</b> ('+nfmt(e.founder_count||0)+'/1000 claimed, owner only to change)</div>'));
   h+='<div class="desc" style="margin:16px 0 5px"><b>Atlas lead follow-up</b> <span class="mut" style="font-weight:400">- On: visitors who leave their email on atlasrental.io but do not start a trial get a short 2-email follow-up nudging them to start their free trial. Off by default (inert). Email capture + the HQ lead alerts always work regardless.</span></div>';
   h+=(owner?('<label style="display:flex;align-items:center;gap:7px;font-size:12.5px;margin:2px 0 2px"><input type="checkbox" id="leadDripToggle" '+(e.lead_drip_enabled?'checked':'')+' onchange="toggleLeadDrip(this.checked)"> Enable Atlas lead follow-up emails <span class="mut">'+(e.lead_drip_enabled?'(on)':'(off)')+'</span></label>'):('<div class="mut" style="font-size:12.5px;margin:2px 0 2px">Atlas lead follow-up: <b>'+(e.lead_drip_enabled?'on':'off')+'</b> (owner only to change)</div>'));
+  if(owner){ h+='<div class="desc" style="margin:16px 0 5px"><b>Sale alerts on this device</b> <span class="mut" style="font-weight:400">- Cha-ching push + breakdown the instant money hits Atlas (new subs, upgrades, packs, trials). The owner email + HQ feed always fire; this adds a lock-screen push to THIS device. Needs the VAPID keys set on the worker first.</span></div>'; h+='<button class="btn" onclick="hqPushSubscribe()" style="font-size:12.5px;padding:7px 12px">Enable sale alerts on this device</button> <span id="hqPushMsg" class="mut" style="font-size:12px;margin-left:8px"></span>'; }
   el.innerHTML=h;
 }
 function toggleLeadDrip(on){ api('/api/admin/config',{method:'POST',body:{lead_drip_enabled:on}}).then(function(r){ if(r.json&&r.json.enterprise){ DATA.enterprise=r.json.enterprise; renderEnterprise(); toast('Atlas lead follow-up '+(on?'enabled':'disabled')); } else { renderEnterprise(); toast('Could not update'); } }); }
+/* WAVE59: HQ cha-ching -- platform-owner sale-alert sound + web-push opt-in for THIS HQ device. Mirrors the tenant app chime; the SW relays an 'atlas-sale' push to open HQ tabs, which play the sound here. */
+var _hqAC=null, _hqChaT=0;
+function _hqAudioUnlock(){ try{ if(!_hqAC){ var AC=window.AudioContext||window.webkitAudioContext; if(AC) _hqAC=new AC(); } if(_hqAC&&_hqAC.state==='suspended') _hqAC.resume(); }catch(e){} }
+function _hqCha(){ try{ var now=Date.now(); if(now-_hqChaT<2500) return; _hqChaT=now; _hqAudioUnlock(); if(!_hqAC) return; var t=_hqAC.currentTime; [[1047,0],[1568,0.13]].forEach(function(p){ var o=_hqAC.createOscillator(), g=_hqAC.createGain(); o.type='sine'; o.frequency.value=p[0]; o.connect(g); g.connect(_hqAC.destination); var s=t+p[1]; g.gain.setValueAtTime(0.0001,s); g.gain.exponentialRampToValueAtTime(0.22,s+0.02); g.gain.exponentialRampToValueAtTime(0.0001,s+0.42); o.start(s); o.stop(s+0.45); }); }catch(e){} }
+try{ if(navigator.serviceWorker){ navigator.serviceWorker.addEventListener('message', function(ev){ try{ if(ev.data&&ev.data.type==='atlas-sale'){ _hqCha(); toast('Cha-ching! '+String(ev.data.body||'A sale').slice(0,80)); } }catch(e){} }); } }catch(e){}
+['click','keydown','touchstart'].forEach(function(evn){ try{ window.addEventListener(evn,_hqAudioUnlock,{passive:true}); }catch(e){} });
+function _u8FromB64(s){ var pad=(4-(s.length%4))%4, p=''; for(var j=0;j<pad;j++) p+='='; var b=(s+p).replace(/-/g,'+').replace(/_/g,'/'); var raw=atob(b), arr=new Uint8Array(raw.length); for(var i=0;i<raw.length;i++) arr[i]=raw.charCodeAt(i); return arr; }
+function hqPushSubscribe(){ var m=$('hqPushMsg'); function say(t){ if(m) m.textContent=t; }
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)){ say('This browser does not support push.'); return; }
+  _hqAudioUnlock();
+  fetch(ATLAS_API+'/api/push/vapid').then(function(r){return r.json();}).then(function(v){
+    if(!(v&&v.enabled&&v.publicKey)){ say('Push is off until the VAPID keys are set on the worker.'); return; }
+    return Notification.requestPermission().then(function(perm){
+      if(perm!=='granted'){ say('Notifications blocked -- allow them for this site, then retry.'); return; }
+      return navigator.serviceWorker.register('atlas-sw.js').then(function(){ return navigator.serviceWorker.ready; }).then(function(reg){
+        return reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:_u8FromB64(v.publicKey)});
+      }).then(function(sub){
+        return api('/api/admin/push/subscribe',{method:'POST',body:{subscription:sub.toJSON()}}).then(function(r){
+          if(r.status===200&&r.json&&r.json.ok){ say('On -- this device will cha-ching on every sale.'); toast('Sale alerts enabled on this device'); _hqCha(); }
+          else say('Could not save the subscription.'); }); });
+    });
+  }).catch(function(){ say('Could not enable push on this device.'); });
+}
 function toggleFounderProgram(on){ if(on && !confirm('Turn ON the founding-member program?\n\nThe next 1,000 new signups become founders: 1 week free + 50% off plans for life + founding-member number/badge + beta-first access, and the landing page shows the offer. You can turn it off anytime; existing founders keep their status.')){ renderEnterprise(); return; } api('/api/admin/config',{method:'POST',body:{founder_program:on}}).then(function(r){ if(r.json&&r.json.enterprise){ DATA.enterprise=r.json.enterprise; renderEnterprise(); toast('Founding-member program '+(on?'enabled':'disabled')); } else { renderEnterprise(); toast('Could not update'); } }); }
 function _entRenderPayGate(e,owner){ var el=$('entPayGateBody'); if(!el) return;
   el.innerHTML=
