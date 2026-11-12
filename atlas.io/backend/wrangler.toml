@@ -35,6 +35,21 @@ database_id = "76c32a35-7695-48cd-9bec-58f8703b066f"
 binding = "R2"
 bucket_name = "pb-videos"
 
+# ---- Durable Object: per-bucket rate limiter (binding env.RL) ----------------
+# SCALE: rate limiting runs here instead of D1 so the hot per-request limiter write distributes across DO instances
+# (one per bucket via idFromName) instead of serializing through the single D1. MUST stay declared (a deploy sets the
+# worker's bindings to exactly this file). rateLimit() in worker.js falls back to the D1 limiter if this binding is ever
+# absent, so rate limiting is never silently lost.
+[[durable_objects.bindings]]
+name = "RL"
+class_name = "RateLimiter"
+
+# DO class migration (first + only so far). SQLite-backed storage (GA; compatibility_date 2026-01-01 is well past).
+# Adding/removing a DO class in future needs a NEW tag here, never editing this one.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiter"]
+
 # ---- Staging environment (bake changes against real requests before production) ------------------------------
 # Deploy with: wrangler deploy --env staging   (or the deploy-staging CI job on PRs).
 # One-time owner setup: `wrangler d1 create atlas-staging` -> paste its id below; secrets are per-env
