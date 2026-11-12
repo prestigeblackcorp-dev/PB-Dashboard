@@ -2,7 +2,7 @@
    Network-first for everything (never serve stale HTML/JS), cache only as an OFFLINE fallback.
    Own cache name so it never touches other apps' caches. Deploy Atlas in its own folder in
    production so this SW's scope stays isolated from any sibling app's service worker. */
-var CACHE = 'atlas-shell-v446';
+var CACHE = 'atlas-shell-v450';
 var SHELL = ['atlas.html', 'atlas-manifest.json', 'atlas-icon.svg'];
 
 self.addEventListener('install', function (e) {
@@ -51,7 +51,12 @@ self.addEventListener('push', function(e){
   var title = d.title || 'Atlas Rental';
   var opts = { body: d.body || '', icon: '/atlas-hq-icon-192.png', badge: '/atlas-hq-icon-192.png', data: { url: d.url || '/' } };
   if (d.tag) opts.tag = d.tag;
-  e.waitUntil(self.registration.showNotification(title, opts));
+  var _isSale = (d.tag === 'atlas-sale' || d.sound === 'chaching');
+  if (_isSale) { opts.vibrate = [40, 30, 90]; opts.renotify = true; }   // a short buzz on a sale; the cha-ching AUDIO is played by any open tab (custom sounds are not reliable on a background OS notification, so we post a message to open clients to play it)
+  e.waitUntil(Promise.all([
+    self.registration.showNotification(title, opts),
+    (_isSale ? self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (ws) { for (var i = 0; i < ws.length; i++) { try { ws[i].postMessage({ type: 'atlas-sale', body: (d.body || '') }); } catch (e2) {} } }) : Promise.resolve())
+  ]));
 });
 self.addEventListener('notificationclick', function(e){
   e.notification.close();
