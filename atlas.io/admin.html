@@ -593,6 +593,12 @@
     <div class="card-b pad" id="marginBox"><div class="mut">Loading&hellip;</div></div>
   </div>
 
+  <!-- COHORT COST MONITOR: real founder vs normal-user AI exposure (live credit burn x metered cost), not the worst case -->
+  <div class="card">
+    <div class="card-h"><h2>Cohort cost monitor</h2><span class="sub">real AI spend by cohort</span><div class="sp"></div><button class="chip" onclick="loadCohortCosts(true)">Refresh</button></div>
+    <div class="card-b pad" id="cohortBody"><div class="mut" style="font-size:12.5px">Click <b>Refresh</b> for your <b>live</b> founder vs normal-user AI exposure (actual credit burn this week &times; your real metered cost/credit) &mdash; the true number, not the 100%-burn ceiling.</div></div>
+  </div>
+
   <div class="hqgroup">Transactions</div>
   <!-- PURCHASES (itemized: subscriptions, credits, websites, domains) -->
   <div class="card">
@@ -1006,6 +1012,17 @@ function renderMargin(){ var p=DATA.pnl||{}, pm=p.plan_margins, el=$('marginBox'
     (_isOwner()?('<div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><label style="font-size:12px;color:var(--mut2)">Assumed cost per credit (USD)</label><input class="inp" id="marginBasis" type="number" min="0" max="1" step="0.0005" value="'+basisUsd.toFixed(4)+'" style="width:120px"><button class="btn ghost sm" onclick="saveMarginBasis()">Save</button><span class="mut" style="font-size:11px">Tune to your real cost/call so the projection matches what you pay.</span></div>'):'');
 }
 function saveMarginBasis(){ var el=$('marginBasis'); if(!el) return; var usd=Math.max(0,Math.min(1,parseFloat(el.value)||0)); api('/api/admin/config',{method:'POST',body:{credit_cost_micros:Math.round(usd*1000000)}}).then(function(r){ if(r&&r.json&&r.json.ok){ toast('Credit cost basis saved'); loadAll(); } else toast('Save failed'); }); }
+/* ===== Cohort cost monitor: real founder vs normal-user AI exposure (live credit burn x metered cost/credit) ===== */
+function loadCohortCosts(force){ var el=$('cohortBody'); if(!el) return; el.innerHTML='<div class="mut" style="font-size:12.5px">Loading cohort costs&hellip;</div>';
+  api('/api/admin/founder-costs').then(function(r){ if(!el) return; var j=r.json||{}; if(r.status===404){ el.innerHTML='<div class="mut" style="font-size:12px">Needs the latest worker.</div>'; return; } if(!j.ok){ el.innerHTML='<div class="mut" style="font-size:12px">'+esc(j.error||'Could not load.')+'</div>'; return; } renderCohortCosts(j); }).catch(function(){ if(el) el.innerHTML='<div class="mut" style="font-size:12px">Network error.</div>'; }); }
+function renderCohortCosts(j){ var el=$('cohortBody'); if(!el) return; var pc=(j.per_credit_micros||0)/10000;
+  function cohCard(title, c, sub){ c=c||{}; return '<div style="flex:1;min-width:190px;background:var(--surf2);border:1px solid var(--line);border-radius:11px;padding:11px 13px">'
+    +'<div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut2);font-weight:700">'+esc(title)+'</div>'
+    +'<div style="font-size:22px;font-weight:800;margin:4px 0">'+centsUSD(c.cost_month_cents||0)+' <span class="mut" style="font-size:12px;font-weight:600">/mo est</span></div>'
+    +'<div class="mut" style="font-size:12px;line-height:1.6">'+nfmt(c.users||0)+' users'+(sub?(' &middot; '+sub):'')+'<br>This week: '+centsUSD(c.cost_week_cents||0)+' &middot; burn '+(c.burn_pct||0)+'%<br>If 100% maxed: '+centsUSD(c.ceiling_month_cents||0)+'/mo</div></div>'; }
+  el.innerHTML='<div class="mut" style="font-size:12px;margin-bottom:9px">Real metered cost <b>$'+pc.toFixed(4)+'/credit</b> ('+nfmt(j.metered_calls||0)+' calls measured). Each cohort = its actual free-credit burn this week &times; that cost, projected monthly. &ldquo;If maxed&rdquo; is the 100%-burn ceiling for comparison.</div>'
+    +'<div style="display:flex;gap:10px;flex-wrap:wrap">'+cohCard('Founders', j.founders, nfmt(j.founders_claimed||0)+' / '+nfmt(j.cap||1000)+' claimed')+cohCard('Normal users', j.normal, '')+'</div>';
+}
 function renderPnl(){ var p=DATA.pnl||{}; var rev=p.revenue||{}, ai=p.ai_spend||{}, fc=p.fixed_costs||{}, exp=p.expenses||{}, net=p.net||{}, dc=p.domain_cogs||{}, sf=p.stripe_fees||{};
   var rl=((p.range&&p.range.label)||'this range');
   $('pnlSub').textContent = rl+', to the cent';
@@ -1294,7 +1311,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.08.15hl';
+var ATLAS_EXPECT_BUILD='2026.08.15hm';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
