@@ -6013,7 +6013,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // F4-c: a swept renewal (renew_pending -> registered) books its renewal revenue (year-stamped id), which it did not before
   ok(/stripe_id: rr\.id \+ ':rnswp:' \+ new Date\(now\)\.getUTCFullYear\(\)/.test(_WORKER_SRC), 'F4-c: the retry-sweep books renewal revenue when it completes a held renew_pending (only on the status-guarded flip)');
   // F4-d: domain COGS counts every DELIVERED state, not just registered (a canceling/lapsing domain was still paid for)
-  ok(/const _DOM_DELIVERED = "status IN \('registered','canceling','canceled','renew_failed','renew_pending'\) AND tenant_id != '__platform_test__'";/.test(_WORKER_SRC), 'F4-d + money-A/C: domain COGS sums all DELIVERED states (incl. canceled), excludes the platform test-buy tenant (no live-P&L leak)');
+  ok(/const _DOM_DELIVERED = "status IN \('registered','canceling','canceled','renew_failed','renew_pending'\) AND tenant_id != '__platform_test__' AND id NOT LIKE 'dtr%'";/.test(_WORKER_SRC), 'F4-d + money-A/C: domain COGS sums all DELIVERED states (incl. canceled), excludes the platform test-buy tenant AND any test-register buy (dtr% id) tagged to a real tenant (no live-P&L leak)');
   // L3: an abandoned unpaid+unsigned self-extension releases its phantom slot-hold after a 2h grace (cron)
   ok(/async function _runSelfExtendExpire\(env, now\) \{/.test(_WORKER_SRC) && /if \(await _due\(env, 'selfext_expire', 3600000\)\) await _runSelfExtendExpire\(env, Date\.now\(\)\)/.test(_WORKER_SRC), 'L3: the self-extend-expire sweep is wired into scheduled() (gated ~1h)');
   ok(/'portal\.self_extend_expired'/.test(_WORKER_SRC) && /if \(ch && ch\.paidAt\) return;/.test(_WORKER_SRC) && /e\.by !== 'portal-self'\) return false;/.test(_WORKER_SRC), 'L3 + audit c3 [12]: an aged UNPAID portal-self extension is expired whether signed or not (the paid-check keeps a paid one; a signed-but-unpaid hold no longer holds the slot forever). The signatures row persists as the legal trail.');
@@ -6081,7 +6081,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if \(!await rateLimit\(env, 'rnsweep:' \+ rr\.id, 1, 3600000\)\) continue;/.test(_WORKER_SRC), 'F3: a per-row 1/hr lock gates the sweep renewal charge (no double Dynadot renewal on overlapping sweeps)');
   // money-C: a domain subscription.deleted advances canceling->canceled; canceled is a DELIVERED COGS state; test-buy tenant excluded from COGS
   ok(/T === 'customer\.subscription\.deleted' && md\.billing === 'domain'/.test(_WORKER_SRC) && /'domain\.subscription_deleted'/.test(_WORKER_SRC), 'money-C: a domain subscription.deleted advances the row canceling->canceled (leaves the active portfolio; sunk COGS still counts)');
-  ok(/const _DOM_DELIVERED = "status IN \('registered','canceling','canceled','renew_failed','renew_pending'\) AND tenant_id != '__platform_test__'";/.test(_WORKER_SRC), 'money-A/C: COGS includes canceled (delivered) + excludes the platform test-buy tenant (no live-P&L leak)');
+  ok(/const _DOM_DELIVERED = "status IN \('registered','canceling','canceled','renew_failed','renew_pending'\) AND tenant_id != '__platform_test__' AND id NOT LIKE 'dtr%'";/.test(_WORKER_SRC), 'money-A/C: COGS includes canceled (delivered) + excludes the platform test-buy tenant AND any dtr% test-register buy tagged to a real tenant (no live-P&L leak)');
 }
 
 // ==== 13AE: tenant AI quality -- asset-generic (no "fleet"), reads-between-lines + confirm-if-unsure, cost-effective growth, planning, aviation ====
