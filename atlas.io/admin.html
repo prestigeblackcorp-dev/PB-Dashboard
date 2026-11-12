@@ -83,6 +83,7 @@
   .icon-btn:hover{color:var(--ink);background:var(--surf3)}
   .icon-btn.spin svg{animation:spin .7s linear}
   @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes pulseDot{0%,100%{opacity:1}50%{opacity:.3}}
 
   /* ---- section tabs ---- */
   .hqtabs{display:flex;gap:6px;overflow-x:auto;padding:0 0 12px;margin-top:2px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
@@ -92,6 +93,22 @@
   .hqtabs button.on{color:#04160e;background:linear-gradient(180deg,var(--em),var(--em2));border-color:transparent}
   .hqsec{display:none}
   .hqsec.on{display:block}
+  .hqgroup{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:4px 2px 11px;padding-bottom:7px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+  .hqgroup:not(:first-child){margin-top:20px}
+  .hqfind{position:relative;margin:0 0 2px}
+  .hqfind input{width:100%;background:var(--surf2);border:1px solid var(--line2);border-radius:9px;padding:9px 12px 9px 34px;color:var(--ink);font-size:13px;font-family:inherit;outline:none}
+  .hqfind input:focus{border-color:var(--em)}
+  .hqfind>svg{position:absolute;left:11px;top:11px;opacity:.5;pointer-events:none}
+  .hqfind-res{position:absolute;top:100%;left:0;right:0;z-index:60;background:var(--surf);border:1px solid var(--line2);border-radius:10px;margin-top:5px;box-shadow:0 14px 34px rgba(0,0,0,.4);max-height:360px;overflow-y:auto;display:none}
+  .hqfind-item{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:9px 13px;cursor:pointer;border-bottom:1px solid var(--line)}
+  .hqfind-item:last-child{border-bottom:none}
+  .hqfind-item:hover,.hqfind-item.sel{background:var(--surf2)}
+  .hqfind-l{font-size:13px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hqfind-c{font-size:10.5px;color:var(--mut);flex:none;text-transform:uppercase;letter-spacing:.04em}
+  .hqfind-k{font-size:9px;font-weight:700;color:var(--mut2);border:1px solid var(--line2);border-radius:5px;padding:1px 5px;margin-right:7px;text-transform:uppercase;letter-spacing:.05em}
+  .hqfind-empty{padding:11px 13px;color:var(--mut);font-size:12.5px}
+  .hq-flash{animation:hqflash 1.7s ease}
+  @keyframes hqflash{0%,100%{box-shadow:0 0 0 0 rgba(49,214,138,0)}22%{box-shadow:0 0 0 2px var(--em)}}
 
   /* ---- KPI grid ---- */
   .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:8px 0 16px}
@@ -180,6 +197,7 @@
   .feed-ic{width:32px;height:32px;border-radius:9px;flex:none;display:flex;align-items:center;justify-content:center;background:var(--surf3);color:var(--em)}
   .feed-ic.gold{color:var(--gold2)}
   .feed-ic.blue{color:var(--blue)}
+  .feed-ic.red{color:#e0736f}
   .feed-tx{flex:1;min-width:0}
   .feed-tx b{font-size:13px;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .feed-tx span{font-size:11.5px;color:var(--mut2)}
@@ -282,6 +300,13 @@
     <button class="icon-btn" title="Lock console" aria-label="Lock console" onclick="lock()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="4" y="10.5" width="16" height="10" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" stroke="currentColor" stroke-width="1.8"/></svg></button>
   </header>
 
+  <!-- CONTROL FINDER: type to jump to any area or control across every tab -->
+  <div class="hqfind">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.8"/><path d="m20 20-3-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <input id="hqFind" type="text" autocomplete="off" spellcheck="false" placeholder="Find any area or control &mdash; e.g. webhook, bans, GMV, domain, backup..." oninput="hqFind()" onfocus="hqBuildIndex()" onblur="setTimeout(hqFindHide,160)" onkeydown="hqFindKey(event)">
+    <div class="hqfind-res" id="hqFindRes" role="listbox"></div>
+  </div>
+
   <!-- SECTION TABS -->
   <nav class="hqtabs" id="hqTabs">
     <button data-sec="overview" onclick="setSection('overview')">Overview</button>
@@ -291,6 +316,7 @@
     <button data-sec="support" onclick="setSection('support')">Support</button>
     <button data-sec="ai" onclick="setSection('ai')">AI</button>
     <button data-sec="security" onclick="setSection('security')">Security</button>
+    <button data-sec="system" onclick="setSection('system')">System</button>
     <button data-sec="settings" onclick="setSection('settings')">Settings</button>
     <button data-sec="control" id="tcTab" style="display:none;border-color:#6b2b2b;color:#ff9d9d" onclick="setSection('control')">Take Control</button>
   </nav>
@@ -327,6 +353,16 @@
     <div class="card-b pad" id="cxBody"><div class="mut">Loading&hellip;</div></div>
   </div>
 
+  <!-- NEEDS ATTENTION (monitoring-derived action list) stays on the command center -->
+  <div class="card">
+    <div class="card-h"><h2>Needs attention</h2><span class="sub" id="monSub"></span><div class="sp"></div><span class="sub">derived from live monitoring</span></div>
+    <div class="card-b pad" id="monBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
+  </section>
+
+  <!-- ===== SYSTEM TAB: platform health + monitoring (pulled out of Overview for a clean command center) ===== -->
+  <section class="hqsec" data-sec="system">
+  <div class="hqgroup">Platform health</div>
   <!-- SYSTEM HEALTH -->
   <style>.hgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:9px}.hc{background:var(--surf2);border:1px solid var(--line);border-radius:11px;padding:11px 13px;min-width:0}.hc .hk{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);font-weight:600}.hc .hv{font-size:14px;font-weight:700;margin-top:4px;display:flex;align-items:center;gap:6px}.hdot{width:9px;height:9px;border-radius:50%;flex:none}.hbanner{display:flex;align-items:center;gap:12px;margin-bottom:12px}.hbig{font-size:16px;font-weight:800;letter-spacing:-.01em}</style>
   <div class="card">
@@ -351,10 +387,7 @@
     .fun-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--em2),var(--em));min-width:2px}
     .fun-conv{font-size:11px;color:var(--mut2);margin-top:3px}
   </style>
-  <div class="card">
-    <div class="card-h"><h2>Needs attention</h2><span class="sub" id="monSub"></span><div class="sp"></div><span class="sub">derived from live monitoring</span></div>
-    <div class="card-b pad" id="monBody"><div class="mut">Loading&hellip;</div></div>
-  </div>
+  <div class="hqgroup">Monitoring</div>
   <div class="card">
     <div class="card-h"><h2>SEO monitor</h2><span class="sub" id="seoSub"></span><div class="sp"></div><span class="sub">worst first</span></div>
     <div class="card-b pad" id="seoBody"><div class="mut">Loading&hellip;</div></div>
@@ -377,6 +410,7 @@
   <!-- SECURITY LOG (owner-only -- rows carry other tenants' emails/IPs; hidden entirely for support/analyst) -->
   <style>.sx-item{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border:1px solid var(--line);border-radius:10px;margin-bottom:7px;background:var(--surf2)}.sx-ic{flex:none;padding-top:5px}.sx-main{flex:1;min-width:0}.sx-t{font-size:13px;font-weight:700}.sx-b{font-size:11.5px;color:var(--mut);margin-top:2px}.sx-empty{font-size:13px;color:var(--mut);padding:6px 2px}</style>
   <style>.cr-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}.cr-kpi{border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:var(--surf2)}.cr-k{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}.cr-v{font-size:26px;font-weight:800;line-height:1.1;margin:2px 0}.cr-s{font-size:11px;color:var(--mut)}.cr-p{font-size:13px;line-height:1.6;margin:0 0 12px}.cr-links{display:flex;flex-wrap:wrap;gap:8px}.cr-links .chip{text-decoration:none}.cr-note{font-size:11.5px;color:var(--mut);margin-top:10px}@media(max-width:720px){.cr-grid{grid-template-columns:1fr 1fr}}</style>
+  <div class="hqgroup">Compliance &amp; audit</div>
   <div class="card" id="complianceCard">
     <div class="card-h"><h2>Compliance &amp; Audit Reports</h2><span class="sub">Updated Aug 6, 2026 &middot; owner-only</span><div class="sp"></div></div>
     <div class="card-b pad">
@@ -442,6 +476,7 @@
 
   <section class="hqsec" data-sec="analytics">
   <!-- GROWTH & SOCIAL (AI marketing brain: day-by-day compare, campaigns, posts, partners, real accounts) -->
+  <div class="hqgroup">Marketing &amp; growth</div>
   <div class="card">
     <div class="card-h"><h2>Growth &amp; social</h2><span class="sub" id="growSub"></span><div class="sp"></div><span class="sub" id="growRange"></span></div>
     <div class="card-b pad">
@@ -464,6 +499,7 @@
 
   <section class="hqsec" data-sec="support">
   <!-- SUPPORT INBOX (inbound email -> AI draft -> you Send) -->
+  <div class="hqgroup">Customer support</div>
   <div class="card">
     <div class="card-h"><h2>Support inbox</h2><span class="sub" id="inboxSub"></span><div class="sp"></div>
       <div class="seg" id="inboxSeg"><button class="on" data-s="new" onclick="setInboxSeg(this)">New</button><button data-s="replied" onclick="setInboxSeg(this)">Replied</button><button data-s="all" onclick="setInboxSeg(this)">All</button></div>
@@ -474,6 +510,7 @@
 
   <section class="hqsec" data-sec="analytics">
   <!-- WEBSITE VISITS -->
+  <div class="hqgroup">Traffic &amp; analytics</div>
   <div class="card">
     <div class="card-h"><h2>Website visits</h2><span class="sub" id="visSub"></span><span class="sub" id="visLive"></span><div class="sp"></div><span class="sub" id="visRange"></span></div>
     <div class="card-b pad" id="visBody"><div class="mut">Loading&hellip;</div></div>
@@ -536,6 +573,7 @@
   </section>
 
   <section class="hqsec" data-sec="revenue">
+  <div class="hqgroup">Revenue &amp; P&amp;L</div>
   <!-- REVENUE BREAKDOWN + FUNNEL -->
   <div class="card">
     <div class="card-h"><h2>Revenue &amp; growth</h2><span class="sub" id="revSub"></span><div class="sp"></div><span class="sub" id="revNote"></span></div>
@@ -555,6 +593,7 @@
     <div class="card-b pad" id="marginBox"><div class="mut">Loading&hellip;</div></div>
   </div>
 
+  <div class="hqgroup">Transactions</div>
   <!-- PURCHASES (itemized: subscriptions, credits, websites, domains) -->
   <div class="card">
     <div class="card-h"><h2>Purchases</h2><span class="sub" id="purSub"></span><div class="sp"></div><button class="chip" id="purModeBtn" onclick="togglePayMode()">All payments</button><button class="chip" onclick="purCSV()">Export CSV</button></div>
@@ -567,15 +606,23 @@
         <button class="on" data-k="all" onclick="setPurKind(this)">All</button>
         <button data-k="subscription" onclick="setPurKind(this)">Subs</button>
         <button data-k="credits" onclick="setPurKind(this)">Credits</button>
+        <button data-k="emails" onclick="setPurKind(this)">Emails</button>
         <button data-k="website" onclick="setPurKind(this)">Websites</button>
-        <button data-k="asset_unlock" onclick="setPurKind(this)">Unlocks</button>
         <button data-k="domain" onclick="setPurKind(this)">Domains</button>
+        <button data-k="addons" onclick="setPurKind(this)">Add-ons</button>
       </div>
     </div>
     <div id="purTotals" style="padding:0 12px 8px;display:flex;flex-wrap:wrap;gap:4px"></div>
     <div style="overflow-x:auto"><table class="tbl" id="purTbl"></table></div>
   </div>
 
+  <!-- LIVE TRANSACTIONS (real-time feed, moved next to Purchases) -->
+  <div class="card">
+    <div class="card-h"><h2>Live transactions</h2><span class="sub">to the cent</span></div>
+    <div class="feed" id="txnFeed"></div>
+  </div>
+
+  <div class="hqgroup">Payment setup</div>
   <!-- PAYMENTS (LIVE/TEST switch, readiness self-test, $49.99 test charge) -->
   <div class="card">
     <div class="card-h"><h2>Payments</h2></div>
@@ -592,6 +639,12 @@
   <div class="card">
     <div class="card-h"><h2>GMV take-rate &amp; Connect routing</h2></div>
     <div class="card-b pad" id="entGmvBody"><div class="mut">Loading&hellip;</div></div>
+  </div>
+
+  <!-- PAYMENT RECONCILIATION (safety-net: a charge that succeeded in Stripe but never fulfilled here, e.g. a webhook outage) -->
+  <div class="card">
+    <div class="card-h"><h2>Payment reconciliation</h2><span class="sub">charged in Stripe, not recorded here</span><div class="sp"></div><button class="chip" onclick="loadReconcile(true)">Scan last 60 days</button></div>
+    <div class="card-b pad" id="reconBody"><div class="mut" style="font-size:12.5px">Click <b>Scan last 60 days</b> to find any succeeded Stripe payment that never fulfilled (e.g. during a webhook outage) &mdash; then <b>Recover</b> re-runs fulfillment for it. Read-only until you recover.</div></div>
   </div>
   </section>
 
@@ -626,6 +679,7 @@
 
   <section class="hqsec" data-sec="security">
   <!-- ABUSE DEFENSE: IP/email bans + attack-attempt feed (owner-only; endpoints 403 for staff, cards stay hidden) -->
+  <div class="hqgroup">Threats &amp; enforcement</div>
   <div class="card" id="banCard" style="display:none">
     <div class="card-h"><h2>Bans</h2><span class="sub" id="banSub"></span><div class="sp"></div><button class="chip" onclick="loadDefense(true)">Refresh</button></div>
     <div class="card-b pad" id="banBody"><div class="mut">Loading&hellip;</div></div>
@@ -638,6 +692,7 @@
 
   <section class="hqsec" data-sec="security">
   <!-- STAFF ACCESS (split out of the old Enterprise & trust card) -->
+  <div class="hqgroup">Access &amp; staff</div>
   <div class="card">
     <div class="card-h"><h2>Staff access</h2><span class="sub" id="entSub"></span></div>
     <div class="card-b pad" id="entStaffIntro"><div class="mut">Loading&hellip;</div></div>
@@ -666,6 +721,7 @@
   </section>
 
   <section class="hqsec" data-sec="support">
+  <div class="hqgroup">Tickets &amp; feedback</div>
   <div class="card">
     <div class="card-h"><h2>Bug &amp; idea inbox</h2><div class="sp"></div>
       <div class="seg" id="bugSeg">
@@ -687,12 +743,6 @@
   </div>
   </section>
 
-  <section class="hqsec" data-sec="revenue">
-  <div class="card">
-    <div class="card-h"><h2>Live transactions</h2><span class="sub">to the cent</span></div>
-    <div class="feed" id="txnFeed"></div>
-  </div>
-  </section>
   </div><!-- /adminMain -->
 </div>
 
@@ -753,7 +803,7 @@ function openReport(key){ var w=window.open('','_blank');
 function _ok200(r){ return !!(r && r.status===200 && r.json && typeof r.json==='object' && r.json.ok!==false && !r.json.error); }
 
 /* ================= section nav (tab bar; only the active section's cards render) ================= */
-var HQ_SECTIONS=['overview','revenue','members','analytics','support','ai','security','settings','control'];
+var HQ_SECTIONS=['overview','revenue','members','analytics','support','ai','security','system','settings','control'];
 var HQ_SEC_KEY='atlas_hq_section';
 function setSection(name){ if(HQ_SECTIONS.indexOf(name)<0) name='overview';
   var tabs=$('hqTabs'); if(tabs){ Array.prototype.forEach.call(tabs.children,function(b){ var _cur=b.getAttribute('data-sec')===name; b.classList.toggle('on', _cur); if(_cur) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current'); }); }
@@ -762,6 +812,47 @@ function setSection(name){ if(HQ_SECTIONS.indexOf(name)<0) name='overview';
   try{ if(window._hqA11yPass) window._hqA11yPass(); }catch(e){}
 }
 function initSections(){ var saved=''; try{ saved=localStorage.getItem(HQ_SEC_KEY)||''; }catch(e){} setSection(HQ_SECTIONS.indexOf(saved)>=0?saved:'overview'); }
+
+/* ===== Control finder: index every area (card) + named control (button/toggle) across ALL tabs, then jump + flash ===== */
+var _hqIdx=null, _hqFindOut=[], _hqSel=-1;
+var _HQ_FIND_SKIP={'refresh':1,'run now':1,'export csv':1,'save':1,'all':1,'new':1,'replied':1,'mark all read':1,'test now':1,'recheck':1,'enable all':1,'disable all':1,'public status':1,'close':1,'cancel':1,'back':1,'next':1,'by plan':1,'by industry':1};
+/* key controls that live INSIDE dynamically-rendered card bodies -> given explicit, always-findable anchors (resolve to the card container that exists in static HTML) */
+var _HQ_FIND_EXTRA=[
+  {label:'Webhook health (Stripe delivery)', sec:'revenue', sel:'#entPayBody', card:'Payments', aliases:'webhook signed events delivering endpoint fulfillment stripe'},
+  {label:'Cancel duplicate subscriptions', sec:'revenue', sel:'#entPayBody', card:'Payments', aliases:'dup dedup double charge subs'},
+  {label:'LIVE / TEST payments mode', sec:'revenue', sel:'#entPayBody', card:'Payments', aliases:'stripe test live sandbox mode switch'},
+  {label:'Run a full test subscription', sec:'revenue', sel:'#entPayBody', card:'Payments', aliases:'test sub charge payment readiness'},
+  {label:'Register a REAL test domain', sec:'settings', sel:'#entRegBody', card:'Domain registrar', aliases:'dynadot buy domain test'}
+];
+function _secLabel(s){ return ({overview:'Overview',system:'System',revenue:'Revenue',members:'Members',analytics:'Analytics',support:'Support',ai:'AI',security:'Security',settings:'Settings',control:'Take Control'})[s]||s; }
+function hqBuildIndex(){ var idx=[]; var secs=document.querySelectorAll('.hqsec');
+  for(var i=0;i<secs.length;i++){ var sec=secs[i].getAttribute('data-sec'); var cards=secs[i].querySelectorAll('.card');
+    for(var j=0;j<cards.length;j++){ var c=cards[j]; var h=c.querySelector('.card-h h2'); var title=h?(h.textContent||'').trim():'';
+      if(title) idx.push({label:title, sec:sec, el:c, kind:'area'});
+      var ctrls=c.querySelectorAll('button, label, a.chip');
+      for(var k=0;k<ctrls.length;k++){ var t=((ctrls[k].textContent||'').trim()).replace(/\s+/g,' '); if(!t||t.length<4||t.length>52) continue; if(_HQ_FIND_SKIP[t.toLowerCase()]) continue; idx.push({label:t, sec:sec, el:ctrls[k], kind:'control', card:title}); }
+    }
+  }
+  for(var m=0;m<_HQ_FIND_EXTRA.length;m++){ var x=_HQ_FIND_EXTRA[m]; var xe=document.querySelector(x.sel); if(xe) idx.push({label:x.label, sec:x.sec, el:xe, kind:'control', card:x.card, aliases:x.aliases}); }
+  _hqIdx=idx; return idx; }
+function hqFindHide(){ var r=$('hqFindRes'); if(r) r.style.display='none'; _hqSel=-1; }
+function hqFind(){ var q=(($('hqFind')&&$('hqFind').value)||'').trim().toLowerCase(); var res=$('hqFindRes'); if(!res) return;
+  if(!q){ hqFindHide(); return; } if(!_hqIdx) hqBuildIndex();
+  var seen={}, out=[]; for(var i=0;i<_hqIdx.length && out.length<14;i++){ var e=_hqIdx[i]; var hay=(e.label+' '+(e.card||'')+' '+(e.aliases||'')+' '+_secLabel(e.sec)).toLowerCase(); if(hay.indexOf(q)<0) continue; var key=e.kind+'|'+e.label.toLowerCase()+'|'+e.sec; if(seen[key]) continue; seen[key]=1; out.push(e); }
+  _hqFindOut=out; _hqSel=-1;
+  if(!out.length){ res.innerHTML='<div class="hqfind-empty">No area or control matches &ldquo;'+esc(q)+'&rdquo;.</div>'; res.style.display='block'; return; }
+  res.innerHTML=out.map(function(e,ix){ return '<div class="hqfind-item" data-ix="'+ix+'" onmousedown="event.preventDefault();hqJump('+ix+')"><span class="hqfind-l">'+(e.kind==='control'?'<span class="hqfind-k">Ctrl</span>':'')+esc(e.label)+'</span><span class="hqfind-c">'+(e.kind==='control'&&e.card?(esc(e.card)+' &middot; '):'')+esc(_secLabel(e.sec))+'</span></div>'; }).join('');
+  res.style.display='block'; }
+function hqJump(ix){ var e=_hqFindOut[ix]; if(!e) return; setSection(e.sec);
+  var el=e.el; setTimeout(function(){ try{ el.scrollIntoView({behavior:'smooth',block:'center'}); el.classList.add('hq-flash'); setTimeout(function(){ el.classList.remove('hq-flash'); },1700); }catch(_e){} },70);
+  var fi=$('hqFind'); if(fi) fi.value=''; hqFindHide(); }
+function hqFindKey(ev){ var res=$('hqFindRes'); var open=res&&res.style.display==='block';
+  if(ev.key==='Escape'){ var fi=$('hqFind'); if(fi) fi.value=''; hqFindHide(); return; }
+  if(!open||!_hqFindOut.length) return;
+  if(ev.key==='Enter'){ ev.preventDefault(); hqJump(_hqSel>=0?_hqSel:0); return; }
+  if(ev.key==='ArrowDown'||ev.key==='ArrowUp'){ ev.preventDefault(); _hqSel=(ev.key==='ArrowDown')?Math.min(_hqFindOut.length-1,_hqSel+1):Math.max(0,_hqSel-1);
+    var items=res.querySelectorAll('.hqfind-item'); for(var i=0;i<items.length;i++){ items[i].classList.toggle('sel', i===_hqSel); if(i===_hqSel) items[i].scrollIntoView({block:'nearest'}); } }
+}
 
 /* ================= auth gate ================= */
 function unlock(){ var v=($('tok').value||'').trim(); if(!v){ $('gateErr').textContent='Enter your admin key.'; return; }
@@ -1054,9 +1145,20 @@ function renderTxns(){ var t=DATA.txns||[];
     if(k==='subscription'||k==='plan'){ label='Subscription'+(x.tier?(' &middot; '+esc(TIER_LABEL[x.tier]||x.tier)):''); ic='gold'; }
     else if(k==='credits'){ label='Credits'+(x.pack?(' &middot; '+esc(x.pack)):''); ic='em'; }
     else if(k==='website'){ label='Website add-on'; ic='blue'; }
-    else if(k==='asset_unlock'){ label='Asset unlock'+(x.pack?(' &middot; '+esc(x.pack)):'')+' &middot; $11.99/mo'; ic='gold'; }
+    else if(k==='domain'){ label='Domain'+(x.pack?(' &middot; '+esc(x.pack)):''); ic='gold'; }
+    else if(k==='domain_renew_claim'){ label='Domain renewal'+(x.pack?(' &middot; '+esc(x.pack)):''); ic='gold'; }
+    else if(k==='email_pack'){ label='Email pack'+(x.pack?(' &middot; '+esc(x.pack)):''); ic='blue'; }
+    else if(k==='email_addon'){ label='Email add-on'+(x.pack?(' &middot; '+esc(x.pack)+'/mo'):'')+' (monthly)'; ic='blue'; }
+    else if(k==='asset_unlock'){ label='Asset unlock'+(x.pack?(' &middot; '+esc(x.pack)):'')+' (monthly)'; ic='gold'; }
+    else if(k==='location_addon'){ label='Extra location (+1 / month)'; ic='em'; }
+    else if(k==='site_addon'){ label='Extra booking site (+1 / month)'; ic='em'; }
+    else if(k==='asset_addon'){ label='Asset-cap block (+10 units / month)'; ic='em'; }
+    else if(k==='tracking'){ label='Live GPS tracking (monthly)'; ic='em'; }
+    else if(k==='gmv'){ label='Atlas processing fee (GMV)'; ic='gold'; }
+    else if(k==='chargeback_rev'||k==='chargeback_lost'||k==='platform_chargeback'){ label='Chargeback'+(k==='chargeback_lost'?' (lost)':(k==='platform_chargeback'?' fee':'')); ic='red'; }
+    else if(k==='chargeback_restore'){ label='Chargeback restored'; ic='em'; }
     else if(k==='trial'){ label='Trial started &middot; card on file'; ic='blue'; }
-    else { label=esc(k||'Payment'); }
+    else { label=esc(_purKindLabel(k)); }
     var amt = (x.amount_cents>0) ? centsUSD(x.amount_cents) : (k==='trial'?'card':centsUSD(0));
     return '<div class="feed-row"><div class="feed-ic '+ic+'">'+txIcon(k)+'</div>'+
       '<div class="feed-tx"><b>'+label+'</b><span>'+esc(x.email||x.tenant_id||'')+' &middot; '+ago(x.created_at)+'</span></div>'+
@@ -1184,7 +1286,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.08.15hh';
+var ATLAS_EXPECT_BUILD='2026.08.15hi';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
@@ -1854,14 +1956,15 @@ function renderGeo(){ var el=$('geoMap'); if(!el) return; var g=DATA.geo||{}; va
   if(_geoDrillCountry) _geoFetchRegions(_geoDrillCountry);   // keep the open region panel fresh across range changes/periodic refreshes
 }
 /* ================= purchases (itemized + filtered) ================= */
-function _purKindLabel(k){ return ({subscription:'Subscription',plan:'Subscription',credits:'Credits',website:'Website',asset_unlock:'Asset unlock',domain:'Domain',trial:'Trial',gmv:'Atlas processing'})[k] || (k? (k.charAt(0).toUpperCase()+k.slice(1)) : 'Other'); }
+function _purKindLabel(k){ return ({subscription:'Subscription',plan:'Subscription',trial:'Trial',credits:'Credits',email_pack:'Email pack',email_addon:'Email add-on',website:'Website',domain:'Domain',domain_renew_claim:'Domain renewal',asset_unlock:'Asset unlock',location_addon:'Extra location',site_addon:'Extra booking site',asset_addon:'Asset-cap block',tracking:'Live GPS tracking',gmv:'Atlas processing',chargeback_rev:'Chargeback',chargeback_lost:'Chargeback (lost)',chargeback_restore:'Chargeback (restored)',platform_chargeback:'Chargeback fee'})[k] || (k? (k.charAt(0).toUpperCase()+k.slice(1).replace(/_/g,' ')) : 'Other'); }
 function _purNorm(r){ return (r.kind==='plan')?'subscription':(r.kind||'other'); }
 function _purDesc(r){ var base=_purKindLabel(_purNorm(r)); var extra=r.tier||r.pack||''; return base+(extra?(' - '+extra):''); }
+var PUR_GROUPS={addons:['location_addon','site_addon','asset_addon','tracking','asset_unlock'],emails:['email_pack','email_addon']};
 function _purFiltered(){ var items=(DATA.purchases&&DATA.purchases.items)||[]; var q=_purQ.toLowerCase();
-  return items.filter(function(r){ if(_purKind!=='all' && _purNorm(r)!==_purKind) return false; if(q){ var hay=((r.email||'')+' '+(r.tier||'')+' '+(r.pack||'')+' '+(r.kind||'')).toLowerCase(); if(hay.indexOf(q)<0) return false; } return true; }); }
+  return items.filter(function(r){ if(_purKind!=='all'){ var nk=_purNorm(r); if(PUR_GROUPS[_purKind]){ if(PUR_GROUPS[_purKind].indexOf(nk)<0) return false; } else if(nk!==_purKind) return false; } if(q){ var hay=((r.email||'')+' '+(r.tier||'')+' '+(r.pack||'')+' '+(r.kind||'')).toLowerCase(); if(hay.indexOf(q)<0) return false; } return true; }); }
 function renderPurchases(){ var p=DATA.purchases||{}; var byk=p.by_kind||{};
   var ps=$('purSub'); if(ps) ps.textContent=((p.range&&p.range.label)||'')+' / '+centsUSD(p.grand_total_cents||0)+' / '+nfmt(p.grand_count||0)+' items';
-  var order=['subscription','credits','website','domain','trial'], seen={}, chips=[];
+  var order=['subscription','trial','credits','email_pack','email_addon','website','domain','asset_unlock','location_addon','site_addon','asset_addon','tracking','gmv'], seen={}, chips=[];
   order.forEach(function(k){ if(byk[k]){ seen[k]=1; chips.push('<span class="pill gray">'+esc(_purKindLabel(k))+' <b class="num">'+nfmt(byk[k].n)+'</b> '+centsUSD0(byk[k].c)+'</span>'); } });
   Object.keys(byk).forEach(function(k){ if(!seen[k]){ chips.push('<span class="pill gray">'+esc(_purKindLabel(k))+' <b class="num">'+nfmt(byk[k].n)+'</b></span>'); } });
   var pt=$('purTotals'); if(pt) pt.innerHTML=chips.join('')||'<span class="mut" style="font-size:12px">No purchases in this window.</span>';
@@ -1881,7 +1984,7 @@ var _payMode='atlas';
 function togglePayMode(){ _payMode=(_payMode==='atlas')?'stripe':'atlas'; var b=$('purModeBtn'); if(b) b.textContent=(_payMode==='stripe')?'Atlas records':'All payments'; if(_payMode==='stripe'){ if(!DATA.payLedger) loadPayLedger(); else renderPayLedger(); } else { renderPurchases(); } }
 function loadPayLedger(){ var tbl=$('purTbl'); if(tbl) tbl.innerHTML='<tbody><tr><td class="mut" style="padding:16px">Loading every payment from Stripe...</td></tr></tbody>'; api('/api/admin/payments-ledger').then(function(r){ var j=r.json||{}; if(!j||!j.ok){ if(tbl) tbl.innerHTML='<tbody><tr><td class="mut" style="padding:16px">'+esc((j&&j.note)||'Could not load payments')+'</td></tr></tbody>'; return; } DATA.payLedger=j; renderPayLedger(); }).catch(function(){ if(tbl) tbl.innerHTML='<tbody><tr><td class="mut" style="padding:16px">Network error</td></tr></tbody>'; }); }
 function _payFmtDay(ms){ if(!ms) return ''; try{ return new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }catch(e){ return ''; } }
-function _payItem(r){ var lbl=({plan:'Subscription',trial:'Trial',website:'Website',domain:'Domain',credits:'Credits',asset_unlock:'Asset unlock',platform_test:'Test'})[r.billing]||''; if(!lbl) lbl=r.desc||'Payment'; var ex=r.tier||r.pack||r.domain||''; var base=lbl+(ex?(' - '+ex):''); var per=(r.period_start&&r.period_end)?(' <span class="mut" style="font-size:11px">'+esc(_payFmtDay(r.period_start))+' - '+esc(_payFmtDay(r.period_end))+'</span>'):''; return esc(base)+per; }
+function _payItem(r){ var lbl=({plan:'Subscription',trial:'Trial',website:'Website',domain:'Domain',credits:'Credits',email_pack:'Email pack',email_addon:'Email add-on',asset_unlock:'Asset unlock',location_addon:'Extra location',site_addon:'Extra booking site',asset_addon:'Asset-cap block',tracking:'Live GPS tracking',platform_test:'Test'})[r.billing]||''; if(!lbl) lbl=r.desc||'Payment'; var ex=r.tier||r.pack||r.domain||''; var base=lbl+(ex?(' - '+ex):''); var per=(r.period_start&&r.period_end)?(' <span class="mut" style="font-size:11px">'+esc(_payFmtDay(r.period_start))+' - '+esc(_payFmtDay(r.period_end))+'</span>'):''; return esc(base)+per; }
 function _payPill(r){ var m={succeeded:['#3ecb8f','Succeeded'],refunded:['#e0a94a','Refunded'],disputed:['#e0736f','Disputed'],failed:['#e0736f','Declined'],pending:['#8a99aa','Pending']}; var s=m[r.status]||['#8a99aa',r.status||'-']; return '<span style="display:inline-block;padding:1px 7px;border-radius:20px;font-size:11px;font-weight:700;color:'+s[0]+';border:1px solid '+s[0]+'55">'+esc(s[1])+'</span>'+(r.decline?('<div class="mut" style="font-size:10.5px">'+esc(r.decline)+'</div>'):''); }
 function renderPayLedger(){ var j=DATA.payLedger||{}; var items=j.items||[]; var q=(_purQ||'').toLowerCase(); var rows=items.filter(function(r){ if(q){ var hay=((r.email||'')+' '+(r.tier||'')+' '+(r.pack||'')+' '+(r.domain||'')+' '+(r.billing||'')+' '+(r.status||'')).toLowerCase(); if(hay.indexOf(q)<0) return false; } return true; }); var ps=$('purSub'); if(ps) ps.textContent=(j.mode||'')+' mode / '+nfmt(rows.length)+' payments'; var pt=$('purTotals'); if(pt) pt.innerHTML='<span class="mut" style="font-size:12px">Every charge from Stripe in <b>'+esc(j.mode||'')+'</b> mode - real status, method + billing period. Switches with your LIVE/TEST payment mode.</span>'; var tbl=$('purTbl'); if(!tbl) return; if(!rows.length){ tbl.innerHTML='<tbody><tr><td class="mut" style="padding:16px">No payments in Stripe for this mode yet. Charges appear here the moment they happen.</td></tr></tbody>'; return; } tbl.innerHTML='<thead><tr><th>Date (CT)</th><th>Account</th><th>Item</th><th>Method</th><th>Status</th><th style="text-align:right">Amount</th></tr></thead><tbody>'+rows.map(function(r){ return '<tr class="row"><td class="num" style="white-space:nowrap">'+esc(tsCT(r.created))+'</td><td><b>'+esc(r.email||'-')+'</b></td><td>'+_payItem(r)+'</td><td class="mut" style="font-size:12px;white-space:nowrap">'+esc(r.method||'')+'</td><td>'+_payPill(r)+'</td><td class="money num" style="text-align:right'+(r.refunded?';text-decoration:line-through;opacity:.6':'')+'">'+centsUSD(r.amount||0)+'</td></tr>'; }).join('')+'</tbody>'; }
 
@@ -1965,6 +2068,7 @@ function _entRenderBackup(e,owner){ var el=$('entBackupBody'); if(!el) return; v
 function _entRenderPayments(e,owner){ var el=$('entPayBody'); if(!el) return; var payTest=!!e.payments_test_mode;
   el.innerHTML=
     '<div class="desc" style="margin:0 0 5px">Switch between LIVE and TEST. The readiness check below is read-only and never moves money.</div>'
+    +'<div id="webhookHealth"></div>'
     +'<div id="payModeBlock">'
     +(owner?('<div style="display:flex;gap:8px;margin-bottom:8px"><button class="btn sm" style="flex:1;cursor:pointer;font-weight:700;'+(payTest?'background:transparent;border:1px solid var(--line2);color:var(--mut)':'background:rgba(62,203,143,.15);border:1px solid #3ecb8f;color:#3ecb8f')+'" onclick="payModeSet(false)">LIVE payments</button><button class="btn sm" style="flex:1;cursor:pointer;font-weight:700;'+(payTest?'background:rgba(224,169,74,.15);border:1px solid #e0a94a;color:#e0a94a':'background:transparent;border:1px solid var(--line2);color:var(--mut)')+'" onclick="payModeSet(true)">TEST payments</button></div>'):('<div class="pill '+(payTest?'past':'active')+'" style="display:inline-block;margin-bottom:8px">'+(payTest?'TEST mode':'LIVE mode')+'</div>'))
     +'<div class="mut" style="font-size:12.5px;margin-bottom:8px">'+(payTest?'Safe sandbox &mdash; only Stripe test cards (4242 4242 4242 4242), no real money moves.':'Real cards are charged real money.')+' <span class="mut">'+(e.test_key?'(PLATFORM_STRIPE_TEST_KEY set)':'(add PLATFORM_STRIPE_TEST_KEY in the worker)')+'</span></div>'
@@ -1987,10 +2091,54 @@ function _entRenderPayments(e,owner){ var el=$('entPayBody'); if(!el) return; va
         +'</div>'
       ):('<div class="mut" style="font-size:12.5px">'+esc(e.platform_legal_name||'Atlas Rental.io')+(e.platform_legal_address?(' &middot; '+esc(e.platform_legal_address)):'')+(e.platform_tax_id?(' &middot; Tax ID set'):'')+' (owner only to change)</div>'))
     +'</div>';
+  try{ loadWebhookHealth(); }catch(_e){}
+}
+var _whHtml='', _whLast=0;
+function loadWebhookHealth(force){ var el=$('webhookHealth'); if(!el) return;
+  if(_whHtml && !force){ el.innerHTML=_whHtml; if((Date.now()-_whLast)<45000) return; }
+  else { el.innerHTML='<div style="font-size:12px;color:var(--mut);padding:9px 2px">Checking webhook delivery&hellip;</div>'; }
+  api('/api/admin/payments/selftest').then(function(r){ var el2=$('webhookHealth'); if(!el2) return; var j=(r&&r.json)||{};
+    if(r.status===404){ el2.innerHTML=''; return; }
+    if(!j.ok){ el2.innerHTML='<div style="font-size:12px;color:var(--mut);padding:7px 2px">Webhook health check unavailable right now.</div>'; return; }
+    var c=j.checks||{}, wh=j.webhook||{};
+    var ep=!!c.webhook_endpoint_configured, sec=!!c.webhook_secret_set, evOk=(c.webhook_events_ok!==false);
+    var miss=(wh.missing_required||[]);
+    var state=(!ep||!sec)?'bad':(!evOk?'warn':'ok');
+    var mode=j.mode||'', url=j.expected_webhook_url||'https://atlasrental.io/api/stripe/webhook';
+    var col=state==='ok'?'#3ecb8f':(state==='warn'?'#e0a94a':'#e0736f');
+    var bg=state==='ok'?'rgba(62,203,143,.10)':(state==='warn'?'rgba(224,169,74,.12)':'rgba(224,115,111,.13)');
+    var dot='<span style="width:10px;height:10px;border-radius:50%;background:'+col+';flex:none;animation:pulseDot 1.5s ease-in-out infinite"></span>';
+    var title, body;
+    if(state==='ok'){ title='Stripe webhooks: delivering &middot; '+esc(mode)+' mode';
+      body='Signed events reach the worker, so every paid checkout records a transaction, emails a branded receipt, grants the plan/add-on/credits, and auto-renews each month.';
+      if(wh.kind==='verified_by_received_event'&&wh.last_event_at){ body+=' Last signed event received '+esc(new Date(wh.last_event_at).toISOString().slice(0,10))+'.'; }
+      if(mode==='test'){ body+=' <b>Before go-live:</b> add the same endpoint in your <b>LIVE</b> Stripe environment too (webhooks are per-environment).'; } }
+    else if(state==='warn'){ title='Stripe webhooks: endpoint live, but MISSING required events &middot; '+esc(mode)+' mode';
+      body='The endpoint receives signed events, but these <b>required</b> events are not subscribed, so that part of the money loop silently breaks: <code style="color:var(--fg)">'+esc(miss.join(', '))+'</code>. In Stripe &rarr; Developers &rarr; Webhooks, edit this endpoint and add them (or choose &ldquo;receive all events&rdquo;), then Recheck.'; }
+    else { title='Stripe webhooks: NOT delivering &middot; '+esc(mode)+' mode';
+      var why=[]; if(!ep) why.push('no endpoint points at <code style="color:var(--fg)">'+esc(url)+'</code> in the <b>'+esc(mode)+'</b> environment'); if(!sec) why.push('the signing secret ('+(mode==='test'?'STRIPE_WEBHOOK_SECRET_TEST':'STRIPE_WEBHOOK_SECRET')+') is not set in the worker');
+      body='<b style="color:'+col+'">Charges would succeed but NOT fulfill</b> &mdash; no transaction, receipt, grant, or auto-renewal &mdash; because '+why.join(', and ')+'. Fix in Stripe &rarr; Developers &rarr; Webhooks: add the endpoint above (same environment as the key), subscribe it to <code style="color:var(--fg)">checkout.session.completed, payment_intent.succeeded, customer.subscription.created/updated/deleted, invoice.paid, invoice.payment_failed, charge.refunded</code>, set its signing secret in the worker, then Recheck.'; }
+    var out='<div style="background:'+bg+';border:1px solid '+col+'66;border-radius:11px;padding:11px 13px;margin:2px 0 12px">'
+      +'<div style="display:flex;align-items:center;gap:9px">'+dot+'<b style="color:'+col+';font-size:13px;flex:1">'+title+'</b><button class="btn ghost sm" style="padding:4px 11px;font-size:11.5px" onclick="loadWebhookHealth(true)">Recheck</button></div>'
+      +'<div class="mut" style="font-size:12px;line-height:1.55;margin-top:7px">'+body+'</div></div>';
+    _whHtml=out; _whLast=Date.now(); el2.innerHTML=out;
+  }).catch(function(){ var el3=$('webhookHealth'); if(el3 && !_whHtml) el3.innerHTML='<div style="font-size:12px;color:var(--mut);padding:7px 2px">Could not check webhook health (network).</div>'; });
 }
 function saveReceiptLegal(){ var n=$('rlName'); if(!n) return; var a=$('rlAddr'), t=$('rlTax');
   api('/api/admin/config',{method:'POST',body:{platform_legal_name:(n.value||'').trim(), platform_legal_address:(a?a.value:'').trim(), platform_tax_id:(t?t.value:'').trim()}}).then(function(r){
     if(r&&r.json&&r.json.ok){ toast('Receipt details saved'); loadAll(); } else toast('Save failed'); }).catch(function(){ toast('Save failed'); }); }
+/* ===== Payment reconciliation: find Stripe payments that charged but never recorded here, and recover them (re-dispatch the real event through our webhook) ===== */
+function loadReconcile(force){ var el=$('reconBody'); if(!el) return; el.innerHTML='<div class="mut" style="font-size:12.5px">Scanning Stripe (read-only)&hellip;</div>';
+  api('/api/admin/payments/reconcile').then(function(r){ if(!el) return; var j=r.json||{}; if(r.status===404){ el.innerHTML='<div class="mut" style="font-size:12px">Needs the latest worker.</div>'; return; } if(!j.ok){ el.innerHTML='<div class="mut" style="font-size:12px">'+esc(j.error||'Could not scan.')+'</div>'; return; } renderReconcile(j); }).catch(function(){ if(el) el.innerHTML='<div class="mut" style="font-size:12px">Network error.</div>'; }); }
+function renderReconcile(j){ var el=$('reconBody'); if(!el) return; var gaps=j.gaps||[];
+  var head='<div class="mut" style="font-size:12px;margin-bottom:8px">Checked <b>'+nfmt(j.checked||0)+'</b> Stripe checkout payment'+((j.checked===1)?'':'s')+' ('+esc(j.mode||'')+' mode, last '+(j.window_days||60)+' days).'+(j.truncated?' (first 100)':'')+'</div>';
+  if(!gaps.length){ el.innerHTML=head+'<div style="font-size:13px;color:#3ecb8f;font-weight:600">&#10003; Every Stripe payment is recorded here &mdash; no gaps.</div>'; return; }
+  var rows=gaps.map(function(g){ var isDom=(g.kind==='domain'); var when=g.created?tsCT(g.created):'';
+    return '<div style="display:flex;gap:10px;align-items:center;padding:9px 0;border-top:1px solid var(--line)"><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600">'+centsUSD(g.amount_cents||0)+' &middot; '+esc(_purKindLabel(g.kind)||g.kind)+(g.domain?(' &middot; '+esc(g.domain)):'')+'</div><div class="mut" style="font-size:11.5px">'+esc(g.email||g.tenant||'')+(when?(' &middot; '+esc(when)):'')+'</div></div><button class="btn ghost sm" onclick="recoverGap(this,\''+esc(g.type)+'\',\''+esc(g.object_id)+'\','+(isDom?'true':'false')+')">Recover</button></div>'; }).join('');
+  el.innerHTML=head+'<div style="background:rgba(224,169,74,.1);border:1px solid rgba(224,169,74,.35);border-radius:9px;padding:8px 11px;margin-bottom:4px;font-size:12px;color:var(--amber)"><b>'+nfmt(gaps.length)+'</b> payment'+((gaps.length===1)?'':'s')+' charged in Stripe but never recorded here. <b>Recover</b> re-runs fulfillment (records the sale + emails the receipt; a domain is also registered at Dynadot).</div>'+rows; }
+function recoverGap(btn, type, objId, isDom){ if(isDom){ if(!confirm('Recover this domain purchase? It registers the domain for real at Dynadot (a real wholesale cost) and records the sale. Continue?')) return; } else { if(!confirm('Recover this payment? It records the sale and emails the receipt. Continue?')) return; }
+  if(btn){ btn.disabled=true; btn.textContent='Recovering...'; }
+  api('/api/admin/payments/recover',{method:'POST',body:{type:type,object_id:objId}}).then(function(r){ var j=r.json||{}; if(j.ok){ toast('Recovered - fulfillment re-ran'); loadReconcile(true); if(typeof loadAll==='function') loadAll(true); } else { toast('Recover failed ('+(j.status||r.status||'')+')'); if(btn){ btn.disabled=false; btn.textContent='Recover'; } } }).catch(function(){ toast('Recover failed'); if(btn){ btn.disabled=false; btn.textContent='Recover'; } }); }
 function _entRenderRegistrar(e){ var el=$('entRegBody'); if(!el) return;
   el.innerHTML=
     '<div class="desc" style="margin:0 0 5px">Dynadot buy/renew for tenant domains. The key test is read-only (never buys); the owner-only test registration below spends a few dollars once to confirm real purchases work.</div>'
