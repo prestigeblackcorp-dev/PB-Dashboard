@@ -6443,5 +6443,28 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/var _stW7 = \(_wc091\.indexOf\('status'\) >= 0\)/.test(_WORKER_SRC) && /await _confirmSlotHeal\(env, tenantId, id, _bd7, _s7, _e7\)/.test(_WORKER_SRC), 're-audit #7/#9: a scalar-only (no body.data) write that lands a blocking status / moves the window runs the confirm-time double-book heal inside _bookingMirrorWrite (was bypassed -- the route-handler guards are gated on body.data)');
 }
 
+// ==== WAVE76: iCal channel sync (two-way availability interop; no money, no PII) ====
+{
+  const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  // worker: the token-scoped public busy feed, the owner mint/revoke, and the SSRF-safe import
+  ok(/CREATE TABLE IF NOT EXISTS ical_feeds/.test(_WORKER_SRC), 'WAVE76: ical_feeds table (token->tenant,asset) created lazily');
+  ok(/function _icalFeedResponse\(/.test(_WORKER_SRC), 'WAVE76: public per-asset .ics feed generator present');
+  ok(/function _ssrfSafeUrl\(/.test(_WORKER_SRC) && /function _icalFetchText\(/.test(_WORKER_SRC), 'WAVE76: SSRF-safe external iCal fetch present');
+  ok(/path === '\/api\/ical\/feed' && method === 'POST'/.test(_WORKER_SRC), 'WAVE76: owner feed mint/revoke route present');
+  ok(/path === '\/api\/ical\/fetch' && method === 'POST'/.test(_WORKER_SRC), 'WAVE76: owner iCal import route present');
+  ok(/if \(method === 'GET' && \/\^\\\/api\\\/ical/.test(_WORKER_SRC), 'WAVE76: public GET feed route present (pre-auth)');
+  ok(/_can\(ctx, 'fleetEdit'\)/.test(_WORKER_SRC), 'WAVE76: channel routes gated on fleetEdit');
+  // worker: the feed is BUSY-ONLY (summary Unavailable) and never selects renter PII columns
+  ok(/_icalGen\(name\+' - availability'/.test(_WORKER_SRC), 'WAVE76: feed built from name + busy events only');
+  ok(/SELECT id, starts, ends, data FROM bookings WHERE tenant_id=\? AND LOWER\(status\) NOT IN \('cancelled','completed','voided','declined','expired'\)/.test(_WORKER_SRC), 'WAVE76: feed reads only active bookings, no email/phone columns');
+  // client: the Listing-channels UI + sync + export link + exports
+  ok(/function _channelsHtml\(/.test(_ATLAS_SRC) && /function channelSyncNow\(/.test(_ATLAS_SRC) && /function channelFeedGet\(/.test(_ATLAS_SRC), 'WAVE76: client channel UI + sync + feed-link functions present');
+  ok(/id="chanSec"/.test(_ATLAS_SRC), 'WAVE76: Listing channels section rendered in the asset detail');
+  ok(/channelSyncNow,channelRemove,channelFeedGet,/.test(_ATLAS_SRC), 'WAVE76: new channel functions exported on Atlas');
+  ok(/\/api\/ical\/fetch/.test(_ATLAS_SRC) && /\/api\/ical\/feed/.test(_ATLAS_SRC), 'WAVE76: client calls the import + feed endpoints');
+  // client: imported busy dates become source-tagged blackouts the existing gate already honors
+  ok(/src:'chan:'\+cid/.test(_ATLAS_SRC), 'WAVE76: imported blocks tagged src=chan:<id> so one engine gates them everywhere');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

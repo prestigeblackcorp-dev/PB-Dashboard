@@ -5294,7 +5294,7 @@ const Atlas = (function(){
     openModal('<div class="modal__head"><h3>Block days</h3>'+_xBtn()+'</div><div class="modal__body"><div class="desc" style="margin-bottom:12px">Pick a '+esc(_adNoun())+', then choose the dates to keep off the calendar (maintenance, personal use, off-season).</div><div class="field"><label>Which '+esc(_adNoun())+'?</label><select class="select" id="blkPick">'+as.map(function(a){ return '<option value="'+esc(a.id)+'">'+esc(a.name)+'</option>'; }).join('')+'</select></div><button class="btn btn--primary btn--full" onclick="var _id=document.getElementById(\'blkPick\').value; Atlas.closeModal(); Atlas.assetBlock(_id);">Next: pick dates</button></div>'); }
   function _blackouts(a){ if(!a.blackouts) a.blackouts=[]; return a.blackouts; }
   function _blackoutHtml(a){ var bs=_blackouts(a); if(!bs.length) return '<div class="bk-lenhint" style="margin:0">No blocked days. Block a range to keep it off the calendar (maintenance, personal use, off-season).</div>';
-    return '<div style="display:flex;flex-direction:column;gap:6px">'+bs.slice().sort(function(x,y){return (x.from||0)-(y.from||0);}).map(function(x){ return '<div class="mp-row"><span>'+_csvDate(x.from)+' &rarr; '+_csvDate(x.to)+(x.reason?' <span style="font-size:11.5px;color:var(--muted)">'+esc(x.reason)+'</span>':'')+'</span><button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:2px 7px" onclick="Atlas.assetUnblock(\''+a.id+'\',\''+x.id+'\')">Remove</button></div>'; }).join('')+'</div>'; }
+    return '<div style="display:flex;flex-direction:column;gap:6px">'+bs.slice().sort(function(x,y){return (x.from||0)-(y.from||0);}).map(function(x){ var viaSrc=x.src&&String(x.src).indexOf('chan:')===0; var cn=''; if(viaSrc){ var cid=String(x.src).slice(5); var c=_channels(a).filter(function(cc){return cc.id===cid;})[0]; cn=(c&&c.name)||'calendar sync'; } return '<div class="mp-row"><span>'+_csvDate(x.from)+' &rarr; '+_csvDate(x.to)+(viaSrc?(' <span style="font-size:11px;color:var(--muted)">&middot; via '+esc(cn)+'</span>'):(x.reason?' <span style="font-size:11.5px;color:var(--muted)">'+esc(x.reason)+'</span>':''))+'</span>'+(viaSrc?'<span class="muted" style="font-size:11px;padding:2px 7px">synced</span>':'<button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:2px 7px" onclick="Atlas.assetUnblock(\''+a.id+'\',\''+x.id+'\')">Remove</button>')+'</div>'; }).join('')+'</div>'; }
   function assetBlock(id){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return;
     openModal('<div class="modal__head"><h3>Block days &mdash; '+esc(a.name)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<div class="desc" style="margin-bottom:12px">Mark this '+esc(S.fleet.noun)+' unavailable for a date range &mdash; it will not be bookable then.</div>'
@@ -5309,6 +5309,72 @@ const Atlas = (function(){
     _logEvent('booking','Blocked days on '+a.name+' ('+_csvDate(from)+' - '+_csvDate(to)+')',{asset:a.id});
     closeModal(); openAsset(id); toast('Days blocked'); }
   function assetUnblock(id,bid){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return; a.blackouts=_blackouts(a).filter(function(x){return x.id!==bid;}); _saveAssets(); openAsset(id); }
+  // ---- WAVE76 Listing channels: two-way calendar (iCal) sync so an asset listed on other platforms can't be double-booked.
+  // Imported busy dates become source-tagged blackouts (src:'chan:<id>') -> honored by the SAME availability gate as manual
+  // blocks (owner booking, public /book, AI, extend). The Atlas feed (channelFeedGet) pushes our busy dates OUT to any
+  // platform that can import a calendar URL. iCal is real for RV + vacation + some boats; walled gardens (Turo, Boatsetter,
+  // Sailo, powersports) have no feed -> we stay source of truth + offer the export link. Nothing here touches money or PII.
+  function _channels(a){ if(!a.channels) a.channels=[]; return a.channels; }
+  function _chanNoon(ms){ var d=new Date(Number(ms)||0); d.setHours(12,0,0,0); return d.getTime(); }
+  function _chanEventToBlk(ev,cid,nm){ var s=Number(ev.start)||0, e=Number(ev.end)||0; if(!(s>0)) return null; var f=_chanNoon(s); var lastMs=(e>s)?(e-1):s; var t=_chanNoon(lastMs); if(t<f)t=f; return {id:'chn'+cid+'_'+s, from:f, to:t, reason:(nm||'External calendar'), src:'chan:'+cid}; }
+  function _chanErr(code){ var M={bad_url:'invalid link',not_ical:'not a calendar feed',fetch_failed:'could not reach it',unsafe_redirect:'blocked redirect',too_many_redirects:'too many redirects',read_failed:'could not read it',redirect_no_location:'bad redirect'}; code=String(code||''); if(M[code])return M[code]; if(code.indexOf('http_')===0)return 'server error '+code.slice(5); return code||'error'; }
+  function _channelsHtml(a){ var cs=_channels(a);
+    var rows = cs.length ? ('<div style="display:flex;flex-direction:column;gap:6px">'+cs.map(function(c){
+      var st = (c.lastStatus==='ok') ? ('<span style="color:#1E8E5A">Synced'+((c.n!=null)?(' &middot; '+c.n+' block'+(c.n===1?'':'s')):'')+(c.lastSync?(' &middot; '+_fmtWhen(c.lastSync)):'')+'</span>')
+        : ((c.lastStatus&&c.lastStatus!=='') ? ('<span style="color:var(--danger)">Could not sync ('+esc(_chanErr(c.lastStatus))+')</span>') : '<span class="muted">Not synced yet</span>');
+      return '<div class="mp-row"><span style="min-width:0"><b style="word-break:break-word">'+esc(c.name)+'</b><br><span style="font-size:11.5px">'+st+'</span></span>'
+        +'<span style="display:flex;gap:4px;flex-shrink:0"><button class="btn btn--ghost btn--sm" style="padding:2px 7px" onclick="Atlas.channelSyncNow(\''+a.id+'\',\''+c.id+'\')">Sync</button>'
+        +'<button class="btn btn--ghost btn--sm" style="color:var(--danger);padding:2px 7px" onclick="Atlas.channelRemove(\''+a.id+'\',\''+c.id+'\')">Remove</button></span></div>'; }).join('')+'</div>')
+      : '<div class="bk-lenhint" style="margin:0">No calendars connected. Add a marketplace&rsquo;s iCal link to block its booked dates here automatically &mdash; and share your feed so it blocks yours.</div>';
+    return rows+'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'
+      +'<button class="btn btn--ghost btn--sm" onclick="Atlas.channelAddModal(\''+a.id+'\')">+ Add calendar</button>'
+      +(cs.length?('<button class="btn btn--ghost btn--sm" onclick="Atlas.channelSyncNow(\''+a.id+'\')">Sync all</button>'):'')
+      +'<button class="btn btn--ghost btn--sm" onclick="Atlas.channelFeedGet(\''+a.id+'\')">Get shareable feed link</button></div>'; }
+  function channelAddModal(id){ if(!_canCap('fleetEdit')){ toast('You do not have permission to manage channels'); return; } var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return;
+    openModal('<div class="modal__head"><h3>Add a calendar to sync</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<p class="desc" style="margin-bottom:12px">Paste the <b>iCal / .ics link</b> a marketplace gives you (look for &ldquo;Export calendar&rdquo; or &ldquo;Calendar sync&rdquo; in its owner settings). Atlas checks it regularly and blocks those dates here, so this '+esc(S.fleet.noun||'asset')+' can&rsquo;t be double-booked.</p>'
+      +'<div class="field"><label>Platform / label</label><input class="input" id="chanName" placeholder="e.g. Outdoorsy, Airbnb, Google Calendar" maxlength="60"></div>'
+      +'<div class="field"><label>Calendar link (iCal / .ics URL)</label><input class="input" id="chanUrl" placeholder="https://...ics" autocomplete="off" style="font-size:12px"></div>'
+      +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas._channelAddGo(\''+id+'\')">Add &amp; sync</button>'
+      +'<div class="bk-lenhint" style="margin:10px 0 0">Platforms without a calendar link (Turo, Boatsetter, Sailo, powersports) can&rsquo;t be auto-synced &mdash; use <b>Get shareable feed link</b> to push <i>your</i> availability out, and keep Atlas as your source of truth.</div></div>'); }
+  function _channelAddGo(id){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return;
+    var nm=(val('chanName')||'').trim().slice(0,60), u=(val('chanUrl')||'').trim();
+    if(!/^https?:\/\//i.test(u)&&!/^webcal:\/\//i.test(u)){ toast('Paste a valid calendar link (https:// or webcal://)'); return; }
+    if(!nm) nm='External calendar';
+    var cid='c'+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36);
+    _channels(a).push({id:cid, name:nm, url:u, lastSync:0, lastStatus:'', n:0, _t:Date.now()});
+    _saveAssets(); closeModal(); try{ _logEvent('fleet','Added calendar sync ('+nm+') to '+a.name,{asset:a.id}); }catch(e){}
+    channelSyncNow(id, cid); }
+  function channelSyncNow(id,cid){ if(!_canCap('fleetEdit')){ toast('You do not have permission to manage channels'); return; }
+    var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return;
+    var all=_channels(a); var list=cid?all.filter(function(c){return c.id===cid;}):all;
+    if(!list.length){ toast('No calendar to sync'); return; }
+    if(!ATLAS_BACKEND||!_apiCsrf){ toast('Connect your account to sync calendars'); return; }
+    toast('Syncing calendar'+(list.length>1?'s':'')+'...');
+    var done=0, total=list.length, totalEv=0, anyErr=false;
+    list.forEach(function(c){
+      _api('/api/ical/fetch',{method:'POST',body:{url:c.url}}).then(function(res){ var j=(res&&res.json)||{};
+        if(res&&res.status>=200&&res.status<300&&j.ok){ a.blackouts=_blackouts(a).filter(function(b){return b.src!==('chan:'+c.id);}); var added=0;
+          (j.events||[]).forEach(function(ev){ var blk=_chanEventToBlk(ev,c.id,c.name); if(blk){ a.blackouts.push(blk); added++; } });
+          c.n=added; c.lastSync=Date.now(); c.lastStatus='ok'; c._t=Date.now(); totalEv+=added; }
+        else { c.lastStatus=(j.error||'error'); c.lastSync=Date.now(); c._t=Date.now(); anyErr=true; }
+      }).catch(function(){ c.lastStatus='error'; c.lastSync=Date.now(); c._t=Date.now(); anyErr=true; })
+      .then(function(){ done++; if(done>=total){ _saveAssets(); try{ if(document.getElementById('chanSec')) openAsset(id); }catch(e){} toast(anyErr?('Synced with some errors - '+totalEv+' date'+(totalEv===1?'':'s')+' blocked'):('Synced - '+totalEv+' booked date'+(totalEv===1?'':'s')+' imported')); } }); }); }
+  function channelRemove(id,cid){ if(!_canCap('fleetEdit')){ toast('You do not have permission to manage channels'); return; }
+    var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return;
+    if(!confirm('Remove this calendar connection? Its imported blocked dates will be cleared.')) return;
+    a.channels=_channels(a).filter(function(c){return c.id!==cid;});
+    a.blackouts=_blackouts(a).filter(function(b){return b.src!==('chan:'+cid);});
+    _saveAssets(); openAsset(id); toast('Calendar removed'); }
+  function channelFeedGet(id){ if(!_canCap('fleetEdit')){ toast('You do not have permission to manage channels'); return; }
+    var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return;
+    if(a.icalFeedUrl){ _chanShowFeed(a.icalFeedUrl); return; }
+    if(!ATLAS_BACKEND||!_apiCsrf){ toast('Connect your account to get a shareable feed link'); return; }
+    _api('/api/ical/feed',{method:'POST',body:{assetId:id}}).then(function(res){ var j=(res&&res.json)||{};
+      if(res&&res.status>=200&&res.status<300&&j.ok&&j.url){ a.icalFeedUrl=j.url; _saveAssets(); _chanShowFeed(j.url); }
+      else toast(j.error||'Could not create the feed link'); }).catch(function(){ toast('Network error'); }); }
+  function _chanShowFeed(url){ var copied=false; try{ if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(url); copied=true; }catch(e){}
+    openModal('<div class="modal__head"><h3>Your availability feed</h3>'+_xBtn()+'</div><div class="modal__body"><p class="muted" style="font-size:13px">Paste this link into any platform that can import a calendar (Outdoorsy, RVezy, Airbnb, Vrbo, Google Calendar, and more). It publishes this '+esc(S.fleet.noun||'asset')+'&rsquo;s booked &amp; blocked dates as <b>busy</b> &mdash; no customer details &mdash; so those platforms block the same dates automatically.</p><input class="input" readonly value="'+esc(url)+'" onclick="this.select()" style="font-size:12px;margin-bottom:6px"><div class="bk-lenhint" style="margin:0">'+(copied?'Copied to your clipboard.':'Tap the box to select it, then copy.')+'</div></div>'); }
   var _ovRange='all';
   var OV_RANGES=[['all','All time'],['today','Today'],['yesterday','Yesterday'],['7','Last 7 days'],['14','Last 14 days'],['30','Last 30 days'],['60','Last 60 days'],['90','Last 90 days'],['365','Last year']];
   function _ovRangeBounds(k){ var now=Date.now(), d=86400000, ds=new Date(); ds.setHours(0,0,0,0); var t0=ds.getTime();
@@ -5534,6 +5600,7 @@ const Atlas = (function(){
       +'<div class="field"><label>Email</label><input class="input" id="aTenEmail" value="'+esc(t.email||'')+'" placeholder="'+rl+'@email.com"'+dis+'></div>'
       +_agreementRow(id,ro)
       +(ro?'':'<div style="font-size:13px;font-weight:750;color:var(--ink);margin:16px 0 8px">Blocked / unavailable days</div>'+_blackoutHtml(a)+'<button class="btn btn--ghost btn--sm" style="margin-top:10px" onclick="Atlas.assetBlock(\''+id+'\')">+ Block days</button>')
+      +(ro?'':'<div id="chanSec" style="font-size:13px;font-weight:750;color:var(--ink);margin:16px 0 8px">Listing channels <span style="color:var(--muted);font-weight:500;font-size:12px">&middot; sync availability across platforms, no double-booking</span></div>'+_channelsHtml(a))
       +'<div style="display:flex;align-items:center;justify-content:space-between;margin:16px 0 6px"><span style="font-size:13px;font-weight:750;color:var(--ink)">Service plan</span>'+_serviceDueBadge(a)+'</div>'
       +(ro? '<div class="bk-lenhint" style="margin:0">'+esc(_servicePlanHint(a))+'</div>'
           : '<div class="row2"><div class="field"><label>Service every <span style="color:var(--muted);font-weight:400;font-size:12px">(days, blank = off)</span></label><input class="input tnum" id="aSvcDays" inputmode="numeric" value="'+((a.service&&a.service.intervalDays>0)?a.service.intervalDays:'')+'" placeholder="e.g. 90"></div>'
@@ -15337,7 +15404,7 @@ const Atlas = (function(){
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,catSetView,catEdit,bkBuilderTour,addLocation,removeLocation,editLocation,saveLocationEdit,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,_vehPhotoPick,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetPhotoAdd,assetPhotoRmGallery,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
-    drillKpi,ovCustomizeKpis,ovCustomizeAna,ovKpiToggle,ovKpiMove,ovKpiSave,ovKpiDragStart,ovKpiDrop,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,setOvScope,_anaDrillSet,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,blockDaysQuick,maintUnblock,
+    drillKpi,ovCustomizeKpis,ovCustomizeAna,ovKpiToggle,ovKpiMove,ovKpiSave,ovKpiDragStart,ovKpiDrop,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,setOvScope,_anaDrillSet,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,blockDaysQuick,maintUnblock,channelAddModal,_channelAddGo,channelSyncNow,channelRemove,channelFeedGet,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,pnlRevDrill,pnlNetDrill,pnlExpDrill,assetPnlSetPeriod,renderPnl,
     renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,webScopedLinkPick,copyScopedLink,webSiteCreate,webAutoSites,webSiteEdit,webSiteSave,webSitePubToggle,webSiteDelete,webSiteCopy,webSiteDomainModal,webSiteDomainConnect,webSiteDomainVerify,webSiteDomainDisconnect,webEmailDomainModal,webEmailDomainConnect,webEmailDomainVerify,webEmailDomainDisconnect,webEmailDomainActivate,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomAutoRenew,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,webMetaImageUpload,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
