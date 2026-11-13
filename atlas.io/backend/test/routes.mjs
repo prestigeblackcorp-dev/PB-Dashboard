@@ -6466,5 +6466,26 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/src:'chan:'\+cid/.test(_ATLAS_SRC), 'WAVE76: imported blocks tagged src=chan:<id> so one engine gates them everywhere');
 }
 
+// ==== WAVE77: device <-> asset mapping (#10) -- client-only; bind GPS devices to any asset type (no VIN needed) ====
+{
+  const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  // persistent manual map on the trackers object
+  ok(/if\(!S\.trackers\.map\) S\.trackers\.map=\{\}/.test(_ATLAS_SRC), 'WAVE77: _trackers() ensures a persistent map {deviceId->assetId}');
+  // the live-fetch matcher builds a by-id index and consults the manual map FIRST, honoring ignore
+  ok(/byId\[a\.id\]=a;/.test(_ATLAS_SRC), 'WAVE77: _trkFetchLive builds an asset-by-id index');
+  ok(/var _md=_mp\[p\.deviceId\]; if\(_md==='__ignore'\) return;/.test(_ATLAS_SRC), 'WAVE77: an ignored device is dropped from the live set');
+  ok(/var a=\(_md&&byId\[_md\]\)\|\|\(p\.vin&&byVin\[/.test(_ATLAS_SRC), 'WAVE77: the manual map wins over VIN then label auto-match');
+  // the UI: orphan detector, unmapped banner, match modal, save
+  ok(/function _trkOrphans\(/.test(_ATLAS_SRC), 'WAVE77: _trkOrphans lists dev:<id> devices not matched to an asset');
+  ok(/function _trkRenderUnmapped\(/.test(_ATLAS_SRC), 'WAVE77: unmatched-devices banner render present');
+  ok(/function trkMapOpen\(/.test(_ATLAS_SRC) && /function trkMapSave\(/.test(_ATLAS_SRC), 'WAVE77: match-devices modal open + save present');
+  ok(/id="trkUnmapped"/.test(_ATLAS_SRC), 'WAVE77: the dashboard mounts the unmatched-devices banner');
+  ok(/Atlas\.trkMapOpen\(\)">Match devices/.test(_ATLAS_SRC), 'WAVE77: Match devices action on the Live toolbar');
+  // save re-keys the live vehicle immediately so map/list update without waiting for the next poll
+  ok(/if\(veh\)\{ delete t\.vehicles\[old\]; if\(v!=='__ignore'\) t\.vehicles\[v\]=veh; \}/.test(_ATLAS_SRC), 'WAVE77: save re-keys dev:<id> onto the chosen asset at once');
+  // exported on Atlas
+  ok(/trkMapOpen,trkMapSave,/.test(_ATLAS_SRC), 'WAVE77: new mapping handlers exported on Atlas');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

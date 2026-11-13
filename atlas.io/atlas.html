@@ -8574,7 +8574,7 @@ const Atlas = (function(){
   var TRK_BOX={minLat:30.20,maxLat:30.34,minLng:-97.82,maxLng:-97.66};
   var TRK_STREETS=['Congress Ave','S Lamar Blvd','E 6th St','Guadalupe St','Riverside Dr','Cesar Chavez St','Burnet Rd','Manor Rd','Airport Blvd','Barton Springs Rd','MoPac Expy','I-35 Frontage'];
   var _trkTimer=null, _trkSaveTick=0, _trkSel=null;
-  function _trackers(){ if(!S.trackers) S.trackers={provider:null,connected:false,apiKey:'',vehicles:{}}; if(!S.trackers.vehicles) S.trackers.vehicles={}; return S.trackers; }
+  function _trackers(){ if(!S.trackers) S.trackers={provider:null,connected:false,apiKey:'',vehicles:{},map:{}}; if(!S.trackers.vehicles) S.trackers.vehicles={}; if(!S.trackers.map) S.trackers.map={}; return S.trackers; }
   var _trkLiveBox=null;   // when a real provider is connected, the map box auto-fits to the real coordinates (set in _trkFetchLive)
   function _trkProject(lat,lng){ var B=(_trackers().live&&_trkLiveBox)?_trkLiveBox:TRK_BOX; var x=(lng-B.minLng)/((B.maxLng-B.minLng)||1)*1000; var y=(B.maxLat-lat)/((B.maxLat-B.minLat)||1)*620; return {x:Math.max(14,Math.min(986,x)),y:Math.max(14,Math.min(606,y))}; }
   var TRK_BASE={lat:(TRK_BOX.minLat+TRK_BOX.maxLat)/2, lng:(TRK_BOX.minLng+TRK_BOX.maxLng)/2};
@@ -8599,20 +8599,21 @@ const Atlas = (function(){
       if(!j.live){ t.live=false; t.connected=false; _trkStop(); save(); try{ renderTracking(); }catch(e){} return; }   // no live provider on the server -> honest reconnect/empty screen; NEVER fall back to a simulated "connected" map
       if(j.error && first){ toast('Connected, but the provider returned no data ('+esc(j.error)+'). Check the key.'); }
       var ps=j.positions||[]; if(!ps.length){ if(first) toast('Connected -- positions appear once a device reports in.'); return; }
-      var assets=DATA.assets||[], byVin={}, byName={}; assets.forEach(function(a){ if(a.vin)byVin[String(a.vin).toUpperCase()]=a; byName[String(a.name).toLowerCase()]=a; });
+      var assets=DATA.assets||[], byVin={}, byName={}, byId={}; assets.forEach(function(a){ byId[a.id]=a; if(a.vin)byVin[String(a.vin).toUpperCase()]=a; byName[String(a.name).toLowerCase()]=a; });
       var lats=ps.map(function(p){return p.lat;}), lngs=ps.map(function(p){return p.lng;}), pad=0.01;
       _trkLiveBox={ minLat:Math.min.apply(null,lats)-pad, maxLat:Math.max.apply(null,lats)+pad, minLng:Math.min.apply(null,lngs)-pad, maxLng:Math.max.apply(null,lngs)+pad };
-      var nv={}; ps.forEach(function(p){ var a=(p.vin&&byVin[String(p.vin).toUpperCase()])||(p.label&&byName[String(p.label).toLowerCase()])||null; var id=a?a.id:('dev:'+p.deviceId);
+      var nv={}, _mp=t.map||{}; ps.forEach(function(p){ var _md=_mp[p.deviceId]; if(_md==='__ignore') return;   // #10: owner chose to hide this device
+        var a=(_md&&byId[_md])||(p.vin&&byVin[String(p.vin).toUpperCase()])||(p.label&&byName[String(p.label).toLowerCase()])||null; var id=a?a.id:('dev:'+p.deviceId);
         var prev=t.vehicles[id]||{}; nv[id]={ lat:p.lat, lng:p.lng, heading:p.heading||0, speed:Math.round(p.speed||0), status:(p.moving?'moving':'parked'), online:true, street:p.address||prev.street||'', milesToday:prev.milesToday||0, lastPing:Date.now(), deviceId:p.deviceId, label:p.label||'', real:true }; });
       t.vehicles=nv; save(); try{ _gfCheck(); }catch(e){}   // geofence entry/exit alerts now fire on REAL positions (they used to ride the removed sim tick)
-      try{ _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); if(_trkSel)_trkRenderDetail(); if(_n3d && !_n3d.arrived) _n3dReroute(); }catch(e){}
+      try{ _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderUnmapped(); if(_trkSel)_trkRenderDetail(); if(_n3d && !_n3d.arrived) _n3dReroute(); }catch(e){}
     }).catch(function(){}); }
   function renderTracking(){ var body=document.getElementById('trkBody'), top=document.getElementById('trkTopActions'); if(!body)return; _trkMapTeardown(); var t=_trackers();
     if(!_featOk('tracking')){ _trkStop(); if(top)top.innerHTML=''; body.innerHTML=_lockOverlay('tracking'); return; }   // premium feature: locked below Pro
     if(!t.connected){ _trkStop(); if(top)top.innerHTML=''; _trkSel=null; _trkRoute=null; body.innerHTML=_trkConnectHtml(); return; }   // not connected (with or without a fleet) -> honest "connect a tracker to see live positions" empty state; NEVER a simulated map
-    if(top) top.innerHTML='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="trk-live"><i></i>Live</span><button class="btn btn--ghost btn--sm" onclick="Atlas.trkFullscreen()"><svg viewBox="0 0 16 16" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Full screen</button><button class="btn btn--ghost btn--sm" onclick="Atlas.trkRefresh()">Refresh</button><button class="btn btn--ghost btn--sm" onclick="Atlas.editTrackerConnect()">Edit connection</button><button class="btn btn--ghost btn--sm" onclick="Atlas.disconnectTracker()">Disconnect</button></div>';
+    if(top) top.innerHTML='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="trk-live"><i></i>Live</span><button class="btn btn--ghost btn--sm" onclick="Atlas.trkFullscreen()"><svg viewBox="0 0 16 16" width="13" height="13" style="vertical-align:-2px" fill="none"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg> Full screen</button><button class="btn btn--ghost btn--sm" onclick="Atlas.trkRefresh()">Refresh</button><button class="btn btn--ghost btn--sm" onclick="Atlas.trkMapOpen()">Match devices</button><button class="btn btn--ghost btn--sm" onclick="Atlas.editTrackerConnect()">Edit connection</button><button class="btn btn--ghost btn--sm" onclick="Atlas.disconnectTracker()">Disconnect</button></div>';
     _trkSel=null; _trkRoute=null;   // clean slate each time you open the map
-    body.innerHTML=_trkDashHtml(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderDetail(); _trkStart(); if(t.live) _trkFetchLive(true); }
+    body.innerHTML=_trkDashHtml(); _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderUnmapped(); _trkRenderDetail(); _trkStart(); if(t.live) _trkFetchLive(true); }
   function _trkConnectHtml(){ return '<div class="trk-empty"><div class="trk-empty__ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2a7 7 0 017 7c0 5-7 13-7 13S5 14 5 9a7 7 0 017-7z" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="9" r="2.4" stroke="currentColor" stroke-width="1.6"/></svg></div>'
     +'<h3>Connect a tracker to see live positions</h3><p>Map every '+esc(S.fleet.noun)+' with <b>real live positions</b> &mdash; one-tap sync for '+esc(_trkLiveList())+', plus a universal connector for any other REST GPS platform. Location, trips, mileage, geofences and alerts. Nothing is simulated.</p>'
     +'<button class="btn btn--primary" onclick="Atlas.openTrackerConnect()">Connect a tracker</button>'
@@ -8836,7 +8837,7 @@ const Atlas = (function(){
     save(); try{ var a=(DATA.assets||[]).filter(function(x){return x.id===assetId;})[0]; _logEvent('tracker','Geofence '+(z?'updated':'added')+' for '+((a&&a.name)||assetId),{asset:assetId}); }catch(e){}
     closeModal(); _trkRenderGeofences(); if(_trkSel) _trkRenderDetail(); toast('Geofence saved'); }
   function gfRemove(assetId){ if(!confirm('Remove this geofence?'))return; var t=_trackers(); t.geofences=(t.geofences||[]).filter(function(g){return g.assetId!==assetId;}); save(); try{_logEvent('tracker','Geofence removed',{asset:assetId});}catch(e){} closeModal(); _trkRenderGeofences(); if(_trkSel) _trkRenderDetail(); toast('Geofence removed'); }
-  function _trkDashHtml(){ return '<div class="trk-kpis" id="trkKpis"></div><div class="trk-grid">'
+  function _trkDashHtml(){ return '<div class="trk-kpis" id="trkKpis"></div><div id="trkUnmapped"></div><div class="trk-grid">'
     +'<div class="trk-map-wrap"><div id="trkLMap" style="position:absolute;inset:0"></div>'
     +'<div class="trk-map-legend"><span><i class="d-mv"></i>Moving</span><span><i class="d-id"></i>Idle</span><span><i class="d-pk"></i>Parked</span><span><i class="d-of"></i>Offline</span></div></div>'
     +'<div class="trk-side"><div class="trk-side__hd">'+esc(cap_adNouns())+'</div><div id="trkList"></div></div></div><div id="trkDetail"></div>'; }
@@ -8936,6 +8937,42 @@ const Atlas = (function(){
     var speeding=vs.filter(function(v){return v.speed>65;}).length;
     var k=[['Total '+_adNouns(),vs.length,''],['Moving',f('moving'),'mv'],['Idle',f('idle'),'id'],['Parked',f('parked'),'pk'],['Offline',f('offline'),'of'],['Speeding',speeding,speeding?'al':'']];   // WAVE75: dropped "Distance today" -- the position feed carries no odometer/trip miles, so it was always 0
     el.innerHTML=k.map(function(x){return '<div class="trk-kpi"><div class="trk-kpi__v tnum'+(x[2]==='al'?' trk-kpi__v--al':'')+'">'+x[1]+'</div><div class="trk-kpi__l">'+x[0]+'</div></div>';}).join(''); }
+  // ---- #10 device <-> asset mapping: bind GPS devices that don't auto-match an asset (no VIN, or label != asset name:
+  // most equipment, boats, gear, furniture). Orphan devices land as 'dev:<id>' and would be invisible on the Live map.
+  function _trkOrphans(){ var t=_trackers(); return Object.keys(t.vehicles||{}).filter(function(k){return k.indexOf('dev:')===0;}).map(function(k){ var v=t.vehicles[k]||{}; return {deviceId:v.deviceId||k.slice(4), label:v.label||'', v:v}; }); }
+  function _trkRenderUnmapped(){ var el=document.getElementById('trkUnmapped'); if(!el) return; var n=_trkOrphans().length;
+    if(!n){ el.innerHTML=''; return; }
+    el.innerHTML='<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:0 0 12px;padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--warn,#D97706);border-radius:10px;background:var(--card,#fff)">'
+      +'<span style="font-size:13px;color:var(--ink)"><b>'+n+' GPS device'+(n>1?'s':'')+'</b> not matched to a '+esc(S.fleet.noun)+' yet &mdash; live position stays hidden until matched.</span>'
+      +'<button class="btn btn--primary btn--sm" onclick="Atlas.trkMapOpen()">Match now</button></div>'; }
+  function trkMapOpen(){ var t=_trackers(), assets=DATA.assets||[];
+    var bound={}; Object.keys(t.vehicles||{}).forEach(function(k){ if(k.indexOf('dev:')!==0) bound[k]=1; });   // assets already showing a live device
+    var seen={}, items=[]; _trkOrphans().forEach(function(o){ seen[o.deviceId]=1; items.push({deviceId:o.deviceId,label:o.label,v:o.v,cur:(t.map[o.deviceId]||'')}); });
+    Object.keys(t.map||{}).forEach(function(d){ if(t.map[d]==='__ignore' && !seen[d]){ seen[d]=1; items.push({deviceId:d,label:'',v:null,cur:'__ignore'}); } });   // ignored devices stay reversible
+    var rows;
+    if(!items.length){ rows='<p class="bk-lenhint" style="margin:0">Every connected device is matched to a '+esc(S.fleet.noun)+'. Any new unmatched device will appear here.</p>'; }
+    else { rows=items.map(function(o){ var cur=o.cur, where=(o.v&&o.v.street)?(' &middot; '+esc(o.v.street)):'';
+      var opts=assets.map(function(a){ return '<option value="'+esc(a.id)+'"'+(cur===a.id?' selected':'')+'>'+esc(a.name)+(bound[a.id]?' (has a device)':'')+'</option>'; }).join('');
+      return '<div style="display:flex;gap:10px;align-items:center;padding:11px 0;border-top:1px solid var(--line)">'
+        +'<div style="flex:1;min-width:0"><b style="font-size:13.5px">'+esc(o.label||('Device '+o.deviceId))+'</b>'
+        +'<div style="font-size:12px;color:var(--muted)">ID '+esc(String(o.deviceId))+where+(cur==='__ignore'?' &middot; ignored':'')+'</div></div>'
+        +'<select class="select trk-map-sel" data-dev="'+esc(String(o.deviceId))+'" style="max-width:52%">'
+        +'<option value=""'+(cur===''?' selected':'')+'>Choose a '+esc(S.fleet.noun)+'...</option>'+opts
+        +'<option value="__ignore"'+(cur==='__ignore'?' selected':'')+'>Ignore this device</option></select></div>'; }).join(''); }
+    openModal('<div class="modal__head"><h3>Match devices to '+esc(cap_adNouns())+'</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<p class="bk-lenhint" style="margin:0 0 6px">A tracker reports by VIN or its own label. Anything without a matching VIN or name (most equipment, boats and gear) needs a one-time match here &mdash; then its live position, trips and geofences work like any vehicle.</p>'
+      +rows
+      +(items.length?'<button class="btn btn--primary btn--full btn--lg" style="margin-top:14px" onclick="Atlas.trkMapSave()">Save matches</button>':'')
+      +'</div>'); }
+  function trkMapSave(){ var t=_trackers(), sels=document.querySelectorAll('.trk-map-sel'), changed=0;
+    [].forEach.call(sels,function(s){ var dev=s.getAttribute('data-dev'), v=s.value; if(!dev||v==='') return;   // blank = no decision, leave as-is
+      if(t.map[dev]!==v) changed++; t.map[dev]=v;
+      var old='dev:'+dev, veh=t.vehicles[old];   // re-key the live vehicle now so the map/list update without waiting for the next poll
+      if(veh){ delete t.vehicles[old]; if(v!=='__ignore') t.vehicles[v]=veh; } });
+    save(); closeModal();
+    try{ _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderUnmapped(); if(_trkSel)_trkRenderDetail(); }catch(e){}
+    if(changed){ _logEvent('tracker','Matched '+changed+' GPS device'+(changed>1?'s':'')+' to '+(changed>1?'assets':'an asset'),{}); toast('Matched '+changed+' device'+(changed>1?'s':'')); }
+    else { toast('No changes'); } }
   function trkSelect(id){ _trkSel=(_trkSel===id?null:id); if(!_trkSel)_trkRoute=null; _trkRenderMap(); _trkRenderList(); _trkRenderDetail(); }
   function trkRoute(id){ _trkRoute=(_trkRoute===id?null:id); _trkDrawRoute(); _trkRenderDetail(); }
   function _trkRenderDetail(){ var d=document.getElementById('trkDetail'); if(!d)return; if(!_trkSel){ d.innerHTML=''; return; }
@@ -15415,7 +15452,7 @@ const Atlas = (function(){
     setCommsMode,setCommsField,setPendingResend,setPendingSmsToken,connectSms,toggleAuto,setAutoDays,chaChingToggle,setSaleEmail,verifyResendKey,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
     openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,renderPayouts,downloadReport,drillReportRow,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,reviewShowAll,
-    renderTracking,openTrackerConnect,connectTrackerLive,connectTrackerGeneric,trkPickProvider,trkGenericAuthUpdate,trkConnTab,trkLiveFieldsUpdate,trkFieldsUpdate,trkConnect,editTrackerConnect,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkFullscreen,trkNav3d,exitNav3d,
+    renderTracking,openTrackerConnect,connectTrackerLive,connectTrackerGeneric,trkPickProvider,trkGenericAuthUpdate,trkConnTab,trkLiveFieldsUpdate,trkFieldsUpdate,trkConnect,editTrackerConnect,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkMapOpen,trkMapSave,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
     openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,pbSyncNow,openWebhooks,devKeyCreate,devKeyRevoke,_devCopy,devHookCreate,devHookTest,devHookDelete,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     mfaEnableEmail,openMfaSetupTotp,mfaConfirmTotp,_mfaDownloadCodes,openMfaDisable,mfaDisableSubmit,mfaStepupToggle,
