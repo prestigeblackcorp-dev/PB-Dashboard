@@ -6502,6 +6502,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 
 // ==== WAVE79: domain pricing -- 125% markup, no per-TLD floor, processing fee passed to the buyer (sales tax stays a Stripe-Tax checkout concern) ====
 {
+  const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');   // block-local client source (same pattern as the other client-guard blocks) -- the last ok() asserts a client invariant
   ok(/function _domainRetailCents\(costCents, tld, env\)/.test(_WORKER_SRC), 'WAVE79: the _domainRetailCents helper is the single source of truth for the domain price we charge');
   ok(/Number\(env\.DOMAIN_MARKUP_PCT\) \|\| 125/.test(_WORKER_SRC), 'WAVE79: the domain markup default is 125 percent');
   ok(/Math\.ceil\(\(base \+ 30\) \/ \(1 - 0\.029\)\)/.test(_WORKER_SRC), 'WAVE79: the payment-processing fee is passed to the buyer via a gross-up so Atlas nets the full base');
