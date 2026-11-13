@@ -6556,5 +6556,13 @@ ok((_WORKER_SRC.match(/quick_pay:/g) || []).length >= 1, 'WAVE81 square-tax: qui
 ok((_WORKER_SRC.match(/taxPct: /g) || []).length >= 2, 'WAVE81 square-tax: both the public booking and portal callers pass a taxPct to the checkout');
 ok(/kind === 'deposit' \|\| kind === 'balance'\) \? _sqEffTaxPct\(q\) : 0/.test(_WORKER_SRC), 'WAVE81 square-tax: the portal caller taxes only deposit and balance, never a refundable security hold or an ad-hoc charge');
 
+// ==== W83 a11y: server-rendered customer pages (portal + public booking) get the accessibility the client shim cannot reach ====
+ok(/<body><main class="wrap">/.test(_WORKER_SRC), 'W83 a11y: served pages wrap content in a main landmark element');
+ok(/id=sgName aria-label="Your full legal name"/.test(_WORKER_SRC), 'W83 a11y: the portal legal-signature input has an accessible name');
+ok(/id=partAmt aria-label="Amount to pay"/.test(_WORKER_SRC), 'W83 a11y: the portal partial-payment input has an accessible name');
+ok(/id=gcMsg class=muted role=status aria-live=polite/.test(_WORKER_SRC), 'W83 a11y: portal status messages announce updates via aria-live');
+ok(/tabindex="0" role="group" aria-label="Rental agreement"/.test(_WORKER_SRC), 'W83 a11y: the rental-agreement scroll box is keyboard focusable');
+ok((_WORKER_SRC.match(/#767676/g) || []).length >= 4, 'W83 a11y: the four low-contrast greys on the public booking page are darkened to an approx 4.5 to 1 token');
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
