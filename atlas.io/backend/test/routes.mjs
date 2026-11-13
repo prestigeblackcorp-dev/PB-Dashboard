@@ -6489,5 +6489,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(!/cap_adNouns/.test(_ATLAS_SRC), 'WAVE77 fix: the undefined cap_adNouns() phantom is gone (capitalize via cap(_adNouns()))');
 }
 
+// ==== WAVE78: mid-period tier TRUE-UP (money) -- an upgrade grants the new tier free credit/email allotment NOW, not at the next period rollover ====
+{
+  ok(/async function _tierTrueUp\(env, tid, oldTier, newTier, force\)/.test(_WORKER_SRC), 'WAVE78: the _tierTrueUp helper is present');
+  ok(/UPDATE tenants SET credits_week=0, email_month=0 WHERE id=\?/.test(_WORKER_SRC), 'WAVE78: the true-up resets credits_week + email_month so the next metering touch refills at the current tier');
+  ok(/\(\(TIER_CREDITS\[newTier\] \|\| 0\) > \(TIER_CREDITS\[oldTier\] \|\| 0\)\)/.test(_WORKER_SRC), 'WAVE78: a non-forced true-up fires only on a genuine allotment INCREASE so a downgrade or lateral never re-grants (no gifting)');
+  ok((_WORKER_SRC.match(/tier='unlimited', stripe_sub=NULL, square_tier=NULL, square_period_end=NULL, credits_week=0, email_month=0/g) || []).length === 2, 'WAVE78: BOTH comp grants reset the period markers so a comp refills at the Unlimited tier allotment');
+  ok((_WORKER_SRC.match(/await _tierTrueUp\(env,/g) || []).length === 6, 'WAVE78: all six paid upgrade paths (crypto, Stripe checkout, subscription.updated active, Square, confirm-session, change-plan) call the true-up');
+  ok(/if \(_u53 && _u53\.meta && _u53\.meta\.changes\) await _tierTrueUp/.test(_WORKER_SRC), 'WAVE78: the subscription.updated true-up fires only when the tier UPDATE actually applied (superseded-sub-safe)');
+  ok(/body\.email\.toLowerCase\(\)\)\.run\(\); \} catch \(e\) \{\}/.test(_WORKER_SRC), 'WAVE78 regression: the api admin comp UPDATE stays INSIDE its try-catch (the new comment must not swallow the closing catch)');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
