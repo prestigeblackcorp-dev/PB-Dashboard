@@ -615,6 +615,11 @@ table.tbl{width:100%;border-collapse:collapse}
 .demo-exit b{color:#8FE3C6;font-weight:700}
 .demo-exit button{background:#2FA576;border:0;color:#fff;font-weight:750;font-size:12px;border-radius:999px;padding:5px 12px;font-family:inherit;cursor:pointer;white-space:nowrap}
 .demo-exit .demo-exit__back{background:transparent;border:1px solid rgba(255,255,255,.28);color:#fff;font-weight:650}
+.demo-clock{position:fixed;top:calc(10px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);z-index:9300;display:none;align-items:center;gap:7px;background:rgba(14,28,21,.95);color:#fff;border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:7px 14px;font-size:12.5px;font-weight:750;font-variant-numeric:tabular-nums;box-shadow:0 10px 30px -8px rgba(0,0,0,.5)}
+.demo-clock.on{display:flex}
+.demo-clock svg{width:14px;height:14px;opacity:.9;flex:none}
+.demo-clock.warn{background:#e5484d;border-color:rgba(255,255,255,.3);animation:demoClockPulse 1s ease-in-out infinite}
+@keyframes demoClockPulse{0%,100%{opacity:1}50%{opacity:.62}}
 .verify-gate{position:fixed;inset:0;z-index:9500;background:rgba(12,20,16,.55);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;padding:24px}
 .verify-gate.on{display:flex}
 .verify-card{max-width:400px;width:100%;text-align:center;background:var(--surface,#fff);border:1px solid var(--line,#e5e1d8);border-radius:18px;padding:28px 24px;box-shadow:0 20px 60px -18px rgba(0,0,0,.5)}
@@ -3309,7 +3314,7 @@ const Atlas = (function(){
   function _mfaDeviceToken(email){ try{ var v=JSON.parse(localStorage.getItem(_mfaTdKey(email))||'null'); if(v&&v.token&&v.exp>Date.now()) return v.token; }catch(e){} return undefined; }
   function _mfaSaveDeviceToken(email,token){ try{ if(!token) return; var parts=String(token).split('.'); var exp=parseInt(parts[1],10)||(Date.now()+2592000000); localStorage.setItem(_mfaTdKey(email), JSON.stringify({token:token,exp:exp})); }catch(e){} }
   function goAuth(mode){ try{ _demoTeardown(); }catch(e){} if(mode!=='login') _funnelEvent('cta_click');   /* #297 funnel: a landing "Start free trial" CTA (every one routes here) */ _authMode=(mode==='login')?'login':'signup'; renderAuth(); show('auth'); var e=document.getElementById('authEmail'); if(e) setTimeout(function(){e.focus();},60); }
-  function _demoTeardown(){ if(_demo){ _demo.on=false; clearTimeout(_demo.timer); } var c=document.getElementById('dcoach'); if(c) c.classList.remove('on'); var x=document.getElementById('demoExit'); if(x) x.classList.remove('on'); }
+  function _demoTeardown(){ if(_demo){ _demo.on=false; clearTimeout(_demo.timer); } try{ _demoStopClock(); }catch(e){} try{ _lsSet(_DEMO_AT_K,0); }catch(e){} var c=document.getElementById('dcoach'); if(c) c.classList.remove('on'); var x=document.getElementById('demoExit'); if(x) x.classList.remove('on'); }
   function renderAuth(){
     if(_authMode==='signup') _funnelEvent('signup_open');   /* #297 funnel: the auth screen shown in signup mode */
     var _ef=document.getElementById('authEmailField');
@@ -7953,7 +7958,10 @@ const Atlas = (function(){
   function liveTour(force){
     if(_tour||(_demo&&_demo.on))return;                       // never collide with a running tour or the guided demo
     if(_isDemoTenant())return;                                // demo accounts have their own guided demo
+    var _av=document.getElementById('view-app'); if(!_av || _av.style.display==='none' || _av.classList.contains('hidden')) return;   // ONLY inside the live dashboard -- never on the auth / landing / onboarding screens (fixes the walkthrough firing during login)
+    if(!(S&&S.onboarded)) return;                             // a signed-in, onboarded account only
     if(!force && _lsGet('atlas_tour_live_done',0))return;     // only ever once
+    _lsSet('atlas_tour_live_done',1);                         // mark seen the MOMENT it starts, so an interrupted/partial walkthrough can never replay (was previously set ONLY on full completion -> replayed for anyone who closed it early)
     _liveTourAt(0);
   }
   function _liveTourAt(idx){
@@ -9681,7 +9689,7 @@ const Atlas = (function(){
       </div>`)
       + `<div class="set-block"><h3>Atlas.io credits</h3><div class="desc">Fuel for your AI assistant. Free credits refill every week; top up anytime.</div>
         <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-          <div style="flex:1;min-width:180px"><div style="font-size:26px;font-weight:850;color:var(--ink)" class="tnum">${_c.toLocaleString()}</div><div style="font-size:12.5px;color:var(--muted)">credits available &middot; ${_t.credits.toLocaleString()} free every week on ${esc(_t.name)}</div></div>
+          <div style="flex:1;min-width:180px"><div style="font-size:26px;font-weight:850;color:var(--ink)" class="tnum">${_creditsUnlimited()?'Unlimited':_c.toLocaleString()}</div><div style="font-size:12.5px;color:var(--muted)">${_creditsUnlimited()?('credits &middot; included with '+esc(_t.name)):('credits available &middot; '+_t.credits.toLocaleString()+' free every week on '+esc(_t.name))}</div></div>
           <button class="btn btn--primary btn--sm" onclick="Atlas.openCredits()">Buy credits</button></div>
       </div>` + _emailMeterHtml() + _addonsBillingHtml() + _referralCardHtml();
       if(_refEnabled) _referralLoad();
@@ -11851,7 +11859,8 @@ const Atlas = (function(){
   function _weekStart(){ var d=new Date(); var day=(d.getDay()+6)%7; d.setHours(0,0,0,0); d.setDate(d.getDate()-day); return d.getTime(); }
   function _ensureCredits(){ if(!S) return; if(!S.credits) S.credits={free:_curTier().credits, purchased:0, weekStart:_weekStart()};
     if(S.credits.weekStart!==_weekStart()){ S.credits.free=_curTier().credits; S.credits.weekStart=_weekStart(); save(); } }
-  function _credits(){ _ensureCredits(); if(ATLAS_BACKEND && S.credits && typeof S.credits.bal==='number') return S.credits.bal; return (S.credits.free||0)+(S.credits.purchased||0); }   // server balance is authoritative when live
+  function _credits(){ _ensureCredits(); if(ATLAS_BACKEND && S.credits && typeof S.credits.bal==='number') return S.credits.bal; return (S.credits.free||0)+(S.credits.purchased||0); }
+  function _creditsUnlimited(){ try{ return _credits()===Infinity || !!(_curTier()&&_curTier().credits===Infinity) || _isOwnerAcct(); }catch(e){ return false; } }   // true unlimited (owner / Diamond) -> credit meters show "Unlimited" instead of a number   // server balance is authoritative when live
   function _spendCredit(n){ n=n||1; _ensureCredits(); if(_credits()<n) return false; var f=Math.min(S.credits.free,n); S.credits.free-=f; S.credits.purchased-=(n-f); save(); return true; }
   function _addCredits(n){ _ensureCredits(); S.credits.purchased=(S.credits.purchased||0)+n; if(typeof S.credits.bal==='number') S.credits.bal=(S.credits.bal||0)+n; save(); }
   function renderTrialBox(){ var el=document.getElementById('trialBox'); if(!el) return; var t=_curTier(), c=_credits();
@@ -12040,9 +12049,9 @@ const Atlas = (function(){
     if(!confirm('Cancel your subscription? You keep all your data.')) return; S.plan='trial'; save(); renderTrialBox(); renderSet(); toast('Plan cancelled -- you keep your data'); }   // fix: billing RBAC guard (mirror confirmSubscribe/buyCredits)
   function openCredits(){
     openModal('<div class="modal__head"><h3>Atlas.io credits</h3>'+_xBtn()+'</div>'
-      +'<div class="modal__body"><div style="text-align:center"><div style="font-size:32px;font-weight:850;color:var(--ink)" class="tnum">'+_credits().toLocaleString()+'</div><div style="font-size:13px;color:var(--muted)">credits available &middot; '+_curTier().credits.toLocaleString()+' free every week</div></div>'
+      +'<div class="modal__body"><div style="text-align:center"><div style="font-size:32px;font-weight:850;color:var(--ink)" class="tnum">'+(_creditsUnlimited()?'Unlimited':_credits().toLocaleString())+'</div><div style="font-size:13px;color:var(--muted)">'+(_creditsUnlimited()?'credits &mdash; included with your plan':('credits available &middot; '+_curTier().credits.toLocaleString()+' free every week'))+'</div></div>'
       +'<div style="font-size:13px;font-weight:700;color:var(--ink);margin:18px 0 8px">Need more? Top up anytime</div>'
-      +CREDIT_PACKS.map(function(p,i){ return '<div style="display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><div style="flex:1"><b style="color:var(--ink)">'+p.credits.toLocaleString()+' credits</b><div style="font-size:11.5px;color:var(--muted)">$'+((_isFounder()?_fHalf(p.price):p.price)/p.credits).toFixed(3).replace(/0+$/,'0')+' per credit'+(_isFounder()?' &middot; founder':'')+'</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.buyCredits('+i+')">'+_fDisp(p.price)+'</button>'+(_cryptoEnabled?('<button class="btn btn--ghost btn--sm" style="margin-left:6px" title="Pay with crypto" onclick="Atlas._cryptoCheckout(\'credits\',{pack:\''+p.credits+'\'})">&#8383;</button>'):'')+'</div>'; }).join('')
+      +CREDIT_PACKS.map(function(p,i){ return '<div style="display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><div style="flex:1"><b style="color:var(--ink)">'+p.credits.toLocaleString()+' credits</b>'+(_isFounder()?'<div style="font-size:11.5px;color:var(--muted)">Founder price</div>':'')+'</div><button class="btn btn--primary btn--sm" onclick="Atlas.buyCredits('+i+')">'+_fDisp(p.price)+'</button>'+(_cryptoEnabled?('<button class="btn btn--ghost btn--sm" style="margin-left:6px" title="Pay with crypto" onclick="Atlas._cryptoCheckout(\'credits\',{pack:\''+p.credits+'\'})">&#8383;</button>'):'')+'</div>'; }).join('')
       +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px">A credit = one Atlas.io action. Purchased credits never expire.</p></div>');
   }
   function buyCredits(i){ if(!_guard('billing','Managing billing'))return; var p=CREDIT_PACKS[i]; if(!p) return;
@@ -12066,11 +12075,11 @@ const Atlas = (function(){
     openModal('<div class="modal__head"><h3>Email top-ups</h3>'+_xBtn()+'</div>'
       +'<div class="modal__body"><div style="text-align:center"><div style="font-size:32px;font-weight:850;color:var(--ink)" class="tnum">'+((m.allowance===Infinity)?'Unlimited':((m.remaining)||0).toLocaleString())+'</div><div style="font-size:13px;color:var(--muted)">emails left this month &middot; '+((m.allowance===Infinity)?'unlimited':(((m.allowance)||0).toLocaleString()+'/mo'))+'</div></div>'
       +'<div style="font-size:13px;font-weight:700;color:var(--ink);margin:18px 0 8px">Need more? Add a one-off pack</div>'
-      +EMAIL_PACKS.map(function(p,i){ return '<div style="display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><div style="flex:1"><b style="color:var(--ink)">'+p.emails.toLocaleString()+' emails</b><div style="font-size:11.5px;color:var(--muted)">$'+((_isFounder()?_fHalf(p.price):p.price)/p.emails*1000).toFixed(2)+' per 1,000'+(_isFounder()?' &middot; founder':'')+'</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.buyEmails('+i+')">'+_fDisp(p.price)+'</button></div>'; }).join('')
+      +EMAIL_PACKS.map(function(p,i){ return '<div style="display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><div style="flex:1"><b style="color:var(--ink)">'+p.emails.toLocaleString()+' emails</b>'+(_isFounder()?'<div style="font-size:11.5px;color:var(--muted)">Founder price</div>':'')+'</div><button class="btn btn--primary btn--sm" onclick="Atlas.buyEmails('+i+')">'+_fDisp(p.price)+'</button></div>'; }).join('')
       +'<div style="font-size:13px;font-weight:700;color:var(--ink);margin:18px 0 8px">Or increase every month</div>'
       +(m.addon>0
         ? '<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><b style="color:var(--ink)">+'+m.addon.toLocaleString()+' emails / month</b><div style="font-size:11.5px;color:var(--muted)">Active add-on &middot; manage or cancel in the billing portal</div></div>'
-        : EMAIL_ADDONS.map(function(p,i){ return '<div style="display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><div style="flex:1"><b style="color:var(--ink)">+'+p.emails.toLocaleString()+' emails / month</b><div style="font-size:11.5px;color:var(--muted)">'+_fDisp(p.price)+'/mo &middot; $'+((_isFounder()?_fHalf(p.price):p.price)/p.emails*1000).toFixed(2)+' per 1,000'+(_isFounder()?' &middot; founder':'')+'</div></div><button class="btn btn--ghost btn--sm" onclick="Atlas.buyEmailAddon('+i+')">'+_fDisp(p.price)+'/mo</button></div>'; }).join(''))
+        : EMAIL_ADDONS.map(function(p,i){ return '<div style="display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px"><div style="flex:1"><b style="color:var(--ink)">+'+p.emails.toLocaleString()+' emails / month</b><div style="font-size:11.5px;color:var(--muted)">'+_fDisp(p.price)+'/mo'+(_isFounder()?' &middot; founder':'')+'</div></div><button class="btn btn--ghost btn--sm" onclick="Atlas.buyEmailAddon('+i+')">'+_fDisp(p.price)+'/mo</button></div>'; }).join(''))
       +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:6px">Top-up emails never expire and are used only after your monthly allowance. Monthly add-ons renew until cancelled.</p></div>'); }
   function buyEmails(i){ if(!_guard('billing','Managing billing'))return; var p=EMAIL_PACKS[i]; if(!p) return;
     if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant()){ closeModal(); _billingCheckout('email_pack',{pack:String(p.emails)}); return; }
@@ -12746,7 +12755,7 @@ const Atlas = (function(){
   function renderExtras(){ var el=document.getElementById('extrasBody'); if(!el) return;
     if(!(ATLAS_BACKEND&&_apiCsrf)){ el.innerHTML='<div class="card" style="padding:22px;text-align:center;color:var(--muted)">Sign in and go online to manage your plan and add-ons.</div>'; return; }
     var t=_curTier(), P=_extPrices(), comp=(typeof _isComp==='function'&&_isComp());
-    var eu=(S&&S.emailUsage)||null, emUsed=eu?Math.max(0,eu.used||0):0, emCap=eu?(eu.unlimited?0:(eu.allowance||0)):((t&&t.emails!==Infinity)?t.emails:0);
+    var eu=(S&&S.emailUsage)||null, emUnlim=!!(eu&&eu.unlimited)||!!(t&&t.emails===Infinity), emCap=emUnlim?0:(eu?(eu.allowance||0):((t&&t.emails!==Infinity)?t.emails:0)), emRem=emUnlim?0:(eu?(typeof eu.remaining==='number'?Math.max(0,eu.remaining):Math.max(0,emCap-(eu.used||0))):emCap);   // show REMAINING (authoritative), never a derived "used" that inflates after a mid-month tier upgrade
     var crBal=(S&&S.credits&&S.credits.bal)||0, crWk=(S&&S.creditsWeekly)||((t&&t.credits!==Infinity)?t.credits:0);
     var asCap=(S&&S.assetCap!=null)?Number(S.assetCap):((t&&t.vehicles!==Infinity)?t.vehicles:0), asUsed=_fleetUnits();
     var locCap=(S&&S.locationCap!=null)?Number(S.locationCap):((t&&t.locations!==Infinity)?t.locations:0), locUsed=_locList().length;
@@ -12759,8 +12768,8 @@ const Atlas = (function(){
       +(comp?'<span class="chip chip--ok">Complimentary access</span>':'<button class="btn btn--ghost btn--sm" onclick="Atlas.openPlans&&Atlas.openPlans()">Change plan</button>')+'</div>';
     h+='<div style="font-weight:850;font-size:15px;margin:2px 0 11px">What you&rsquo;re using</div>'
       +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-bottom:24px">'
-      + _extMeter('Emails this month',emUsed,emCap,'emails','<button class="btn btn--ghost btn--sm" onclick="Atlas.openEmailPacks&&Atlas.openEmailPacks()">Buy emails</button>')
-      + '<div class="card" style="padding:15px 16px"><div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-weight:700;font-size:13.5px">AI credits</div><div style="font-size:12px;color:var(--muted)">'+(crWk?('+'+crWk.toLocaleString()+'/wk'):'')+'</div></div><div style="font-size:26px;font-weight:850;margin:8px 0 2px;font-variant-numeric:tabular-nums">'+(crBal.toLocaleString?crBal.toLocaleString():crBal)+'</div><div style="font-size:12px;color:var(--muted)">available now</div><div style="margin-top:11px"><button class="btn btn--ghost btn--sm" onclick="Atlas.openCredits&&Atlas.openCredits()">Buy credits</button></div></div>'
+      + '<div class="card" style="padding:15px 16px"><div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-weight:700;font-size:13.5px">Emails this month</div><div style="font-size:12px;color:var(--muted)">'+(emUnlim?'':(emCap?(emCap.toLocaleString()+'/mo'):''))+'</div></div><div style="font-size:26px;font-weight:850;margin:8px 0 2px;font-variant-numeric:tabular-nums">'+(emUnlim?'Unlimited':emRem.toLocaleString())+'</div><div style="font-size:12px;color:var(--muted)">'+(emUnlim?'emails &mdash; included with your plan':'emails left this month')+'</div><div style="margin-top:11px"><button class="btn btn--ghost btn--sm" onclick="Atlas.openEmailPacks&&Atlas.openEmailPacks()">Buy emails</button></div></div>'
+      + '<div class="card" style="padding:15px 16px"><div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-weight:700;font-size:13.5px">AI credits</div><div style="font-size:12px;color:var(--muted)">'+(_creditsUnlimited()?'':(crWk?('+'+crWk.toLocaleString()+'/wk'):''))+'</div></div><div style="font-size:26px;font-weight:850;margin:8px 0 2px;font-variant-numeric:tabular-nums">'+(_creditsUnlimited()?'Unlimited':(crBal.toLocaleString?crBal.toLocaleString():crBal))+'</div><div style="font-size:12px;color:var(--muted)">'+(_creditsUnlimited()?'included with your plan':'available now')+'</div><div style="margin-top:11px"><button class="btn btn--ghost btn--sm" onclick="Atlas.openCredits&&Atlas.openCredits()">Buy credits</button></div></div>'
       + _extMeter('Assets',asUsed,asCap,'units','<button class="btn btn--ghost btn--sm" onclick="Atlas.buyAssetBlock&&Atlas.buyAssetBlock()">Add '+(P.assetBlockUnits||10)+' units</button>')
       + _extMeter('Locations',locUsed,locCap,'locations','<button class="btn btn--ghost btn--sm" onclick="Atlas.buyLocation&&Atlas.buyLocation()">Add a location</button>')
       + _extMeter('Booking sites',siteUsed,siteCap,'sites','<button class="btn btn--ghost btn--sm" onclick="Atlas.buySite&&Atlas.buySite()">Add a site</button>')
@@ -14699,7 +14708,8 @@ const Atlas = (function(){
     var sslChip=d.ssl?'<span class="chip chip--ok">SSL</span>':'<span class="chip chip--muted">SSL pending</span>';
     var arChip=(d.autorenew===true)?'<span class="chip chip--ok">Auto-renew on</span>':(d.autorenew===false?'<span class="chip chip--muted">Auto-renew off</span>':'');
     var exp=_domFmtDate(d.expiresAt); var expHtml=exp?('<span style="font-size:11.5px;color:var(--muted)">'+(isConn?'Renews ':'Expires ')+esc(exp)+'</span>'):'';
-    var regHtml=d.registrar?('<span style="font-size:11.5px;color:var(--muted)">'+esc(String(d.registrar))+'</span>'):'';
+    var _reg=String(d.registrar||''); if(/dynadot/i.test(_reg)) _reg='Atlas';   // white-label: a domain registered through Atlas never exposes the underlying registrar
+    var regHtml=_reg?('<span style="font-size:11.5px;color:var(--muted)">'+esc(_reg)+'</span>'):'';
     var meta=[expHtml,regHtml].filter(Boolean).join(' <span style="color:var(--line)">&middot;</span> ');
     var top='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">'
       +'<div style="min-width:0"><div class="mono" style="font-size:13.5px;font-weight:700;color:var(--ink);word-break:break-all">'+esc(name)+'</div>'+(meta?('<div style="margin-top:2px">'+meta+'</div>'):'')+'</div>'
@@ -14865,6 +14875,7 @@ const Atlas = (function(){
     return 'You\'re already set up for <b>'+esc(S.fleet.nouns)+'</b> &mdash; your KPIs, labels, booking flow and pricing are all tuned for '+esc(S.fleet.noun)+' rentals. I can <b>refine your pricing</b>, <b>add another asset type</b>, or <b>research your local '+esc(S.fleet.noun)+' market</b> for gaps. What would you like?<br><button class="btn btn--primary btn--sm" style="margin-top:8px" onclick="Atlas.aioAsk(\'Find gaps in my market\')">Find gaps in my '+esc(S.fleet.noun)+' market</button>';
   }
   function demo(){ // jump straight into a filled demo tenant on its own throwaway session (no signup)
+    if(_demoConsumed()){ _demoLockout(); return; }   // single-use: one live demo per visitor, then purchase only
     _lsSet(SK,{email:'demo@atlasrental.io',tenantId:'demo'});
     var t=fresh(); t.brand={name:'Summit Exotics',color:'#1E6E4E',logo:null,initial:'S',subdomain:'summit'}; t.fleet=FLEET_TYPES[0]; t.owner='Alex'; t.onboarded=true;
     _lsSet('atlas_tenant_demo', t); S=load();
@@ -14872,6 +14883,7 @@ const Atlas = (function(){
   }
   // Big property-management account: 300 units across 6 properties on Business. Shows Atlas at scale + multi-location.
   function demoBig(){
+    if(_demoConsumed()){ _demoLockout(); return; }   // single-use: one live demo per visitor, then purchase only
     _lsSet(SK,{email:'demo-big@atlasrental.io',tenantId:'demobig'});
     var t=fresh();
     t.brand={name:'Cascade Property Group',color:'#2563EB',logo:null,initial:'C',subdomain:'cascade'};
@@ -14899,6 +14911,36 @@ const Atlas = (function(){
   function _fleetOf(id){ var t=FLEET_TYPES.find(function(x){return x.id===id;})||FLEET_TYPES[0]; return {id:t.id,emoji:t.emoji,label:t.label,noun:t.noun,nouns:t.nouns,sample:t.sample.slice()}; }
   /* ---- Guided live demo: loads a filled account, walks the whole product ~30s, then returns to sign-up. One-time guided; a persistent exit chip always routes back to purchase. ---- */
   var _demo={i:-1,timer:null,on:false,n:0};
+  // ---- Single-use, time-boxed live demo: ONE ~60s session per visitor, then auto-exit to purchase. ----
+  var _DEMO_MS=60000, _DEMO_USED_K='atlas_demo_used', _DEMO_AT_K='atlas_demo_at';
+  function _demoConsumed(){ return _lsGet(_DEMO_USED_K,0)==1; }
+  function _demoClockEl(){ var e=document.getElementById('demoClock'); if(!e){ e=document.createElement('div'); e.id='demoClock'; e.className='demo-clock'; document.body.appendChild(e); } return e; }
+  function _demoClockTick(){ var e=document.getElementById('demoClock'); if(!e) return; var at=_lsGet(_DEMO_AT_K,0); var s=Math.max(0, Math.ceil((_DEMO_MS-(Date.now()-at))/1000)); var mm=Math.floor(s/60), ss=s%60;
+    e.innerHTML='<svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.3V8l2.6 1.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Live demo &mdash; '+mm+':'+(ss<10?'0':'')+ss+' left';
+    if(s<=10) e.classList.add('warn'); else e.classList.remove('warn'); }
+  function _demoStopClock(){ try{ clearTimeout(_demo.hardTimer); }catch(e){} try{ clearInterval(_demo.clockTimer); }catch(e){} _demo.hardTimer=null; _demo.clockTimer=null; var e=document.getElementById('demoClock'); if(e) e.classList.remove('on'); }
+  function _demoArmClock(){ if(!_isDemoTenant()) return; var at=_lsGet(_DEMO_AT_K,0);
+    if(!at){ at=Date.now(); _lsSet(_DEMO_AT_K,at); _lsSet(_DEMO_USED_K,1); }   // consume on first arm; a reload within the minute resumes the SAME clock
+    var rem=_DEMO_MS-(Date.now()-at); _demoStopClock();
+    if(rem<=0){ _demoExpire(); return; }
+    var el=_demoClockEl(); el.classList.add('on'); _demoClockTick();
+    _demo.clockTimer=setInterval(_demoClockTick,1000);
+    _demo.hardTimer=setTimeout(_demoExpire, rem); }
+  function _demoExpire(){ try{ _lsSet(_DEMO_USED_K,1); _lsSet(_DEMO_AT_K,0); }catch(e){} _demoStopClock();
+    try{ _demoTeardown(); }catch(e){} try{ closeModal(); }catch(e){} try{ closeAio(); }catch(e){} try{ store.logout(); }catch(e){}
+    show('landing'); _demoLockout('Your 1-minute demo has ended'); }
+  function _demoLockout(title){ try{ _demoStopClock(); }catch(e){}
+    openModal('<div class="modal__body" style="text-align:center;padding:26px 22px">'
+      +'<div style="width:52px;height:52px;border-radius:14px;margin:0 auto 14px;background:linear-gradient(140deg,#2FA576,#1E6E4E);display:grid;place-items:center">'+_atlasMark()+'</div>'
+      +'<h3 style="font-size:20px;margin-bottom:6px">'+esc(title||'Your demo has ended')+'</h3>'
+      +'<p style="font-size:14px;color:var(--muted);margin-bottom:18px">You have used your one free walkthrough. Start your 7-day free trial to get your own Atlas Rental.io &mdash; your brand, your assets, your website and customer portal.</p>'
+      +'<button class="btn btn--primary btn--lg btn--full" onclick="Atlas.closeModal();Atlas.goAuth(\'signup\')">Start your 7-day free trial</button>'
+      +'<button class="btn btn--ghost btn--full" style="margin-top:9px" onclick="Atlas.closeModal();Atlas._demoSeePricing()">See plans &amp; pricing</button>'
+      +'<button class="btn btn--ghost btn--full" style="margin-top:9px" onclick="Atlas.closeModal()">Back to the website</button></div>'); }
+  function _demoSeePricing(){ try{ _demoStopClock(); }catch(e){} show('landing'); setTimeout(function(){ try{ var p=document.getElementById('pricing'); if(p&&p.scrollIntoView) p.scrollIntoView({behavior:'smooth'}); }catch(e){} }, 70); }
+  function _demoBootResume(){ var at=_lsGet(_DEMO_AT_K,0);
+    if(!at || (Date.now()-at)>=_DEMO_MS){ _demoExpire(); return; }   // clock already spent (or cleared) -> lock out, no flash of the app
+    try{ applyBrand(); buildApp(); show('app'); }catch(e){} _demoArmClock(); }
   var DEMO_STEPS=[
     {nav:'overview', b:'Your HQ', t:'One dashboard for the whole business', d:'Live revenue, utilization and today\u2019s to-dos \u2014 every number reconciled.'},
     {nav:'bookings', b:'Bookings', t:'Take a booking in seconds', d:'Price it, take a deposit, e-sign and get paid \u2014 no spreadsheets.'},
@@ -14909,6 +14951,7 @@ const Atlas = (function(){
   function demoStart(){ try{ demo(); }catch(e){} }   // demo() now runs _demoFinish (exit chip + one-time guided tour) for EVERY entry path
   // Runs after any demo loads (Start-demo button OR the picker): always shows the persistent exit chip (purchase + back-to-site), and runs the guided tour once -- so a prospect can never get stuck with no way forward or back.
   function _demoFinish(){
+    _demoArmClock();   // start the single 1-minute countdown on every entry (auto-exits to purchase at 0)
     var seen=_lsGet('atlas_demo_guided',0);
     if(!seen){ _lsSet('atlas_demo_guided',1); try{ closeAio(); }catch(e){} clearTimeout(_demo.timer); setTimeout(_demoRun, 550); }   // first visit: run the guided tour (its own card carries the CTAs); the persistent exit chip appears when the tour ends -> never overlaps the header
     else { _demoExitOn(); setTimeout(function(){ try{ openAio(); }catch(e){} }, 420); toast('You are exploring the live demo \u2014 tap Start free trial, or Back to site, any time'); }
@@ -14956,6 +14999,7 @@ const Atlas = (function(){
     e.classList.add('on'); }
   function exitDemo(){ try{ _demoTeardown(); }catch(e){} try{ closeModal(); }catch(e){} try{ closeAio(); }catch(e){} try{ store.logout(); }catch(e){} show('landing'); }   // leave the demo -> back to the marketing site (never a dead-end)
   function demoPick(){
+    if(_demoConsumed()){ _demoLockout(); return; }   // single-use: one live demo per visitor, then purchase only
     openModal('<div class="modal__head"><h3>See a live demo</h3>'+_xBtn()+'</div><div class="modal__body">'
       +'<p style="font-size:13.5px;color:var(--muted);margin-bottom:16px">Atlas Rental.io shapes itself around whatever you rent. Pick a filled example:</p>'
       +'<div class="dom-opt" onclick="Atlas.closeModal();Atlas.demo()"><div style="display:flex;align-items:center;gap:12px"><span style="font-size:22px">\u{1F697}</span><div><b>Exotic car rental</b><small>Summit Exotics &middot; a boutique vehicle fleet</small></div></div></div>'
@@ -15053,6 +15097,7 @@ const Atlas = (function(){
     try{ var _inv=new URLSearchParams(location.search).get('invite'); if(_inv){ showAcceptInvite(_inv); return; } }catch(e){}   // teammate accepting an invite link -> set-password screen (takes priority over any stale local session)
     if(store.session()){
       S=load();
+      if(_isDemoTenant()){ _demoBootResume(); return; }   // demo session on reload: resume the 1-min clock or lock out (never the normal hydrate/trial path)
       // migrate any pre-existing tenant saved with the old money shape (deposit as a number)
       if(S && S.money && typeof S.money.deposit!=='object'){
         var old=S.money; S.money=defaultMoney();
@@ -15108,7 +15153,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,togglePush,setTypeRate,setTypeCfg,setCancelPolicy,setSenderAddress,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,connectCoinbase,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,setTaxTripCharges,syncTax,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,_demoSeePricing,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,setDisplayCurrency,setNotify,togglePush,setTypeRate,setTypeCfg,setCancelPolicy,setSenderAddress,connect,doConnect,connectQuickbooks,connectXero,connectPaypal,connectSquare,connectCoinbase,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,setTaxTripCharges,syncTax,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
