@@ -3,6 +3,22 @@
 <head>
 <meta charset="UTF-8">
 <script src="pb-config.js"></script>
+<script>
+/* KILL-SWITCH (2026-11-12): if PB_FLAGS.driverAppDisabled, show a maintenance notice and stop the app.
+   Paired with guards in startRidesPoll/pollDriverRides/broadcastLocation so no worker polling or location
+   writes (Firebase RTDB egress + the savedAt bump that makes dashboards re-pull the ~23MB sync root) run.
+   Reversible: set driverAppDisabled:false in pb-config.js. Fail-open: if config fails to load, app runs as before. */
+(function(){
+  if(!(window.PB_FLAGS||{}).driverAppDisabled) return;
+  window.__PB_APP_OFF=true;
+  function off(){
+    try{
+      document.body.innerHTML='<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0b0b0d;color:#f5f5f5;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;text-align:center;padding:24px;z-index:2147483647"><div style="max-width:420px"><div style="font-size:22px;font-weight:700;margin-bottom:12px">Driver app is paused</div><div style="font-size:15px;line-height:1.55;opacity:.82">The Prestige Black driver app is temporarily unavailable for maintenance. Please contact dispatch at <a href="tel:+12142072481" style="color:#c9a24a;font-weight:600">(214) 207-2481</a>.</div></div></div>';
+    }catch(e){}
+  }
+  if(document.readyState!=='loading') off(); else document.addEventListener('DOMContentLoaded',off);
+})();
+</script>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
 <title>PB Chauffeur Portal &#8212; Prestige Black</title>
 <meta name="theme-color" content="#0a0a0a">
@@ -1873,6 +1889,7 @@ function stopDutyBroadcast(){
 }
 
 function broadcastLocation(){
+  if((window.PB_FLAGS||{}).driverAppDisabled) return;   // KILL-SWITCH: driver app off -> no location writes (which bump the global savedAt -> dashboard mega-pulls)
   if(!drvState.token||!navigator.geolocation) return;
   navigator.geolocation.getCurrentPosition(function(pos){
     // Clean first (road-snap + stationary deadband), then send the cleaned position so the rider's
@@ -1957,6 +1974,7 @@ var _ridesPollCadence = 0;
 function _ridesPollMs(){ return (_onDuty || _activeRide) ? 5000 : 30000; }
 function startRidesPoll(){
   stopRidesPoll();
+  if((window.PB_FLAGS||{}).driverAppDisabled) return;   // KILL-SWITCH: driver app off -> never arm the /chauffeur/driver-rides poll (Firebase egress)
   if(typeof document!=='undefined' && document.hidden) return; // backgrounded -> don't poll; resume on visibility
   _ridesPollCadence = _ridesPollMs();
   pollDriverRides();
@@ -2025,6 +2043,7 @@ function _renderQueuedBanner(qr){
   '</div>';
 }
 async function pollDriverRides(){
+  if((window.PB_FLAGS||{}).driverAppDisabled) return;   // KILL-SWITCH: driver app off -> no worker polling (Firebase egress)
   if(!drvState.token) return;
   try{ _drvAcquireWake(); }catch(e){}   // heartbeat: re-grab the screen lock if the OS dropped it (no-op if held or off duty)
   var r=await fetch(WORKER+'/chauffeur/driver-rides?token='+encodeURIComponent(drvState.token),{cache:'no-store'}).catch(function(){return null;});
