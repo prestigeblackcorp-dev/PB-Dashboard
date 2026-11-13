@@ -972,7 +972,8 @@ function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.
     {id:'k_trial', label:'Trials', basis:'now', val:mem.trials||0, fmt:function(v){return nfmt(v);}, sub:nfmt(mem.trials_with_card||0)+' with card'},
     {id:'k_bug', label:'Open bugs', basis:'now', val:bugs.open||0, fmt:function(v){return nfmt(v);}, sub:nfmt(bugs.total||0)+' total'},
     {id:'k_net', gold:(pnlNet.range_cents||0)>=0, label:'Net profit', basis:rl, val:pnlNet.range_cents||0, fmt:centsUSD, sub:(pnlNet.range_cents||0)<0?'revenue below expenses':'revenue minus expenses'},
-    {id:'k_aispend', label:'AI spend', basis:rl, val:pnlAi.range_cents||0, fmt:centsUSD, sub:nfmt(((pnlAi.tokens&&pnlAi.tokens.input_tokens)||0)+((pnlAi.tokens&&pnlAi.tokens.output_tokens)||0))+' tokens metered'}
+    {id:'k_aispend', label:'AI spend', basis:rl, val:pnlAi.range_cents||0, fmt:centsUSD, sub:nfmt(((pnlAi.tokens&&pnlAi.tokens.input_tokens)||0)+((pnlAi.tokens&&pnlAi.tokens.output_tokens)||0))+' tokens metered'},
+    {id:'k_install', label:'App installs', basis:'now', val:ins.total||0, fmt:function(v){return nfmt(v);}, sub:'PWA / home-screen'}
   ];
   $('kpis').innerHTML = kpis.map(function(k){ return '<div class="kpi'+(k.hero?' hero':'')+(k.gold?' gold':'')+'" onclick="kpiDrill(\''+k.id+'\')" role="button" tabindex="0" title="Click for the detail behind this number"><div class="glow"></div>'+
     '<div class="k-l">'+esc(k.label)+(k.basis?'<span class="k-basis'+(k.basis==='now'?' now':'')+'">'+esc(k.basis)+'</span>':'')+'</div><div class="k-v'+(k.gold?' money':'')+' num" id="'+k.id+'">'+(k.fmt(0))+'</div>'+
@@ -980,16 +981,27 @@ function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.
   kpis.forEach(function(k){ var el=$(k.id); if(el) animateNum(el, k.val, k.fmt); });
 
   // revenue split
-  var byk = rev.by_kind||{}; var sub=byk.subscription||0, cr=byk.credits||0, ws=byk.website||0, au=byk.asset_unlock||0, dm=byk.domain||0, gm=byk.gmv||0;
+  var byk = rev.by_kind||{};
   var byt = mem.by_tier||{};
   $('revSub').textContent = o.ts ? '' : '';
   $('revNote').textContent = ((o.range&&o.range.label)||'all-time')+', to the cent';
-  var tierRows = TIERS.map(function(t){ var n=byt[t]||0; return n?('<span class="tier-tag" style="color:var(--ink)">'+TIER_LABEL[t]+': <b class="num">'+n+'</b></span>'):''; }).filter(Boolean).join(' &middot; ') || '<span class="mut">no paid members yet</span>';
-  var tot=sub+cr+ws+au+dm+gm||1;
+  // Members by tier -- union the standard tiers with whatever tiers actually exist, so gold/freecomp/other are never dropped from the mix.
+  var _tkeys = TIERS.slice(); Object.keys(byt).forEach(function(t){ if(_tkeys.indexOf(t)<0) _tkeys.push(t); });
+  var tierRows = _tkeys.map(function(t){ var n=byt[t]||0; return n?('<span class="tier-tag" style="color:var(--ink)">'+(TIER_LABEL[t]||t)+': <b class="num">'+n+'</b></span>'):''; }).filter(Boolean).join(' &middot; ') || '<span class="mut">no paid members yet</span>';
+  // Revenue split -- EVERY kind the ledger booked (not a hardcoded six), so the legend always foots to the Revenue KPI above
+  // (email packs/add-ons, extra locations/sites, asset-cap, GPS tracking, domain renewals are revenue too).
+  var KIND_META = { subscription:['Subscriptions','var(--gold)'], credits:['Credits','var(--em)'], website:['Websites','var(--blue)'], asset_unlock:['Asset unlocks','#b45309'], domain:['Domains','#7c3aed'], gmv:['Processing fees','#0d9488'], trial:['Trials','#64748b'], email_pack:['Email packs','#0ea5e9'], email_addon:['Email add-on','#06b6d4'], location_addon:['Extra locations','#f59e0b'], site_addon:['Extra sites','#d97706'], asset_addon:['Asset cap','#a16207'], tracking:['GPS tracking','#14b8a6'], domain_renew_claim:['Domain renewals','#8b5cf6'] };
+  var _palette=['#2dd4bf','#f472b6','#facc15','#60a5fa','#34d399','#fb923c','#c084fc','#4ade80'];
+  var _kkeys = Object.keys(byk).filter(function(k){ return (byk[k]||0)>0; }).sort(function(a,b){ return (byk[b]||0)-(byk[a]||0); });
+  if(!_kkeys.length) _kkeys=['subscription'];
+  var _pi=0, _meta={}; _kkeys.forEach(function(k){ _meta[k]=KIND_META[k]||[ (typeof _purKindLabel==='function'?_purKindLabel(k):k), _palette[_pi++ % _palette.length] ]; });
+  var _tot = _kkeys.reduce(function(s,k){ return s+(byk[k]||0); },0)||1;
+  var _bars = _kkeys.map(function(k){ return '<i style="width:'+((byk[k]||0)/_tot*100)+'%;background:'+_meta[k][1]+'"></i>'; }).join('');
+  var _legend = _kkeys.map(function(k){ return '<span><i style="background:'+_meta[k][1]+'"></i>'+esc(_meta[k][0])+' '+centsUSD0(byk[k]||0)+'</span>'; }).join('');
   $('revSplit').innerHTML =
-    '<div><div class="stat-l">Subscriptions</div><div class="stat-v money num" style="color:var(--gold2)">'+centsUSD(sub)+'</div>'+
-      '<div class="bar"><i style="width:'+(sub/tot*100)+'%;background:var(--gold)"></i><i style="width:'+(cr/tot*100)+'%;background:var(--em)"></i><i style="width:'+(ws/tot*100)+'%;background:var(--blue)"></i><i style="width:'+(au/tot*100)+'%;background:#b45309"></i><i style="width:'+(dm/tot*100)+'%;background:#7c3aed"></i><i style="width:'+(gm/tot*100)+'%;background:#0d9488"></i></div>'+
-      '<div class="legend"><span><i style="background:var(--gold)"></i>Subs '+centsUSD0(sub)+'</span><span><i style="background:var(--em)"></i>Credits '+centsUSD0(cr)+'</span><span><i style="background:var(--blue)"></i>Websites '+centsUSD0(ws)+'</span><span><i style="background:#b45309"></i>Asset unlocks '+centsUSD0(au)+'</span><span><i style="background:#7c3aed"></i>Domains '+centsUSD0(dm)+'</span><span><i style="background:#0d9488"></i>Atlas 3.5% '+centsUSD0(gm)+'</span></div></div>'+
+    '<div><div class="stat-l">Subscriptions</div><div class="stat-v money num" style="color:var(--gold2)">'+centsUSD(byk.subscription||0)+'</div>'+
+      '<div class="bar">'+_bars+'</div>'+
+      '<div class="legend">'+_legend+'</div></div>'+
     '<div><div class="stat-l">Members by tier</div><div style="margin-top:12px;line-height:2.1;font-size:13px">'+tierRows+'</div></div>';
 }
 
@@ -1015,7 +1027,7 @@ function saveMarginBasis(){ var el=$('marginBasis'); if(!el) return; var usd=Mat
 /* ===== Cohort cost monitor: real founder vs normal-user AI exposure (live credit burn x metered cost/credit) ===== */
 function loadCohortCosts(force){ var el=$('cohortBody'); if(!el) return; el.innerHTML='<div class="mut" style="font-size:12.5px">Loading cohort costs&hellip;</div>';
   api('/api/admin/founder-costs').then(function(r){ if(!el) return; var j=r.json||{}; if(r.status===404){ el.innerHTML='<div class="mut" style="font-size:12px">Needs the latest worker.</div>'; return; } if(!j.ok){ el.innerHTML='<div class="mut" style="font-size:12px">'+esc(j.error||'Could not load.')+'</div>'; return; } renderCohortCosts(j); }).catch(function(){ if(el) el.innerHTML='<div class="mut" style="font-size:12px">Network error.</div>'; }); }
-function renderCohortCosts(j){ var el=$('cohortBody'); if(!el) return; var pc=(j.per_credit_micros||0)/10000;
+function renderCohortCosts(j){ var el=$('cohortBody'); if(!el) return; var pc=(j.per_credit_micros||0)/1000000;   // micros -> USD (1,000,000 micros = $1); was /10000 which yields CENTS and overstated the per-credit cost 100x
   function cohCard(title, c, sub){ c=c||{}; return '<div style="flex:1;min-width:190px;background:var(--surf2);border:1px solid var(--line);border-radius:11px;padding:11px 13px">'
     +'<div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut2);font-weight:700">'+esc(title)+'</div>'
     +'<div style="font-size:22px;font-weight:800;margin:4px 0">'+centsUSD(c.cost_month_cents||0)+' <span class="mut" style="font-size:12px;font-weight:600">/mo est</span></div>'
@@ -1055,6 +1067,7 @@ function renderPnl(){ var p=DATA.pnl||{}; var rev=p.revenue||{}, ai=p.ai_spend||
     _dsec('AI spend by feature ('+esc(rl.toLowerCase())+')') + featRows +
     _dsec('Fixed monthly costs (owner-entered; prorated to the range above)') + fcRows +
     ((dc.range_cents||0)>0 ? (_dsec('Domain resale -- registrar wholesale (COGS, '+esc(rl.toLowerCase())+')') + _dr('Wholesale paid to the registrar on resold domains', centsUSD(dc.range_cents||0))) : '') +
+    ((sf.range_cents||0)>0 ? (_dsec('Stripe processing fees (estimated, '+esc(rl.toLowerCase())+')') + _dr(esc(sf.basis||'~2.9% + $0.30 per charge'), centsUSD(sf.range_cents||0))) : '') +
     (_isOwner() ? ('<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px">'+
       '<input class="inp" id="pnlCostLabel" placeholder="Label (e.g. Cloudflare)" style="flex:1;min-width:140px">'+
       '<input class="inp num" id="pnlCostAmt" type="number" min="0" step="0.01" placeholder="Monthly $" style="width:110px">'+
@@ -1101,14 +1114,14 @@ function kpiDrill(id){
   var rl=((o.range&&o.range.label)||'this range'); var T='Detail', H='';
   if(id==='k_rev'||id==='k_mrr'){ var bk=rev.by_kind||{}; T=(id==='k_mrr')?'MRR - recurring revenue':'Revenue';
     H=_dsec('Totals')+_dr('All-time revenue',centsUSD(rev.total_cents||0))+_dr('In '+esc(rl),centsUSD(rev.range_cents||0))+_dr('MRR (recurring / mo)',centsUSD(rev.mrr_cents||0))
-     +_dsec('By type ('+esc(rl)+')')+_dr('Subscriptions',centsUSD(bk.subscription||0))+_dr('Credit packs',centsUSD(bk.credits||0))+_dr('Websites',centsUSD(bk.website||0))+_dr('Domains',centsUSD(bk.domain||0))+_dr('Atlas processing (3.5%)',centsUSD(bk.gmv||0));
+     +_dsec('By type ('+esc(rl)+')')+(Object.keys(bk).filter(function(k){return (bk[k]||0)!==0;}).sort(function(a,b){return (bk[b]||0)-(bk[a]||0);}).map(function(k){ return _dr(esc(_purKindLabel(k)),centsUSD(bk[k]||0)); }).join('') || _dr('No revenue in '+esc(rl),centsUSD(0)));   // every kind, sorted -- matches the overview split + foots to the Revenue KPI (was a hardcoded 5 that dropped asset unlocks + all add-ons)
   } else if(id==='k_mem'){ T='Members'; var byt=mem.by_tier||{}, ms=DATA.members||[];
-    H=_dsec('Overview')+_dr('Total members',nfmt(mem.total||0))+_dr('Paying',nfmt(mem.paid||0))+_dr('On trial',nfmt(mem.trials||0));
+    H=_dsec('Overview')+_dr('Total members',nfmt(mem.total||0))+_dr('Paying',nfmt(mem.paid||0))+_dr('Comped (free / internal)',nfmt(mem.comped||0))+_dr('On trial',nfmt(mem.trials||0));
     var tk=Object.keys(byt); if(tk.length){ H+=_dsec('By tier'); for(var i=0;i<tk.length;i++) H+=_dr(esc(TIER_LABEL[tk[i]]||tk[i]),nfmt(byt[tk[i]])); }
     var top=ms.slice().sort(function(a,b){return (b.revenue_cents||0)-(a.revenue_cents||0);}).slice(0,8);
     if(top.length){ H+=_dsec('Top members by revenue'); top.forEach(function(m){ H+=_dr('<b>'+esc(m.name||m.email||'-')+'</b> <span class="mut">'+esc(TIER_LABEL[m.tier]||m.tier||'')+'</span>',centsUSD(m.revenue_cents||0)); }); }
   } else if(id==='k_vis'){ T='Website visits';
-    H=_dsec('Traffic')+_dr('Visits in '+esc(rl),nfmt(vis.range||0))+_dr('Today',nfmt(vis.today||0));
+    H=_dsec('Traffic')+_dr('Visits in '+esc(rl),nfmt(vis.range||0))+_dr('Unique visitors',nfmt(vis.unique||0))+_dr('Today',nfmt(vis.today||0));
     var gc=((DATA.geo||{}).countries)||[]; if(gc.length){ H+=_dsec('Top countries'); gc.slice(0,8).forEach(function(c){ H+=_dr(esc(_cn(c.country||c.c||'')),nfmt(c.views||0)); }); }
     var vt=((DATA.visits||{}).top)||[]; if(vt.length){ H+=_dsec('Top booking sites'); vt.slice(0,8).forEach(function(t){ H+=_dr(esc(t.name||t.tenant_id||'-'),nfmt(t.views||0)); }); }
   } else if(id==='k_signup'){ T='New signups'; var ms2=(DATA.members||[]).slice().sort(function(a,b){return (b.created_at||0)-(a.created_at||0);});
@@ -1121,7 +1134,7 @@ function kpiDrill(id){
     H=_dsec('Counts')+_dr('Open',nfmt(bo.open||0))+_dr('Total',nfmt(bo.total||0));
     var open=bg.filter(function(x){return (x.status||'open')!=='resolved';});
     if(open.length){ H+=_dsec('Open items'); open.slice(0,10).forEach(function(x){ H+=_dr('<span class="pill gray">'+esc(x.type||'note')+'</span> '+esc((x.message||'').slice(0,64)),dstr(x.created_at)); }); }
-  }
+  } else if(id==='k_install'){ T='App installs'; var inst=o.installs||{}; H=_dsec('PWA / home-screen installs')+_dr('Total installs',nfmt(inst.total||0))+_dr('Unique visitors ('+esc(rl)+')',nfmt(vis.unique||0)); }
   if(!H) H='<div class="mut">No detail available.</div>';
   _aiOpen(T,H);
 }
@@ -1184,7 +1197,7 @@ function renderTxns(){ var t=DATA.txns||[];
     else { label=esc(_purKindLabel(k)); }
     var amt = (x.amount_cents>0) ? centsUSD(x.amount_cents) : (k==='trial'?'card':centsUSD(0));
     return '<div class="feed-row"><div class="feed-ic '+ic+'">'+txIcon(k)+'</div>'+
-      '<div class="feed-tx"><b>'+label+'</b><span>'+esc(x.email||x.tenant_id||'')+' &middot; '+ago(x.created_at)+'</span></div>'+
+      '<div class="feed-tx"><b>'+label+'</b><span>'+esc(x.email||x.tenant_id||'')+' &middot; '+ago(x.created_at)+(x.receipt_no?(' &middot; '+esc(x.receipt_no)):'')+'</span></div>'+
       '<div class="feed-amt" style="'+(k==='trial'?'color:var(--blue)':'')+'">'+amt+'</div></div>';
   }).join('');
 }
@@ -1311,7 +1324,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.11.13ij';
+var ATLAS_EXPECT_BUILD='2026.11.13ik';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
@@ -1986,7 +1999,7 @@ function renderGeo(){ var el=$('geoMap'); if(!el) return; var g=DATA.geo||{}; va
   if(_geoDrillCountry) _geoFetchRegions(_geoDrillCountry);   // keep the open region panel fresh across range changes/periodic refreshes
 }
 /* ================= purchases (itemized + filtered) ================= */
-function _purKindLabel(k){ return ({subscription:'Subscription',plan:'Subscription',trial:'Trial',credits:'Credits',email_pack:'Email pack',email_addon:'Email add-on',website:'Website',domain:'Domain',domain_renew_claim:'Domain renewal',asset_unlock:'Asset unlock',location_addon:'Extra location',site_addon:'Extra booking site',asset_addon:'Asset-cap block',tracking:'Live GPS tracking',gmv:'Atlas processing',chargeback_rev:'Chargeback',chargeback_lost:'Chargeback (lost)',chargeback_restore:'Chargeback (restored)',platform_chargeback:'Chargeback fee'})[k] || (k? (k.charAt(0).toUpperCase()+k.slice(1).replace(/_/g,' ')) : 'Other'); }
+function _purKindLabel(k){ return ({subscription:'Subscription',plan:'Subscription',trial:'Trial',credits:'Credits',email_pack:'Email pack',email_addon:'Email add-on',website:'Website',domain:'Domain',domain_renew_claim:'Domain renewal',asset_unlock:'Asset unlock',location_addon:'Extra location',site_addon:'Extra booking site',asset_addon:'Asset-cap block',tracking:'Live GPS tracking',gmv:'Processing fees',chargeback_rev:'Chargeback',chargeback_lost:'Chargeback (lost)',chargeback_restore:'Chargeback (restored)',platform_chargeback:'Chargeback fee'})[k] || (k? (k.charAt(0).toUpperCase()+k.slice(1).replace(/_/g,' ')) : 'Other'); }
 function _purNorm(r){ return (r.kind==='plan')?'subscription':(r.kind||'other'); }
 function _purDesc(r){ var base=_purKindLabel(_purNorm(r)); var extra=r.tier||r.pack||''; return base+(extra?(' - '+extra):''); }
 var PUR_GROUPS={addons:['location_addon','site_addon','asset_addon','tracking','asset_unlock'],emails:['email_pack','email_addon']};
@@ -1996,18 +2009,18 @@ function renderPurchases(){ var p=DATA.purchases||{}; var byk=p.by_kind||{};
   var ps=$('purSub'); if(ps) ps.textContent=((p.range&&p.range.label)||'')+' / '+centsUSD(p.grand_total_cents||0)+' / '+nfmt(p.grand_count||0)+' items';
   var order=['subscription','trial','credits','email_pack','email_addon','website','domain','asset_unlock','location_addon','site_addon','asset_addon','tracking','gmv'], seen={}, chips=[];
   order.forEach(function(k){ if(byk[k]){ seen[k]=1; chips.push('<span class="pill gray">'+esc(_purKindLabel(k))+' <b class="num">'+nfmt(byk[k].n)+'</b> '+centsUSD0(byk[k].c)+'</span>'); } });
-  Object.keys(byk).forEach(function(k){ if(!seen[k]){ chips.push('<span class="pill gray">'+esc(_purKindLabel(k))+' <b class="num">'+nfmt(byk[k].n)+'</b></span>'); } });
+  Object.keys(byk).forEach(function(k){ if(!seen[k]){ chips.push('<span class="pill gray">'+esc(_purKindLabel(k))+' <b class="num">'+nfmt(byk[k].n)+'</b> '+centsUSD0(byk[k].c||0)+'</span>'); } });   // fallback chips now show dollars too (was count-only -> chargebacks/renewals/any future kind lost their amount)
   var pt=$('purTotals'); if(pt) pt.innerHTML=chips.join('')||'<span class="mut" style="font-size:12px">No purchases in this window.</span>';
   var rows=_purFiltered(); var shown=rows.reduce(function(s,r){return s+(r.amount_cents||0);},0); var tbl=$('purTbl'); if(!tbl) return;
   if(!rows.length){ tbl.innerHTML='<tbody><tr><td class="mut" style="padding:16px">No purchases match this filter. Every subscription, credit pack, website and domain purchase is itemized here as it happens.</td></tr></tbody>'; return; }
-  tbl.innerHTML='<thead><tr><th>Date (CT)</th><th>Account</th><th>Item</th><th style="text-align:right">Amount</th></tr></thead><tbody>'+rows.map(function(r){ var _isDom=(r.kind==='domain'); var _buyer=(_isDom&&r.buyer_name)?('<div class="mut" style="font-size:11px">'+esc(r.buyer_name)+'</div>'):''; var _cm=(_isDom&&r.cost_cents!=null)?('<div class="mut" style="font-size:11px">cost '+centsUSD(r.cost_cents||0)+' &middot; margin '+centsUSD(r.margin_cents||0)+'</div>'):''; return '<tr class="row"><td class="num" style="white-space:nowrap"><div>'+esc(tsCT(r.created_at))+'</div>'+(r.tz?('<div class="mut" style="font-size:11px" title="'+esc(r.tz)+'">'+esc(tsTheir(r.created_at,r.tz))+'</div>'):'')+'</td><td><div class="m-name"><b>'+esc(r.email||r.tenant_id||'-')+'</b></div>'+_buyer+'</td><td>'+esc(_purDesc(r))+'</td><td class="money num" style="text-align:right">'+centsUSD(r.amount_cents||0)+_cm+'</td></tr>'; }).join('')+'</tbody><tfoot><tr><td colspan="3" class="mut" style="text-align:right;padding:10px 12px">'+nfmt(rows.length)+' shown'+((p.count>=1000)?' (latest 1000)':'')+'</td><td class="money num" style="text-align:right;padding:10px 12px">'+centsUSD(shown)+'</td></tr></tfoot>';
+  tbl.innerHTML='<thead><tr><th>Date (CT)</th><th>Account</th><th>Item</th><th style="text-align:right">Amount</th></tr></thead><tbody>'+rows.map(function(r){ var _isDom=(r.kind==='domain'); var _buyer=(_isDom&&r.buyer_name)?('<div class="mut" style="font-size:11px">'+esc(r.buyer_name)+'</div>'):''; var _cm=(_isDom&&r.cost_cents!=null)?('<div class="mut" style="font-size:11px">cost '+centsUSD(r.cost_cents||0)+' &middot; margin '+centsUSD(r.margin_cents||0)+'</div>'):''; return '<tr class="row"><td class="num" style="white-space:nowrap"><div>'+esc(tsCT(r.created_at))+'</div>'+(r.tz?('<div class="mut" style="font-size:11px" title="'+esc(r.tz)+'">'+esc(tsTheir(r.created_at,r.tz))+'</div>'):'')+'</td><td><div class="m-name"><b>'+esc(r.email||r.tenant_id||'-')+'</b></div>'+_buyer+'</td><td>'+esc(_purDesc(r))+(r.receipt_no?('<div class="mut num" style="font-size:11px">'+esc(r.receipt_no)+'</div>'):'')+'</td><td class="money num" style="text-align:right">'+centsUSD(r.amount_cents||0)+_cm+'</td></tr>'; }).join('')+'</tbody><tfoot><tr><td colspan="3" class="mut" style="text-align:right;padding:10px 12px">'+nfmt(rows.length)+' shown'+((p.count>=1000)?' (latest 1000)':'')+'</td><td class="money num" style="text-align:right;padding:10px 12px">'+centsUSD(shown)+'</td></tr></tfoot>';
 }
 function setPurKind(btn){ Array.prototype.forEach.call($('purSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _purKind=btn.getAttribute('data-k'); renderPurchases(); }
 function purFilter(){ _purQ=($('purSearch').value||'').trim(); renderPurchases(); }
 function _csv(v){ v=String(v==null?'':v); if(/^[=+\-@\t\r]/.test(v)) v="'"+v;   /* WAVE12 MED: neutralize spreadsheet formula / CSV injection (a tenant business name like "=HYPERLINK(...)" / "=cmd|..." must NOT execute in the platform owner's Excel/Sheets) BEFORE the RFC-4180 quoting below -- mirrors atlas.html _downloadCsv (8149). */ return /[",\n]/.test(v)?('"'+v.replace(/"/g,'""')+'"'):v; }
 function purCSV(){ var rows=_purFiltered(); if(!rows.length){ toast('Nothing to export'); return; }
-  var head=['Central Time','Account','Account TZ','Account Local Time','Kind','Detail','Amount USD','Buyer','Our Cost USD','Margin USD','Currency','Txn ID'];
-  var lines=[head.join(',')].concat(rows.map(function(r){ var _d=(r.kind==='domain'); return [tsCT(r.created_at),(r.email||r.tenant_id||''),(r.tz||''),(r.tz?tsTheir(r.created_at,r.tz):''),_purNorm(r),(r.tier||r.pack||''),((r.amount_cents||0)/100).toFixed(2),(_d?(r.buyer_name||''):''),(_d&&r.cost_cents!=null?((r.cost_cents||0)/100).toFixed(2):''),(_d&&r.margin_cents!=null?((r.margin_cents||0)/100).toFixed(2):''),(r.currency||'usd'),r.id].map(_csv).join(','); }));
+  var head=['Central Time','Account','Account TZ','Account Local Time','Kind','Detail','Amount USD','Buyer','Our Cost USD','Margin USD','Currency','Receipt No','Txn ID'];
+  var lines=[head.join(',')].concat(rows.map(function(r){ var _d=(r.kind==='domain'); return [tsCT(r.created_at),(r.email||r.tenant_id||''),(r.tz||''),(r.tz?tsTheir(r.created_at,r.tz):''),_purNorm(r),(r.tier||r.pack||''),((r.amount_cents||0)/100).toFixed(2),(_d?(r.buyer_name||''):''),(_d&&r.cost_cents!=null?((r.cost_cents||0)/100).toFixed(2):''),(_d&&r.margin_cents!=null?((r.margin_cents||0)/100).toFixed(2):''),(r.currency||'usd'),(r.receipt_no||''),r.id].map(_csv).join(','); }));
   var a=document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(lines.join('\n')); a.download='atlas-purchases-'+_range+'.csv'; document.body.appendChild(a); a.click(); document.body.removeChild(a); toast('CSV exported'); }
 /* ===== FULL payments ledger (Stripe, current mode): every charge + status + method + billing period ===== */
 var _payMode='atlas';
