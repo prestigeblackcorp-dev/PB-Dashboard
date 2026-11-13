@@ -6514,5 +6514,35 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/markupPct:125/.test(_ATLAS_SRC), 'WAVE79: the client domain markup default is 125 percent');
 }
 
+// ==== WAVE80: gated Stripe Tax on domain checkout -- OFF until the owner sets DOMAIN_TAX=on (so tax is never charged before Stripe Tax is set up) ====
+{
+  ok(/function _domainTaxOn\(env\)/.test(_WORKER_SRC), 'WAVE80 tax: the _domainTaxOn gate helper exists');
+  ok(/env\.DOMAIN_TAX/.test(_WORKER_SRC), 'WAVE80 tax: the gate reads the DOMAIN_TAX owner flag so tax stays off until the owner turns it on');
+  ok(/if \(opts\.automaticTax && mode !== 'setup'\)/.test(_WORKER_SRC), 'WAVE80 tax: automatic_tax is added only when the caller opts in (gated, never unconditional) and never on a card-save setup session');
+  ok((_WORKER_SRC.match(/automatic_tax\[enabled\]/g) || []).length === 1, 'WAVE80 tax: automatic_tax enabled is wired in exactly one place (the gated stripeCheckout block)');
+  ok(/line_items\[0\]\[price_data\]\[tax_behavior\]/.test(_WORKER_SRC), 'WAVE80 tax: the domain line price is tax-exclusive so Stripe adds tax on top (plus tax, not carved out of the amount)');
+  ok(/automaticTax: \(kind === 'domain' && _domainTaxOn\(env\)\)/.test(_WORKER_SRC), 'WAVE80 tax: the domain checkout caller opts into tax only for the domain kind and only when the owner flag is on');
+}
+
+// ==== WAVE80 providers: Trackunit OAuth2 drift fix + Samsara EU region + per-provider official-docs links + GPS setup help page ====
+{
+  const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  // worker -- Trackunit current API (was broken: static Bearer + GeoJSON features)
+  ok(/auth\.trackunit\.com\/token\/v2/.test(_WORKER_SRC), 'WAVE80 trackunit: OAuth2 client-credentials token exchange at the token v2 endpoint');
+  ok(/tuJ && Array\.isArray\(tuJ\.content\)/.test(_WORKER_SRC), 'WAVE80 trackunit: the paginated content array is read (current API) with features kept as a legacy fallback');
+  ok(/mph = sp \* 0\.621371/.test(_WORKER_SRC), 'WAVE80 trackunit: speed is converted from kmh to mph');
+  ok(/p\.updatedAt \|\| p\.time/.test(_WORKER_SRC), 'WAVE80 trackunit: the timestamp reads updatedAt first (the current API field)');
+  // worker -- Samsara EU data region
+  ok(/api\.eu\.samsara\.com/.test(_WORKER_SRC), 'WAVE80 samsara: the EU data-region base URL is supported');
+  ok(/String\(meta\.region \|\| ''\)\.toLowerCase\(\) === 'eu'/.test(_WORKER_SRC), 'WAVE80 samsara: the EU base is used only when the connection region is eu so US stays the default');
+  // client -- official docs links + live help page
+  ok(/var TRACKER_DOCS=\{/.test(_ATLAS_SRC), 'WAVE80 docs: the TRACKER_DOCS vendor-docs map exists in the client');
+  ok(/official setup docs/.test(_ATLAS_SRC), 'WAVE80 docs: the per-provider guide renders a View official setup docs link');
+  ok(/function openTrackerHelp\(\)/.test(_ATLAS_SRC), 'WAVE80 help: the openTrackerHelp step-by-step setup page exists');
+  ok(/openTrackerConnect,openTrackerHelp,/.test(_ATLAS_SRC), 'WAVE80 help: openTrackerHelp is exposed on the Atlas API object');
+  ok(/clientId:tuc,clientSecret:tus/.test(_ATLAS_SRC), 'WAVE80 trackunit client: the connect form sends clientId and clientSecret as JSON');
+  ok(/val\('smRegion'\)\|\|'us'\)==='eu'/.test(_ATLAS_SRC), 'WAVE80 samsara client: the connect form sends the EU region when selected');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
