@@ -2447,7 +2447,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.13im';
+  var APP_VERSION='2026.11.13in';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -9962,6 +9962,7 @@ const Atlas = (function(){
         <p style="font-size:12.5px;color:var(--muted);margin-top:12px">Cancel anytime and keep your data.</p>
       </div>`)
       + '<div id="sqBkBlock"></div>'
+      + '<div id="stBkBlock"></div>'
       + `<div class="set-block"><h3>Atlas.io credits</h3><div class="desc">Fuel for your AI assistant. Free credits refill every week; top up anytime.</div>
         <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
           <div style="flex:1;min-width:180px"><div style="font-size:26px;font-weight:850;color:var(--ink)" class="tnum">${_creditsUnlimited()?'Unlimited':_c.toLocaleString()}</div><div style="font-size:12.5px;color:var(--muted)">${_creditsUnlimited()?('credits &middot; included with '+esc(_t.name)):('credits available &middot; '+_t.credits.toLocaleString()+' free every week on '+esc(_t.name))}</div></div>
@@ -9969,6 +9970,7 @@ const Atlas = (function(){
       </div>` + _emailMeterHtml() + _addonsBillingHtml() + _referralCardHtml();
       if(_refEnabled) _referralLoad();
       _sqBkLoad();
+      _stBkLoad();
     }
     else if(setCur==='support'){ b.innerHTML = `
       <div class="set-block"><div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><h3>Support tickets</h3><div class="desc">Open a ticket and the Atlas team replies right here &mdash; you'll get an email too.</div></div><button class="btn btn--primary btn--sm" onclick="Atlas.openTicket()">+ New ticket</button></div>
@@ -12269,6 +12271,34 @@ const Atlas = (function(){
       if(res.status>=200&&res.status<300&&j.ok){ _sqBk.backup=null; toast('Backup card removed.'); _sqBkRender(); }
       else { toast((j&&(j.error||j.message))||'Could not remove the backup card.'); }
     }).catch(function(){ toast('Network error removing the backup card.'); }); }
+  // WAVE92: Stripe BACKUP card -- a 2nd card saved via hosted Checkout (setup mode, no charge). invoice.payment_failed + the dunning cron charge it
+  // if the primary declines, before the account lapses. Shown ONLY to tenants paying Atlas via a Stripe card subscription. Redirect flow (not inline SDK).
+  var _stBk={loaded:false,subscribed:false,backup:null};
+  function _stBkLoad(){ if(!(ATLAS_BACKEND&&_apiCsrf)) return;
+    _api('/api/billing/stripe/card',{method:'GET'}).then(function(res){ var j=(res&&res.json)||{};
+      _stBk.loaded=true; _stBk.subscribed=!!j.subscribed; _stBk.backup=j.backup||null; _stBkRender();
+    }).catch(function(){}); }
+  function _stBkRender(){ var el=document.getElementById('stBkBlock'); if(!el) return;
+    if(!_stBk.subscribed){ el.innerHTML=''; return; }   // only for tenants paying Atlas via a Stripe card subscription
+    var bk=_stBk.backup;
+    el.innerHTML='<div class="set-block"><h3>Backup card</h3>'
+      +'<div class="desc">Add a second card and we&rsquo;ll charge it automatically if your main card is ever declined &mdash; so your account never lapses over an expired or maxed-out card. You&rsquo;re still only billed once each month.</div>'
+      +(bk
+        ? '<div style="display:flex;align-items:center;gap:12px;padding:14px 15px;border:1px solid var(--line);border-radius:12px;flex-wrap:wrap"><div style="flex:1;min-width:160px"><b style="color:var(--ink);font-size:14px">'+esc(bk.brand||'Card')+' &bull;&bull;&bull;&bull; '+esc(bk.last4||'')+'</b><div style="font-size:12.5px;color:var(--muted)">Backup card on file</div></div><button class="btn btn--ghost btn--sm" onclick="Atlas._stBackupAdd()">Replace</button> <button class="btn btn--sm btn--danger" onclick="Atlas._stBackupRemove()">Remove</button></div>'
+        : '<button class="btn btn--ghost btn--sm" onclick="Atlas._stBackupAdd()">Add a backup card</button>')
+      +'</div>'; }
+  function _stBackupAdd(){ if(!_guard('billing','Managing billing'))return; if(_isNativeApp()){ _manageOnWeb('plan'); return; }
+    toast('Opening secure card form...');
+    _api('/api/billing/backup-card/checkout',{method:'POST',body:{}}).then(function(res){ var j=(res&&res.json)||{};
+      if(res.status>=200&&res.status<300&&j.ok&&j.url){ window.location.href=j.url; return; }
+      toast((j&&(j.error||j.message))||'Could not open the card form.');
+    }).catch(function(){ toast('Network error opening the card form.'); }); }
+  function _stBackupRemove(){ if(!_guard('billing','Managing billing'))return;
+    if(!confirm('Remove your backup card? If your main card is declined after this, there will be no backup to fall back on.')) return;
+    _api('/api/billing/backup-card/remove',{method:'POST',body:{}}).then(function(res){ var j=(res&&res.json)||{};
+      if(res.status>=200&&res.status<300&&j.ok){ _stBk.backup=null; toast('Backup card removed.'); _stBkRender(); }
+      else { toast((j&&(j.error||j.message))||'Could not remove the backup card.'); }
+    }).catch(function(){ toast('Network error removing the backup card.'); }); }
   // On return from Stripe Checkout (Stripe only redirects here AFTER a completed payment), reflect the purchase locally; the webhook is the server-authoritative record.
   // GATE FIX / confirm-on-return: after a Stripe trial checkout, verify the session with the server (worker fetches the
   // session from Stripe and writes card_on_file + stripe_sub + trial_ends directly -- no webhook dependency) BEFORE
@@ -12302,6 +12332,7 @@ const Atlas = (function(){
     try{ var q=new URLSearchParams(location.search); var b=q.get('billing'); if(!b) return;
     if(b==='cryptopending'){ toast('Crypto payment started \u2014 confirming on the blockchain. Your account updates automatically once it settles (usually a few minutes).'); try{ _api('/api/billing/crypto-confirm',{method:'POST',body:{}}).then(function(r){ try{ if(r&&r.confirmed){ var _s2=store.session(); if(_s2&&typeof _srvHydrate==='function') _srvHydrate(_s2.tenantId).then(function(){ try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){} }); } }catch(e){} }).catch(function(){}); }catch(e){}   // re-audit #14 (client): confirm-on-return -- ask the server to poll Coinbase NOW and grant the plan/credits/website webhook-independently, then hydrate to reflect it immediately; the 18s interval below stays as the slower webhook/cron backstop
       var _cp=0; var _cpT=setInterval(function(){ _cp++; try{ var _s=store.session(); if(_s&&typeof _srvHydrate==='function') _srvHydrate(_s.tenantId).then(function(){ try{ renderTrialBox(); renderSet(); buildAio(); }catch(e){} }); }catch(e){} if(_cp>=10){ try{ clearInterval(_cpT); }catch(e){} } }, 18000); try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){} return; }   // crypto confirms async -> poll a few times so the plan/credits reflect once the webhook lands; the normal live-poll also catches it
+    if(b==='backupsaved'){ toast('Backup card saved -- we will only use it if your main card is ever declined.'); try{ if(typeof _stBkLoad==='function') _stBkLoad(); }catch(e){} try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){} return; }   // WAVE92: Stripe backup-card setup Checkout return
     if(b==='success' && typeof S!=='undefined' && S){ var kind=q.get('kind'), tier=q.get('tier'), pack=q.get('pack'), sid=q.get('session_id');
       if(kind==='plan'&&tier){ var t=_tier(tier); if(t){ var chg=!(S.plan==='active'&&S.tier===t.id); S.plan='active'; S.tier=t.id; if(chg){ S.subscribedAt=Date.now(); S.credits={free:t.credits,purchased:(S.credits&&S.credits.purchased)||0,weekStart:_weekStart()}; } save(); } _confirmPlanReturn(sid, 0); }   // PAID-BUT-LOCKED FIX: confirm the paid session with the SERVER (webhook-independent) so a missed checkout.session.completed/invoice.paid can't leave the just-paid subscriber locked out -- the optimistic local S.plan above would otherwise be contradicted by the server's 402 and re-raise the paywall
       else if(kind==='credits'&&pack){ var n=parseInt(pack,10)||0; if(n){ if(!S.credits)S.credits={free:0,purchased:0}; S.credits.purchased=(S.credits.purchased||0)+n; if(typeof S.credits.bal==='number') S.credits.bal=(S.credits.bal||0)+n; save(); } }
@@ -15542,7 +15573,7 @@ const Atlas = (function(){
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
     setBrandName,setBizTz,setBrandColor,setBrandColorHex,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,revOptApply,revOptAsk,setAutoPrice,autoPriceRevertAll,autoPriceRevertOne,
-    goAuth,authSubmit,authTogglePass,ssoLogin,setMoneyStack,bkSaveCard,bkChargeCard,_bkChargeCardSubmit,_askModal,_askOk,_bkRecordPaySubmit,bkRecordPayment,setTipping,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,changePassword,_changePwGo,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,openEmailPacks,buyEmails,buyEmailAddon,buyAddon,removeAddon,renderExtras,buyLocation,buySite,buyAssetBlock,buyTracking,_cryptoCheckout,_cryptoPlanPrompt,_cryptoPlanGo,_squarePlanCheckout,_squarePayGo,_sqBackupAdd,_sqBackupGo,_sqBackupRemove,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
+    goAuth,authSubmit,authTogglePass,ssoLogin,setMoneyStack,bkSaveCard,bkChargeCard,_bkChargeCardSubmit,_askModal,_askOk,_bkRecordPaySubmit,bkRecordPayment,setTipping,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,changePassword,_changePwGo,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,openEmailPacks,buyEmails,buyEmailAddon,buyAddon,removeAddon,renderExtras,buyLocation,buySite,buyAssetBlock,buyTracking,_cryptoCheckout,_cryptoPlanPrompt,_cryptoPlanGo,_squarePlanCheckout,_squarePayGo,_sqBackupAdd,_sqBackupGo,_sqBackupRemove,_stBackupAdd,_stBackupRemove,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,
     mfaSubmit,mfaResend,mfaToggleBackup,mfaCancel,
     newBooking,editBooking,bkPreview,createBooking,openBooking,bkAddCoSigner,_bkCoSignerSubmit,bkCoSignerLink,bkRmCoSigner,bkContractPdf,bkViewAgreement,bkSendAgreement,bkReceiptPdf,setBookingStatus,deleteBooking,bkReqCharge,bkReqDone,bkFilter,bkSearch,bkShowAll,bkAssign,bkSetView,bkCalNav,bkCalDay,exportBkIcs,viewCustomer,custSearch,custShowAll,exportCustomers,saveCustNote,emailCustomer,eraseCustomer,sendCustEmail,addWaitlist,saveWaitlist,editWaitlist,saveWaitlistEdit,rmWait,waitToBooking,addLead,saveLead,leadStage,leadToBooking,rmLead,bkAddCondition,bkRmCondition,bkFinalizeCondition,bkUnlockCondition,bkCompareCondition,bkAddCharge,sendCharge,bkRmCharge,portalPayCharge,
     bkLogIncident,saveIncident,bkIncidentCharge,bkRmIncident,bkCancelFlow,doCancel,bkVoidFlow,doVoid,unvoidBooking,bkVoidReport,bkEvidence,bkRebuttalLetter,_rebutCopy,_rebutPrint,bkOrphanDisputes,_orphanLink,_orphanDismiss,bkPortalLink,bkPortalRevoke,bkIdvNudge,bkSendSignLink,idvSetAutoSend,idvSetAutoCarry,bkExtendFlow,bkExtendAmt,bkExtendPreview,bkExtendSave,bkExtRemove,bkRepeat,doRepeat,bkToggleVerify,bkRejectVerify,bkClearVerify,bkRequireResign,bkSignHistory,bkActivityLog,bkPaymentPlan,savePlan,bkPlanPaid,_ppTypeChange,_ppAddRow,_ppRmRow,_ppEdit,bkMeter,saveMeter,bkMeterBill,_mtHint,_mtOverage,bkFuel,saveFuel,_flHint,bkLate,saveLate,_ltHint,bkDriver,saveDriver,bkRmDriver,bkInsurance,saveInsurance,bkBlacklistToggle,blacklistBlockToggle,holdAuth,holdRelease,holdCapture,holdReturn,doCapture,bkCheckIn,doCheckIn,bkCloseOut,doCloseOut,_coCalc,
