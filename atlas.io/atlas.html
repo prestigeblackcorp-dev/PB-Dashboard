@@ -2135,9 +2135,11 @@ const Atlas = (function(){
   // tab becomes visible again -- so an open, in-use tab keeps its session alive, while a CLOSED/abandoned tab stops
   // pinging and correctly idles out. Result ignored (pure session refresh, no re-render); _apiCsrf-guarded so it is inert
   // pre-login and self-stops once _sessionExpired() nulls _apiCsrf.
-  function _sessionKeepalive(){ try{ if(document.hidden||!ATLAS_BACKEND||!_apiCsrf) return; _api('/api/auth/me').catch(function(){}); }catch(e){} }
+  function _sessionKeepalive(){ try{ if(document.hidden||!ATLAS_BACKEND||!_apiCsrf) return; _refreshSelfRole(); }catch(e){} }   // slide the session AND, for a logged-in teammate, re-adopt any access change the owner just made (owner sessions no-op the rebuild; hits the same /api/auth/me, so no extra cost)
   setInterval(_sessionKeepalive, 300000);
   try{ document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='visible') _sessionKeepalive(); }); }catch(e){}
+  try{ window.addEventListener('focus',function(){ try{ if(!document.hidden && _selfActor && ATLAS_BACKEND && _apiCsrf) _refreshSelfRole(); }catch(e){} }); }catch(e){}   // a returning teammate picks up new access immediately
+  setInterval(function(){ try{ if(!document.hidden && _selfActor && ATLAS_BACKEND && _apiCsrf) _refreshSelfRole(); }catch(e){} }, 60000);   // teammate access auto-refresh: a NON-owner re-checks its own caps ~every 60s while the tab is visible, so an owner's grant/revoke takes effect WITHOUT a manual reload. Owner sessions (_selfActor null) skip it -> no added cost.
   // A11Y (WCAG 1.3.1/4.1.2): programmatically associate every .field's <label> with its control -- screen readers otherwise
   // announce most of the ~176 inputs as unnamed -- and make leaf clickable div/span[onclick] keyboard-operable (Enter/Space).
   // Runtime + observed so it covers static AND JS-rendered forms uniformly without hand-editing each; idempotent + fail-safe.
@@ -3443,7 +3445,8 @@ const Atlas = (function(){
     finally{ _authBusy=false; if(_btn){ _btn.disabled=false; _btn.classList.remove('is-loading'); _btn.textContent=_bt; } }
   }
   // Re-fetch the logged-in user's role and adopt/clear the self-actor (UI gating). Server enforcement is the real backstop; this keeps the UI honest.
-  function _refreshSelfRole(){ if(!ATLAS_BACKEND) return Promise.resolve(); return _api('/api/auth/me',{method:'GET'}).then(function(res){ if(res&&res.json&&res.json.user){ var was=!!_selfActor; _applySelfRole(res.json.user); if(_selfActor||was){ try{ var ap=document.getElementById('view-app'); if(S&&S.onboarded&&ap&&!ap.classList.contains('hidden')) buildApp(); }catch(e){} } } }).catch(function(){}); }
+  function _selfActorSig(){ try{ return _selfActor?(JSON.stringify(_selfActor.perms||null)+'|'+(_selfActor.role||'')):'owner'; }catch(e){ return ''; } }   // compact signature of this session's effective access, to detect a real change
+  function _refreshSelfRole(){ if(!ATLAS_BACKEND) return Promise.resolve(); return _api('/api/auth/me',{method:'GET'}).then(function(res){ if(res&&res.json&&res.json.user){ var was=!!_selfActor, _before=_selfActorSig(); _applySelfRole(res.json.user); var _after=_selfActorSig(); if((_selfActor||was) && _before!==_after){ try{ var ap=document.getElementById('view-app'); if(S&&S.onboarded&&ap&&!ap.classList.contains('hidden')){ buildApp(); toast('Your access was updated'); } }catch(e){} } } }).catch(function(){}); }   // rebuild ONLY when this user's access actually changed, so the periodic self-caps poll never needlessly rebuilds/flickers the teammate's UI; tell them when it does change
   // Shared with the post-2FA success path (mfaSubmit): local session pointer + seed + server hydrate.
   async function _srvAuthSettle(email, tenantId){
     _lsSet(SK, {email:_emailKey(email), tenantId:tenantId});
@@ -9033,10 +9036,12 @@ const Atlas = (function(){
       +'<button class="btn btn--primary btn--full btn--lg" style="margin-top:16px" onclick="Atlas.closeModal();Atlas.toast(\'Access updated\')">Done</button>'
       +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.removeMember(\''+id+'\')">Remove from team</button></div>');
   }
-  function setRolePreset(id,role){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; m.role=role; if(role!=='custom'&&ROLE_PRESETS[role]) m.perms=ROLE_PRESETS[role].make(); save(); _srvTeamPut(m); renderTeam(); renderSet(); openPerm(id); }   // fix: renderSet() refreshes the Settings>Team subsection too; _srvTeamPut keeps server enforcement in sync
-  function setPerm(id,kind,key,val){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; m.perms=m.perms||_permsAll(false); m.perms[kind]=m.perms[kind]||{}; m.perms[kind][key]=!!val; m.role='custom'; save(); _srvTeamPut(m); renderTeam(); renderSet();   // fix: refresh Settings>Team subsection; _srvTeamPut keeps server enforcement in sync
+  function setRolePreset(id,role){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; m.role=role; if(role!=='custom'&&ROLE_PRESETS[role]) m.perms=ROLE_PRESETS[role].make(); save(); _srvTeamPut(m); _renderTeamRows(); renderSet(); openPerm(id); }   // fix: repaint the roster from LOCAL cache (not renderTeam(), which re-GETs /api/team and can race the PUT above -> revert); renderSet() refreshes Settings>Team; _srvTeamPut keeps server enforcement in sync
+  function setPerm(id,kind,key,val){ if(!_guard('teamManage'))return; var m=_member(id); if(!m)return; m.perms=m.perms||_permsAll(false); m.perms[kind]=m.perms[kind]||{}; m.perms[kind][key]=!!val; m.role='custom'; save(); _srvTeamPut(m); _renderTeamRows(); renderSet();   // fix: repaint the roster from LOCAL cache -- NOT renderTeam(), which re-GETs /api/team and, racing the PUT above, overwrote the just-toggled perms with pre-write server state ("some toggles revert"); renderSet() refreshes Settings>Team
     var sel=document.querySelector('#modal select'); if(sel) sel.value='custom'; }
   var _inviteDraft=null;
+  var _teamPutInflight={};   // memberId -> count of in-flight PUT /api/team writes, so a racing GET (_srvTeamLoad) can't overwrite a just-toggled member's perms with pre-write server state (the "some toggles revert" bug)
+  var _teamEditTs={};        // memberId -> last LOCAL edit time; a short grace window also shields a just-edited member from a slow tab-open GET that carries pre-write data and resolves after the PUT settled
   function inviteMember(){ if(!_guard('teamManage','Managing team'))return;
     _inviteDraft={ name:'', email:'', role:'desk', perms:ROLE_PRESETS.desk.make() };   // fix: name is now REQUIRED, and the full access editor lives IN the invite flow so you set exactly what they can see/do BEFORE sending (was a role preset only + "fine-tune after inviting")
     _renderInviteModal(); }
@@ -9103,13 +9108,16 @@ const Atlas = (function(){
       var srv=res.json.team.filter(function(u){return !u.isOwner;});   // the owner is rendered separately (the "you" row)
       var byId={},byEmail={}; (S.team||[]).forEach(function(m){ if(m.id)byId[m.id]=m; if(m.email)byEmail[String(m.email).toLowerCase()]=m; });
       S.team=srv.map(function(u){ var ex=byId[u.id]||byEmail[String(u.email||'').toLowerCase()]||{};
+        if(ex && ex.id && (_teamPutInflight[ex.id] || (_teamEditTs[ex.id] && (Date.now()-_teamEditTs[ex.id])<10000))){ return { id:u.id, name:(ex.name||u.name||_nameFromEmail(u.email)), email:u.email, role:ex.role, perms:ex.perms, status:u.status, pending:!!u.pending }; }   // fix: a PUT for this member is in flight OR was edited <10s ago -- keep the LOCAL (just-edited, authoritative) role/perms so a GET that raced/outran the write can't revert the owner's toggles
         var perms=(u.caps&&(u.caps.caps||u.caps.mods))?u.caps:(ROLE_PRESETS[u.role]?ROLE_PRESETS[u.role].make():_permsAll(false));
         return { id:u.id, name:(u.name||ex.name||_nameFromEmail(u.email)), email:u.email, role:u.role, perms:perms, status:u.status, pending:!!u.pending }; });   // fix: prefer the SERVER-stored name (now captured at invite); fall back to a locally-kept name, then the email-derived one for legacy rows
       save();
     }).catch(function(){});
   }
   // Persist a role/caps change to the server so enforcement matches the UI (best-effort; server clamps role, never to owner).
-  function _srvTeamPut(m){ if(!(ATLAS_BACKEND && !_isDemoTenant() && _apiCsrf && m && m.id))return; var role=(['manager','ops','desk','viewer'].indexOf(m.role)>=0)?m.role:'desk'; try{ _api('/api/team',{method:'PUT',body:{id:m.id, role:role, caps:m.perms}}).catch(function(){}); }catch(e){} }
+  function _srvTeamPut(m){ if(!(ATLAS_BACKEND && !_isDemoTenant() && _apiCsrf && m && m.id))return; var role=(['manager','ops','desk','viewer'].indexOf(m.role)>=0)?m.role:'desk'; var _id=m.id; _teamPutInflight[_id]=(_teamPutInflight[_id]||0)+1; _teamEditTs[_id]=Date.now();   // mark this member's write in flight (+ stamp the edit time) so a concurrent/slow _srvTeamLoad keeps the local (authoritative) perms
+    function _done(){ _teamPutInflight[_id]=Math.max(0,(_teamPutInflight[_id]||1)-1); }
+    try{ _api('/api/team',{method:'PUT',body:{id:m.id, role:role, caps:m.perms}}).then(_done,_done); }catch(e){ _done(); } }
   function removeMember(id){ if(!_guard('teamManage'))return; if(!confirm('Remove this teammate and their access?'))return;
     if(ATLAS_BACKEND && !_isDemoTenant() && _apiCsrf){ _api('/api/team?id='+encodeURIComponent(id),{method:'DELETE'}).then(function(res){ if(!(res.json&&res.json.ok)){ toast((res.json&&res.json.error)||'Could not remove'); return; } _finishRemove(id); }).catch(function(){ toast('Network error - please try again'); }); return; }
     _finishRemove(id); }
