@@ -1889,9 +1889,11 @@ const Atlas = (function(){
       return v; }catch(e){ return ''; } }
   function _vping(){ try{
       var vsid=_vpingId(); if(!vsid) return;
-      var body=JSON.stringify({src:'app',sid:vsid});
+      var _q; try{ _q=new URLSearchParams(location.search); }catch(e){ _q=null; }
+      function _qg(n){ try{ return (_q&&_q.get(n))||''; }catch(e){ return ''; } }   // WAVE61: first-touch attribution -- utm_* from the URL + referrer + landing path. The worker records these ONCE per new daily visitor (deduped server-side), so sending on every load is safe and never double-counts.
+      var body=JSON.stringify({src:'app',sid:vsid,utm_source:_qg('utm_source'),utm_medium:_qg('utm_medium'),utm_campaign:_qg('utm_campaign'),utm_term:_qg('utm_term'),utm_content:_qg('utm_content'),ref:(document.referrer||''),landing:(location.pathname||'')});
       if(navigator.sendBeacon) navigator.sendBeacon(ATLAS_API+'/api/visit-ping', new Blob([body],{type:'application/json'}));
-      else { var img=new Image(); img.src=ATLAS_API+'/api/visit-ping?src=app&sid='+encodeURIComponent(vsid); }
+      else { var img=new Image(); img.src=ATLAS_API+'/api/visit-ping?src=app&sid='+encodeURIComponent(vsid)+'&utm_source='+encodeURIComponent(_qg('utm_source'))+'&utm_medium='+encodeURIComponent(_qg('utm_medium'))+'&utm_campaign='+encodeURIComponent(_qg('utm_campaign'))+'&ref='+encodeURIComponent(document.referrer||'')+'&landing='+encodeURIComponent(location.pathname||''); }
     }catch(e){ /* best-effort only -- never throw from a tracking call */ } }
   // #297 SIGNUP-FUNNEL instrumentation (first-party, no-cookie): a lightweight event at each of the six REAL
   // steps of the trial funnel, so the founder can see WHERE people drop off (today only page-level visits +
@@ -2385,7 +2387,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.7.23eu';
+  var APP_VERSION='2026.7.23ev';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
