@@ -14692,6 +14692,7 @@ const Atlas = (function(){
   var _domPortfolio=null, _domManageOpen='', _domConn={}, _domDnsData={}, _domDnsOpen={};
   var _DOM_DNS_TYPES=['A','AAAA','CNAME','TXT','MX'];
   function _domKey(d){ return String(d||'').replace(/[^a-z0-9]/gi,'_'); }
+  function _domFind(name){ var ds=(_domPortfolio&&_domPortfolio.domains)||[]; name=String(name||''); for(var i=0;i<ds.length;i++){ if(ds[i]&&String(ds[i].domain||'')===name) return ds[i]; } return null; }
   function _domArg(d){ return _jsAttr(d); }
   function _domFmtDate(v){ if(v==null||v==='') return ''; var t=(typeof v==='number')?v:Date.parse(v); if(!isFinite(t)) return ''; try{ return new Date(t).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }catch(e){ return ''; } }
   // Lazy portfolio load (mirrors seoHealthLoad): re-open / mode switch renders from cache; only first open or Refresh (force) fetches.
@@ -14714,7 +14715,7 @@ const Atlas = (function(){
     var st=String(d.status||'').toLowerCase(); var isConn=(d.connected===true)||st==='live'||st==='active'||st==='owned'||st==='connected';
     var connChip=isConn?('<span class="chip chip--ok"><span class="dot"></span>'+(st==='owned'?'Owned':'Connected')+'</span>'):(st==='pending'?'<span class="chip chip--warn"><span class="dot"></span>Pending DNS</span>':('<span class="chip chip--muted"><span class="dot"></span>'+(st?esc(st.charAt(0).toUpperCase()+st.slice(1)):'Not connected')+'</span>'));
     var sslChip=d.ssl?'<span class="chip chip--ok">SSL</span>':'<span class="chip chip--muted">SSL pending</span>';
-    var arChip=(d.autorenew===true)?'<span class="chip chip--ok">Auto-renew on</span>':(d.autorenew===false?'<span class="chip chip--muted">Auto-renew off</span>':'');
+    var arChip=(d.billed===true)?((d.renewOn!==false)?'<span class="chip chip--ok">Auto-renew on</span>':'<span class="chip chip--muted">Auto-renew off</span>'):'';   // reflect Atlas's yearly renewal (the sub), not Dynadot's internal renew_option; hidden for names Atlas doesn't bill
     var exp=_domFmtDate(d.expiresAt); var expHtml=exp?('<span style="font-size:11.5px;color:var(--muted)">'+(isConn?'Renews ':'Expires ')+esc(exp)+'</span>'):'';
     var _reg=String(d.registrar||''); if(/dynadot/i.test(_reg)) _reg='Atlas';   // white-label: a domain registered through Atlas never exposes the underlying registrar
     var regHtml=_reg?('<span style="font-size:11.5px;color:var(--muted)">'+esc(_reg)+'</span>'):'';
@@ -14729,7 +14730,33 @@ const Atlas = (function(){
       +'<div id="domConn_'+k+'" style="margin-top:10px">'+(_domConn[name]?_domConnBodyHtml(name):'')+'</div></div>';
     var dns='<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line-2)"><button class="btn btn--ghost btn--sm btn--full" style="text-align:left" onclick="Atlas.webDomDns(\''+_domArg(name)+'\')">'+(dnsOpen?'&#9662;':'&#9656;')+' DNS records</button>'
       +'<div id="domDns_'+k+'" style="margin-top:10px'+(dnsOpen?'':';display:none')+'">'+(dnsOpen?_domDnsBodyHtml(name):'')+'</div></div>';
-    return conn+dns; }
+    return _domAutoRenewHtml(name)+conn+dns; }
+  // Auto-renew control for an Atlas-purchased domain. "Auto-renew" here = Atlas's yearly renewal (the Stripe sub that drives
+  // _registrarRenew), the thing the owner actually controls -- NOT Dynadot's internal renew_option. Shown only when the name is
+  // on a recurring plan (d.billed); a comp/test register with no sub shows an honest "not on a renewal plan" line instead.
+  function _domAutoRenewHtml(name){ var d=_domFind(name); if(!d) return ''; var k=_domKey(name);
+    var head='<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line-2)" id="domAr_'+k+'">';
+    if(d.billed!==true){
+      var isAtlas=/dynadot/i.test(String(d.registrar||''))||String(d.registrar||'')==='dynadot';
+      if(!isAtlas) return '';   // external/connected name -- renewal is handled at the owner's own registrar, nothing for Atlas to toggle
+      return head+'<div style="font-size:13px;font-weight:700;color:var(--ink);margin-bottom:3px">Auto-renew</div><div style="font-size:12px;color:var(--muted)">This domain is not on a yearly renewal plan.</div></div>';
+    }
+    var on=(d.renewOn!==false);
+    var desc=on?'On &mdash; Atlas renews this domain every year so it never lapses.':'Off &mdash; this domain stays live through the paid period, then lapses.';
+    return head+'<div style="display:flex;align-items:center;justify-content:space-between;gap:12px">'
+      +'<div style="min-width:0"><div style="font-size:13px;font-weight:700;color:var(--ink)">Auto-renew</div><div style="font-size:12px;color:var(--muted)">'+desc+'</div></div>'
+      +'<label class="switch" style="flex:none" title="'+(on?'Turn auto-renew off':'Turn auto-renew on')+'"><input type="checkbox" '+(on?'checked':'')+' onchange="Atlas.webDomAutoRenew(\''+_domArg(name)+'\',this.checked)"><span class="switch__t"></span></label>'
+      +'</div></div>'; }
+  function webDomAutoRenew(name, checked){ name=String(name||''); var on=(checked===true||checked==='true');
+    if(!(ATLAS_BACKEND&&_apiCsrf)){ toast('Sign in to manage renewal'); _domPortfolioRender(); return; }
+    if(!on){ if(!confirm('Turn OFF auto-renew for '+name+'?\n\nIt stays live through the period you have already paid for, then lapses -- and could be registered by someone else.')){ _domPortfolioRender(); return; } }   // reset the switch if they back out
+    var k=_domKey(name); var box=document.getElementById('domAr_'+k); if(box) box.style.opacity='.55';
+    var ep=on?'/api/billing/domain-resume':'/api/billing/domain-cancel';
+    _api(ep,{method:'POST',body:{domain:name}}).then(function(res){ var j=(res&&res.json)||{};
+      if(!(res.status>=200&&res.status<300&&j.ok)){ if(box) box.style.opacity=''; toast((j&&j.error)||'Could not update auto-renew'); _domPortfolioRender(); return; }
+      var d=_domFind(name); if(d){ d.renewOn=on; d.status=on?'registered':'canceling'; }
+      _domPortfolioRender(); toast(on?('Auto-renew on &mdash; '+name+' will keep renewing'):('Auto-renew off &mdash; '+name+' lapses at period end'));
+    }).catch(function(){ if(box) box.style.opacity=''; toast('Network error - please try again'); _domPortfolioRender(); }); }
   function webDomManage(name){ _domManageOpen=(_domManageOpen===name)?'':name; _domPortfolioRender(); }
   // Connection health: cfStatus + SSL + propagation + a plain-English "Needs attention" list of each misconfigured record.
   function webDomCheckConn(name){ if(!(ATLAS_BACKEND&&_apiCsrf)){ toast('Sign in to check your connection'); return; }
@@ -15179,7 +15206,7 @@ const Atlas = (function(){
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,ovCustomizeKpis,ovCustomizeAna,ovKpiToggle,ovKpiMove,ovKpiSave,ovKpiDragStart,ovKpiDrop,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,setOvScope,_anaDrillSet,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,blockDaysQuick,maintUnblock,
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,pnlRevDrill,pnlNetDrill,pnlExpDrill,assetPnlSetPeriod,renderPnl,
-    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,webScopedLinkPick,copyScopedLink,webSiteCreate,webAutoSites,webSiteEdit,webSiteSave,webSitePubToggle,webSiteDelete,webSiteCopy,webSiteDomainModal,webSiteDomainConnect,webSiteDomainVerify,webSiteDomainDisconnect,webEmailDomainModal,webEmailDomainConnect,webEmailDomainVerify,webEmailDomainDisconnect,webEmailDomainActivate,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,webMetaImageUpload,
+    renderWebsite,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,webScopedLinkPick,copyScopedLink,webSiteCreate,webAutoSites,webSiteEdit,webSiteSave,webSitePubToggle,webSiteDelete,webSiteCopy,webSiteDomainModal,webSiteDomainConnect,webSiteDomainVerify,webSiteDomainDisconnect,webEmailDomainModal,webEmailDomainConnect,webEmailDomainVerify,webEmailDomainDisconnect,webEmailDomainActivate,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomAutoRenew,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,webMetaImageUpload,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
     openPerm,setRolePreset,setPerm,setMemberField,inviteMember,_renderInviteModal,_inviteSet,_invitePreset,_invitePerm,saveInvite,resendInvite,copyInviteLink,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
     search,searchGo,_searchClose,

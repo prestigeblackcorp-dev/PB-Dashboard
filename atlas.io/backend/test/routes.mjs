@@ -6082,6 +6082,10 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   // money-C: a domain subscription.deleted advances canceling->canceled; canceled is a DELIVERED COGS state; test-buy tenant excluded from COGS
   ok(/T === 'customer\.subscription\.deleted' && md\.billing === 'domain'/.test(_WORKER_SRC) && /'domain\.subscription_deleted'/.test(_WORKER_SRC), 'money-C: a domain subscription.deleted advances the row canceling->canceled (leaves the active portfolio; sunk COGS still counts)');
   ok(/const _DOM_DELIVERED = "status IN \('registered','canceling','canceled','renew_failed','renew_pending'\) AND tenant_id != '__platform_test__' AND id NOT LIKE 'dtr%'";/.test(_WORKER_SRC), 'money-A/C: COGS includes canceled (delivered) + excludes the platform test-buy tenant AND any dtr% test-register buy tagged to a real tenant (no live-P&L leak)');
+  // domain auto-renew toggle: domain-resume is the symmetric partner to domain-cancel -- clears cancel_at_period_end on the
+  // domain sub and revives a 'canceling' row to 'registered' (owner-facing on/off toggle); portfolio reports billed + renewOn.
+  ok(/path === '\/api\/billing\/domain-resume' && method === 'POST'/.test(_WORKER_SRC) && /subscriptions\/' \+ encodeURIComponent\(sub\), 'cancel_at_period_end=false'/.test(_WORKER_SRC) && /UPDATE domains_sold SET status='registered' WHERE tenant_id=\? AND domain=\? AND status='canceling'/.test(_WORKER_SRC), 'domain-resume: re-enables the domain sub (cancel_at_period_end=false) and revives only a canceling row');
+  ok(/_renewOn = _billed \? \(\['canceling', 'canceled'\]\.indexOf/.test(_WORKER_SRC) && /_existing\.billed = _billed; _existing\.renewOn = _renewOn;/.test(_WORKER_SRC), 'portfolio: reports Atlas billing-side auto-renew (billed + renewOn) so the toggle reflects the yearly sub, not Dynadot native renew_option');
 }
 
 // ==== 13AE: tenant AI quality -- asset-generic (no "fleet"), reads-between-lines + confirm-if-unsure, cost-effective growth, planning, aviation ====
