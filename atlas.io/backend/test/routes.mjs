@@ -6544,5 +6544,17 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/val\('smRegion'\)\|\|'us'\)==='eu'/.test(_ATLAS_SRC), 'WAVE80 samsara client: the connect form sends the EU region when selected');
 }
 
+// ==== WAVE81: precise Square sales-tax itemization -- OFF until SQUARE_TAX_ITEMIZE=on; INCLUSIVE so the charged total is unchanged ====
+ok(/function _squareTaxItemize\(env\)/.test(_WORKER_SRC), 'WAVE81 square-tax: the _squareTaxItemize gate helper exists');
+ok(/env\.SQUARE_TAX_ITEMIZE/.test(_WORKER_SRC), 'WAVE81 square-tax: the gate reads the SQUARE_TAX_ITEMIZE owner flag so itemization stays off until the owner turns it on');
+ok(/function _sqEffTaxPct\(q\)/.test(_WORKER_SRC), 'WAVE81 square-tax: the _sqEffTaxPct effective-rate helper exists');
+ok(/t \/ \(g - t\) \* 100/.test(_WORKER_SRC), 'WAVE81 square-tax: the effective inclusive rate is taxCents over totalCents minus taxCents so a partial payment carries its proportional share');
+ok(/if \(_squareTaxItemize\(env\) && _taxPct > 0 && _amt > 0\)/.test(_WORKER_SRC), 'WAVE81 square-tax: the order form is built only when the gate is on and there is a positive rate and amount');
+ok(/type: 'INCLUSIVE'/.test(_WORKER_SRC), 'WAVE81 square-tax: the tax is INCLUSIVE so the order total equals the amount and the customer pays exactly what quick_pay charged');
+ok(/scope: 'ORDER'/.test(_WORKER_SRC), 'WAVE81 square-tax: the tax is ORDER scoped so it auto-applies to the single line item');
+ok((_WORKER_SRC.match(/quick_pay:/g) || []).length >= 1, 'WAVE81 square-tax: quick_pay remains the default path when the gate is off (byte-identical fallback)');
+ok((_WORKER_SRC.match(/taxPct: /g) || []).length >= 2, 'WAVE81 square-tax: both the public booking and portal callers pass a taxPct to the checkout');
+ok(/kind === 'deposit' \|\| kind === 'balance'\) \? _sqEffTaxPct\(q\) : 0/.test(_WORKER_SRC), 'WAVE81 square-tax: the portal caller taxes only deposit and balance, never a refundable security hold or an ad-hoc charge');
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
