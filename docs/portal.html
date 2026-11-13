@@ -596,18 +596,14 @@ let state = {
 
 // --- Vehicle data (mirrors index.html) ------------------------------------
 var VEHICLE_MILEAGE = {
-  "Corvette":           { miles: 150, overage: 2.00  },
-  "Corvette Z51":       { miles: 150, overage: 2.00  },
-  "BMW M3":             { miles: 150, overage: 3.50  },
-  "BMW i4":             { miles: 200, overage: 1.50  },
-  "Macan":              { miles: 200, overage: 2.00  },
-  "Porsche Boxster S":  { miles: 150, overage: 3.00  },
-  "C300":               { miles: 200, overage: 1.25  },
-  "Accord":             { miles: 200, overage: 0.50  },
+  "Corvette":           { miles: 125, overage: 5.00  },
+  "Corvette Z51":       { miles: 125, overage: 5.00  },
+  "BMW M3":             { miles: 125, overage: 5.00  },
+  "BMW i4":             { miles: 150, overage: 3.00  },
+  "Macan":              { miles: 150, overage: 3.00  },
+  "Porsche Boxster S":  { miles: 125, overage: 5.00  },
+  "C300":               { miles: 150, overage: 3.00  },
   "Lambo Huracan":      { miles: 125, overage: 10.00 },
-  "Lambo Urus":         { miles: 125, overage: 10.00 },
-  "Escalade Rental":    { miles: 150, overage: 5.00  },
-  "G Wagon":            { miles: 150, overage: 5.00  },
   "Polaris Slingshot":  { miles: 300, overage: 1.00  },
 };
 var VEHICLE_INFO = {
@@ -705,7 +701,7 @@ function _buildContractBreakdown(bk){
   var dateLockAmt = Number(bk.dateLock)||0;
   var balanceDue = bk.remainingBalance != null ? Math.max(0,Number(bk.remainingBalance)||0) : Math.max(0,rentalRev+depositAmt-dateLockAmt);
   var dailyRateNum = days > 0 ? baseRev / days : 0;
-  return {baseRev,days,dailyRateNum,unlimitedPD,unlimitedTot,deliveryAmt,stopAmt,waitAmt,petAmt,photoAmt,champagneAmt,redcarpetAmt,decorAmt,bouquetAmt,addonsTotal,subtotal,dateLockAmt,depositAmt,balanceDue};
+  return {baseRev,days,dailyRateNum,unlimitedPD,unlimitedTot,doubleMiles:!!bk.doubleMiles,deliveryAmt,stopAmt,waitAmt,petAmt,photoAmt,champagneAmt,redcarpetAmt,decorAmt,bouquetAmt,addonsTotal,subtotal,dateLockAmt,depositAmt,balanceDue};
 }
 
 function _buildBreakdownTable(bk){
@@ -714,7 +710,7 @@ function _buildBreakdownTable(bk){
   var durLabel = (bk.type==='hourly'||bk.type==='chauffeur') ? 'hr' : 'day';
   var rows = '';
   rows += '<tr><td style="padding:4px 8px 4px 0">Base Rental ('+f(bd.dailyRateNum)+'/'+durLabel+' \u00D7 '+bd.days+' '+durLabel+(bd.days!==1?'s':'')+')</td><td style="text-align:right;padding:4px 0;font-weight:700">'+f(bd.baseRev)+'</td></tr>';
-  if(bd.unlimitedPD>0) rows += '<tr><td style="padding:4px 8px 4px 0;color:#aaa">Unlimited Mileage ('+f(bd.unlimitedPD)+'/day \u00D7 '+bd.days+' day'+(bd.days!==1?'s':'')+')</td><td style="text-align:right;padding:4px 0">'+f(bd.unlimitedTot)+'</td></tr>';
+  if(bd.unlimitedPD>0) rows += '<tr><td style="padding:4px 8px 4px 0;color:#aaa">'+(bd.doubleMiles?'Double Miles':'Unlimited Mileage')+' ('+f(bd.unlimitedPD)+'/day \u00D7 '+bd.days+' day'+(bd.days!==1?'s':'')+')</td><td style="text-align:right;padding:4px 0">'+f(bd.unlimitedTot)+'</td></tr>';
   if(bd.deliveryAmt>0) rows += '<tr><td style="padding:4px 8px 4px 0;color:#aaa">Delivery Fee</td><td style="text-align:right;padding:4px 0">'+f(bd.deliveryAmt)+'</td></tr>';
   if(bd.stopAmt>0)     rows += '<tr><td style="padding:4px 8px 4px 0;color:#aaa">Extra Stop</td><td style="text-align:right;padding:4px 0">'+f(bd.stopAmt)+'</td></tr>';
   if(bd.waitAmt>0)     rows += '<tr><td style="padding:4px 8px 4px 0;color:#aaa">Extra Wait</td><td style="text-align:right;padding:4px 0">'+f(bd.waitAmt)+'</td></tr>';
@@ -961,8 +957,9 @@ async function _downloadSignedContractPdf(rootEl, fname){
 // signing. KEEP IN SYNC: if you add a template placeholder to _initSigningMode's fill, add it here too.
 // Returns the filled template HTML, or '' if there is no template.
 function _smFillContractTmpl(bk, data, drvIdx, readOnly){
-  var tmpl = (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+  var tmpl = (bk.type==='lease') ? (data.leaseTemplate||data.contractTemplate||'') : (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
   if(!tmpl) return '';
+  if(bk.type==='lease' && typeof _pbLeaseFill==='function') tmpl = _pbLeaseFill(tmpl, bk, !readOnly);
   // Slingshot color normalization
   if(bk.vehicle==='Polaris Slingshot'){
     var _sentCol = bk.contractSentColor||'Green';
@@ -990,7 +987,7 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly){
   var _sTripTot = (Number(bk.includedMiles)>0)?Number(bk.includedMiles):((Number(_sVm.miles)||0)*_sDaysM);
   var _sPerDay = (Number(bk.includedMiles)>0&&_sDaysM>0)?Math.round(Number(bk.includedMiles)/_sDaysM):(Number(_sVm.miles)||0);
   var _sOvRate = Number(bk.overageRate)||_sVm.overage||0;
-  var _sIsUnlim = Number(bk.unlimited)>0||!_sPerDay;
+  var _sIsUnlim = (Number(bk.unlimited)>0 && !bk.doubleMiles)||!_sPerDay;   // legacy uncapped only; Double Miles uses the standard clause with the doubled allowance
   var _sMilesDisp = _sIsUnlim?'Unlimited':_sPerDay.toLocaleString()+' mi/day';
   var _sTripMiles = _sIsUnlim?'Unlimited':_sTripTot.toLocaleString()+' mi';
   var _sOverageDisp = _sIsUnlim?'N/A':(_sOvRate?'$'+_sOvRate+'/mi over limit':'N/A');
@@ -1032,7 +1029,7 @@ function _smFillContractTmpl(bk, data, drvIdx, readOnly){
     .replace(/\{\{breakdown_table\}\}/gi, _sr(_sBdTable))
     .replace(/\{\{addons\}\}/gi, _sr(
       [bk.delivery&&Number(bk.delivery)?'Delivery ($'+bk.delivery+')':null,
-       bk.unlimited&&Number(bk.unlimited)?'Unlimited Miles ($'+bk.unlimited+'/day)':null,
+       bk.unlimited&&Number(bk.unlimited)?(bk.doubleMiles?'Double Miles':'Unlimited Miles')+' ($'+bk.unlimited+'/day)':null,
        bk.pet&&Number(bk.pet)?'Pet Fee ($'+bk.pet+')':null,
        bk.photo&&Number(bk.photo)?'Photoshoot ($'+bk.photo+')':null,
        bk.champagne&&Number(bk.champagne)?'Champagne ($'+bk.champagne+')':null,
@@ -1201,8 +1198,9 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
     }
 
     // Pick template
-    var tmpl = (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
+    var tmpl = (bk.type==='lease') ? (data.leaseTemplate||data.contractTemplate||'') : (bk.vehicle==='Polaris Slingshot'&&bk.type==='hourly') ? (data.slingshotWaiverTemplate||'') : (data.contractTemplate||'');
     if(!tmpl){ body.innerHTML='<div style="color:#f87171;padding:20px">No contract template found. Please contact Prestige Black Rentals.</div>'; return; }
+    if(bk.type==='lease' && typeof _pbLeaseFill==='function') tmpl = _pbLeaseFill(tmpl, bk, true);
 
     // Slingshot color normalization
     if(bk.vehicle==='Polaris Slingshot'){
@@ -1232,7 +1230,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
     var _sTripTot = (Number(bk.includedMiles)>0)?Number(bk.includedMiles):((Number(_sVm.miles)||0)*_sDaysM);
     var _sPerDay = (Number(bk.includedMiles)>0&&_sDaysM>0)?Math.round(Number(bk.includedMiles)/_sDaysM):(Number(_sVm.miles)||0);
     var _sOvRate = Number(bk.overageRate)||_sVm.overage||0;
-    var _sIsUnlim = Number(bk.unlimited)>0||!_sPerDay;
+    var _sIsUnlim = (Number(bk.unlimited)>0 && !bk.doubleMiles)||!_sPerDay;   // legacy uncapped only; Double Miles uses the standard clause with the doubled allowance
     var _sMilesDisp = _sIsUnlim?'Unlimited':_sPerDay.toLocaleString()+' mi/day';
     var _sTripMiles = _sIsUnlim?'Unlimited':_sTripTot.toLocaleString()+' mi';
     var _sOverageDisp = _sIsUnlim?'N/A':(_sOvRate?'$'+_sOvRate+'/mi over limit':'N/A');
@@ -1275,7 +1273,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
       .replace(/\{\{breakdown_table\}\}/gi, _sr(_sBdTable))
       .replace(/\{\{addons\}\}/gi, _sr(
         [bk.delivery&&Number(bk.delivery)?'Delivery ($'+bk.delivery+')':null,
-         bk.unlimited&&Number(bk.unlimited)?'Unlimited Miles ($'+bk.unlimited+'/day)':null,
+         bk.unlimited&&Number(bk.unlimited)?(bk.doubleMiles?'Double Miles':'Unlimited Miles')+' ($'+bk.unlimited+'/day)':null,
          bk.pet&&Number(bk.pet)?'Pet Fee ($'+bk.pet+')':null,
          bk.photo&&Number(bk.photo)?'Photoshoot ($'+bk.photo+')':null,
          bk.champagne&&Number(bk.champagne)?'Champagne ($'+bk.champagne+')':null,
@@ -1363,6 +1361,7 @@ function _initSigningMode(bookingId, driverIdx, fromPortal){
     }
     window._smData = data;
     _smInitCanvas();
+    if(bk.type==='lease'){ try{ _pbLeaseAckSetup(bk); }catch(e){} }
 
     // Sticky bar
     var _sb = document.createElement('div');
@@ -1680,6 +1679,119 @@ function _initExtensionSigningMode(bookingId, extId, driverIdx, fromPortal){
   });
 }
 
+// ============================ LEASE: signing-time acknowledgment (shared portal + dashboard) =========
+// A motor-vehicle lease requires the signer to INITIAL 4 conspicuous clauses (Insurance, No-Ownership,
+// AS-IS, Liability/Release) before the signature unlocks. The contract renders inside the same-origin
+// #smContractFrame srcdoc iframe, so this walks the signer to each [data-pbini] box in it, writes their
+// adopted initials in, and only then enables #smSubmitBtn. Additive + lease-only: never runs unless
+// booking.type==='lease'. If the iframe is unreachable it still gates signing on 4 taps (degrades safe).
+function _pbIniFrameDoc(){
+  try{ var f=document.getElementById('smContractFrame'); return (f&&f.contentDocument)?f.contentDocument:null; }catch(e){ return null; }
+}
+function _pbLeaseFill(tmpl, bk, liveSign){
+  if(!bk || bk.type!=='lease' || !tmpl) return tmpl;
+  var money=function(n){ n=Number(n)||0; return '$'+n.toLocaleString('en-US',{maximumFractionDigits:0}); };
+  var fd=function(s){ try{ if(typeof fmtDateFull==='function'){ var r=fmtDateFull(s); if(r) return r; } }catch(e){} return s||''; };
+  var term=Number(bk.leaseTerm)||12, down=Number(bk.leaseDown)||0, monthly=Number(bk.leaseMonthly)||0;
+  var deposit=Number(bk.leaseDeposit!=null?bk.leaseDeposit:bk.deposit)||0;
+  var miles=Number(bk.leaseMiles)|| (term*1250), over=Number(bk.leaseOverage)||0.5;
+  var total=Number(bk.leaseTotal)|| (down+monthly*term);
+  var startS=fd(bk.pickupDate||bk.date||''), endS=fd(bk.dropoffDate||'');
+  var ini=liveSign?'':(bk.leaseInitials?String(bk.leaseInitials).toUpperCase().slice(0,6):'');
+  function R(re,val){ tmpl=tmpl.replace(re,function(){return val;}); }
+  R(/\{\{lease_term\}\}/gi, term+' months');
+  R(/\{\{lease_start\}\}/gi, startS);
+  R(/\{\{lease_end\}\}/gi, endS);
+  R(/\{\{first_payment_date\}\}/gi, startS);
+  R(/\{\{down_payment\}\}/gi, money(down));
+  R(/\{\{monthly_payment\}\}/gi, money(monthly)+'/mo');
+  R(/\{\{total_lease\}\}/gi, money(total));
+  R(/\{\{included_miles\}\}/gi, miles.toLocaleString('en-US')+' mi');
+  R(/\{\{overage_rate\}\}/gi, '$'+over.toFixed(2)+'/mi');
+  R(/\{\{deposit_amount\}\}/gi, money(deposit));
+  R(/\{\{lessee_initials\}\}/gi, ini);
+  return tmpl;
+}
+var _PB_INI_SECTIONS=[{n:'1',t:'Section 7 - Insurance Required'},{n:'2',t:'Section 10 - Lease Only; No Ownership'},{n:'3',t:'Section 11 - Leased AS-IS; No Warranties'},{n:'4',t:'Section 12 - Liability, Release and Indemnity'}];
+function _pbIniRenderProgress(activeIdx){
+  var box=document.getElementById('pbIniProgress'); if(!box) return;
+  var done=(window._pbLeaseAck||[]).length, h='';
+  for(var i=0;i<_PB_INI_SECTIONS.length;i++){
+    var isDone=i<done, isAct=(i===activeIdx);
+    var bg=isDone?'rgba(46,125,50,.92)':(isAct?'#C9A962':'rgba(255,255,255,.08)');
+    var col=(!isDone&&!isAct)?'rgba(255,255,255,.5)':'#000';
+    h+='<span style="padding:5px 10px;border-radius:999px;font-size:11px;font-weight:800;background:'+bg+';color:'+col+'">'+(isDone?'&#10003; ':'')+_PB_INI_SECTIONS[i].t.split(' - ')[0]+'</span>';
+  }
+  box.innerHTML=h;
+}
+function _pbLeaseAckSetup(bk){
+  try{
+    window._pbLeaseAck=[]; window._pbLeaseInitialsDone=false; window._pbLeaseInitials=''; window._pbLeaseBk=bk;
+    var sign=document.getElementById('smSignSection'); if(!sign) return;
+    var nm=(bk&&bk.name)?String(bk.name).trim():'';
+    var di=nm?nm.split(/\s+/).map(function(p){return p.charAt(0);}).join('').toUpperCase().slice(0,4):'';
+    var panel=document.createElement('div');
+    panel.id='pbLeaseAck';
+    panel.style.cssText='background:rgba(201,169,98,.06);border:2px solid rgba(201,169,98,.45);border-radius:14px;padding:18px;margin-bottom:18px';
+    panel.innerHTML=
+      '<div style="font-size:15px;font-weight:800;color:#C9A962;margin-bottom:4px">Review &amp; Initial - Required Before Signing</div>'+
+      '<div style="font-size:12px;color:rgba(255,255,255,.55);margin-bottom:12px;line-height:1.5">This is a binding motor-vehicle lease. You must review and initial <strong style="color:#fff">4 key sections</strong>. We will scroll you to each one in the agreement above.</div>'+
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px"><label style="font-size:12px;color:rgba(255,255,255,.7)">Your initials:</label>'+
+      '<input id="pbIniInput" type="text" maxlength="5" value="'+di+'" style="width:84px;padding:7px 10px;border:1px solid rgba(201,169,98,.5);border-radius:8px;background:#0e0e12;color:#C9A962;font-weight:800;font-size:15px;text-align:center;letter-spacing:.08em;text-transform:uppercase"></div>'+
+      '<div id="pbIniProgress" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px"></div>'+
+      '<button id="pbIniBtn" onclick="_pbIniBegin()" style="padding:11px 24px;border:none;border-radius:10px;background:#C9A962;color:#000;font-weight:800;font-size:15px;cursor:pointer;width:100%;max-width:340px">Begin - Take Me to Section 1</button>'+
+      '<div id="pbIniHint" style="font-size:12px;color:rgba(255,255,255,.45);margin-top:10px"></div>';
+    sign.parentNode.insertBefore(panel, sign);
+    _pbIniRenderProgress(-1);
+    var sub=document.getElementById('smSubmitBtn');
+    if(sub){ sub.disabled=true; sub.style.opacity='.4'; sub.style.cursor='not-allowed'; }
+    sign.style.opacity='.5';
+    var msg=document.getElementById('smSigMsg'); if(msg) msg.textContent='Complete the 4 section acknowledgments above to unlock signing.';
+    var sb=document.getElementById('smStickyBar'); if(sb){ var sbb=sb.querySelector('button'); if(sbb){ sbb.textContent='Review & Initial to Sign'; sbb.setAttribute('onclick',"var s=document.getElementById('pbLeaseAck');if(s)s.scrollIntoView({behavior:'smooth',block:'center'});"); } }
+  }catch(e){ try{ var s2=document.getElementById('smSubmitBtn'); if(s2){ s2.disabled=false; s2.style.opacity='1'; } var sg=document.getElementById('smSignSection'); if(sg) sg.style.opacity='1'; }catch(_e){} }
+}
+function _pbIniBegin(){
+  var inp=document.getElementById('pbIniInput');
+  var v=inp?String(inp.value||'').trim().toUpperCase().slice(0,6):'';
+  if(!v){ var hn=document.getElementById('pbIniHint'); if(hn){hn.style.color='#f87171';hn.textContent='Please enter your initials first.';} if(inp) inp.focus(); return; }
+  window._pbLeaseInitials=v; window._pbLeaseAck=[];
+  if(inp) inp.disabled=true;
+  _pbIniGo(0);
+}
+function _pbIniGo(idx){
+  if(idx>=_PB_INI_SECTIONS.length){ _pbIniComplete(); return; }
+  var sec=_PB_INI_SECTIONS[idx];
+  var doc=_pbIniFrameDoc();
+  var box=doc?doc.querySelector('[data-pbini="'+sec.n+'"]'):null;
+  var row=box?(box.closest?box.closest('.initial'):box.parentNode):null;
+  if(doc){ try{ var prev=doc.querySelectorAll('.pbini-active'); for(var i=0;i<prev.length;i++) prev[i].classList.remove('pbini-active'); }catch(e){} }
+  try{ var fr=document.getElementById('smContractFrame'); if(fr) fr.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){}
+  if(row){ try{ row.classList.add('pbini-active'); }catch(e){} }
+  if(box){ setTimeout(function(){ try{ box.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){} }, 280); }
+  var btn=document.getElementById('pbIniBtn');
+  if(btn){ btn.textContent='Initial '+sec.t.split(' - ')[0]+' & Continue'; btn.setAttribute('onclick','_pbIniConfirm('+idx+')'); }
+  var hint=document.getElementById('pbIniHint');
+  if(hint){ hint.style.color='rgba(255,255,255,.6)'; hint.textContent='Read '+sec.t+' (highlighted above), then tap to initial.'+(box?'':' If it is not highlighted, scroll up in the agreement to '+sec.t+'.'); }
+  _pbIniRenderProgress(idx);
+}
+function _pbIniConfirm(idx){
+  var sec=_PB_INI_SECTIONS[idx];
+  var doc=_pbIniFrameDoc();
+  var box=doc?doc.querySelector('[data-pbini="'+sec.n+'"]'):null;
+  if(box){ try{ box.textContent=window._pbLeaseInitials; var row=box.closest?box.closest('.initial'):box.parentNode; if(row){ row.classList.remove('pbini-active'); row.classList.add('pbini-done'); } }catch(e){} }
+  (window._pbLeaseAck=window._pbLeaseAck||[]).push({section:sec.t, at:Date.now()});
+  _pbIniGo(idx+1);
+}
+function _pbIniComplete(){
+  window._pbLeaseInitialsDone=true;
+  var panel=document.getElementById('pbLeaseAck');
+  if(panel){ panel.innerHTML='<div style="font-size:15px;font-weight:800;color:#2ec27a;margin-bottom:4px">&#10003; All 4 Sections Acknowledged</div><div style="font-size:12px;color:rgba(255,255,255,.55);line-height:1.5">You initialed Sections 7, 10, 11 and 12 as <strong style="color:#C9A962">'+(window._pbLeaseInitials||'')+'</strong>. You can now sign below.</div>'; panel.style.borderColor='rgba(46,194,122,.5)'; }
+  var sign=document.getElementById('smSignSection'); if(sign){ sign.style.opacity='1'; }
+  var sub=document.getElementById('smSubmitBtn'); if(sub){ sub.disabled=false; sub.style.opacity='1'; sub.style.cursor='pointer'; }
+  var msg=document.getElementById('smSigMsg'); if(msg) msg.textContent='By signing, you agree to the terms of the lease agreement above.';
+  try{ if(sign) sign.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){}
+}
+
 function _smInitCanvas(){
   var c = document.getElementById('smSigCanvas'); if(!c) return;
   var ctx = c.getContext('2d'); var drawing = false; var lastX=0, lastY=0;
@@ -1756,6 +1868,11 @@ function _smSubmitSig(bookingId, driverIdx){
     var _signerName = _isDriver ? ((_freshBk.extraDrivers&&_freshBk.extraDrivers[_dIdx]&&_freshBk.extraDrivers[_dIdx].name)||'Driver').split(' ')[0] : (_freshBk.name||'').split(' ')[0]||'there';
     var _savePayload = {bookingId, sig, sigDate};
     if(_isDriver) _savePayload.driverIdx = _dIdx;
+    // LEASE: a primary lessee signature must carry the 4-section acknowledgment (initials) captured above.
+    if(_freshBk && _freshBk.type==='lease' && !_isDriver){
+      if(!window._pbLeaseInitialsDone || !window._pbLeaseInitials){ _showSaveErr('Please initial all 4 required sections above before signing.'); return; }
+      _savePayload.initials = window._pbLeaseInitials; _savePayload.initialsAck = window._pbLeaseAck || [];
+    }
     return fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_savePayload)})
       .then(r => r.json())
       .then(function(res){
@@ -1851,6 +1968,113 @@ function _smSubmitExtSig(bookingId, extId, driverIdx){
         }
       });
   }).catch(err => _showSaveErr('Network error \u2014 '+err));
+}
+
+// VEHICLE SUBSTITUTION AMENDMENT signing (portal) -- mirrors the extension signing flow. Loads the booking,
+// finds the swap in vehicleSwaps[], renders the amendment + signature pad, and POSTs /signing/save with swapId.
+// The original agreement/signature is untouched. ASCII-safe (HTML entities + plain ASCII).
+var _smSwapTok = '';
+function _smAmendWhen(ms){ if(!ms) return 'now'; try{ return new Date(Number(ms)).toLocaleString(); }catch(e){ return 'now'; } }
+function _initAmendmentSigningMode(bookingId, swapId, fromPortal){
+  _smFromPortal = !!fromPortal;
+  try{ _smSwapTok = new URLSearchParams(location.search).get('t') || ''; }catch(e){ _smSwapTok=''; }
+  document.getElementById('signing-screen').style.display = 'block';
+  document.getElementById('auth-screen').style.display = 'none';
+  document.getElementById('app-screen').style.display = 'none';
+  var backBtn = document.getElementById('sign-back-btn');
+  if(backBtn) backBtn.style.display = _smFromPortal ? '' : 'none';
+  var tagEl = document.getElementById('sign-tag'); if(tagEl) tagEl.textContent = 'Vehicle Substitution Amendment';
+  var body = document.getElementById('signing-body');
+  fetch(WORKER+'/signing/load?id='+encodeURIComponent(bookingId)+'&_='+Date.now(),{cache:'no-store'})
+  .then(function(r){ return r.ok ? r.json() : null; })
+  .then(function(data){
+    if(!data||!data.booking){ body.innerHTML = '<div style="color:#f87171;padding:20px">Unable to load. Contact Prestige Black Rentals at <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a>.</div>'; return; }
+    var bk = data.booking;
+    var swaps = (bk.vehicleSwaps||[]).filter(function(w){ return w && !w._deleted; });
+    var sw = swaps.find(function(w){ return w && w.id===swapId; });
+    if(!sw){ body.innerHTML = '<div style="color:#f87171;padding:20px">This amendment was not found. Please contact Prestige Black Rentals at <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a>.<br><small style="opacity:.4">ref '+esc(String(swapId))+'</small></div>'; return; }
+    var who = ((bk.name||'').split(' ')[0]) || 'there';
+    var already = !!(sw.amendmentSig && String(sw.amendmentSig).startsWith('data:image/'));
+    if(already){
+      body.innerHTML = '<div style="text-align:center;padding:30px">'+
+        '<div style="font-size:48px;margin-bottom:12px">&#9989;</div>'+
+        '<div style="font-size:18px;font-weight:700;color:#22c55e;margin-bottom:8px">Amendment Already Signed!</div>'+
+        '<div style="color:rgba(255,255,255,.5);font-size:14px">The vehicle substitution was signed on '+esc(sw.amendmentSigDate||'file')+'. Thank you, '+esc(who)+'!</div>'+
+        '<div style="margin-top:20px;font-size:12px;color:rgba(255,255,255,.55)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div>'+
+        _signerPortalPrompt(bk)+
+        '</div>';
+      return;
+    }
+    window._smData = data;
+    var _ownSig = (typeof data.owner_signature==='string') ? data.owner_signature : '';
+    var ownerSig = (_ownSig&&_ownSig.startsWith('data:image/'))
+      ? '<img src="'+_ownSig+'" style="max-height:58px;max-width:220px;display:block;object-fit:contain;filter:brightness(0)">'
+      : '<span style="font-family:\'Brush Script MT\',\'Segoe Script\',cursive;font-size:26px;color:#111">Jalen Nguyen</span>';
+    var isSlingWaiver = (bk.vehicle==='Polaris Slingshot' && bk.type==='hourly');
+    var docName = isSlingWaiver ? 'Liability Waiver' : 'Rental Agreement';
+    var origDate = bk.customerSigDate || '';
+    var pa = Number(sw.priceAdjust)||0;
+    var paLine = pa ? ('<tr><td style="padding:6px 10px;font-size:13px;color:#444">Price adjustment</td><td style="padding:6px 10px;font-size:13px;font-weight:700">'+(pa>0?'+':'')+'$'+(Math.round(pa*100)/100).toFixed(2)+(sw.priceAdjustNote?(' <span style="color:#888">('+esc(sw.priceAdjustNote)+')</span>'):'')+'</td></tr>') : '';
+    body.innerHTML =
+      '<div style="background:#fff;color:#111;border-radius:12px;padding:20px;max-width:620px;margin:0 auto">'+
+        '<div style="font-size:18px;font-weight:800;color:#0a3d62;margin-bottom:6px">Vehicle Substitution Amendment</div>'+
+        '<p style="font-size:13.5px;line-height:1.6;margin:0 0 12px">Hi '+esc(who)+', please review and sign this amendment to your '+esc(docName)+(origDate?(' dated '+esc(origDate)):'')+'. Your original agreement and signature remain in full force &mdash; this only substitutes the vehicle.</p>'+
+        '<table style="width:100%;border-collapse:collapse;background:#f7f9fb;border-radius:8px;overflow:hidden">'+
+          '<tr><td style="padding:6px 10px;font-size:13px;color:#444;width:42%">Original vehicle</td><td style="padding:6px 10px;font-size:13px;font-weight:700">'+esc(sw.fromVehicle||bk.vehicle||'')+(sw.fromColor?(' ('+esc(sw.fromColor)+')'):'')+'</td></tr>'+
+          '<tr><td style="padding:6px 10px;font-size:13px;color:#444">Substitute vehicle</td><td style="padding:6px 10px;font-size:13px;font-weight:700">'+esc(sw.vehicle||'')+(sw.color?(' ('+esc(sw.color)+')'):'')+'</td></tr>'+
+          '<tr><td style="padding:6px 10px;font-size:13px;color:#444">Effective</td><td style="padding:6px 10px;font-size:13px">'+esc(_smAmendWhen(sw.effAt))+'</td></tr>'+
+          paLine+
+        '</table>'+
+        '<p style="font-size:12px;line-height:1.55;color:#333;margin:12px 0 0">All other terms, conditions, rate, security deposit, insurance and liability provisions of the original Agreement remain in full force and apply to the substitute vehicle. By signing below you acknowledge receiving the substitute vehicle and agree this Amendment forms part of the original Agreement.</p>'+
+        '<div style="margin-top:14px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Prestige Black Rentals</div>'+ownerSig+'</div>'+
+      '</div>'+
+      '<div id="smSignSection" style="margin-top:18px;text-align:center">'+
+        '<div style="font-size:12px;color:rgba(255,255,255,.6);margin-bottom:6px">Sign below</div>'+
+        '<canvas id="smSigCanvas" width="480" height="160" style="width:100%;max-width:480px;height:clamp(120px,22vw,160px);border:2px dashed rgba(201,169,98,.5);border-radius:10px;background:#fff;touch-action:none;cursor:crosshair;display:block;margin:0 auto"></canvas>'+
+        '<div style="margin-top:10px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'+
+          '<button onclick="_smClearSig()" style="padding:8px 18px;border:1px solid rgba(255,255,255,.25);border-radius:8px;background:transparent;color:rgba(255,255,255,.8);font-weight:700;cursor:pointer;font-size:14px">Clear</button>'+
+          '<button onclick="_smSubmitAmendmentSig(\''+bookingId+'\',\''+swapId+'\')" id="smSubmitBtn" style="padding:8px 22px;border:none;border-radius:8px;background:#C9A962;color:#000;font-weight:800;cursor:pointer;font-size:15px">&#9997;&#65039; Sign &amp; Submit</button>'+
+        '</div>'+
+        '<div id="smSigMsg" style="margin-top:8px;font-size:13px;color:rgba(255,255,255,.6)"></div>'+
+      '</div>';
+    _smInitCanvas();
+  })
+  .catch(function(){ body.innerHTML = '<div style="color:#f87171;padding:20px">Network error. Please try again or call (214) 207-2481.</div>'; });
+}
+function _smSubmitAmendmentSig(bookingId, swapId){
+  var c = document.getElementById('smSigCanvas'); if(!c) return;
+  var ctx = c.getContext('2d');
+  var px = ctx.getImageData(0,0,c.width,c.height).data;
+  var hasInk = false; for(var i=3;i<px.length;i+=4){ if(px[i]>10){ hasInk=true; break; } }
+  if(!hasInk){ document.getElementById('smSigMsg').textContent='Please sign above before submitting.'; return; }
+  var btn = document.getElementById('smSubmitBtn'); if(btn){ btn.disabled=true; btn.textContent='Saving...'; }
+  var sig = c.toDataURL('image/png');
+  var t = new Date(); var sigDate = (t.getMonth()+1)+'/'+t.getDate()+'/'+t.getFullYear();
+  function _showSaveErr(msg){ if(btn){ btn.disabled=false; btn.innerHTML='&#9997;&#65039; Sign &amp; Submit'; } var m=document.getElementById('smSigMsg'); if(m){ m.style.color='#f87171'; m.textContent=msg||'Network error -- please try again.'; } }
+  var payload = {bookingId:bookingId, sig:sig, sigDate:sigDate, swapId:swapId}; if(_smSwapTok) payload.t=_smSwapTok;
+  fetch(WORKER+'/signing/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .then(function(r){ return r.json(); })
+    .then(function(res){
+      if(res&&res.ok){
+        var bkName=''; try{ bkName=((window._smData&&window._smData.booking&&window._smData.booking.name)||'').split(' ')[0]; }catch(e){}
+        if(_smFromPortal && state && state.bookings){ var _lb=state.bookings.find(function(x){ return x.id===bookingId; }); if(_lb && Array.isArray(_lb.vehicleSwaps)){ var _ls=_lb.vehicleSwaps.find(function(w){ return w&&w.id===swapId; }); if(_ls){ _ls.amendmentSig=sig; _ls.amendmentSigDate=sigDate; _ls.signed=true; } } }
+        var _portalBtn = _smFromPortal ? '<button onclick="_smGoBack()" style="margin-top:20px;padding:12px 32px;background:#C9A962;color:#000;border:none;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer">&#8592; Back to My Bookings</button>' : _signerPortalPrompt((window._smData&&window._smData.booking)||{});
+        var sb = document.getElementById('smStickyBar'); if(sb) sb.remove();
+        document.getElementById('signing-body').innerHTML =
+          '<div style="text-align:center;padding:40px">'+
+          '<div style="font-size:60px;margin-bottom:16px">&#9989;</div>'+
+          '<div style="font-size:22px;font-weight:800;color:#22c55e;margin-bottom:10px">Amendment Signed!</div>'+
+          '<div style="color:rgba(255,255,255,.6);font-size:15px;margin-bottom:20px">Thank you'+(bkName?(', '+esc(bkName)):'')+'! The vehicle substitution has been signed and recorded.</div>'+
+          '<div style="background:rgba(255,255,255,.05);border-radius:10px;padding:16px;display:inline-block;text-align:left;min-width:220px">'+
+          '<div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Your Signature</div>'+
+          '<img src="'+sig+'" style="max-height:60px;max-width:240px;display:block;background:#fff;padding:6px;border-radius:6px">'+
+          '<div style="font-size:11px;color:rgba(255,255,255,.3);margin-top:6px">Signed '+sigDate+'</div></div>'+
+          '<div style="margin-top:24px;font-size:13px;color:rgba(255,255,255,.55)">Questions? Call <a href="tel:2142072481" style="color:#C9A962">(214) 207-2481</a></div>'+
+          _portalBtn+
+          '</div>';
+      } else { _showSaveErr(res&&res.error ? res.error : 'Save failed -- please try again.'); }
+    })
+    .catch(function(err){ _showSaveErr('Network error -- '+err); });
 }
 
 // --- Auth ------------------------------------------------------------------
@@ -2012,6 +2236,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   var sp = new URLSearchParams(location.search);
   var signId = sp.get('sign');
   var extId  = sp.get('extId');
+  var swapId = sp.get('swap');   // vehicle-substitution amendment signing
   var driverParam = sp.get('driver');
   var driverIdx = (driverParam !== null && driverParam !== '') ? parseInt(driverParam) : null;
   var paidFlag   = sp.get('paid');
@@ -2022,7 +2247,9 @@ document.addEventListener('DOMContentLoaded',()=>{
 
   if(signId){
     hideLoading();
-    if(extId){
+    if(swapId){
+      _initAmendmentSigningMode(signId, swapId);
+    } else if(extId){
       _initExtensionSigningMode(signId, extId, driverIdx);
     } else {
       _initSigningMode(signId, driverIdx);
@@ -2367,7 +2594,7 @@ function showMileageTracker(b){
   const start=Number(b.odomIn)||0;
   const inc=Number(b.includedMiles)||0;
   const rate=Number(b.overageRate)||0;
-  const unlimited=!!b.unlimited||inc<=0;
+  const unlimited=(!!b.unlimited && !b.doubleMiles)||inc<=0;   // legacy uncapped only; Double Miles shows the doubled cap + overage tracker
   const fuel=b.fuelIn?esc(String(b.fuelIn)):'';
   const bid=esc(b.id);
   let saved=''; try{ saved=localStorage.getItem('pb_miles_'+b.id)||''; }catch(e){}
@@ -2635,18 +2862,18 @@ function showAddUnlimited(b){
   var fee = Math.round(rate*days*100)/100;
   return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
     <div style="background:rgba(124,196,255,.07);border:1px solid rgba(124,196,255,.25);border-radius:12px;padding:12px 14px;">
-      <div style="font-size:13px;font-weight:800;color:#7cc4ff;margin-bottom:3px;">\u221e Add Unlimited Miles</div>
-      <div style="font-size:11px;color:rgba(255,255,255,.55);line-height:1.5;margin-bottom:10px;">Drive as far as you want \u2014 no per-mile overage. Available until you sign your agreement. <strong style="color:#7cc4ff">+$${fee.toFixed(2)}</strong> is added to your balance.</div>
+      <div style="font-size:13px;font-weight:800;color:#7cc4ff;margin-bottom:3px;">\u00d7 Add Double Miles</div>
+      <div style="font-size:11px;color:rgba(255,255,255,.55);line-height:1.5;margin-bottom:10px;">Double your daily mileage allowance \u2014 overage only applies after the doubled limit. Available until you sign your agreement. <strong style="color:#7cc4ff">+$${fee.toFixed(2)}</strong> is added to your balance.</div>
       <button onclick="addUnlimited('${b.id}')" id="unlBtn_${b.id}"
         style="width:100%;padding:10px;background:rgba(124,196,255,.12);color:#7cc4ff;border:1px solid rgba(124,196,255,.4);border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;">
-        Add Unlimited Miles \u2014 +$${fee.toFixed(2)} \u2192
+        Add Double Miles \u2014 +$${fee.toFixed(2)} \u2192
       </button>
     </div>
   </div>`;
 }
 
 async function addUnlimited(bookingId){
-  if(!confirm('Add Unlimited Miles? The fee is added to your balance and this booking switches to unlimited mileage.')) return;
+  if(!confirm('Add Double Miles? The fee is added to your balance and this doubles your daily mileage allowance.')) return;
   var btn = document.getElementById('unlBtn_'+bookingId);
   if(btn){ btn.disabled=true; btn.textContent='Adding\u2026'; }
   try{
@@ -2657,26 +2884,30 @@ async function addUnlimited(bookingId){
     var d = await r.json();
     if(r.status===401){ _portalSessionExpired(); return; }
     if(!r.ok || !d.ok){
-      toast(d.error||'Could not add unlimited miles. Call (214) 207-2481.','error');
-      if(btn){ btn.disabled=false; btn.textContent='Add Unlimited Miles \u2192'; }
+      toast(d.error||'Could not add double miles. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Add Double Miles \u2192'; }
       return;
     }
     await loadPortalData();
     renderBookings();
-    if(btn){ btn.disabled=false; btn.textContent='Add Unlimited Miles \u2192'; }
-    toast('Unlimited miles added \u2014 $'+(Number(d.fee)||0).toFixed(2)+' added to your balance.','success');
+    if(btn){ btn.disabled=false; btn.textContent='Add Double Miles \u2192'; }
+    toast('Double miles added \u2014 $'+(Number(d.fee)||0).toFixed(2)+' added to your balance.','success');
   }catch(e){
     toast('Network error. Call (214) 207-2481.','error');
-    if(btn){ btn.disabled=false; btn.textContent='Add Unlimited Miles \u2192'; }
+    if(btn){ btn.disabled=false; btn.textContent='Add Double Miles \u2192'; }
   }
 }
 
+var PB_CRYPTO_LIVE = false;   // flip to true once Coinbase key is set + worker deployed -> reveals the portal crypto button
 function showPayBalance(b){
   const bal = Number(b.remainingBalance) || 0;
   if(bal < 0.50 || b.balancePaidAt || ['cancelled','completed','voided'].includes((b.status||'').toLowerCase())) return '';
   const fee   = Math.round(bal * 0.05 * 100) / 100;
   const tax   = Math.round(bal * 0.0825 * 100) / 100;
   const total = Math.round((bal + fee + tax) * 100) / 100;
+  const cryptoFee = Math.round(bal * 0.02 * 100) / 100;
+  const cryptoTotal = Math.round((bal + cryptoFee + Math.round((bal + cryptoFee) * 0.0825 * 100) / 100) * 100) / 100;
+  const cryptoBtnHtml = PB_CRYPTO_LIVE ? ('<button onclick="payBalanceCrypto(\'' + b.id + '\')" id="payCryptoBtn_' + b.id + '" style="width:100%;margin-top:8px;padding:11px;background:rgba(110,168,254,.12);color:#8ab4ff;border:1px solid rgba(110,168,254,.55);border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:.02em;">Pay $' + cryptoTotal.toFixed(2) + ' with Crypto</button><div style="font-size:10px;color:rgba(255,255,255,.4);margin-top:6px;text-align:center;">Crypto: 2% processing (vs 5% card) + 8.25% TX tax</div>') : '';
   // Partial payments already collected (owner-recorded cash/Zelle/etc.) -- acknowledge them to the customer.
   const paidSoFar = Array.isArray(b.balancePayments) ? b.balancePayments.reduce(function(s,p){return s+(Number(p&&p.amount)||0);},0) : (Number(b.balancePaidAmount)||0);
   return `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
@@ -2695,6 +2926,7 @@ function showPayBalance(b){
         style="width:100%;padding:11px;background:linear-gradient(135deg,#635bff,#4338ca);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:.02em;">
         Pay $${total.toFixed(2)} by Card \u2192
       </button>
+      ${cryptoBtnHtml}
     </div>
   </div>`;
 }
@@ -2718,6 +2950,28 @@ async function payBalance(bookingId){
   }catch(e){
     toast('Network error. Please try again.','error');
     if(btn){ btn.disabled=false; btn.textContent='Pay by Card \u2192'; }
+  }
+}
+
+async function payBalanceCrypto(bookingId){
+  const btn = document.getElementById('payCryptoBtn_'+bookingId);
+  if(btn){ btn.disabled=true; btn.textContent='Loading...'; }
+  try{
+    const r = await fetch(`${WORKER}/portal/pay-balance-crypto`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email:state.email, token:state.token, bookingId })
+    });
+    const d = await r.json();
+    if(r.status===401){ _portalSessionExpired(); return; }
+    if(!r.ok || !d.url){
+      toast(d.error||'Crypto unavailable. Call (214) 207-2481.','error');
+      if(btn){ btn.disabled=false; btn.textContent='Pay with Crypto'; }
+      return;
+    }
+    window.location.href = d.url;
+  }catch(e){
+    toast('Network error. Please try again.','error');
+    if(btn){ btn.disabled=false; btn.textContent='Pay with Crypto'; }
   }
 }
 
@@ -3095,14 +3349,10 @@ var VEHICLE_RATES = {
   "Corvette Z51":       { rate:450,  deposit:750,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/67E01466-6370-4766-9664-B3177F7A0BF3.png?v=1774231506&width=600', desc:'2023 Chevrolet Corvette C8 Z51 \u00B7 Black' },
   "BMW M3":             { rate:450,  deposit:750,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/Sleek_BMW_M3_at_twilight.png?v=1772687164&width=600',            desc:'2026 BMW M3 Competition xDrive \u00B7 Black' },
   "BMW i4":             { rate:150,  deposit:300,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Mar_16_2026_10_29_04_PM.png?v=1773719350&width=600', desc:'2022 BMW i4 \u00B7 White' },
-  "Macan":              { rate:325,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/Sleek_Porsche_Macan_at_twilight.png?v=1772687164&width=600',      desc:'2025 Porsche Macan \u00B7 Black' },
+  "Macan":              { rate:225,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/Sleek_Porsche_Macan_at_twilight.png?v=1772687164&width=600',      desc:'2025 Porsche Macan \u00B7 Black' },
   "Porsche Boxster S":  { rate:300,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_7810.jpg?v=1778039085&width=600',        desc:'2013 Porsche Boxster S \u00B7 White' },
   "C300":               { rate:200,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/Mercedes-Benz_AMG_C300_at_twilight.png?v=1772687163&width=600',  desc:'2022 Mercedes-Benz C300 AMG \u00B7 Gray' },
-  "Accord":             { rate:85,   deposit:200,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Mar_4_2026_11_04_00_PM.png?v=1772687151&width=600', desc:'2016 Honda Accord Coupe \u00B7 Black' },
   "Lambo Huracan":      { rate:1350, deposit:1000, type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/6E5F23BF-88AE-446E-BF29-516AECBB0BAD.png?v=1774231128&width=600', desc:'2015 Lamborghini Hurac\u00E1n \u00B7 Gray' },
-  "Lambo Urus":         { rate:1350, deposit:1000, type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_May_18_2026_02_28_46_PM.png?v=1779132587&width=600', desc:'2020 Lamborghini Urus \u00B7 Blue' },
-  "Escalade Rental":    { rate:500,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/ChatGPT_Image_Apr_30_2026_09_26_46_AM.png?v=1777559241&width=600', desc:'2022 Cadillac Escalade Sport Platinum' },
-  "G Wagon":            { rate:650,  deposit:500,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/A7402504.jpg?v=1777522784&width=600',        desc:'2020 Mercedes-Benz G-Wagon \u00B7 Black' },
   "Polaris Slingshot":  { rate:300,  deposit:250,  type:'rental',    img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_8536.heic?v=1780329704&width=600',       desc:'2025 Polaris Slingshot SL' },
   "Escalade Chauffeur": { rate:200,  deposit:0,    type:'chauffeur', img:'https://prestigeblackrentals.com/cdn/shop/files/IMG_5982.png?v=1779149140&width=600', desc:'Cadillac Escalade ESV \u00B7 Black \u2014 Per hour' },
 };
