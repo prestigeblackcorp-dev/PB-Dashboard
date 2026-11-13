@@ -6485,6 +6485,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if\(veh\)\{ delete t\.vehicles\[old\]; if\(v!=='__ignore'\) t\.vehicles\[v\]=veh; \}/.test(_ATLAS_SRC), 'WAVE77: save re-keys dev:<id> onto the chosen asset at once');
   // exported on Atlas
   ok(/trkMapOpen,trkMapSave,/.test(_ATLAS_SRC), 'WAVE77: new mapping handlers exported on Atlas');
+  // regression guard: cap_adNouns() was a phantom (never defined) that threw in _trkDashHtml + trkMapOpen; use cap(_adNouns())
+  ok(!/cap_adNouns/.test(_ATLAS_SRC), 'WAVE77 fix: the undefined cap_adNouns() phantom is gone (capitalize via cap(_adNouns()))');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
