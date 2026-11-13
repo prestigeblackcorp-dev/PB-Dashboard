@@ -3,7 +3,7 @@
 // Run locally (Node 20+):  node test/routes.mjs
 // CI live (2026-07-19): D1 bound + CLOUDFLARE_API_TOKEN/ACCOUNT_ID secrets set -- this gate now guards auto-deploy.
 
-import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _coinbaseLatestStatus, _coinbaseFullySettled, _coinbaseGrantPlatform, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _domainOwnerToken, _domainOwnershipOk, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _bkLockedRate, _smartRateMult, _assetKtRestore, _bookingKtRestore, _rtbfRecord, _rtbfMatch, _rtbfLift, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkSignTermsHashLegacy, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES } from '../worker.js';
+import worker, { _promoApply, _extAddendumClause, _waitlistEligible, _waitlistSlotFree, _pendingExpired, _coinbaseVerify, _coinbasePaidCents, _coinbaseLatestStatus, _coinbaseFullySettled, _coinbaseGrantPlatform, _actuallyPaidCents, _sanitizeAioContext, _deIdentifyPlaybook, _clampRoleCapsToGranter, _paypalCreditBooking, _stripeCreditBooking, _extDisputeReverse, _squareGetDispute, _paypalGetDispute, _disputeApplyToSlot, _disputeRestoreSlot, _slotFullyClawed, _chargeOwedCents, _pbMirrorMerge, _pbmHasNativeState, _stripUnbackedIdVerify, _carryVerify, _ownerLoginBanBypass, _offSessionCreditBooking, _domainOwnerToken, _domainOwnershipOk, _blkWin, _ssoReclaim, _ssoAmrMfa, _secShouldAdvance, _sweepNextCursor, _graftServerPay, _bookHeadTags, _bookCanon, _captureErr, _portalDue, _portalTrip, _coSignTok, _coSignParse, _aiDayReserve, _aiDayUnreserve, _councilReleaseMicros, _deliberateRefundNonce, _bkEffEndServer, _bkLockedRate, _smartRateMult, _assetKtRestore, _bookingKtRestore, _rtbfRecord, _rtbfMatch, _rtbfLift, _confirmSlotFull, _confirmSlotHeal, _collectGiftReturns, _collectPromoReturn, _BAN_EXEMPT, _emailBlocked, _smsBlocked, _reconcileCreditTerminal, _signupTrialEnds, _signupMayFounder, _ledgerEmail, _ipStrBlocked, _bkSignTerms, _bkSignTermsStr, _bkSignTermsHashLegacy, _bkTermsDrifted, _extSigTermsStr, _scrubSettingsSecrets, _applyErasure, _wallToUtcMs, _tzAbbr, _b32decode, _hotp, _totpAt, _meterAI, _aiUsageFrom, AI_PRICES, _meterReconcileFree, TIER_CREDITS, TIER_EMAILS } from '../worker.js';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 const _WORKER_SRC = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');   // for source-level guards (query bounds etc. that can't be exercised without a live multi-thousand-row DB)
@@ -6563,6 +6563,36 @@ ok(/id=partAmt aria-label="Amount to pay"/.test(_WORKER_SRC), 'W83 a11y: the por
 ok(/id=gcMsg class=muted role=status aria-live=polite/.test(_WORKER_SRC), 'W83 a11y: portal status messages announce updates via aria-live');
 ok(/tabindex="0" role="group" aria-label="Rental agreement"/.test(_WORKER_SRC), 'W83 a11y: the rental-agreement scroll box is keyboard focusable');
 ok((_WORKER_SRC.match(/#767676/g) || []).length >= 4, 'W83 a11y: the four low-contrast greys on the public booking page are darkened to an approx 4.5 to 1 token');
+
+// ==== WAVE86: metering self-heal -- the free allotment can NEVER drift from the current tier (integrity: "always accurate, never slip") ====
+{
+  const EC = TIER_EMAILS.enterprise, UC = TIER_EMAILS.unlimited, PC = TIER_EMAILS.pro;   // 20000, 100000, 5000
+  // (1) the EXACT reported bug: Enterprise->Unlimited mid-month, markers never reset -> the meter must top up NOW, not next period
+  ok(_meterReconcileFree(19990, 'enterprise', 'unlimited', TIER_EMAILS, UC, false) === UC, 'WAVE86 self-heal: a mid-period tier INCREASE (enterprise->unlimited) tops the email bucket up to 100,000 immediately (the granted-account bug)');
+  ok(_meterReconcileFree(3000, 'enterprise', 'unlimited', TIER_CREDITS, TIER_CREDITS.unlimited, false) === TIER_CREDITS.unlimited, 'WAVE86 self-heal: the same tier increase tops the weekly credit bucket up to 10,000 immediately');
+  // (2) a genuine period rollover still refills to the current tier (unchanged behavior) regardless of basis
+  ok(_meterReconcileFree(5, 'enterprise', 'unlimited', TIER_EMAILS, UC, true) === UC, 'WAVE86: a real month rollover refills to the current tier allotment');
+  // (3) DOWNGRADE clamps so the display can NEVER show more than the new cap -- and never re-grants
+  ok(_meterReconcileFree(90000, 'unlimited', 'pro', TIER_EMAILS, PC, false) === PC, 'WAVE86: a DOWNGRADE (unlimited->pro) clamps a high remaining down to the new 5,000 cap (no over-show)');
+  ok(_meterReconcileFree(100, 'unlimited', 'pro', TIER_EMAILS, PC, false) === 100, 'WAVE86: a downgrade keeps an already-low running balance (clamp never INFLATES)');
+  // (4) same tier mid-period -> the running balance is left EXACTLY as-is (a spent-down bucket is never re-gifted)
+  ok(_meterReconcileFree(4200, 'pro', 'pro', TIER_EMAILS, PC, false) === 4200, 'WAVE86: same-tier mid-period leaves the running balance untouched (no re-grant)');
+  // (5) NULL basis mid-period -> trust the running balance (prevents a one-time over-grant on the backfill); only a rollover fills it
+  ok(_meterReconcileFree(4200, null, 'pro', TIER_EMAILS, PC, false) === 4200, 'WAVE86: a NULL basis mid-period NEVER re-grants -- it trusts the stored balance until a known increase or rollover');
+  ok(_meterReconcileFree(0, '', 'pro', TIER_EMAILS, PC, true) === PC, 'WAVE86: a NULL basis AT rollover fills to the current tier (new/first-fill tenant)');
+  // (6) idempotent: re-running after the basis is already current is a no-op (a second upgrade event never double-grants)
+  ok(_meterReconcileFree(UC, 'unlimited', 'unlimited', TIER_EMAILS, UC, false) === UC, 'WAVE86: reconcile is idempotent once the basis matches the current tier');
+}
+// source guards: the self-heal must stay WIRED into every metering function (read + decrement + refund) + the schema/heal present
+ok(/SELECT tier, credits_purchased, credits_free, credits_week, credits_tier FROM tenants/.test(_WORKER_SRC), 'WAVE86 wired: _creditOp/_creditRefund read the credits_tier basis');
+ok(/SELECT tier, email_free, email_month, email_addon, email_tier FROM tenants/.test(_WORKER_SRC), 'WAVE86 wired: _emailOp reads email_free + the email_tier basis');
+ok(/SELECT tier, email_free, email_purchased, email_month, email_addon, email_tier FROM tenants/.test(_WORKER_SRC), 'WAVE86 wired: _emailUsage (the dashboard display read) reads the email_tier basis');
+ok(/credits_free=\?, credits_purchased=\?, credits_week=\?, credits_tier=\?/.test(_WORKER_SRC), 'WAVE86 wired: _creditOp/_creditRefund STAMP credits_tier on every write');
+ok(/email_free=\?, email_month=\?, email_tier=\?/.test(_WORKER_SRC), 'WAVE86 wired: _emailOp stamps email_tier on the month-rollover refill');
+ok(/else if \(String\(row\.email_tier \|\| ''\) !== String\(curTier\)\)/.test(_WORKER_SRC), 'WAVE86 wired: _emailOp has the SAME-month tier-change self-heal branch');
+ok((_WORKER_SRC.match(/_meterReconcileFree\(/g) || []).length >= 5, 'WAVE86 wired: _meterReconcileFree is called from all metering paths (def + credit op/refund + email op/usage)');
+ok(/ADD COLUMN credits_tier TEXT/.test(_WORKER_SRC) && /ADD COLUMN email_tier TEXT/.test(_WORKER_SRC), 'WAVE86 schema: the credits_tier + email_tier basis columns are added (idempotent ALTER)');
+ok(/_heal_meterbasis_v1/.test(_WORKER_SRC) && /tier IN \('unlimited','diamond','gold','freecomp'\)/.test(_WORKER_SRC), 'WAVE86 heal: the one-time backfill + comp/unlimited marker reset heals already-drifted accounts (e.g. Azure) exactly once');
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
