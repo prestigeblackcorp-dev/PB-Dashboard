@@ -6500,5 +6500,18 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/body\.email\.toLowerCase\(\)\)\.run\(\); \} catch \(e\) \{\}/.test(_WORKER_SRC), 'WAVE78 regression: the api admin comp UPDATE stays INSIDE its try-catch (the new comment must not swallow the closing catch)');
 }
 
+// ==== WAVE79: domain pricing -- 125% markup, no per-TLD floor, processing fee passed to the buyer (sales tax stays a Stripe-Tax checkout concern) ====
+{
+  ok(/function _domainRetailCents\(costCents, tld, env\)/.test(_WORKER_SRC), 'WAVE79: the _domainRetailCents helper is the single source of truth for the domain price we charge');
+  ok(/Number\(env\.DOMAIN_MARKUP_PCT\) \|\| 125/.test(_WORKER_SRC), 'WAVE79: the domain markup default is 125 percent');
+  ok(/Math\.ceil\(\(base \+ 30\) \/ \(1 - 0\.029\)\)/.test(_WORKER_SRC), 'WAVE79: the payment-processing fee is passed to the buyer via a gross-up so Atlas nets the full base');
+  ok(/_priceCents = s\.available \? _domainRetailCents\(/.test(_WORKER_SRC), 'WAVE79: the domain quote uses _domainRetailCents so the quote equals the charge');
+  ok(/const _floor = _domainRetailCents\(_domCost,/.test(_WORKER_SRC), 'WAVE79: the domain checkout floors on _domainRetailCents, the same helper as the quote');
+  ok(/DOMAIN_TLD_MIN_CENTS\[String\(tld \|\| ''\)\.toLowerCase\(\)\] \|\| 0/.test(_WORKER_SRC), 'WAVE79: the per-TLD retail floor mechanism is wired via DOMAIN_TLD_MIN_CENTS');
+  ok(!/DOMAIN_MARKUP_PCT\) \|\| 65/.test(_WORKER_SRC), 'WAVE79 regression: no stray old 65 percent domain markup default remains');
+  ok(!/DOMAIN_MARKUP_PCT\) \|\| 100/.test(_WORKER_SRC), 'WAVE79 regression: no stray old 100 percent domain markup default remains');
+  ok(/markupPct:125/.test(_ATLAS_SRC), 'WAVE79: the client domain markup default is 125 percent');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
