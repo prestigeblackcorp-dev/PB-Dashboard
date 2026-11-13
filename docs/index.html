@@ -29548,8 +29548,27 @@ function afterCloudLoad(ok){
 
 // Only run cloud polling in normal dashboard mode (not signing/portal mode)
 if(!(new URLSearchParams(location.search).get('sign'))&&!(new URLSearchParams(location.search).get('portal'))){
-  // Pull from cloud \u2014 always wins over local data
-  cloudLoad(function(ok) {
+  // Pull from cloud \u2014 always wins over local data. BUT only full-pull /sync/load (the ~18MB whole root) when the
+  // cloud actually CHANGED since our last sync: restore the persisted savedAt watermark, and if we already hold
+  // local data at that watermark, GET the tiny /sync/savedAt first and SKIP the whole-root pull when nothing changed.
+  // (Owner rule 2026-11: only NEW data crosses the wire; everything else stays local to the device.) Degrades to the
+  // old unconditional full load on first run / cleared cache / no watermark / any savedAt error, so cloud still
+  // "wins" whenever there is any chance of divergence.
+  (function _bootCloudSync(_cb){
+    _storeReady.then(function(){
+      try{ var _w=Number(localStorage.getItem('pb_last_cloud_save'))||0; if(_w>_lastSavedAt) _lastSavedAt=_w; }catch(e){}
+      var _haveLocal = (Array.isArray(bookings) && bookings.length>0);
+      if(!WORKER_URL || _lastSavedAt<=0 || !_haveLocal){ cloudLoad(_cb); return; }   // first run / cleared cache / offline -> full load (old behavior)
+      fetch(WORKER_URL + '/sync/savedAt?_=' + Date.now(), { cache:'no-store', headers:_authHeader() })
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(rt){
+          var _remoteT = Number(rt) || 0;
+          if(_remoteT > _lastSavedAt){ cloudLoad(_cb); }   // a real remote change -> pull the fresh data
+          else { _cb(true); }                               // local already current -> SKIP the whole-root pull
+        })
+        .catch(function(){ cloudLoad(_cb); });               // any savedAt error -> safe fallback to full load
+    });
+  })(function(ok) {
     afterCloudLoad(ok);
     setSyncStatus(WORKER_URL ? (ok ? 'ok' : 'error') : 'off');
     // Run auto-scheduled emails once after initial load (data is fresh)
