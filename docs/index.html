@@ -14952,9 +14952,13 @@ function _migrateOneTripPhotoBooking(bookingId, cb){
   var b=bookings[idx];
   var pre  = (b.customerPreTripPhotos ||[]).filter(Boolean);
   var post = (b.customerPostTripPhotos||[]).filter(Boolean);
-  var doPre  = pre.length  >0 && !(b.customerPreTripPhotoIds ||[]).length;
-  var doPost = post.length >0 && !(b.customerPostTripPhotoIds||[]).length;
-  if(!doPre && !doPost){ cb(false,0); return; }   // idempotent: nothing inline to move, or already migrated
+  // LOCKED-ONLY offload: a phase is offloaded only once the guest has locked it (Save & Finish). An UNLOCKED
+  // phase is still add/removable in the portal, and offloaded (by-id) photos render view-only there, so
+  // offloading an unlocked phase would change behavior AND could leave a mixed inline+by-id phase whose meta
+  // indices collide. Unlocked phases offload automatically later, at lock time (worker /portal/lock-photos).
+  var doPre  = pre.length  >0 && !(b.customerPreTripPhotoIds ||[]).length && !!b.customerPreTripLockedAt;
+  var doPost = post.length >0 && !(b.customerPostTripPhotoIds||[]).length && !!b.customerPostTripLockedAt;
+  if(!doPre && !doPost){ cb(false,0); return; }   // idempotent: nothing inline to move, not yet locked, or already migrated
   var preIds  = doPre  ? pre.map(_mintPhotoId)  : [];
   var postIds = doPost ? post.map(_mintPhotoId) : [];
   var total=preIds.length+postIds.length, confirmed=0, allOk=true;
@@ -14991,8 +14995,10 @@ function _migratePreTripPhotosToStore(apply){
     if(!b || !b.id || b._deleted) return;
     var pre  = (b.customerPreTripPhotos ||[]).filter(Boolean);
     var post = (b.customerPostTripPhotos||[]).filter(Boolean);
-    var doPre  = pre.length  >0 && !(b.customerPreTripPhotoIds ||[]).length;
-    var doPost = post.length >0 && !(b.customerPostTripPhotoIds||[]).length;
+    // LOCKED-ONLY (mirror _migrateOneTripPhotoBooking): only a locked phase is offloaded; unlocked phases stay
+    // inline + fully editable and self-offload later at lock time (worker /portal/lock-photos).
+    var doPre  = pre.length  >0 && !(b.customerPreTripPhotoIds ||[]).length && !!b.customerPreTripLockedAt;
+    var doPost = post.length >0 && !(b.customerPostTripPhotoIds||[]).length && !!b.customerPostTripLockedAt;
     if(!doPre && !doPost) return;
     jobs.push({ id:b.id, name:b.name||'?', pre:doPre?pre:[], post:doPost?post:[] });
   });
