@@ -1,4 +1,4 @@
-const CACHE = 'pb-v413';
+const CACHE = 'pb-v414';
 const ASSETS = ['./index.html', './icon.png', './obsidian.html', './driver.html', './pb-config.js', './pb-vehicle-search.js'];
 
 self.addEventListener('install', function(e) {
@@ -60,6 +60,16 @@ function _pbUrlB64(s){ s=(s||'').replace(/-/g,'+').replace(/_/g,'/'); while(s.le
 function _pbReadAuth(){
   return caches.open('pb-push').then(function(c){ return c.match('/__pbauth'); }).then(function(r){ return r?r.json():null; }).catch(function(){ return null; });
 }
+// An owner push also wakes any OPEN/backgrounded dashboard so a new booking shows at 0s instead of waiting
+// for the next 15s sync poll (which only runs while the tab is visible). Egress-safe: the client handler
+// runs ONE tiny /sync/savedAt check and only full-pulls when it actually changed. Best-effort, never throws.
+function _pbWakeClients(){
+  try{
+    return clients.matchAll({type:'window', includeUncontrolled:true}).then(function(cl){
+      for(var i=0;i<cl.length;i++){ try{ cl[i].postMessage({type:'pb-pull-now', reason:'push'}); }catch(_e){} }
+    }).catch(function(){});
+  }catch(_e){ return Promise.resolve(); }
+}
 
 self.addEventListener('message', function(e){
   var d=e.data||{};
@@ -88,8 +98,8 @@ self.addEventListener('push', function(e){
           else { vsUrl=(a&&a.url)||''; app=vsUrl?('./index.html?vsurl='+encodeURIComponent(vsUrl)):'./index.html'; }
           data={app:app, vsUrl:vsUrl, rideId:'ow'+Date.now()};
           title=(a&&a.kind==='signed')?'\u270d\ufe0f Document signed':(a&&a.kind==='steal')?'\ud83d\udd25 STEAL deal':(a&&a.kind==='soon')?'\u23f0 Selling soon':(a&&a.kind==='snipe')?'\u23f1 Auction ending':'Prestige Black';
-          body=(a&&a.text)?a.text:'New booking activity on your dashboard'; return show(); })
-        .catch(function(){ title='Prestige Black'; body='New booking activity'; data={app:'./index.html', rideId:'ow'+Date.now()}; return show(); });
+          body=(a&&a.text)?a.text:'New booking activity on your dashboard'; return Promise.all([show(), _pbWakeClients()]); })
+        .catch(function(){ title='Prestige Black'; body='New booking activity'; data={app:'./index.html', rideId:'ow'+Date.now()}; return Promise.all([show(), _pbWakeClients()]); });
     }
     if(auth && auth.role==='driver' && auth.worker && auth.token){
       return fetch(auth.worker+'/chauffeur/driver-rides?token='+encodeURIComponent(auth.token)+'&_='+Date.now(), {cache:'no-store'})
