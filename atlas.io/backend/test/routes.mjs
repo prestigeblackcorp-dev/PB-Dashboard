@@ -6720,6 +6720,19 @@ ok(/if \(!\(_role === 'owner' \|\| _role === 'analyst'\) && _g\) \{/.test(_WORKE
   ok(/typeof S!=='undefined'&&S&&S\.fleet&&S\.fleet\.nouns\)\|\|'assets'/.test(_ATLAS_SRC), 'WAVE96f: _tierUnlocks guards a null S (fresh signup / new-device verify) -- was an unguarded S.fleet that threw and aborted the showSignupPlans() render so "Start free trial" did nothing');
   ok(!/\+ 500 '\+\(\(S\.fleet&&/.test(_ATLAS_SRC), 'WAVE96f: the OLD unguarded _tierUnlocks form (+ 500 "+((S.fleet&&...) is removed');
   ok(/if\(!S\)\{ try\{ if\(store\.session\(\)\) S=fresh\(\); \}catch\(e\)\{\} \}/.test(_ATLAS_SRC), 'WAVE96f: _postVerifyProceed seeds a fresh() S when load() returns null, so the plan gate + pick->checkout never run on a null S');
+
+  // WAVE97: signup -> free-trial seamlessness. After WAVE96f the plan gate rendered, but picking a tier fired a best-effort
+  // chosenPlan PUT to /api/tenant/profile, which is NOT in the worker's _PAYMENT_OPEN allow-list -> a not-yet-carded tenant
+  // got a 402 payment_required -> _api's central handler popped the paywall (titled "Start your 7-day free trial", z-index
+  // 9500) OVER the Square checkout modal (z-index 80), burying the card form. Symptom: "can't pick a tier, it's behind the
+  // start-your-free-trial page". Fix: suppress the central 402 paywall while a checkout is in flight, AND lift the card modal
+  // above the gates. (The 402 trigger itself is verified by the _PAYMENT_OPEN assertion elsewhere in this file.)
+  ok(/_PAYMENT_OPEN = \/\^\\\/api\\\/\(health\|auth\\\/\|billing\\\//.test(readFileSync(new URL('../../backend/worker.js', import.meta.url), 'utf8')), 'WAVE97: _PAYMENT_OPEN exempts billing/ (the Square/Stripe checkout rails stay reachable for a needs_card tenant) -- while /api/tenant/profile is deliberately NOT exempt, which is why its chosenPlan PUT 402s and used to pop the paywall');
+  ok(/if\(!_signupCheckoutActive\) showPaywall\(j\.billing_state\)/.test(_ATLAS_SRC), 'WAVE97: _api 402 handler suppresses the central paywall while the user is mid-checkout, so the chosenPlan-PUT 402 can no longer bury the card form');
+  ok(/function _signupPickPlan\(tierId\)\{ var t=_tier\(tierId\); if\(!t\) return;\s*\n\s*_signupCheckoutActive=true;/.test(_ATLAS_SRC), 'WAVE97: _signupPickPlan sets the suppression flag BEFORE the chosenPlan PUT that 402s');
+  ok(/\.modal-scrim\.checkout-top\{z-index:9600\}/.test(_ATLAS_SRC), 'WAVE97: a billing checkout modal is lifted to z-index 9600 -- ABOVE the full-screen gates (9500) -- so it can never be buried');
+  ok(/if\(_sczq\) _sczq\.classList\.add\('checkout-top'\)/.test(_ATLAS_SRC), 'WAVE97: _squarePlanCheckout adds .checkout-top to the scrim when the Square card modal opens');
+  ok(/function closeModal\(\)\{ _signupCheckoutActive=false; var _scM=document\.getElementById\('modalScrim'\); if\(_scM\)\{ _scM\.classList\.remove\('on'\); _scM\.classList\.remove\('checkout-top'\); \}/.test(_ATLAS_SRC), 'WAVE97: closeModal releases the suppression flag + drops the z-lift so a bailed checkout reveals the paywall underneath');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }

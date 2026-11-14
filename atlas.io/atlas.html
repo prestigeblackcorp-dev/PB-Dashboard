@@ -732,6 +732,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
 @keyframes tin{from{opacity:0;transform:translateY(10px)}to{opacity:1}}
 .modal-scrim{position:fixed;inset:0;background:rgba(16,20,28,.45);z-index:80;display:none;place-items:center;padding:20px}
 .modal-scrim.on{display:grid}
+.modal-scrim.checkout-top{z-index:9600}   /* WAVE97: a BILLING card modal (Square checkout) must sit ABOVE the full-screen gates (.verify-gate/.pay-gate @ z-index:9500) so a needs_card paywall can never bury the card form */
 .modal{background:var(--surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);width:100%;max-width:480px;max-height:90vh;overflow:auto}
 .modal__head{padding:20px 22px;border-bottom:1px solid var(--line-2);display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:var(--surface);z-index:2}
 .modal__head h3{font-size:18px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1920,7 +1921,7 @@ const Atlas = (function(){
         // #276: central 402 interception -- ANY authenticated call (every caller goes through this one function) can
         // surface a mid-session lock (e.g. a card declined while the tab was already open); the worker is the real
         // gate, this just reflects it. Login/signup/billing/etc. are server-side allow-listed and never 402 here.
-        if(r.status===402 && j && j.error==='payment_required'){ try{ showPaywall(j.billing_state); }catch(e){} }
+        if(r.status===402 && j && j.error==='payment_required'){ try{ if(!_signupCheckoutActive) showPaywall(j.billing_state); }catch(e){} }   // WAVE97: while the user is actively in the plan-pick -> card-entry flow, a background 402 (notably the best-effort chosenPlan PUT to /api/tenant/profile, which is NOT in the worker's _PAYMENT_OPEN allow-list) must NOT pop the paywall OVER the open checkout modal and bury it
         // #auth C: a mid-session authenticated WRITE that 401s means the server session died while the tab stayed open --
         // surface the resign screen (background syncs + user edits otherwise fail SILENTLY, the mid-use twin of the boot
         // #falseCache gate). Guarded by _apiCsrf so GET probes + the signup/login flow (no _apiCsrf yet) are excluded, and
@@ -2447,8 +2448,9 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.13iu';
+  var APP_VERSION='2026.11.13iv';
   var APP_CHANGELOG=[
+    'Signup fix: picking a plan to start your 7-day free trial now opens the secure card form on top, every time &mdash; it could previously end up hidden behind the &ldquo;Start your free trial&rdquo; screen, so a tier tap looked like it did nothing. Starting a trial is now seamless from email verification straight through to card entry',
     'Money-accuracy &amp; scheduling fixes: your Net Profit and P&amp;L now subtract consignment (owner) fees and broker fees, so take-home is no longer overstated when you rent on behalf of owners or split with a broker; a percentage security hold is capped at 100% (a carried-over dollar amount can no longer become a runaway authorization); a booking can only be cancelled or voided through its proper flow, so deposits, refunds and cancellation fees are always handled; and the team Scheduler&rsquo;s shift list now follows the exact week you page to with the week arrows',
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -3616,7 +3618,7 @@ const Atlas = (function(){
      login/signup/MFA response carries a non-'ok' billing_state, or (b) centrally from _api() the instant ANY
      authenticated call 402s payment_required mid-session (e.g. a card declined while the tab was open). Uses
      a more opaque backdrop (.pay-gate) than the verify-gate -- this is a harder stop, not a "check your inbox". ---- */
-  var _paywallReason='', _paywallFocusBound=false;
+  var _paywallReason='', _paywallFocusBound=false, _signupCheckoutActive=false;   // WAVE97: true only while the user is mid plan-pick/checkout -> suppresses the central 402 paywall so it can never bury the card-entry modal (referenced by _api's 402 handler above via hoisting)
   function _paywallCopy(reason){
     if(reason==='needs_card') return {h:'Start your 7-day free trial', plan:'Start free trial'};   // #280
     if(reason==='past_due') return {h:'Your payment didn&rsquo;t go through', plan:'Choose a plan'};
@@ -3729,13 +3731,14 @@ const Atlas = (function(){
   }
   function _hideSignupPlans(){ var e=document.getElementById('planGate'); if(e) e.classList.remove('on'); }
   function _signupPickPlan(tierId){ var t=_tier(tierId); if(!t) return;
+    _signupCheckoutActive=true;   // WAVE97: entering the card-entry flow -> suppress the central 402 paywall. The chosenPlan PUT below 402s for a not-yet-carded tenant (tenant/profile is not _PAYMENT_OPEN) and would otherwise pop the "Start your 7-day free trial" gate (z-index:9500) OVER the checkout modal -- the exact "can't pick a tier / it's behind the start-your-free-trial page" bug
     _funnelEvent('plan_selected');   // #297 funnel: a plan was picked in the signup plan gate
     if(S){ S.tier=t.id; S.chosenPlan=t.id; save(); }   // #291: carry the chosen plan across the Stripe redirect (localStorage) AND remember it as their explicit pick
     if(ATLAS_BACKEND && _apiCsrf){ _api('/api/tenant/profile',{method:'PUT',body:{settings:{chosenPlan:t.id}}}).catch(function(){}); }   // #291: persist the pick server-side immediately (not only via the debounced sync) so ANY device / device type brings them back to it
     _hideSignupPlans();
     if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp()){ _billingCheckout('trial',{tier:t.id}); return; }   // card on file -> 7-day trial priced at this plan -> Stripe auto-charges on day 7
     if(S){ S.plan='trial'; S.trialStartedAt=S.trialStartedAt||Date.now(); save(); }   // demo/offline/native fallback: local trial, onboard now
-    startTrial();
+    _signupCheckoutActive=false; startTrial();   // WAVE97: demo/offline path never hits the backend 402 -> release the suppression before onboarding
   }
   /* ---- forgot password: emails a signed, time-limited reset link (server never reveals whether the address has an account) ---- */
   function forgotPassword(){
@@ -12225,7 +12228,7 @@ const Atlas = (function(){
   }
   function copyEmbed(){ var t=document.getElementById('embedCode'); if(t){ try{ t.select(); navigator.clipboard.writeText(t.value); }catch(e){} } toast('Embed snippet copied'); }
   function openModal(html){ openModal._lastFocus=document.activeElement; var _m=document.getElementById('modal'); _m.innerHTML=html; try{ var _h=_m.querySelector('h3'); if(_h) _m.setAttribute('aria-label',(_h.textContent||'').trim().slice(0,80)); }catch(e){} document.getElementById('modalScrim').classList.add('on'); try{ _m.setAttribute('tabindex','-1'); _m.focus(); }catch(e){} if(!openModal._escBound){ openModal._escBound=1; document.addEventListener('keydown',function(e){ var _s=document.getElementById('modalScrim'); if(!_s||!_s.classList.contains('on')) return; if(e.key==='Escape'){ closeModal(); return; } if(e.key==='Tab'){ var _md=document.getElementById('modal'); var _f=Array.prototype.slice.call(_md.querySelectorAll('a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type=hidden]),select:not([disabled]),[tabindex]:not([tabindex="-1"])')).filter(function(el){ return el.offsetWidth>0||el.offsetHeight>0||el===document.activeElement; }); if(!_f.length){ e.preventDefault(); try{_md.focus();}catch(_e){} return; } var _first=_f[0],_last=_f[_f.length-1],_a=document.activeElement; if(!_md.contains(_a)){ e.preventDefault(); _first.focus(); return; } if(e.shiftKey&&_a===_first){ e.preventDefault(); _last.focus(); } else if(!e.shiftKey&&_a===_last){ e.preventDefault(); _first.focus(); } } }); } }   // #a11y WCAG 2.4.3: trap Tab within the open modal (was: Tab escaped to the page behind); Escape still closes
-  function closeModal(){ document.getElementById('modalScrim').classList.remove('on'); try{ if(openModal._lastFocus&&openModal._lastFocus.focus) openModal._lastFocus.focus(); }catch(e){} if(_livePollDeferredBuild){ _livePollDeferredBuild=false; try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } }   // flush a live-poll refresh that was held back while this modal was open
+  function closeModal(){ _signupCheckoutActive=false; var _scM=document.getElementById('modalScrim'); if(_scM){ _scM.classList.remove('on'); _scM.classList.remove('checkout-top'); }   /* WAVE97: closing ANY modal ends the checkout-suppression + drops the z-lift. If the user bailed on the card form while still needs_card, the paywall underneath is revealed again and the next 402 can re-show it. */ try{ if(openModal._lastFocus&&openModal._lastFocus.focus) openModal._lastFocus.focus(); }catch(e){} if(_livePollDeferredBuild){ _livePollDeferredBuild=false; try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } }   // flush a live-poll refresh that was held back while this modal was open
 
   /* ============================== misc ============================== */
   function finish(){ _captureOB(); S.onboarded=true; S.onboardStarted=false;
@@ -12279,14 +12282,15 @@ const Atlas = (function(){
   function _xBtn(){ return '<button class="icon-btn" aria-label="Close" onclick="Atlas.closeModal()"><svg viewBox="0 0 18 18" fill="none"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>'; }   // fix: a11y name on the modal close X (used ~48x)
   // ---- Atlas PLATFORM billing: send the owner to Stripe hosted Checkout on ATLAS's account (so Atlas gets paid). Live only. ----
   function _billingCheckout(kind,params,_noSquare){ if(_isNativeApp()){ _manageOnWeb(kind); return; }   // app-store compliance: digital purchases happen on the web, never via in-app Stripe
+    if(kind==='trial'||kind==='plan') _signupCheckoutActive=true;   // WAVE97: hold the 402-paywall suppression across the WHOLE checkout (covers paywallStartTrial + the Square<->Stripe fallbacks) until the modal closes, a redirect, or an error toast releases it
     if(!_noSquare&&typeof S!=='undefined'&&S&&S.payProcessor==='square'&&(kind==='trial'||kind==='plan')){ _squarePlanCheckout(kind,params); return; }   // WAVE52: platform swapped to Square -> subscriptions use the inline Square card form (card-on-file), not the Stripe redirect. WAVE96c: _noSquare is set by the Square->Stripe fallback so it can never bounce back here.
     var body={kind:kind}; for(var k in (params||{})) body[k]=params[k];
     toast('Opening secure checkout...');
     _api('/api/billing/checkout',{method:'POST',body:body}).then(function(res){
       if(res.status>=200&&res.status<300&&res.json&&res.json.url){ if(kind==='trial') _funnelEvent('checkout_open');   /* #297 funnel: Stripe trial checkout actually opened (sendBeacon survives the redirect) */ window.location.href=res.json.url; }
       else if(!_noSquare&&res.json&&res.json.code==='use_square'&&(kind==='trial'||kind==='plan')){ try{ if(typeof S!=='undefined'&&S) S.payProcessor='square'; }catch(e){} _squarePlanCheckout(kind,params); }   // WAVE96c MONEY: server is authoritative -- this account bills via Square -> run the Square checkout even if the client's processor flag was stale/unset (e.g. fresh signup, before /api/auth/me). _noSquare guards against a bounce loop.
-      else { toast((res.json&&res.json.error)||'Could not start checkout - please try again'); }
-    }).catch(function(){ toast('Network error starting checkout'); }); }
+      else { _signupCheckoutActive=false; toast((res.json&&res.json.error)||'Could not start checkout - please try again'); }   // WAVE97: checkout could not start -> release suppression so a later genuine 402 can re-inform them
+    }).catch(function(){ _signupCheckoutActive=false; toast('Network error starting checkout'); }); }
   // CRYPTO platform checkout (Coinbase Commerce) -- the crypto twin of _billingCheckout. Same app-store guard; the server
   // computes the amount + is authoritative; redirects to the Coinbase hosted charge. INERT unless the owner connected Coinbase.
   function _cryptoCheckout(kind,params){ if(_isNativeApp()){ _manageOnWeb(kind); return; }
@@ -12315,7 +12319,7 @@ const Atlas = (function(){
   function _loadSquareSdk(envName){ if(window.Square) return Promise.resolve(window.Square); if(_sqSdkP) return _sqSdkP;
     _sqSdkP=new Promise(function(res,rej){ var s=document.createElement('script'); s.src=(envName==='sandbox'?'https://sandbox.web.squarecdn.com/v1/square.js':'https://web.squarecdn.com/v1/square.js'); s.async=true; s.onload=function(){ window.Square?res(window.Square):rej(new Error('Square SDK failed to load')); }; s.onerror=function(){ _sqSdkP=null; rej(new Error('Square SDK failed to load')); }; document.head.appendChild(s); });
     return _sqSdkP; }
-  function _squarePlanCheckout(kind,params){ params=params||{}; _sqPlanKind=kind||'plan'; if(_isNativeApp()){ _manageOnWeb(kind); return; }
+  function _squarePlanCheckout(kind,params){ params=params||{}; _sqPlanKind=kind||'plan'; if(_isNativeApp()){ _manageOnWeb(kind); return; } _signupCheckoutActive=true;   // WAVE97: the inline Square card form IS the checkout -> keep the 402 paywall suppressed for its duration
     _api('/api/billing/square/config').then(function(res){ var cfg=(res&&res.json)||{};
       if(!cfg.ready||!cfg.appId||!cfg.locationId){ _billingCheckout(kind,params,true); return; }   // WAVE96c MONEY: the toggle says Square but Square isn't live yet -> fall back to the Stripe checkout instead of dead-ending (the server's _platProcessor already returns 'stripe' in this state, so the Stripe rail is the correct one). _noSquare=true prevents a bounce.
       _sqTrial=(String(kind)==='trial') && (cfg.trialEligible!==false);   // WAVE96d: a signup trial gets the SAME 7-day free trial as Stripe (card saved, $0 today) -- unless the server says this tenant already used one
@@ -12328,9 +12332,10 @@ const Atlas = (function(){
         +'<div id="sqErr" style="color:#e0736f;font-size:12.5px;min-height:15px;margin:2px 0;line-height:1.4"></div>'
         +'<button class="btn btn--primary btn--full btn--lg" id="sqPayBtn" disabled onclick="Atlas._squarePayGo()">Loading card form...</button>'
         +'<div class="bk-lenhint" style="margin-top:8px">'+(_sqTrial?('Your card is saved now &mdash; <b>$0 today</b>. Your first charge is on <b>'+esc(_endStr)+'</b>, then monthly. Cancel anytime before then.'):'Your card is saved and charged now, then billed monthly. Cancel anytime.')+'</div></div>');
+      try{ var _sczq=document.getElementById('modalScrim'); if(_sczq) _sczq.classList.add('checkout-top'); }catch(e){}   // WAVE97: lift the card modal ABOVE any full-screen gate (paywall/plan/verify @ z-index:9500) so it can never be buried behind the "Start your 7-day free trial" gate
       _sqCard=null;
       _loadSquareSdk(cfg.env).then(function(Sq){ var payments=Sq.payments(cfg.appId, cfg.locationId); return payments.card(); }).then(function(card){ _sqCard=card; return card.attach('#sqCardBox'); }).then(function(){ var b=document.getElementById('sqPayBtn'); if(b){ b.disabled=false; b.textContent=(_sqTrial?'Start 7-day free trial':'Subscribe'); } }).catch(function(e){ var er=document.getElementById('sqErr'); if(er) er.textContent='Could not load the card form: '+((e&&e.message)||e); });
-    }).catch(function(){ toast('Could not start Square checkout.'); }); }
+    }).catch(function(){ _signupCheckoutActive=false; toast('Could not start Square checkout.'); }); }   // WAVE97: release suppression on a failed Square config fetch
   function _squarePayGo(){ if(_sqBusy||!_sqCard) return; _sqBusy=true; var b=document.getElementById('sqPayBtn'), er=document.getElementById('sqErr'); if(er)er.textContent=''; if(b){ b.disabled=true; b.textContent='Processing...'; }
     var tier=val('sqTier')||'pro';
     _sqCard.tokenize().then(function(r){ if(!r||r.status!=='OK'){ throw new Error((r&&r.errors&&r.errors[0]&&r.errors[0].message)||'Card was not accepted'); } return _api('/api/billing/square/subscribe',{method:'POST',body:{tier:tier,sourceId:r.token,kind:(_sqPlanKind||'plan')}}); }).then(function(res){ var j=(res&&res.json)||{};   // WAVE96d: pass the kind so the worker gives a signup 'trial' the 7-day free trial (card saved, $0 today) instead of charging now
