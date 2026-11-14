@@ -3770,13 +3770,13 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const DAY281 = 86400000;
   // tenantRow shape returned by BOTH real call sites: SELECT * (subdomain path) and the named, widened SELECT
   // (custom-domain path) -- both must carry .plan + .delinquent_since alongside the usual profile fields.
-  function tdRow(plan, delinquentSince) {
+  function tdRow(plan, delinquentSince, trialEnds) {
     return {
       id: 't_td281', subdomain: 'td281', fleet_type: 'cars', plan: plan, tier: 'starter', website_addon: null,
       custom_domain: 'td281-custom.example', custom_domain_status: 'live',
       brand: JSON.stringify({ color: '#123456' }), money: JSON.stringify({}),
       settings: JSON.stringify({ publicSite: { published: true, headline: 'Hi', assets: [], config: {} } }),
-      delinquent_since: delinquentSince,
+      delinquent_since: delinquentSince, trial_ends: (typeof trialEnds === 'undefined' ? null : trialEnds),
     };
   }
   function tdDB(tenantRow, flagOn) {
@@ -3838,6 +3838,16 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   r = await worker.fetch(tdCustomReq('td281-custom.example'), tdEnv(tdRow('past_due', Date.now() - 4 * DAY281), false), tdCtx);
   t = await r.text();
   ok(r.status === 200 && isRealPage(t), '#281 custom-domain serve path: flag OFF -> real site (got status ' + r.status + ')');
+
+  // (g) WAVE-PG split: flag ON + a LAPSED trial (trial_ends just passed) -> taken down IMMEDIATELY, NO 3-day grace for a never-paid trial
+  r = await worker.fetch(mkReq('GET', '/api/book/td281'), tdEnv(tdRow('trial', null, Date.now() - 60000), true), tdCtx);
+  t = await r.text();
+  ok(r.status === 200 && isUnavailable(t), '#281 WAVE-PG split: flag ON, lapsed trial (ended 1 min ago) -> immediate "temporarily unavailable" page, NO grace (got status ' + r.status + ', marker=' + isUnavailable(t) + ')');
+
+  // (h) an ACTIVE trial (trial_ends in the future) is NEVER taken down even with the flag ON -- the free trial is a paid-for period, not a lapse
+  r = await worker.fetch(mkReq('GET', '/api/book/td281'), tdEnv(tdRow('trial', null, Date.now() + 2 * DAY281), true), tdCtx);
+  t = await r.text();
+  ok(r.status === 200 && isRealPage(t), '#281 WAVE-PG split: flag ON, still-active trial (ends in 2 days) -> real booking page still serves (got status ' + r.status + ')');
 }
 
 // ---- #281 admin toggle: GET/POST /api/admin/config surfaces site_takedown_enabled, independently of the other
@@ -6187,7 +6197,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 // ==== build ez: Wave-4 correctness-engine audit fixes (billing takedown, analytics mode-filters, availability column backfill, pricing order) ====
 {
   // Billing MED: public-site takedown now covers canceled/unpaid/lapsed-trial, not only past_due
-  ok(/if \(_plan === 'canceled' \|\| _plan === 'unpaid'\) return true;/.test(_WORKER_SRC) && /if \(_plan === 'trial'\) \{ const _te = Number\(tenant\.trial_ends\);/.test(_WORKER_SRC), 'billing MED: _siteTakenDown withdraws the hosted site from a CANCELED/UNPAID tenant immediately and a lapsed TRIAL after grace (delinquent_since is cleared on cancel / never set for a trial, so the past_due-only check kept serving a non-paying ex-customer forever)');
+  ok(/if \(_plan === 'canceled' \|\| _plan === 'unpaid'\) return true;/.test(_WORKER_SRC) && /if \(_plan === 'trial'\) \{ const _te = Number\(tenant\.trial_ends\); return \(_te && isFinite\(_te\)\) \? \(Date\.now\(\) > _te\) : false;/.test(_WORKER_SRC), 'billing MED + WAVE-PG split: _siteTakenDown withdraws the hosted site from a CANCELED/UNPAID tenant and a LAPSED TRIAL immediately (no grace, Date.now() > trial_ends), while a past_due payer keeps the 3-day grace (delinquent_since is cleared on cancel / never set for a trial, so the past_due-only check kept serving a non-paying ex-customer forever)');
   // Analytics MED #1: cohort revenue mode-filtered
   ok(/WHERE t\.created_at>=\? AND COALESCE\(pt\.livemode,0\)=\?/.test(_WORKER_SRC), 'analytics MED #1: cohort revenue mode-filters livemode (was the only owner-dashboard revenue read mixing TEST + LIVE)');
   // Analytics MED #2: counsel rollup revenue mode-filtered + signups owner-excluded

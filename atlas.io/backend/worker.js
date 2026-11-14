@@ -6570,7 +6570,7 @@ async function _lockedTenantCount(env) {
 // a missing tenant row, an unset/null delinquent_since, or an active plan -- this must NEVER invent a takedown
 // from absent or unexpected data. `tenant` needs .plan + .delinquent_since -- both are present whether the caller
 // used a named SELECT (widened to include them) or SELECT * (the subdomain path, once the ALTER above has run).
-const _TAKEDOWN_GRACE_MS = 3 * 86400000;   // 3-day grace period after the FIRST failed-payment webhook
+const _TAKEDOWN_GRACE_MS = 3 * 86400000;   // 3-day grace for a PAST_DUE payer (an established customer whose card later failed), measured from the first failed-payment. A lapsed TRIAL gets NO grace -- see the trial branch in _siteTakenDown.
 async function _siteTakenDown(env, tenant) {
   try {
     if (!tenant) return false;                                                     // no row to evaluate -> fail open
@@ -6583,11 +6583,11 @@ async function _siteTakenDown(env, tenant) {
     // Wave4 billing MED: delinquent_since is set ONLY on past_due (cleared on cancel, never set for a lapsed trial), so a
     // CANCELED / UNPAID / lapsed-TRIAL tenant slipped past the delinquent check below and kept the Atlas-hosted booking site
     // (a paid feature, still taking bookings + customer PII) forever. Close it: a canceled/unpaid tenant's paid period has
-    // already ended (Stripe cancels at period END) -> take down now; a trial is taken down once trial_ends + the SAME 3-day
-    // grace passes (an ACTIVE or no-trial_ends trial still serves). The dashboard is already locked by _billingState for all
+    // already ended (Stripe cancels at period END) -> take down now; a LAPSED trial (never paid) is taken down IMMEDIATELY at
+    // trial_ends with NO grace (an ACTIVE or no-trial_ends trial still serves); only a past_due payer keeps the 3-day grace below. The dashboard is already locked by _billingState for all
     // of these; this withdraws the public hosted site too. Gated by site_takedown_enabled (OFF by default) exactly as before.
     if (_plan === 'canceled' || _plan === 'unpaid') return true;
-    if (_plan === 'trial') { const _te = Number(tenant.trial_ends); return (_te && isFinite(_te)) ? ((Date.now() - _te) > _TAKEDOWN_GRACE_MS) : false; }
+    if (_plan === 'trial') { const _te = Number(tenant.trial_ends); return (_te && isFinite(_te)) ? (Date.now() > _te) : false; }   // WAVE-PG split: a LAPSED trial (never paid a cent) is withdrawn the INSTANT trial_ends passes -- no grace. An ACTIVE trial (trial_ends in the future) or a trial with no trial_ends still serves; only a past_due payer (below) keeps the 3-day grace.
     const since = Number(tenant.delinquent_since);
     if (!since || !isFinite(since)) return false;                                   // (past_due) never delinquent, or already cleared -> never take down
     return (Date.now() - since) > _TAKEDOWN_GRACE_MS;
