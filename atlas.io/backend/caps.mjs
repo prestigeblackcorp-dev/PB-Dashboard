@@ -71,7 +71,7 @@ export const STAFF_CAPS = [
     routes: [{ m: 'POST', p: '^/api/admin/ai/(copilot|churn|onboarding-nudges|release-notes|ticket-draft|inbox-draft|triage-bugs)$' }] },
 
   // ---- Money visibility: a pure flag (unlocks NO route; see _staffSeeMoney) ----
-  { key: 'money.view', group: 'Revenue', label: 'See revenue / MRR / money figures', sens: 'money', def: 'analyst', money: true,
+  { key: 'money.view', group: 'Revenue', label: 'See revenue / MRR / money figures (analyst role only)', sens: 'money', def: 'analyst', money: true, roleLock: 'analyst',
     routes: [] },
 ];
 
@@ -167,10 +167,12 @@ export function _capForRoute(method, path) {
   return null;
 }
 
-// Can this staffer SEE money figures? Explicit caps -> money.view flag; else the
-// legacy rule (analyst sees money, support does not).
+// Can this staffer SEE money figures? Money is ANALYST-ROLE ONLY (owner policy): a
+// non-analyst never sees it. Within the analyst role the money.view cap applies --
+// the capless analyst preset includes it; an analyst whose owner un-ticked it does not.
 export function _staffSeeMoney(role, capsJson) {
+  if (role !== 'analyst') return false;   // POLICY (owner directive): full company money data (MRR / revenue / data spreads) is ANALYST-ROLE ONLY. A support (or any non-analyst) staffer NEVER sees money, even if money.view somehow sits in their caps -- the cap is inert off the analyst role. The owner is handled by the caller (_role==='owner' || _staffSeeMoney(...)).
   var parsed = _parseCaps(capsJson);
-  if (parsed === null) return role === 'analyst';
-  return parsed.indexOf('money.view') >= 0;
+  if (parsed === null) return true;        // capless analyst -> the analyst preset includes money.view
+  return parsed.indexOf('money.view') >= 0;  // an analyst whose owner un-ticked money.view does NOT see it
 }

@@ -88,9 +88,15 @@ ok(_staffCan(viewer, 'GET', '/api/admin/members') === true, 'viewer: can view me
 ok(_staffSeeMoney('support', JSON.stringify(viewer)) === false, 'viewer: no money');
 
 const lead = ['hq.console', 'ops.overview', 'support.tickets.view', 'support.tickets.act', 'support.bugs.view', 'support.bugs.act', 'money.view'];
-ok(_staffSeeMoney('support', JSON.stringify(lead)) === true, 'lead: sees money (money.view granted)');
+ok(_staffSeeMoney('support', JSON.stringify(lead)) === false, 'lead (support + money.view cap): CANNOT see money -- full company money data is ANALYST-ROLE ONLY, so the cap is inert on a non-analyst');
 ok(_staffCan(lead, 'GET', '/api/admin/members') === false, 'lead: still cannot view members (not granted)');
 ok(_staffCan(lead, 'POST', '/api/admin/grant') === false, 'lead: cannot comp/grant (hard rail)');
+// ----- money visibility is ANALYST-ROLE ONLY (owner policy: "only analysts see full company data spreads") -----
+ok(_staffSeeMoney('analyst', null) === true, 'analyst (capless preset): sees money');
+ok(_staffSeeMoney('analyst', JSON.stringify(['ops.overview', 'money.view'])) === true, 'analyst + explicit money.view: sees money');
+ok(_staffSeeMoney('analyst', JSON.stringify(['ops.overview'])) === false, 'analyst with money.view un-ticked: does NOT see money (owner can hide MRR even from an analyst)');
+ok(_staffSeeMoney('support', JSON.stringify(['money.view'])) === false, 'support + money.view cap: NEVER sees money (analyst-role only)');
+ok(_staffSeeMoney('support', null) === false, 'support (capless preset): no money');
 
 // ===== TEST 4: Support-HQ workflow simulation -- a support agent handling a test ticket + bug =====
 const agent = JSON.stringify(_defaultStaffCaps('support'));
