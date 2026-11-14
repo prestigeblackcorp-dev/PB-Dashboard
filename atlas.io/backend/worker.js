@@ -19,6 +19,8 @@
  * reseller endpoints plug into the same router in their phases.
  */
 
+import { STAFF_CAPS, OWNER_ONLY_CAPS, ATLAS_CAPS_VERSION, _parseCaps, _defaultStaffCaps, _effectiveStaffCaps, _staffCan, _capForRoute, _staffSeeMoney } from './caps.mjs';
+
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 // ---------------------------------------------------------------- security headers
@@ -6209,6 +6211,7 @@ async function ensurePlatformSchema(env) {
   // if this CREATE ever fails, _adminIdentity's owner branch (env-token match) never touches this table at all, so
   // the owner is NEVER locked out by an admin_staff problem -- only staff-token logins would be affected.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS admin_staff (id TEXT PRIMARY KEY, email TEXT UNIQUE, name TEXT, role TEXT NOT NULL, token_hash TEXT, token_prefix TEXT, active INTEGER DEFAULT 1, created_by TEXT, created_at INTEGER, last_seen_at INTEGER, revoked_at INTEGER)").run(); } catch (e) {}
+  try { await env.DB.prepare("ALTER TABLE admin_staff ADD COLUMN caps TEXT").run(); } catch (e) { /* WAVE-RBAC1: per-staff granular capability grants (JSON array of cap keys from caps.mjs); NULL = use the role preset (back-compat) */ }
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_admin_staff_hash ON admin_staff(token_hash)").run(); } catch (e) {}
   // Scale/perf indexes (SCALING.md): hot query patterns that lacked one. Each independent -- if a column/table on some
   // older deploy doesn't match, only that one index is skipped, the rest still land.
@@ -6407,10 +6410,10 @@ async function _adminIdentity(req, env) {
   if (!presented || presented.indexOf('atlst_') !== 0) return null;   // no credential, or not shaped like a staff token -> 403, no DB hit needed
   try {
     await ensurePlatformSchema(env);
-    const row = await env.DB.prepare('SELECT id,email,role,active,revoked_at FROM admin_staff WHERE token_hash=?').bind(await _sha256Hex(presented)).first();
+    const row = await env.DB.prepare('SELECT id,email,role,active,revoked_at,caps FROM admin_staff WHERE token_hash=?').bind(await _sha256Hex(presented)).first();
     if (!row || !row.active || row.revoked_at || (row.role !== 'support' && row.role !== 'analyst')) return null;   // FAIL CLOSED: missing / inactive / revoked / anything but support|analyst
     try { await env.DB.prepare('UPDATE admin_staff SET last_seen_at=? WHERE id=?').bind(Date.now(), row.id).run(); } catch (e) { /* best-effort; never blocks auth */ }
-    return { actor: row.email, role: row.role, via: 'staff-token', staffId: row.id, tier: 0 };
+    return { actor: row.email, role: row.role, via: 'staff-token', staffId: row.id, tier: 0, caps: (row.caps != null ? row.caps : null) };   // RBAC1: carry the per-staff caps (NULL = role preset)
   } catch (e) { return null; }   // any DB error on the staff-lookup path fails CLOSED -- the owner branch above never reaches here
 }
 // Global master-dashboard date window. Day-aligned (UTC) so timestamp queries and the day-bucketed page_views agree.
@@ -10393,7 +10396,7 @@ function doReset(){
           return err(403, 'Admin key required.');
         }
         await ensurePlatformSchema(env);   // idempotent no-op if the staff-token branch above already ran it; guarantees every table the routes below touch exists, for BOTH identity paths
-        const _actor = _id.actor, _role = _id.role, _staffId = _id.staffId, _via = _id.via, _reqTier = _id.tier || 0;
+        const _actor = _id.actor, _role = _id.role, _staffId = _id.staffId, _via = _id.via, _reqTier = _id.tier || 0, _scaps = (_id.caps != null ? _id.caps : null);
         // #264 / WAVE96e role gate: two INDEPENDENT layers, both fail-safe. Identity above is server-verified (env token ==
         // owner; else a hashed/active/non-revoked admin_staff row) -- no client header can move a caller between roles, and a
         // present-but-unmatched credential already returned 403 above (never silently == owner).
@@ -10407,7 +10410,15 @@ function doReset(){
         //   money-stripped for support (the _money gate in those handlers) and only support holds a write exception.
         // WRITES: still owner-only except support's narrow triage exception (SUPPORT_WRITE). Unchanged.
         if (_role !== 'owner') {
-          if (method === 'GET') {
+          // RBAC1: a staffer the owner has EXPLICITLY configured (admin_staff.caps set) is gated by the granular
+          // capability model (caps.mjs): DEFAULT-DENY, and only curated-delegable routes are reachable -- no cap can
+          // ever reach a destructive / real-money / secret / owner-management route (those are absent from STAFF_CAPS).
+          // A staffer with NO explicit caps (legacy support/analyst) falls through to the UNCHANGED role gate below, so
+          // existing tokens behave byte-identically. test/staff_caps.mjs proves the preset path agrees route-by-route.
+          if (_parseCaps(_scaps) !== null) {
+            const _eff = _effectiveStaffCaps(_role, _scaps);
+            if (!_staffCan(_eff, method, path)) { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.denied', { reason: 'cap', role: _role, path: path }); return err(403, 'Your access does not permit this action.'); }
+          } else if (method === 'GET') {
             const _ownerOnly = OWNER_ONLY.test(path) && path !== '/api/admin/config';   // hard deny (config GET is the one exemption)
             const _canRead = !_ownerOnly && STAFF_READ.test(path);
             if (!_canRead) { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.denied', { reason: 'role', role: _role, path: path }); return err(403, 'Your admin role does not permit this action.'); }
@@ -10478,7 +10489,7 @@ function doReset(){
           // inbox, visits) the triage console legitimately needs. ANALYST (metrics) + owner keep the full figures. This is
           // the authoritative cut -- the client also hides the money tiles, but a response-level strip means no client
           // rendering choice (or a crafted raw API call) can ever re-expose MRR/revenue to a support token.
-          const _money = (_role === 'owner' || _role === 'analyst');
+          const _money = (_role === 'owner' || _staffSeeMoney(_role, _scaps));   // RBAC1: capless analyst still sees money; a configured staffer needs the money.view cap
           return json({ ok: true, ts: now, range: { key: range.key, label: range.label },
             revenue: _money ? { total_cents: revTot.c || 0, month_cents: revMo.c || 0, range_cents: revRange.c || 0, mrr_cents: mrr, by_kind: by_kind } : { hidden: true },
             members: _money ? { total: total, paid: paid, comped: comped, trials: trials, trials_with_card: twc, by_tier: by_tier } : { total: total, trials: trials, trials_with_card: twc, hidden: true },
@@ -10727,7 +10738,7 @@ function doReset(){
           const _g = await _hqGrowthData(env, range);
           // WAVE96e: defensive money-strip -- the allow-list makes this analyst/owner-only today, but if a support token ever
           // reaches here it must not see the revenue series/totals. Keeps the visits/signups growth story, drops the dollars.
-          if (!(_role === 'owner' || _role === 'analyst') && _g) {
+          if (!(_role === 'owner' || _staffSeeMoney(_role, _scaps)) && _g) {   // RBAC1: money-strip unless owner or money.view
             if (Array.isArray(_g.series)) _g.series = _g.series.map(function (d) { return { day: d.day, visits: d.visits, signups: d.signups }; });
             if (_g.totals) _g.totals = { visits: _g.totals.visits || 0, signups: _g.totals.signups || 0 };
             if (_g.members) delete _g.members.paid;
@@ -11111,8 +11122,9 @@ function doReset(){
         // its SHA-256 hash is ever persisted -- a DB dump never yields a usable token. Owner-only via OWNER_ONLY
         // above (path starts with '/api/admin/staff'), so a staff token can never reach these routes itself.
         if (path === '/api/admin/staff' && method === 'GET') {
-          const rows = ((await env.DB.prepare('SELECT id,email,name,role,token_prefix,active,created_at,last_seen_at,revoked_at FROM admin_staff ORDER BY created_at DESC LIMIT 200').all()).results) || [];
-          return json({ ok: true, staff: rows });   // NEVER selects token_hash -- a DB dump (or this endpoint) can never yield a usable credential
+          const rows = ((await env.DB.prepare('SELECT id,email,name,role,token_prefix,active,created_at,last_seen_at,revoked_at,caps FROM admin_staff ORDER BY created_at DESC LIMIT 200').all()).results) || [];
+          const staff = rows.map(function (r) { const _expl = _parseCaps(r.caps); return { id: r.id, email: r.email, name: r.name, role: r.role, token_prefix: r.token_prefix, active: r.active, created_at: r.created_at, last_seen_at: r.last_seen_at, revoked_at: r.revoked_at, caps: (_expl === null ? null : _expl), effective: _effectiveStaffCaps(r.role, r.caps), using_preset: (_expl === null) }; });   // RBAC1: surface per-staff caps + the effective set (preset or explicit) for the owner panel. NEVER selects token_hash.
+          return json({ ok: true, staff: staff, caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS, caps_version: ATLAS_CAPS_VERSION });   // RBAC1: ship the capability taxonomy so the panel renders the full checklist (nothing left out)
         }
         if (path === '/api/admin/staff' && method === 'POST') {
           const b = await req.json().catch(function () { return {}; });
@@ -11149,6 +11161,22 @@ function doReset(){
           if (!_r || !_r.meta || !_r.meta.changes) return err(404, 'No such staff record.');
           await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.staff.role', { id: id, role: role });
           return json({ ok: true });
+        }
+        if (path === '/api/admin/staff/caps' && method === 'POST') {   // RBAC1: owner sets a staffer's granular capabilities (owner-only: /staff is OWNER_ONLY so staff can never reach this)
+          const b = await req.json().catch(function () { return {}; });
+          const id = String(b.id || ''); if (!id) return err(400, 'id required.');
+          const row = await env.DB.prepare('SELECT id, role FROM admin_staff WHERE id=?').bind(id).first();
+          if (!row) return err(404, 'No such staff record.');
+          let _capsVal;   // NULL -> use the role preset; a JSON array string -> explicit grant set ('[]' = reaches nothing)
+          if (b.reset === true || b.caps === null) { _capsVal = null; }
+          else if (Array.isArray(b.caps)) {
+            const _known = {}; for (let _i = 0; _i < STAFF_CAPS.length; _i++) _known[STAFF_CAPS[_i].key] = 1;   // only KNOWN, delegable keys are storable -- an unknown or owner-only key is dropped here, never granted
+            const _clean = []; for (let _i = 0; _i < b.caps.length; _i++) { const _k = String(b.caps[_i] || ''); if (_known[_k] && _clean.indexOf(_k) < 0) _clean.push(_k); }
+            _capsVal = JSON.stringify(_clean);
+          } else { return err(400, 'caps must be an array of capability keys, or pass reset:true to use the role preset.'); }
+          await env.DB.prepare('UPDATE admin_staff SET caps=? WHERE id=?').bind(_capsVal, id).run();
+          await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.staff.caps', { id: id, caps: _capsVal });
+          return json({ ok: true, id: id, caps: (_capsVal === null ? null : JSON.parse(_capsVal)), effective: _effectiveStaffCaps(row.role, _capsVal), using_preset: (_capsVal === null) });
         }
         if (path === '/api/admin/staff/revoke' && method === 'POST') {
           const b = await req.json().catch(function () { return {}; });
