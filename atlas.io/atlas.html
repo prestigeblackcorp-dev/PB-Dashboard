@@ -2447,7 +2447,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.13ip';
+  var APP_VERSION='2026.11.13iq';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -8989,33 +8989,40 @@ const Atlas = (function(){
     el.innerHTML='<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:0 0 12px;padding:10px 12px;border:1px solid var(--line);border-left:3px solid var(--warn,#D97706);border-radius:10px;background:var(--card,#fff)">'
       +'<span style="font-size:13px;color:var(--ink)"><b>'+n+' GPS device'+(n>1?'s':'')+'</b> not matched to a '+esc(S.fleet.noun)+' yet &mdash; live position stays hidden until matched.</span>'
       +'<button class="btn btn--primary btn--sm" onclick="Atlas.trkMapOpen()">Match now</button></div>'; }
-  function trkMapOpen(){ var t=_trackers(), assets=DATA.assets||[];
-    var bound={}; Object.keys(t.vehicles||{}).forEach(function(k){ if(k.indexOf('dev:')!==0) bound[k]=1; });   // assets already showing a live device
-    var seen={}, items=[]; _trkOrphans().forEach(function(o){ seen[o.deviceId]=1; items.push({deviceId:o.deviceId,label:o.label,v:o.v,cur:(t.map[o.deviceId]||'')}); });
-    Object.keys(t.map||{}).forEach(function(d){ if(t.map[d]==='__ignore' && !seen[d]){ seen[d]=1; items.push({deviceId:d,label:'',v:null,cur:'__ignore'}); } });   // ignored devices stay reversible
+  function _trkVehKey(t,dev){ var ks=Object.keys(t.vehicles||{}); for(var i=0;i<ks.length;i++){ if(String((t.vehicles[ks[i]]||{}).deviceId)===String(dev)) return ks[i]; } return 'dev:'+dev; }   // #10: where the live vehicle for this device currently sits (asset id or dev:<id>), so a re-assign re-keys from the right place
+  function trkMapOpen(){ var t=_trackers(), assets=DATA.assets||[], byId={}; assets.forEach(function(a){ byId[a.id]=a; });
+    var bound={}; Object.keys(t.vehicles||{}).forEach(function(k){ if(k.indexOf('dev:')!==0) bound[k]=String((t.vehicles[k]||{}).deviceId||'1'); });   // assetId -> the deviceId currently on it
+    var seen={}, items=[];
+    _trkOrphans().forEach(function(o){ if(seen[o.deviceId])return; seen[o.deviceId]=1; items.push({deviceId:o.deviceId,label:o.label,v:o.v,cur:(t.map[o.deviceId]&&byId[t.map[o.deviceId]]?t.map[o.deviceId]:''),state:'orphan'}); });   // unmatched -- needs action
+    Object.keys(t.vehicles||{}).forEach(function(k){ if(k.indexOf('dev:')===0)return; var vv=t.vehicles[k]||{}, d=vv.deviceId; if(!d||seen[d])return; seen[d]=1; items.push({deviceId:d,label:vv.label||'',v:vv,cur:k,state:'assigned'}); });   // already on an asset (explicit or VIN/name auto) -- re-assignable
+    Object.keys(t.map||{}).forEach(function(d){ if(t.map[d]==='__ignore' && !seen[d]){ seen[d]=1; items.push({deviceId:d,label:'',v:null,cur:'__ignore',state:'ignored'}); } });   // ignored -- reversible
     var rows;
-    if(!items.length){ rows='<p class="bk-lenhint" style="margin:0">Every connected device is matched to a '+esc(S.fleet.noun)+'. Any new unmatched device will appear here.</p>'; }
+    if(!items.length){ rows='<p class="bk-lenhint" style="margin:0">No devices are reporting yet. Connected devices appear here once they report a position.</p>'; }
     else { rows=items.map(function(o){ var cur=o.cur, where=(o.v&&o.v.street)?(' &middot; '+esc(o.v.street)):'';
-      var opts=assets.map(function(a){ return '<option value="'+esc(a.id)+'"'+(cur===a.id?' selected':'')+'>'+esc(a.name)+(bound[a.id]?' (has a device)':'')+'</option>'; }).join('');
+      var tag=o.state==='assigned'?(' &middot; on '+esc((byId[cur]&&byId[cur].name)||cur)):(o.state==='ignored'?' &middot; ignored':' &middot; unmatched');
+      var opts=assets.map(function(a){ var inUse=bound[a.id]&&bound[a.id]!==String(o.deviceId); return '<option value="'+esc(a.id)+'"'+(cur===a.id?' selected':'')+'>'+esc(a.name)+(inUse?' (in use)':'')+'</option>'; }).join('');
       return '<div style="display:flex;gap:10px;align-items:center;padding:11px 0;border-top:1px solid var(--line)">'
         +'<div style="flex:1;min-width:0"><b style="font-size:13.5px">'+esc(o.label||('Device '+o.deviceId))+'</b>'
-        +'<div style="font-size:12px;color:var(--muted)">ID '+esc(String(o.deviceId))+where+(cur==='__ignore'?' &middot; ignored':'')+'</div></div>'
-        +'<select class="select trk-map-sel" data-dev="'+esc(String(o.deviceId))+'" style="max-width:52%">'
+        +'<div style="font-size:12px;color:var(--muted)">ID '+esc(String(o.deviceId))+where+tag+'</div></div>'
+        +'<select class="select trk-map-sel" data-dev="'+esc(String(o.deviceId))+'" data-cur="'+esc(String(cur))+'" style="max-width:52%">'
         +'<option value=""'+(cur===''?' selected':'')+'>Choose a '+esc(S.fleet.noun)+'...</option>'+opts
+        +'<option value="__auto">Auto-match (VIN / name)</option>'
         +'<option value="__ignore"'+(cur==='__ignore'?' selected':'')+'>Ignore this device</option></select></div>'; }).join(''); }
     openModal('<div class="modal__head"><h3>Match devices to '+esc(cap(_adNouns()))+'</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<p class="bk-lenhint" style="margin:0 0 6px">A tracker reports by VIN or its own label. Anything without a matching VIN or name (most equipment, boats and gear) needs a one-time match here &mdash; then its live position, trips and geofences work like any vehicle.</p>'
+      +'<p class="bk-lenhint" style="margin:0 0 6px">A tracker reports by VIN or its own label. Anything without a matching VIN or name (most equipment, boats and gear) needs a one-time match here &mdash; then its live position, trips and geofences work like any vehicle. You can re-assign or ignore a device at any time.</p>'
       +rows
       +(items.length?'<button class="btn btn--primary btn--full btn--lg" style="margin-top:14px" onclick="Atlas.trkMapSave()">Save matches</button>':'')
       +'</div>'); }
   function trkMapSave(){ var t=_trackers(), sels=document.querySelectorAll('.trk-map-sel'), changed=0;
-    [].forEach.call(sels,function(s){ var dev=s.getAttribute('data-dev'), v=s.value; if(!dev||v==='') return;   // blank = no decision, leave as-is
-      if(t.map[dev]!==v) changed++; t.map[dev]=v;
-      var old='dev:'+dev, veh=t.vehicles[old];   // re-key the live vehicle now so the map/list update without waiting for the next poll
-      if(veh){ delete t.vehicles[old]; if(v!=='__ignore') t.vehicles[v]=veh; } });
+    [].forEach.call(sels,function(s){ var dev=s.getAttribute('data-dev'), v=s.value, dc=s.getAttribute('data-cur')||''; if(!dev||v==='')return;   // blank = no decision, leave as-is
+      if(v===dc)return;   // unchanged -- also keeps a VIN/name auto-match auto instead of locking it to its current asset
+      var ck=_trkVehKey(t,dev), veh=t.vehicles[ck];
+      if(v==='__auto'){ if(dev in t.map){ delete t.map[dev]; changed++; } return; }   // revert to VIN/name auto-match; the next poll (<=30s) re-places it
+      changed++; t.map[dev]=v;   // explicit asset id, or '__ignore'
+      if(veh){ delete t.vehicles[ck]; if(v!=='__ignore') t.vehicles[v]=veh; } });   // re-key the live vehicle now so map/list update without waiting for the next poll
     save(); closeModal();
     try{ _trkRenderMap(); _trkRenderList(); _trkRenderKpis(); _trkRenderUnmapped(); if(_trkSel)_trkRenderDetail(); }catch(e){}
-    if(changed){ _logEvent('tracker','Matched '+changed+' GPS device'+(changed>1?'s':'')+' to '+(changed>1?'assets':'an asset'),{}); toast('Matched '+changed+' device'+(changed>1?'s':'')); }
+    if(changed){ _logEvent('tracker','Updated '+changed+' GPS device match'+(changed>1?'es':''),{}); toast('Updated '+changed+' device'+(changed>1?'s':'')); }
     else { toast('No changes'); } }
   function trkSelect(id){ _trkSel=(_trkSel===id?null:id); if(!_trkSel)_trkRoute=null; _trkRenderMap(); _trkRenderList(); _trkRenderDetail(); }
   function trkRoute(id){ _trkRoute=(_trkRoute===id?null:id); _trkDrawRoute(); _trkRenderDetail(); }

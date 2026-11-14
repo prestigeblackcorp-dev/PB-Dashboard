@@ -6482,11 +6482,20 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/id="trkUnmapped"/.test(_ATLAS_SRC), 'WAVE77: the dashboard mounts the unmatched-devices banner');
   ok(/Atlas\.trkMapOpen\(\)">Match devices/.test(_ATLAS_SRC), 'WAVE77: Match devices action on the Live toolbar');
   // save re-keys the live vehicle immediately so map/list update without waiting for the next poll
-  ok(/if\(veh\)\{ delete t\.vehicles\[old\]; if\(v!=='__ignore'\) t\.vehicles\[v\]=veh; \}/.test(_ATLAS_SRC), 'WAVE77: save re-keys dev:<id> onto the chosen asset at once');
+  ok(/if\(veh\)\{ delete t\.vehicles\[ck\]; if\(v!=='__ignore'\) t\.vehicles\[v\]=veh; \}/.test(_ATLAS_SRC), 'WAVE77/95: save re-keys the live vehicle from its current slot onto the chosen asset at once');
   // exported on Atlas
   ok(/trkMapOpen,trkMapSave,/.test(_ATLAS_SRC), 'WAVE77: new mapping handlers exported on Atlas');
   // regression guard: cap_adNouns() was a phantom (never defined) that threw in _trkDashHtml + trkMapOpen; use cap(_adNouns())
   ok(!/cap_adNouns/.test(_ATLAS_SRC), 'WAVE77 fix: the undefined cap_adNouns() phantom is gone (capitalize via cap(_adNouns()))');
+}
+
+// ==== WAVE95: device<->asset mapping COMPLETION -- the match modal now manages ALL devices (re-assign a wrong match, revert to VIN/name auto, or ignore), not just unmatched ones ====
+{
+  ok(/function _trkVehKey\(/.test(_ATLAS_SRC), 'WAVE95: _trkVehKey resolves a device current live-vehicle slot so a re-assign re-keys from the right place (not just dev:<id>)');
+  ok(/state:'assigned'/.test(_ATLAS_SRC) && /already on an asset/.test(_ATLAS_SRC), 'WAVE95: the match modal also lists devices already on an asset, so a wrong match is re-assignable');
+  ok(/value="__auto">Auto-match/.test(_ATLAS_SRC), 'WAVE95: an Auto-match (VIN/name) option lets the owner revert a forced match');
+  ok(/if\(v==='__auto'\)\{ if\(dev in t\.map\)\{ delete t\.map\[dev\]; changed\+\+; \} return; \}/.test(_ATLAS_SRC), 'WAVE95: save handles __auto by clearing the explicit map entry (reverts to auto-detect)');
+  ok(/if\(v===dc\)return;/.test(_ATLAS_SRC), 'WAVE95: an unchanged row is skipped so a VIN/name auto-match is not silently locked to its current asset');
 }
 
 // ==== WAVE78: mid-period tier TRUE-UP (money) -- an upgrade grants the new tier free credit/email allotment NOW, not at the next period rollover ====
