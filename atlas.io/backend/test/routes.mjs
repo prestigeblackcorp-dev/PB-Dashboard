@@ -6779,6 +6779,37 @@ ok(/if \(!\(_role === 'owner' \|\| _role === 'analyst'\) && _g\) \{/.test(_WORKE
     ok(/val:\(mem\.trials_with_card\|\|0\)/.test(_ADM), 'WAVE100: the HQ Trials tile counts only carded (started) trials');
     ok(/incomplete \(no card\)/.test(_ADM), 'WAVE100: HQ surfaces cardless signups as "incomplete (no card)", not trials');
   }
+
+  // WAVE101 FOUNDERS BADGE COLLECTION: a founder picks ONE of ten collectible medallions as a permanent mark (set-once,
+  // founders-only). Worker: founder_badge column + founderBadge in /api/auth/me + /api/tenant/profile + POST
+  // /api/founder/badge (validates a 10-key whitelist, requires founder=1, set-once idempotent). Client: the 10 inline-SVG
+  // medallions + the picker (_founderBadgePick/_fbSel/_fbCommit) + _founderBadgeHtml shows the chosen medallion or a
+  // "Choose your founder badge" CTA. Only the first 1000 founders ever hold one. ASCII-pure client source (entities only).
+  ok(/ALTER TABLE tenants ADD COLUMN founder_badge TEXT/.test(_WORKER_SRC), 'WAVE101: tenants.founder_badge column is created (the chosen medallion key)');
+  ok(/founderBadge: \(\(t \|\| tb\) && \(t \|\| tb\)\.founder_badge\) \|\| null,/.test(_WORKER_SRC), 'WAVE101: /api/auth/me returns founderBadge so the client hydrates the chosen medallion on boot');
+  ok(/founderBadge: \(t && t\.founder_badge\) \|\| null,/.test(_WORKER_SRC), 'WAVE101: /api/tenant/profile also returns founderBadge');
+  ok(/if \(path === '\/api\/founder\/badge' && method === 'POST'\)/.test(_WORKER_SRC), 'WAVE101: POST /api/founder/badge route exists');
+  ok(/const _FB_KEYS = \['king', 'queen', 'boss', 'shark', 'money', 'legend', 'heart', 'gent', 'wild', 'immortal'\];/.test(_WORKER_SRC), 'WAVE101: the badge route validates against the 10-key whitelist (no arbitrary value is ever stored)');
+  ok(/if \(!\(_fbrow && Number\(_fbrow\.founder\)\)\) return err\(403, 'Only founding members can choose a badge\.'\);/.test(_WORKER_SRC), 'WAVE101: only a founder (founder=1) can set a badge -- non-founders get none, ever');
+  ok(/if \(_fbrow\.founder_badge\) return json\(\{ ok: true, badge: _fbrow\.founder_badge, already: true \}\);/.test(_WORKER_SRC), 'WAVE101: set-once -- a chosen mark is permanent; a re-submit returns it idempotently (never overwrites)');
+  ok(/var _FB_ORDER=\['king','queen','boss','shark','money','legend','heart','gent','wild','immortal'\]/.test(_ATLAS_SRC), 'WAVE101: the client defines the 10 founder badge keys in collection order');
+  ok(/function _founderBadgeSvg\(key,size\)/.test(_ATLAS_SRC), 'WAVE101: the client renders a chosen medallion as inline SVG (_founderBadgeSvg)');
+  ok(/if\('founderBadge' in r\[2\]\.json\) _founderInfo\.badge=r\[2\]\.json\.founderBadge\|\|''/.test(_ATLAS_SRC), 'WAVE101: the boot hydrate adopts the server-authoritative chosen badge');
+  ok(/var key=\(_founderInfo\.badge\|\|\(typeof S!=='undefined'&&S&&S\.founderBadge\)\|\|''\)/.test(_ATLAS_SRC), 'WAVE101: _founderBadgeHtml shows the chosen medallion (or a Choose-your-badge CTA when none is set)');
+  ok(/_api\('\/api\/founder\/badge',\{method:'POST',body:\{badge:key\}\}\)/.test(_ATLAS_SRC), 'WAVE101: the picker commits the choice to the server (set-once) via POST /api/founder/badge');
+  ok(/_founderBadgePick,_fbSel,_fbCommit,/.test(_ATLAS_SRC), 'WAVE101: the founder-badge picker methods are exported on the Atlas object so the onclick handlers resolve');
+
+  // WAVE102 MONEY-CRASH FIX (live): a fresh/partial server profile could replace the complete default money blob with one
+  // missing rateModel/deposit/hold -> _assetCard (S.money.rateModel[0]) and the onboarding money step (S.money.deposit.mode)
+  // threw, so "Open my dashboard" did nothing, the rate picker never rendered, and adding more setup items stalled.
+  // _fillMoney backfills from defaultMoney() at every render/hydrate chokepoint so S.money is always whole (self-heals saved state).
+  ok(/function _fillMoney\(m\)\{ var d=defaultMoney\(\);/.test(_ATLAS_SRC), 'WAVE102: _fillMoney(m) backfills a partial money blob from defaultMoney() (values already present are kept untouched)');
+  ok(/function _ensureMoney\(\)\{ try\{ if\(S\) S\.money=_fillMoney\(S\.money\); \}catch\(e\)\{\} \}/.test(_ATLAS_SRC), 'WAVE102: _ensureMoney() normalizes the live S.money, wrapped in try/catch so it can never itself break a render');
+  ok(/function buildApp\(\)\{\s*_ensureMoney\(\);/.test(_ATLAS_SRC), 'WAVE102: buildApp() calls _ensureMoney() first, so no dashboard render reads an undefined money sub-key (the "Open my dashboard" crash)');
+  ok(/function renderStep\(\)\{\s*_ensureMoney\(\);/.test(_ATLAS_SRC), 'WAVE102: renderStep() calls _ensureMoney() first, so the onboarding money/rate/asset steps always render');
+  ok(/merged\.money=_fillMoney\(merged\.money\);/.test(_ATLAS_SRC), 'WAVE102: the profile hydrate never persists a partial money blob (fills it before _lsSet)');
+  ok(/\$\{money\(a\.rate\)\}\/\$\{S\.money\.rateModel\[0\]\}/.test(_ATLAS_SRC), 'WAVE102: _assetCard still reads S.money.rateModel[0] -- the crash site _fillMoney now guarantees is populated');
+  ok(/S\.money\.deposit\.mode==='full'/.test(_ATLAS_SRC), 'WAVE102: the onboarding money step still reads S.money.deposit.mode -- the crash site _fillMoney now guarantees is populated');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
