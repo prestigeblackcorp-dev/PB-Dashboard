@@ -2103,12 +2103,14 @@ async function _hqMetrics(env) {
 }
 async function _hqBuildBrief(env) {
   const m = await _hqMetrics(env);
-  const payload = { metrics: m,
+  var _tStarted = Math.max(0, Number(m.trials_with_card) || 0);                                   // WAVE108: a STARTED trial == plan in trial/pending WITH a card on file -- this is the number the HQ dashboard "Trials" tile shows
+  var _sIncomplete = Math.max(0, (Number(m.trials) || 0) - (Number(m.trials_with_card) || 0));    // cardless signups (new 'pending' + any legacy no-card 'trial') -- NOT trials; the dashboard surfaces this separately as "N incomplete (no card)"
+  const payload = { metrics: Object.assign({}, m, { trials_started: _tStarted, signups_incomplete: _sIncomplete }),   // WAVE108: give the AI brief UNAMBIGUOUS, dashboard-consistent fields so the Morning Brief can never report a different trial count than the HQ "Trials" tile. m.trials (started+incomplete) + m.trials_with_card stay present for any numeric consumer; these two are additive.
     trials_expiring_3d: (await HQ_QUERIES.trials_expiring.run(env, { days: 3 })).slice(0, 12),
     onboarding_stuck: (await HQ_QUERIES.onboarding_stuck.run(env, { days: 7 })).slice(0, 12),
     hot_tickets: (await HQ_QUERIES.tickets_open_over.run(env, { hours: 24 })).slice(0, 12),
     paid_zero_bookings_30d: (await HQ_QUERIES.paid_no_booking.run(env, { days: 30 })).slice(0, 12) };
-  const sys = HQ_SYS + ' Write a concise founder morning brief. Format: a one-line headline "Do this first: ___" naming the single highest-dollar action, then up to 5 short bullets (what changed, why it matters in dollars, the one action). If nothing is wrong, say so in one line and do not manufacture drama. Use the REAL numbers provided; money is in cents, divide by 100 for dollars. Plain text or light markdown, no preamble.';
+  const sys = HQ_SYS + ' Write a concise founder morning brief. Format: a one-line headline "Do this first: ___" naming the single highest-dollar action, then up to 5 short bullets (what changed, why it matters in dollars, the one action). If nothing is wrong, say so in one line and do not manufacture drama. Use the REAL numbers provided; money is in cents, divide by 100 for dollars. Report the trial count as metrics.trials_started (started trials with a card on file -- this matches the HQ dashboard); if you mention metrics.signups_incomplete, call it "incomplete signups (no card)", never "trials". Plain text or light markdown, no preamble.';
   const md = await _hqAsk(env, sys, 'DATA (JSON):\n' + JSON.stringify(payload).slice(0, 9000), 900, { source: 'hq_brief' });
   return { json: payload, md: md || '' };
 }
