@@ -6810,6 +6810,14 @@ ok(/if \(!\(_role === 'owner' \|\| _role === 'analyst'\) && _g\) \{/.test(_WORKE
   ok(/merged\.money=_fillMoney\(merged\.money\);/.test(_ATLAS_SRC), 'WAVE102: the profile hydrate never persists a partial money blob (fills it before _lsSet)');
   ok(/\$\{money\(a\.rate\)\}\/\$\{S\.money\.rateModel\[0\]\}/.test(_ATLAS_SRC), 'WAVE102: _assetCard still reads S.money.rateModel[0] -- the crash site _fillMoney now guarantees is populated');
   ok(/S\.money\.deposit\.mode==='full'/.test(_ATLAS_SRC), 'WAVE102: the onboarding money step still reads S.money.deposit.mode -- the crash site _fillMoney now guarantees is populated');
+
+  // WAVE103 ONE-BOX NAMING: custom-type naming takes only the singular; the plural + label derive automatically (owner ask:
+  // "no need for singular and plural -- auto populate based on what's typed in 1 box").
+  ok(/function _pluralize\(w\)/.test(_ATLAS_SRC), 'WAVE103: _pluralize(w) derives the plural from the singular (box->boxes, party->parties)');
+  ok(/function setCustomNounSolo\(val\)/.test(_ATLAS_SRC), 'WAVE103: setCustomNounSolo(val) sets the singular and ALWAYS re-derives the plural (single-box naming, no stale plural on re-edit)');
+  ok(/onchange="Atlas\.setCustomNounSolo\(this\.value\)"/.test(_ATLAS_SRC), 'WAVE103: the custom-type naming input commits via the single-box solo setter (onboarding + settings)');
+  ok(/setCustomNounSolo,_customNounPreview,/.test(_ATLAS_SRC), 'WAVE103: the one-box naming handlers are exported on Atlas so onchange/oninput resolve');
+  ok(!/setCustomNoun\('nouns'/.test(_ATLAS_SRC), 'WAVE103: the separate manual Plural input is gone (no setCustomNoun(\'nouns\') caller remains)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
