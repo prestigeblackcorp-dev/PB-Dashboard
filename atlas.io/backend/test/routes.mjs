@@ -6491,6 +6491,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 
 // ==== WAVE95: device<->asset mapping COMPLETION -- the match modal now manages ALL devices (re-assign a wrong match, revert to VIN/name auto, or ignore), not just unmatched ones ====
 {
+  const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');   // WAVE96a fix: this block was missing its own block-local _ATLAS_SRC (every other client-guard block declares one); the WAVE77 block's const is scoped to that block, so node threw ReferenceError: _ATLAS_SRC is not defined at the first ok() here -- aborting the whole route-test suite (CI red since WAVE95 e463f59; the python guard-checker reads the regex statically so it never caught the scope bug)
   ok(/function _trkVehKey\(/.test(_ATLAS_SRC), 'WAVE95: _trkVehKey resolves a device current live-vehicle slot so a re-assign re-keys from the right place (not just dev:<id>)');
   ok(/state:'assigned'/.test(_ATLAS_SRC) && /already on an asset/.test(_ATLAS_SRC), 'WAVE95: the match modal also lists devices already on an asset, so a wrong match is re-assignable');
   ok(/value="__auto">Auto-match/.test(_ATLAS_SRC), 'WAVE95: an Auto-match (VIN/name) option lets the owner revert a forced match');
