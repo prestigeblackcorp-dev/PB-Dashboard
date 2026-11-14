@@ -6840,6 +6840,21 @@ ok(/if \(!\(_role === 'owner' \|\| _role === 'analyst'\) && _g\) \{/.test(_WORKE
   const _ADMIN_SRC = readFileSync(new URL('../../admin.html', import.meta.url), 'utf8');
   ok(/esc\(\(m\.owner_name\|\|''\)\.trim\(\)\|\|m\.name\|\|'\(unnamed\)'\)/.test(_ADMIN_SRC), 'WAVE104: HQ members table leads with the owner name (falls back to the business name for legacy accounts)');
   ok(/\+' '\+\(m\.owner_name\|\|''\)\)\.toLowerCase\(\)/.test(_ADMIN_SRC), 'WAVE104: HQ member search matches the owner name too');
+
+  // WAVE105 CONNECT-STEP ACCURACY + PER-INTEGRATION HELP + BIGGER TIPS (owner asks E/F/C, all onboarding screenshots):
+  // (E) the onboarding Connect step lists every proven processor (not Stripe-only) and advertises GPS tracking as the real
+  // $29/mo add-on (TRACKING_ADDON_CENTS), not "Maps"; (F) every integration links its own Atlas /guides/* help page right
+  // where it is connected; (C) the setup tip/hint text is larger + easier to read.
+  ok(/\['S','Payments','Stripe, Square, PayPal/.test(_ATLAS_SRC), 'WAVE105-E: the Connect step Payments card names Stripe, Square + PayPal (no longer Stripe-only)');
+  ok(/\['G','GPS tracking','Live asset tracking/.test(_ATLAS_SRC), 'WAVE105-E: the Connect step advertises GPS tracking (was the misleading "Maps" card)');
+  ok(/c\[3\]==='tracking'\?/.test(_ATLAS_SRC), 'WAVE105-E: the GPS tracking card shows a paid add-on chip instead of a dead Connect button');
+  ok(/tracking:\['#16A34A'/.test(_ATLAS_SRC), 'WAVE105-E: _connBadge has a GPS tracking badge');
+  ok(/\.field \.hint\{font-size:13\.5px/.test(_ATLAS_SRC), 'WAVE105-C: field hint text enlarged (was 12px)');
+  ok(/\.bk-lenhint\{font-size:14px/.test(_ATLAS_SRC), 'WAVE105-C: the Tip/length-hint text enlarged (was 12.5px)');
+  ok(/var HELP_GUIDES=\{/.test(_ATLAS_SRC), 'WAVE105-F: HELP_GUIDES maps each integration to its Atlas help page');
+  ok(/function _helpGuideUrl\(id\)\{ return 'https:\/\/atlasrental\.io\/guides\/'/.test(_ATLAS_SRC), 'WAVE105-F: _helpGuideUrl builds the /guides/*.html link');
+  ok(/\$\{_helpGuideLink\(id,name\)\}/.test(_ATLAS_SRC), 'WAVE105-F: the generic connect modal shows the Atlas setup guide for every integration');
+  ok(/_helpGuideLink\('paypal','PayPal'\)/.test(_ATLAS_SRC) && /_helpGuideLink\('square','Square'\)/.test(_ATLAS_SRC) && /_helpGuideLink\('coinbase','crypto payments'\)/.test(_ATLAS_SRC) && /_helpGuideLink\('web','booking embed'\)/.test(_ATLAS_SRC), 'WAVE105-F: the PayPal / Square / Coinbase / embed modals each link their Atlas guide too');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
