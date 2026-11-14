@@ -2447,8 +2447,9 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.13iq';
+  var APP_VERSION='2026.11.13ir';
   var APP_CHANGELOG=[
+    'Money-accuracy &amp; scheduling fixes: your Net Profit and P&amp;L now subtract consignment (owner) fees and broker fees, so take-home is no longer overstated when you rent on behalf of owners or split with a broker; a percentage security hold is capped at 100% (a carried-over dollar amount can no longer become a runaway authorization); a booking can only be cancelled or voided through its proper flow, so deposits, refunds and cancellation fees are always handled; and the team Scheduler&rsquo;s shift list now follows the exact week you page to with the week arrows',
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
     'Audit cycle 2 fixes: a cancelled or voided booking no longer gets &ldquo;see you soon&rdquo; / &ldquo;thanks for renting&rdquo; emails or texts; a gift card&rsquo;s balance is correctly restored when a booking that used it is cancelled; a fixed-dollar deposit is now stated correctly in the signed rental agreement; failed-payment retries respect the safety cap; a crypto payment can&rsquo;t mark a booking paid in full unless it actually was; read-only staff can&rsquo;t see platform financials; and account deletion purges every trace of your data',
@@ -4088,8 +4089,8 @@ const Atlas = (function(){
     else if(k==='currency') m.currency=v;
     else if(k==='deposit.mode') m.deposit.mode=v;
     else if(k==='deposit.pct') m.deposit.pct=parseFloat(v)||0;
-    else if(k==='hold.type') m.hold.type=v;
-    else if(k==='hold.value'){ m.hold.value=parseFloat(v)||0; if(m.hold.value>0){ if(!m.hold.type||m.hold.type==='none') m.hold.type='fixed'; } else m.hold.type='none'; }   // audit: the onboarding 'security hold' input set only the value; hold.type stayed 'none' so the hold NEVER activated -- entering an amount now turns it on (fixed), clearing it turns it off
+    else if(k==='hold.type'){ m.hold.type=v; if(v==='percent') m.hold.value=Math.min(100,Math.max(0,Number(m.hold.value)||0)); }   // WAVE96 P1: switching the GLOBAL hold to percent must clamp a carried-over fixed $ (e.g. 5000) to 100% -- mirrors the per-type clamp (setTypeCfg secValue 4045); unclamped it authorized 5000% of the total
+    else if(k==='hold.value'){ var _hv=Math.max(0,parseFloat(v)||0); if(m.hold.type==='percent') _hv=Math.min(100,_hv); m.hold.value=_hv; if(m.hold.value>0){ if(!m.hold.type||m.hold.type==='none') m.hold.type='fixed'; } else m.hold.type='none'; }   // audit: the onboarding 'security hold' input set only the value; hold.type stayed 'none' so the hold NEVER activated -- entering an amount now turns it on (fixed), clearing it turns it off   // WAVE96 P1: clamp a PERCENT hold to 100 like the per-type path (4045)
     else if(k==='deposit.amount') m.deposit.amount=Math.max(0,parseFloat(v)||0);   // #290 fixed-$ reserve down-payment
     else if(k==='hold.collect') m.hold.collect=(v==='charge')?'charge':'hold';      // #290 security: authorize a hold ($0 release) vs charge + refund
     else if(k==='hold.when') m.hold.when=(v==='booking')?'booking':'pickup';        // #290 security: collect at pickup vs at booking
@@ -4949,10 +4950,12 @@ const Atlas = (function(){
   function _totalExpenses(){ return _activeExpenses().reduce(function(s,x){return s+(x.amount||0);},0); }
   function _payoutLabel(){ return (S.money&&S.money.payout&&S.money.payout.label)||'Partner payout'; }
   function _totalPayouts(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){ return s+((b.quote&&b.quote.payoutAmt)||0); },0); }   // commission/split that leaves the owner on each booking -- a real deduction from take-home
+  function _obPayouts(bks){ return _r2((bks||[]).reduce(function(s,b){ var P=_bkPayouts(b); return s+((P&&_r2(P.owner+P.b1+P.b2))||0); },0)); }   // WAVE96 P1: per-ASSET owner (consignment) fees + per-booking broker fees -- a real deduction from take-home, SEPARATE from the global quote.payoutAmt and previously omitted from Net Profit / P&L
+  function _totalObPayouts(){ return _obPayouts((DATA.bookings||[]).filter(_isCommitted)); }
   function _bookingRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkEarnedRev(b);},0); }   // rental + collected add-on charges, NET of any redeemed gift-card value (recognized at gift sale instead)
   function _cancelledFeeIncome(){ return (DATA.bookings||[]).filter(function(b){ return b&&b.status==='Cancelled'; }).reduce(function(s,b){ return s+_collectedCharges(b); },0); }   // kept cancellation fees, recognized when actually COLLECTED (cash basis); committed-basis rollups exclude cancelled bookings, so their paid charges are real income counted only here
   function _taxCollected(){ var s=(DATA.bookings||[]).filter(_isCommitted).reduce(function(a,b){ return a+_bkTax(b); },0); s+=(DATA.bookings||[]).filter(function(b){ return b&&b.status==='Cancelled'; }).reduce(function(a,b){ return a+_collectedChargeTax(b); },0); return _r2(s); }   // Payments G4: sales tax collected = a liability owed to the state, excluded from net profit   // WAVE23 (4b): ALSO remit the tax embedded in collected TAXABLE charges on a CANCELLED booking -- _cancelledFeeIncome counts those collected charges (incl. their tax) as income, so the tax must be on the liability/CSV side too or the owner UNDER-remits (now refund-netted via _collectedChargeTax -> _chargeNetDollars)
-  function _netProfit(){ return _bookingRevenue() + _otherIncome() + _cancelledFeeIncome() - _totalExpenses() - _totalPayouts() - _taxCollected(); }
+  function _netProfit(){ return _bookingRevenue() + _otherIncome() + _cancelledFeeIncome() - _totalExpenses() - _totalPayouts() - _totalObPayouts() - _taxCollected(); }   // WAVE96 P1: also subtract per-asset owner + broker payouts -- they leave the operator on each booking but were never deducted, overstating take-home
   function _bkAddons(b){ var ex=(b&&b.extras)||[]; if(!ex.length)return 0; var per=Math.max(1,Number(b.periods)||1); var rm=(S.money&&S.money.rateModel)||'day'; var _bkMs=per*_periodMsOf(rm);
     return ex.reduce(function(s,x){ var each=(Number(x.price)||0)*(Number(x.qty)||1), amt; if(x.per==='unit') amt=each*per; else if(x.per==='hour'||x.per==='pday'||x.per==='week'||x.per==='pmonth') amt=each*Math.max(1,Math.ceil(_bkMs/_periodMsOf(x.per))); else amt=each; return s+amt; },0); }   // per-booking add-on $ -- mirrors calcQuote exLines
   function _addonRevenue(){ return (DATA.bookings||[]).filter(_isCommitted).reduce(function(s,b){return s+_bkAddons(b);},0); }
@@ -4987,14 +4990,15 @@ const Atlas = (function(){
     else if(which==='avg'){ _drill('Average '+_fterm('book'), 'How it is calculated: total earned revenue &divide; the number of earned '+_fterm('books')+' listed below'+(_ovRange!=='all'?(' &middot; '+_ovRangeBounds(_ovRange).short):'')+(_ovScope.dim!=='all'?(' &middot; '+esc(_ovScopeLabel())):''), _bkList(function(b){return nc(b)&&_inOvRange(b)&&_inOvScope(b);},{earned:true}).sort(function(a,b){return b.amt-a.amt;}), {totalLabel:'Total'}); }   /* re-audit MED: match the avg KPI's range-filtered value (was all-time) */
     else if(which==='repeat'){ var by={}; (DATA.bookings||[]).filter(function(b){return nc(b)&&_inOvRange(b)&&_inOvScope(b);}).forEach(function(b){ var _rk=_custKey(b); if(_rk)(by[_rk]=by[_rk]||[]).push(b); });   // WAVE10 MED: email-else-name key (via _custKey) so the drill list matches the corrected headline count   /* Wave4 MED: range-scope the drill to match the range-filtered headline (was all-time; mirrors count/avg) + per-location/type/asset scope */
       _drill('Repeat customers', 'How it is calculated: customers with 2 or more earned '+_fterm('books')+' (pending + cancelled excluded)'+(_ovRange!=='all'?(' &middot; '+_ovRangeBounds(_ovRange).short):'')+(_ovScope.dim!=='all'?(' &middot; '+esc(_ovScopeLabel())):''), Object.keys(by).filter(function(c){return by[c].length>=2;}).map(function(c){return {n:by[c].length,name:((by[c][0]&&(by[c][0].cust||by[c][0].custEmail))||c)};}).sort(function(a,b){return b.n-a.n;}).map(function(x){return {label:'<b>'+esc(x.name)+'</b>',sub:x.n+' '+(x.n===1?_fterm('book'):_fterm('books')),chip:x.n>=2?'<span class="chip chip--ok" style="font-size:11px">Repeat</span>':''};}), {showTotal:false}); }   // fix: list only repeat customers (n>=2) to match the heading
-    else if(which==='net'){ var _pay=_totalPayouts(), _cf=_cancelledFeeIncome(); var _nrows=[
+    else if(which==='net'){ var _pay=_totalPayouts(), _ob=_totalObPayouts(), _cf=_cancelledFeeIncome(); var _nrows=[
       {label:'<b>Booking revenue</b>',sub:'earned '+_fterm('books'),amt:_bookingRevenue(),onClick:"Atlas.drillKpi('rev')"},
       {label:'<b>Other income</b>',sub:_allIncomes().length+' logged',amt:_otherIncome(),onClick:"Atlas.drillLedger('income')"}];
       if(_cf>0) _nrows.push({label:'<b>Cancellation fees kept</b>',sub:'collected on cancelled '+_fterm('books'),amt:_cf,onClick:"Atlas.drillLedger('income')"});
       _nrows.push({label:'<b>Expenses</b>',sub:_activeExpenses().length+' logged',amt:_totalExpenses(),neg:true,onClick:"Atlas.drillLedger('expense')"});
       if(_pay>0) _nrows.push({label:'<b>'+esc(_payoutLabel())+'</b>',sub:'commission on '+_fterm('books'),amt:_pay,neg:true,onClick:"Atlas.drillKpi('payout')"});
+      if(_ob>0) _nrows.push({label:'<b>Owner &amp; broker payouts</b>',sub:'consignment + broker fees on '+_fterm('books'),amt:_ob,neg:true});   // WAVE96 P1
       var _tx=_taxCollected(); if(_tx>0) _nrows.push({label:'<b>Sales tax collected</b>',sub:'held for the state - a liability, not income',amt:_tx,neg:true});   // Payments G4
-      _drill('Net Profit', 'How it is calculated: Booking revenue, plus other income, minus expenses'+(_pay>0?', payouts':'')+(_tx>0?' and sales tax owed':'')+' &mdash; each row below is tappable to its own ledger', _nrows, {total:_netProfit(), totalLabel:'Net Profit'}); }
+      _drill('Net Profit', 'How it is calculated: Booking revenue, plus other income, minus expenses'+((_pay>0||_ob>0)?', payouts':'')+(_tx>0?' and sales tax owed':'')+' &mdash; each row below is tappable to its own ledger', _nrows, {total:_netProfit(), totalLabel:'Net Profit'}); }
     else if(which==='payout'){ _drill(_payoutLabel(), 'How it is calculated: the commission or split that leaves you on each '+_fterm('book'), (DATA.bookings||[]).filter(function(b){return _isCommitted(b)&&((b.quote&&b.quote.payoutAmt)||0)>0;}).map(function(b){ return {label:'<b>'+esc(b.cust||b.id)+'</b>',sub:esc(b.asset)+' &middot; '+b.id, amt:((b.quote&&b.quote.payoutAmt)||0), neg:true, onClick:"Atlas.closeModal();Atlas.openBooking('"+b.id+"')"}; }), {totalLabel:'Total payout', empty:'No payouts yet -- turn on a payout/commission in Settings > Money rules.'}); } }
   function drillLog(i){ var e=_events()[i]; if(!e)return; var _d=new Date(e.t); var _iso=''; try{_iso=_d.toISOString();}catch(x){}
     var _rw=function(k,v){ return {label:'<span style="color:var(--muted)">'+esc(k)+'</span> &nbsp; <b>'+esc(v)+'</b>'}; };
@@ -5122,19 +5126,20 @@ const Atlas = (function(){
     var cancelFee=(DATA.bookings||[]).filter(function(b){ var t=_bDate(b); return b&&b.status==='Cancelled'&&t>=B.from&&t<=B.to&&(all||_assetKindByName(b.asset)===kind); }).reduce(function(s,b){return s+_collectedCharges(b);},0);
     var exp=_ledger().expenses.filter(function(e){ return _expInRange(e,B)&&(all||(e.assetKind||'')===kind); }).reduce(function(s,e){return s+(e.amount||0);},0);
     var payout=bks.reduce(function(s,b){return s+((b.quote&&b.quote.payoutAmt)||0);},0);
+    var obpay=_obPayouts(bks);   // WAVE96 P1: owner + broker payouts in this scope (same bks basis as payout/tax -> keeps the _pnlSummary(all).net===_netProfit() invariant)
     var tax=bks.reduce(function(s,b){return s+_bkTax(b);},0);   // Payments G4: sales-tax liability, out of net (same basis as _netProfit -> keeps the _pnlSummary(all).net===_netProfit() invariant)
-    var base=rev+income+cancelFee, net=base-exp-payout-tax;
-    return {rev:rev,income:income,cancelFee:cancelFee,exp:exp,payout:payout,tax:tax,net:net,margin:(base>0?Math.round(net/base*1000)/10:0)}; }
+    var base=rev+income+cancelFee, net=base-exp-payout-obpay-tax;
+    return {rev:rev,income:income,cancelFee:cancelFee,exp:exp,payout:payout,obpay:obpay,tax:tax,net:net,margin:(base>0?Math.round(net/base*1000)/10:0)}; }
   function _pnlByKind(B){ var kinds=_pnlKinds(), known={}; kinds.forEach(function(k){known[k]=1;});
     var rows=kinds.map(function(k){ var s=_pnlSummary(B,k); return {kind:k,rev:_r2(s.rev+s.cancelFee),exp:_r2(s.exp),net:_r2(s.net),margin:s.margin}; });
     // General / shared: other income (not tied to any asset) + expenses with no assetKind, PLUS any booking/expense whose
     // asset no longer resolves to a known kind (renamed/deleted asset) -- so this table always foots to the all-kind total.
     var incomeInRange=_allIncomes().reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0);
     var genExp=_ledger().expenses.reduce(function(s,e){ if(!_expInRange(e,B)) return s; var ek=e.assetKind||''; return s+((!ek||!known[ek])?(e.amount||0):0); },0);
-    var strayRev=0, strayPay=0, strayTax=0;
-    (DATA.bookings||[]).forEach(function(b){ if(!_bkInRange(b,B)) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_bkEarnedRev(b); strayPay+=((b.quote&&b.quote.payoutAmt)||0); strayTax+=_bkTax(b); });   // audit c4 [10]: accumulate the stray (renamed/deleted-asset) bookings' sales tax too
+    var strayRev=0, strayPay=0, strayOb=0, strayTax=0;
+    (DATA.bookings||[]).forEach(function(b){ if(!_bkInRange(b,B)) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_bkEarnedRev(b); strayPay+=((b.quote&&b.quote.payoutAmt)||0); strayOb+=_obPayouts([b]); strayTax+=_bkTax(b); });   // audit c4 [10]: accumulate the stray (renamed/deleted-asset) bookings' sales tax too   // WAVE96 P1: + owner/broker payouts so the General/shared row still foots to _pnlSummary(all).net
     (DATA.bookings||[]).forEach(function(b){ var t=_bDate(b); if(!b||b.status!=='Cancelled'||t<B.from||t>B.to) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_collectedCharges(b); });
-    var gRev=_r2(incomeInRange+strayRev), gExp=_r2(genExp), gNet=_r2(gRev-gExp-strayPay-strayTax);   // audit c4 [10]: subtract stray tax so the General/shared row + the by-type table foot to _pnlSummary(all).net (each known-kind row already subtracts its own _bkTax)
+    var gRev=_r2(incomeInRange+strayRev), gExp=_r2(genExp), gNet=_r2(gRev-gExp-strayPay-strayOb-strayTax);   // audit c4 [10]: subtract stray tax so the General/shared row + the by-type table foot to _pnlSummary(all).net (each known-kind row already subtracts its own _bkTax)
     rows.push({kind:'General / shared',rev:gRev,exp:gExp,net:gNet,margin:(gRev>0?Math.round(gNet/gRev*1000)/10:0)});
     return rows; }
   function _pnlMonthLabel(d){ try{ return d.toLocaleDateString('en-US',{month:'short',year:'numeric'}); }catch(e){ return (d.getMonth()+1)+'/'+d.getFullYear(); } }
@@ -5147,9 +5152,10 @@ const Atlas = (function(){
       var income=all?_allIncomes().reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0):0;
       var exp=_ledger().expenses.filter(function(e){ return _expInRange(e,B)&&(all||(e.assetKind||'')===kind); }).reduce(function(s,e){return s+(e.amount||0);},0);
       var payout=bks.reduce(function(s,b){return s+((b.quote&&b.quote.payoutAmt)||0);},0);
+      var obpay=_obPayouts(bks);   // WAVE96 P1: owner + broker payouts out of monthly net too
       var tax=bks.reduce(function(s,b){return s+_bkTax(b);},0);   // Payments G4: sales tax out of monthly net too
       var totalRev=_r2(rev+cancelFee+income);
-      out.push({label:_pnlMonthLabel(d),rev:totalRev,exp:_r2(exp),net:_r2(totalRev-exp-payout-tax)}); }
+      out.push({label:_pnlMonthLabel(d),rev:totalRev,exp:_r2(exp),net:_r2(totalRev-exp-payout-obpay-tax)}); }
     return out; }
   function _pnlCardHtml(){ var B=_pnlBounds(_pnlPeriod), s=_pnlSummary(B,_pnlKind);
     var revTotal=_r2(s.rev+s.cancelFee+s.income), netNeg=(s.net<0), kindLabel=(_pnlKind==='all')?'All types':_pnlKind;
@@ -5197,6 +5203,7 @@ const Atlas = (function(){
     if(s.cancelFee>0) rows.push({label:'<b>Cancellation fees kept</b>',sub:'collected on cancelled '+_fterm('books'),amt:_r2(s.cancelFee)});
     rows.push({label:'<b>Expenses</b>',sub:'costs logged in this period',amt:_r2(s.exp),neg:true,onClick:"Atlas.pnlExpDrill()"});
     if(s.payout>0) rows.push({label:'<b>'+esc(_payoutLabel())+'</b>',sub:'commission on '+_fterm('books'),amt:_r2(s.payout),neg:true});
+    if(s.obpay>0) rows.push({label:'<b>Owner &amp; broker payouts</b>',sub:'consignment + broker fees on '+_fterm('books'),amt:_r2(s.obpay),neg:true});   // WAVE96 P1
     if(s.tax>0) rows.push({label:'<b>Sales tax collected</b>',sub:'held for the state - a liability, not income',amt:_r2(s.tax),neg:true});
     _drill(netNeg?'Net Loss':'Net Profit', _pnlScopeSub(B)+' &mdash; revenue minus all costs', rows, {total:s.net, totalLabel:(netNeg?'Net Loss':'Net Profit')}); }
   function pnlExpDrill(){ var B=_pnlBounds(_pnlPeriod), s=_pnlSummary(B,_pnlKind);
@@ -5272,7 +5279,7 @@ const Atlas = (function(){
     var _setup=(!j.connected||!j.charges_enabled)?'<div style="margin:0 0 12px;padding:11px 13px;border:1px solid var(--brand);border-radius:10px;background:var(--surface2)"><div style="font-weight:600;margin-bottom:3px">Finish your payout setup</div><div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">Connect your bank with Stripe so Atlas can pay you out &mdash; about 2 minutes.</div><button class="btn btn--brand btn--sm" onclick="Atlas.connectAtlas()">'+(j.connected?'Continue payout setup':'Set up payouts')+'</button></div>':'';
     var _passHtml='<label style="display:flex;gap:8px;align-items:center;font-size:12.5px;margin:10px 0;cursor:pointer"><input type="checkbox" '+(j.pass_fee?'checked':'')+' onchange="Atlas.setPassFee(this.checked)"> Add the '+bps.toFixed(2)+'% Atlas fee to the customer\'s total (you keep the full price)</label>';
     return _setup+'<div style="display:flex;gap:10px;flex-wrap:wrap">'+kh+'</div>'+_passHtml+carry+table+'<p style="color:var(--muted);font-size:11px;margin-top:8px">Mode: '+esc(j.mode||'live')+'. Stripe\'s own fee is estimated; your net is settled by Stripe. Times are your local time.</p>'; }
-  function _ledgerCardHtml(){ var inc=_otherIncome(), exp=_totalExpenses(), rev=_bookingRevenue(), pay=_totalPayouts();
+  function _ledgerCardHtml(){ var inc=_otherIncome(), exp=_totalExpenses(), rev=_bookingRevenue(), pay=_totalPayouts(), ob=_totalObPayouts();
     return '<div class="mp" style="margin-bottom:14px">'
       +'<div class="mp-row" style="cursor:pointer" onclick="Atlas.drillKpi(\'rev\')"><span>Booking revenue</span><b class="tnum">'+money(rev)+'</b></div>'
       +'<div class="mp-row mp-ok" style="cursor:pointer" onclick="Atlas.drillLedger(\'income\')"><span>+ Other income</span><b class="tnum">'+money(inc)+'</b></div>'
@@ -6602,7 +6609,7 @@ const Atlas = (function(){
           +'</div></div>'; })()
       +notesField
       +deliveryField
-      +'<div class="field"><label>Status</label><select class="select" id="bkStatusF">'+BK_STATUSES.map(function(s){return '<option'+(s===(b.status||'Confirmed')?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div>'
+      +'<div class="field"><label>Status</label><select class="select" id="bkStatusF">'+BK_STATUSES.filter(function(s){ return (s!=='Cancelled'&&s!=='Voided')||s===b.status; }).map(function(s){return '<option'+(s===(b.status||'Confirmed')?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div>'   // WAVE96 P1: hide Cancelled/Voided from the plain Save-changes dropdown (unless the booking is already there, so it still displays + can be reversed to an active status). Setting those here wrote b.status raw (6673), skipping bkCancelFlow/bkVoidFlow -> no refund, deposit release, cancel fee, or asset-free. Cancel/Void now only via the dedicated buttons that run those flows.
       +'<div class="mp" id="bkPreview" style="margin:2px 0 16px"></div>'
       +((_noAssets&&!existing)
         ? '<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.closeModal();Atlas.go(\'fleet\')">Add your first '+esc(S.fleet.noun)+' first</button></div>'
@@ -9124,17 +9131,17 @@ const Atlas = (function(){
   function _shiftRoster(){ var out=[{id:'owner',name:_ownerName('You')+' (you)'}]; (S.team||[]).forEach(function(m){ if(m.name) out.push({id:m.id,name:m.name}); }); return out; }
   function _shiftHours(sh){ try{ var s=String(sh.start||'').split(':'), e=String(sh.end||'').split(':'); var mins=(parseInt(e[0],10)*60+parseInt(e[1],10))-(parseInt(s[0],10)*60+parseInt(s[1],10)); if(mins<0) mins+=1440; return Math.round(mins/60*10)/10; }catch(err){ return 0; } }
   function _shiftDateLabel(d){ try{ var dt=new Date(d+'T12:00:00'); return dt.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+(d===_todayStr()?' (Today)':''); }catch(e){ return d; } }
-  function _shiftsHtml(){ var today=_todayStr();
-    var up=_shifts().filter(function(x){ return x.date>=today; }).sort(function(a,b){ return (a.date+a.start).localeCompare(b.date+b.start); });
-    var _ws=_schedViewMonday(), wkEnd=_schedDateFor(_ws,'SU');   // summarize the SAME Mon-Sun week the grid shows (audit WAVE94: _schedViewMonday so it tracks the week nav + includes the current week; was _schedWeekStart = upcoming Monday, which hid current-week shifts Tue-Sun)
-    var hrs={}, cost={}, nm={}; up.forEach(function(x){ if(x.date>=_ws && x.date<=wkEnd && x.memberId!=='open'){ var k=x.memberId||x.memberName; hrs[k]=(hrs[k]||0)+_shiftHours(x); cost[k]=(cost[k]||0)+_shiftCost(x); nm[k]=x.memberName; } });   // group by member id so labor cost maps to the right pay rate; round summed hours to 1 decimal (was surfacing binary float garbage like 24.2999...h)
+  function _shiftsHtml(){
+    var _ws=_schedViewMonday(), wkEnd=_schedDateFor(_ws,'SU');   // WAVE96 A7: the viewed Mon-Sun week drives BOTH the summary chips AND the shift list below, so the week arrows move the whole panel together. Was: summary=viewed week but body=all upcoming shifts (date>=today, capped at 10 days) -- they disagreed the moment you paged to another week, and a PAST viewed week rendered no body at all.
+    var wk=_shifts().filter(function(x){ return x.date>=_ws && x.date<=wkEnd; }).sort(function(a,b){ return (a.date+a.start).localeCompare(b.date+b.start); });
+    var hrs={}, cost={}, nm={}; wk.forEach(function(x){ if(x.memberId!=='open'){ var k=x.memberId||x.memberName; hrs[k]=(hrs[k]||0)+_shiftHours(x); cost[k]=(cost[k]||0)+_shiftCost(x); nm[k]=x.memberName; } });   // group by member id so labor cost maps to the right pay rate; round summed hours to 1 decimal (was surfacing binary float garbage like 24.2999...h)
     var _rt=_anyRateSet(), _tH=0, _tC=0;
     var _chips=Object.keys(hrs).sort(function(a,b){ return String(nm[a]||'').localeCompare(String(nm[b]||'')); }).map(function(k){ var h=Math.round(hrs[k]*10)/10, ot=h>40; _tH+=hrs[k]; _tC+=cost[k]||0;
       return '<span class="chip'+(ot?'':' chip--info')+'" style="font-size:11.5px'+(ot?';background:#fef3c7;color:#92400e':'')+'"><span class="dot"></span>'+esc(nm[k])+': '+h+'h'+(_rt&&cost[k]>0?(' &middot; '+money(cost[k])):'')+(ot?' &middot; OT':'')+'</span>'; }).join('');
     var sum=_chips? ('<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:'+(_rt&&_tC>0?'8px':'12px')+'">'+_chips+'</div>'+(_rt&&_tC>0?('<div style="font-size:12px;color:var(--muted);margin-bottom:12px">Week total: <b style="color:var(--ink)">'+(Math.round(_tH*10)/10)+'h</b> &middot; <b style="color:var(--ink)">'+money(_tC)+'</b> labor</div>'):'')) : '';
-    if(!up.length) return sum+'<div class="bk-lenhint" style="margin:0">No shifts scheduled yet. Add one and your team can see who is on.</div>';
-    var byDate={}; up.forEach(function(x){ (byDate[x.date]=byDate[x.date]||[]).push(x); });
-    var body=Object.keys(byDate).sort().slice(0,10).map(function(d){
+    if(!wk.length) return sum+'<div class="bk-lenhint" style="margin:0">No shifts this week. Use the week arrows above to switch weeks, or add a shift below.</div>';
+    var byDate={}; wk.forEach(function(x){ (byDate[x.date]=byDate[x.date]||[]).push(x); });
+    var body=Object.keys(byDate).sort().map(function(d){
       return '<div style="margin-bottom:10px"><div style="font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">'+_shiftDateLabel(d)+'</div>'
         +byDate[d].map(function(x){ return '<div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-top:1px solid var(--line-2)"><span class="avatar" style="width:26px;height:26px;font-size:11px">'+esc((x.memberName||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.memberName)+'</b>'+(x.source==='ai'?' <span class="chip chip--brand" style="font-size:9.5px;padding:1px 6px;vertical-align:1px">Atlas.io</span>':'')+'<div style="font-size:11.5px;color:var(--muted)">'+esc(x.start)+' - '+esc(x.end)+' &middot; '+_shiftHours(x)+'h'+(x.role?(' &middot; '+esc(x.role)):'')+(x.note?(' &middot; '+esc(x.note)):'')+'</div></div><button class="icon-btn" onclick="Atlas.editShift(\''+x.id+'\')" title="Edit"><svg viewBox="0 0 18 18" fill="none"><path d="M12.4 3.1l2.5 2.5L7 13.5l-3.2.7.7-3.2 7.9-7.9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></button><button class="icon-btn" style="color:var(--danger)" onclick="Atlas.rmShift(\''+x.id+'\')" title="Remove">'+_rmSvg()+'</button></div>'; }).join('')+'</div>';
     }).join('');

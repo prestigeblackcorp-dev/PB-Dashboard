@@ -6498,6 +6498,22 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/if\(v===dc\)return;/.test(_ATLAS_SRC), 'WAVE95: an unchanged row is skipped so a VIN/name auto-match is not silently locked to its current asset');
 }
 
+// ==== WAVE96a: pre-launch P1 fixes -- (1) Net Profit / P&L subtract per-asset owner (consignment) + broker payouts; (3) the Save-changes status dropdown can no longer bypass the cancel/void flows; (4) the global security hold percent is clamped to 100; + the team scheduler shift list tracks the viewed week ====
+{
+  const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');   // block-local client source (same pattern as the WAVE79 client-guard block)
+  ok(/function _obPayouts\(bks\)\{/.test(_ATLAS_SRC), 'WAVE96 P1: _obPayouts sums per-asset owner + broker fees (owner+b1+b2) from _bkPayouts');
+  ok(/function _totalObPayouts\(\)\{ return _obPayouts/.test(_ATLAS_SRC), 'WAVE96 P1: _totalObPayouts rolls owner+broker payouts over the committed bookings');
+  ok(/- _totalPayouts\(\) - _totalObPayouts\(\) - _taxCollected\(\)/.test(_ATLAS_SRC), 'WAVE96 P1: _netProfit subtracts owner+broker payouts (take-home no longer overstated)');
+  ok(/net=base-exp-payout-obpay-tax/.test(_ATLAS_SRC), 'WAVE96 P1: _pnlSummary net subtracts obpay so _pnlSummary(all).net===_netProfit()');
+  ok(/net:_r2\(totalRev-exp-payout-obpay-tax\)/.test(_ATLAS_SRC), 'WAVE96 P1: _pnlByMonth monthly net subtracts owner+broker payouts');
+  ok(/gNet=_r2\(gRev-gExp-strayPay-strayOb-strayTax\)/.test(_ATLAS_SRC), 'WAVE96 P1: _pnlByKind General/shared bucket subtracts stray owner+broker payouts so the by-type table foots');
+  ok(/BK_STATUSES\.filter\(function\(s\)\{ return \(s!=='Cancelled'&&s!=='Voided'\)\|\|s===b\.status; \}\)/.test(_ATLAS_SRC), 'WAVE96 P1: the Save-changes status dropdown hides Cancelled/Voided (unless already there) -- those transitions must run bkCancelFlow/bkVoidFlow, not raw b.status');
+  ok(/if\(v==='percent'\) m\.hold\.value=Math\.min\(100,Math\.max\(0,Number\(m\.hold\.value\)\|\|0\)\);/.test(_ATLAS_SRC), 'WAVE96 P1: switching the global hold to percent clamps a carried-over fixed amount to 100% (no runaway hold)');
+  ok(/if\(m\.hold\.type==='percent'\) _hv=Math\.min\(100,_hv\);/.test(_ATLAS_SRC), 'WAVE96 P1: a global percent hold value is clamped to 100, mirroring the per-type setTypeCfg clamp');
+  ok(/var wk=_shifts\(\)\.filter\(function\(x\)\{ return x\.date>=_ws && x\.date<=wkEnd; \}\)/.test(_ATLAS_SRC), 'WAVE96 A7: _shiftsHtml drives summary + body from the SAME viewed Mon-Sun week (week arrows move the whole panel)');
+  ok(/No shifts this week\. Use the week arrows/.test(_ATLAS_SRC), 'WAVE96 A7: the scheduler empty state refers to the viewed week, not all-upcoming');
+}
+
 // ==== WAVE78: mid-period tier TRUE-UP (money) -- an upgrade grants the new tier free credit/email allotment NOW, not at the next period rollover ====
 {
   ok(/async function _tierTrueUp\(env, tid, oldTier, newTier, force\)/.test(_WORKER_SRC), 'WAVE78: the _tierTrueUp helper is present');
