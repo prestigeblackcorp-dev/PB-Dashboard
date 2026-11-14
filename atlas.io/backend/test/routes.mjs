@@ -6733,6 +6733,18 @@ ok(/if \(!\(_role === 'owner' \|\| _role === 'analyst'\) && _g\) \{/.test(_WORKE
   ok(/\.modal-scrim\.checkout-top\{z-index:9600\}/.test(_ATLAS_SRC), 'WAVE97: a billing checkout modal is lifted to z-index 9600 -- ABOVE the full-screen gates (9500) -- so it can never be buried');
   ok(/if\(_sczq\) _sczq\.classList\.add\('checkout-top'\)/.test(_ATLAS_SRC), 'WAVE97: _squarePlanCheckout adds .checkout-top to the scrim when the Square card modal opens');
   ok(/function closeModal\(\)\{ _signupCheckoutActive=false; var _scM=document\.getElementById\('modalScrim'\); if\(_scM\)\{ _scM\.classList\.remove\('on'\); _scM\.classList\.remove\('checkout-top'\); \}/.test(_ATLAS_SRC), 'WAVE97: closeModal releases the suppression flag + drops the z-lift so a bailed checkout reveals the paywall underneath');
+
+  // WAVE98: Square card form wouldn't load + founder price was hidden. Console error proved it: "Failed to load stylesheet at
+  // https://web.squarecdn.com/<ver>/card-wrapper.css" -- the Square Web Payments SDK injects that stylesheet into the PARENT
+  // page, and the CSP style-src ('self' 'unsafe-inline', no https) blocked it, so card.attach() threw "An unexpected error
+  // occurred while using Card." (Config was fine: production appId sq0idp-, production SDK, matching location -- NOT an env
+  // mismatch.) Fix: allow *.squarecdn.com in style-src. Also: the plan dropdown showed list price ("$49.99/mo") with no founder
+  // discount because _fDisp returns HTML that does not render inside <option> -- fixed to plain-text founder pricing.
+  ok(/style-src 'self' 'unsafe-inline' https:\/\/\*\.squarecdn\.com/.test(_ATLAS_SRC), 'WAVE98: CSP style-src allows Square card-wrapper.css from *.squarecdn.com (the exact resource the console showed blocked -> "Could not load the card form")');
+  ok(!/style-src 'self' 'unsafe-inline'; font-src/.test(_ATLAS_SRC), 'WAVE98: the OLD style-src without a stylesheet host (which blocked Square) is gone');
+  ok(/var _fOn=!!\(_founderInfo\.program \|\| \(typeof S!=='undefined'&&S&&S\.founder\)\);   \/\/ WAVE98/.test(_ATLAS_SRC), 'WAVE98: the Square checkout modal computes founder state from the SAME signal as the plan gate (_founderInfo.program || S.founder)');
+  ok(/\$'\+_fNum\(t\.price\)\+'\/mo \(50% off for life, was \$'/.test(_ATLAS_SRC), 'WAVE98: the Square plan dropdown shows the founder 50%-off price as PLAIN TEXT (HTML _fDisp does not render inside <option>, so "$49.99/mo" hid the discount)');
+  ok(/Card form unavailable/.test(_ATLAS_SRC), 'WAVE98: the Square card button no longer stays stuck on "Loading card form..." when the SDK errors -- it shows a clear failed state');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
