@@ -6745,6 +6745,20 @@ ok(/if \(!\(_role === 'owner' \|\| _role === 'analyst'\) && _g\) \{/.test(_WORKE
   ok(/var _fOn=!!\(_founderInfo\.program \|\| \(typeof S!=='undefined'&&S&&S\.founder\)\);   \/\/ WAVE98/.test(_ATLAS_SRC), 'WAVE98: the Square checkout modal computes founder state from the SAME signal as the plan gate (_founderInfo.program || S.founder)');
   ok(/\$'\+_fNum\(t\.price\)\+'\/mo \(50% off for life, was \$'/.test(_ATLAS_SRC), 'WAVE98: the Square plan dropdown shows the founder 50%-off price as PLAIN TEXT (HTML _fDisp does not render inside <option>, so "$49.99/mo" hid the discount)');
   ok(/Card form unavailable/.test(_ATLAS_SRC), 'WAVE98: the Square card button no longer stays stuck on "Loading card form..." when the SDK errors -- it shows a clear failed state');
+
+  // WAVE99: "stuck on the 7-day-trial tiers after the card went through". A FRESH signup has no local tenant blob yet
+  // (store.loadTenant -> load() returns null), and _afterAuthSuccess left S null for a new account (its save was guarded
+  // by `&& S`). The plan gate + _signupPickPlan + the Square card modal all tolerate a null S, but on a successful card
+  // save _squarePayGo's first statement was `S.tier=tier`, which THREW on the null S -> the whole `S.card.onFile=true; save()`
+  // was skipped -> card-on-file never persisted -> the next boot (line ~15660) / next login (_afterAuthSuccess line ~3538)
+  // saw `!(S.card && S.card.onFile)` and re-showed the plan picker. Fix: seed S=fresh() for a fresh signup up front, AND
+  // null-guard every card-on-file persistence point (Square inline + both Stripe-return paths) so the server-confirmed card
+  // is always saved. (Owner-push-on-card: already correct server-side -- recordTxn{kind:'trial'} fires the platform-owner
+  // alert ONLY at the Square subscribe AFTER card_on_file=1, and in the Stripe checkout webhook, never at account creation.)
+  ok(/if\(_authMode==='signup' && !S\)\{ try\{ S=fresh\(\); save\(\); \}catch\(e\)\{\} \}/.test(_ATLAS_SRC), 'WAVE99: _afterAuthSuccess seeds a fresh() S for a brand-new signup when load() is null, so the whole plan-pick -> card-on-file -> onboarding funnel runs on a real, persistable S');
+  ok(/j\.ok\)\{ try\{ if\(!S\)\{ S=load\(\)\|\|fresh\(\); \} S\.tier=tier; S\.plan=\(j\.trial\?'trial':'active'\)/.test(_ATLAS_SRC), 'WAVE99: _squarePayGo seeds a null S BEFORE writing card.onFile, so a fresh-signup card save is actually persisted (was: S.tier=tier threw on null S and card-on-file was lost)');
+  ok((_ATLAS_SRC.match(/if\(!S\)\{ S=load\(\)\|\|fresh\(\); \} if\(!S\.card\)S\.card=\{\}; S\.card\.onFile=true/g) || []).length >= 2, 'WAVE99: both _confirmTrialReturn card-on-file paths (offline + server-confirmed Stripe return) also null-guard S before persisting card.onFile');
+  ok(!/j\.ok\)\{ try\{ S\.tier=tier; S\.plan=\(j\.trial/.test(_ATLAS_SRC), 'WAVE99: the OLD _squarePayGo success (S.tier=tier with no null guard, which threw on a fresh-signup null S) is gone');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
