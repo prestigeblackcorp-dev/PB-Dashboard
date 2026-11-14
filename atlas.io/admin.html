@@ -2360,14 +2360,16 @@ function entToggleGmv(on){ if(on && !confirm('Route NEW bookings through Stripe 
 /* ===== this panel only ever RENDERS for you.role==='owner'; the worker enforces it regardless.               ===== */
 function staffLoad(){ api('/api/admin/staff').then(function(r){ var j=r.json||{}; var el=$('entStaff'); if(!el)return;
   if(r.status===404){ el.innerHTML='<div class="mut" style="font-size:12px">Needs the latest worker. Paste worker.js into Cloudflare, then reload.</div>'; return; }
+  window._CAPS_CAT=j.caps_catalog||[]; window._CAPS_OWNER=j.owner_only_caps||[]; window._CAPS_STAFF=j.staff||[];
   var list=j.staff||[];
   var rows=list.map(function(s){ return '<div style="display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 0;flex-wrap:wrap">'
     +'<span style="width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(s.email)+'">'+esc(s.name||s.email)+'</span>'
     +'<span class="pill '+(s.active?'gray':'past')+'">'+esc(s.role)+(s.active?'':' - revoked')+'</span>'
+    +((s.active&&!s.using_preset)?'<span class="pill" style="background:rgba(239,201,120,.16);color:var(--gold)" title="Custom capability set (not the role preset)">custom</span>':'')
     +'<span class="mut" style="font-size:11px">'+esc(s.token_prefix||'')+'&hellip;</span>'
     +'<span class="mut" style="font-size:11px">'+(s.last_seen_at?ago(s.last_seen_at):'never used')+'</span>'
     +'<span class="sp" style="flex:1"></span>'
-    +(s.active?('<button class="chip" onclick="staffRole(\''+esc(s.id)+'\',\''+esc(s.role)+'\')">Change role</button> <button class="chip" onclick="staffRotate(\''+esc(s.id)+'\')">Rotate</button> <button class="chip" style="color:#e5484d" onclick="staffRevoke(\''+esc(s.id)+'\')">Revoke</button>'):('<button class="chip" onclick="staffRotate(\''+esc(s.id)+'\')">Re-activate (new token)</button>'))
+    +(s.active?('<button class="chip" onclick="staffCaps(\''+esc(s.id)+'\')">Capabilities</button> <button class="chip" onclick="staffRole(\''+esc(s.id)+'\',\''+esc(s.role)+'\')">Change role</button> <button class="chip" onclick="staffRotate(\''+esc(s.id)+'\')">Rotate</button> <button class="chip" style="color:#e5484d" onclick="staffRevoke(\''+esc(s.id)+'\')">Revoke</button>'):('<button class="chip" onclick="staffRotate(\''+esc(s.id)+'\')">Re-activate (new token)</button>'))
     +'</div>'; }).join('')||'<div class="mut" style="font-size:12px">No staff yet.</div>';
   el.innerHTML=rows+'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
     +'<input class="inp" id="stfEmail" placeholder="email" style="width:150px;padding:7px 9px;font-size:12px">'
@@ -2388,6 +2390,55 @@ function staffAdd(){ var email=($('stfEmail').value||'').trim(), name=($('stfNam
 function staffRotate(id){ if(!confirm('Rotate this token? The old one stops working immediately.')) return; api('/api/admin/staff/rotate',{method:'POST',body:{id:id}}).then(function(r){ var j=r.json||{}; if(j.ok&&j.secret){ toast('Token rotated'); staffLoad(); setTimeout(function(){ var sb=$('stfSecret'); if(sb) sb.innerHTML=_stfSecretBox(j.secret); },60); } else toast((j.error)||'Could not rotate'); }); }
 function staffRole(id,cur){ var role=(cur==='support')?'analyst':'support'; if(!confirm('Change this staffer\'s role to '+role+'?')) return; api('/api/admin/staff/role',{method:'POST',body:{id:id,role:role}}).then(function(r){ if(r.json&&r.json.ok){ toast('Role updated'); staffLoad(); } else toast((r.json&&r.json.error)||'Could not update'); }); }
 function staffRevoke(id){ if(!confirm('Revoke this staffer\'s access? Their token stops working immediately.')) return; api('/api/admin/staff/revoke',{method:'POST',body:{id:id}}).then(function(r){ if(r.json&&r.json.ok){ toast('Revoked'); staffLoad(); } else toast('Could not revoke'); }); }
+/* ===== RBAC owner panel (WAVE-RBAC2): pick exactly what each staffer can SEE and DO. Owner-only surfaces are shown  ===== */
+/* ===== greyed so nothing is left out; Preview shows the resulting access; Save/Reset write via /api/admin/staff/caps. ==== */
+var _CAPS_GROUP_ORDER=['Console','Overview','Support','Analytics','Members','System','Security','AI','Revenue','Settings','Staff','Take Control'];
+function _capsSens(sens){ var m={safe:['safe','#3fae7a','rgba(63,174,122,.14)'],pii:['PII','#d8a23a','rgba(216,162,58,.14)'],money:['money','#e2c06a','rgba(239,201,120,.16)'],'money+pii':['money+PII','#e2c06a','rgba(239,201,120,.16)'],'real-money':['real money','#e5676f','rgba(229,103,111,.14)'],destructive:['destructive','#e5484d','rgba(229,72,77,.14)'],config:['config','#7aa2e3','rgba(122,162,227,.14)'],escalation:['escalation','#e5484d','rgba(229,72,77,.14)']}; var x=m[sens]||[(sens||''),'#9aa3b2','rgba(154,163,178,.12)']; return '<span style="font-size:9.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;padding:1px 6px;border-radius:20px;color:'+x[1]+';background:'+x[2]+'">'+esc(x[0])+'</span>'; }
+function _capsStaffById(id){ var a=window._CAPS_STAFF||[]; for(var i=0;i<a.length;i++){ if(a[i].id===id) return a[i]; } return null; }
+function _capsByGroup(){ var cat=window._CAPS_CAT||[], own=window._CAPS_OWNER||[], g={}; function push(c,owner){ var k=c.group||'Other'; (g[k]=g[k]||[]).push({key:c.key,label:c.label,sens:c.sens,owner:owner}); } cat.forEach(function(c){ push(c,false); }); own.forEach(function(c){ push(c,true); }); return g; }
+function staffCaps(id){ var s=_capsStaffById(id), el=$('entStaff'); if(!s||!el){ staffLoad(); return; }
+  var eff={}; (s.effective||[]).forEach(function(k){ eff[k]=1; });
+  var g=_capsByGroup(), order=_CAPS_GROUP_ORDER.slice(); Object.keys(g).forEach(function(k){ if(order.indexOf(k)<0) order.push(k); });
+  var H='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
+    +'<button class="chip" onclick="staffLoad()">&larr; All staff</button>'
+    +'<b style="font-size:13px">'+esc(s.name||s.email)+'</b>'
+    +'<span class="pill gray">'+esc(s.role)+'</span>'
+    +'<span class="mut" style="font-size:11.5px">'+(s.using_preset?('Using the '+esc(s.role)+' preset'):'Custom capability set')+'</span></div>'
+    +'<div class="mut" style="font-size:11.5px;margin-bottom:6px">Tick exactly what this staffer can see and do. Greyed rows are <b>owner-only</b> and can never be granted to staff.</div>';
+  order.forEach(function(grp){ var items=g[grp]; if(!items||!items.length) return;
+    H+='<div style="margin:10px 0 2px;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--gold)">'+esc(grp)+'</div>';
+    items.forEach(function(c){
+      if(c.owner){ H+='<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;opacity:.5;cursor:not-allowed"><input type="checkbox" disabled><span style="flex:1">'+esc(c.label)+'</span>'+_capsSens(c.sens)+'<span style="font-size:9.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;padding:1px 6px;border-radius:20px;color:#9aa3b2;background:rgba(154,163,178,.12)">owner only</span></label>'; }
+      else { H+='<label style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px;cursor:pointer"><input type="checkbox" id="cap_'+esc(c.key)+'"'+(eff[c.key]?' checked':'')+'><span style="flex:1">'+esc(c.label)+'</span>'+_capsSens(c.sens)+'</label>'; }
+    });
+  });
+  H+='<div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap">'
+    +'<button class="btn sm" onclick="staffCapsSave(\''+esc(id)+'\')">Save capabilities</button>'
+    +'<button class="btn ghost sm" onclick="staffCapsPreview(\''+esc(id)+'\')">Preview as this staff</button>'
+    +'<button class="chip" onclick="staffCapsReset(\''+esc(id)+'\')">Reset to '+esc(s.role)+' preset</button></div>'
+    +'<div id="capsPreview"></div>';
+  el.innerHTML=H; }
+function _capsChecked(){ var cat=window._CAPS_CAT||[], out=[]; cat.forEach(function(c){ var b=document.getElementById('cap_'+c.key); if(b&&b.checked) out.push(c.key); }); return out; }
+function staffCapsSave(id){ var caps=_capsChecked(); api('/api/admin/staff/caps',{method:'POST',body:{id:id,caps:caps}}).then(function(r){ var j=r.json||{};
+  if(j.ok){ toast('Capabilities saved'); var s=_capsStaffById(id); if(s){ s.caps=j.caps; s.effective=j.effective||caps; s.using_preset=!!j.using_preset; } staffCaps(id); }
+  else toast((j.error)||'Could not save'); }); }
+function staffCapsReset(id){ if(!confirm('Reset this staffer to their role preset? Any custom tick-boxes are cleared and they return to the default set for their role.')) return;
+  api('/api/admin/staff/caps',{method:'POST',body:{id:id,reset:true}}).then(function(r){ var j=r.json||{};
+    if(j.ok){ toast('Reset to preset'); var s=_capsStaffById(id); if(s){ s.caps=null; s.effective=j.effective||[]; s.using_preset=true; } staffCaps(id); }
+    else toast((j.error)||'Could not reset'); }); }
+function staffCapsPreview(id){ var s=_capsStaffById(id), el=$('capsPreview'); if(!s||!el) return;
+  var cat=window._CAPS_CAT||[], own=window._CAPS_OWNER||[], checked={}; _capsChecked().forEach(function(k){ checked[k]=1; });
+  var granted=[], hidden=[], money=false;
+  cat.forEach(function(c){ if(c.key==='money.view'){ if(checked[c.key]) money=true; return; } (checked[c.key]?granted:hidden).push(c.label); });
+  function li(a){ return a.length?('<ul style="margin:4px 0 8px;padding-left:18px">'+a.map(function(x){ return '<li style="margin:2px 0">'+esc(x)+'</li>'; }).join('')+'</ul>'):'<div class="mut" style="font-size:11.5px;margin:2px 0 8px">(none)</div>'; }
+  var H='<div style="margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.02)">'
+    +'<div style="font-size:12.5px;font-weight:700;margin-bottom:6px">Preview &mdash; what '+esc(s.name||s.email)+' sees &amp; can do in Support-HQ</div>'
+    +'<div style="font-size:11px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:#3fae7a">Granted</div>'+li(granted)
+    +'<div style="font-size:12px;margin:0 0 8px">Revenue / MRR figures: <b style="color:'+(money?'#e2c06a':'#9aa3b2')+'">'+(money?'visible':'hidden')+'</b></div>'
+    +'<div style="font-size:11px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:#9aa3b2">Not granted (hidden from them)</div>'+li(hidden)
+    +'<div style="font-size:11px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;color:#e5676f">Owner only &mdash; never available to any staffer</div>'+li(own.map(function(c){ return c.label; }))
+    +'</div>';
+  el.innerHTML=H; }
 
 /* ================= boot ================= */
 (function(){ try{ var sp=new URLSearchParams(location.search); if(sp.get('social')){ var pl=sp.get('social'); var msg=sp.get('connected')?(pl+' connected'):(sp.get('err')?(pl+' connect failed: '+sp.get('err')):''); if(msg) setTimeout(function(){ toast(msg); },900); history.replaceState({},'',location.pathname); } }catch(e){} })();
