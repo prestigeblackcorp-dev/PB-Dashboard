@@ -6692,14 +6692,12 @@ ok(/trialEligible: _sqTrialOk, trialDays: 7/.test(_WORKER_SRC), 'WAVE96d: /api/b
 
 // ==== WAVE96e SUPPORT-HQ ISOLATION: the admin-plane staff read gate becomes a FAIL-SAFE per-role ALLOW-LIST (an unlisted/
 // new admin GET is owner-only by default, closing the old deny-list's fail-OPEN gap), SUPPORT and ANALYST are split into
-// disjoint read surfaces, and revenue/MRR is STRIPPED from the support role's overview + growth responses (server-authoritative
+// shared read surface, and revenue/MRR is STRIPPED from the support role's overview + growth responses (server-authoritative
 // -- no client/raw-call path can re-expose money to a support token). Fixes "support console leaks revenue/MRR". ====
-ok(/const STAFF_READ = /.test(_WORKER_SRC) && /\(config\|overview\)\$/.test(_WORKER_SRC), 'WAVE96e: STAFF_READ allow-list (config + overview) exists -- the shared bootstrap both staff roles may GET');
-ok(/const SUPPORT_READ = /.test(_WORKER_SRC) && /\(tickets\|inbox\|feedback\)\$/.test(_WORKER_SRC), 'WAVE96e: SUPPORT_READ allow-list (tickets/inbox/feedback) -- customer-triage reads, support only');
-ok(/const ANALYST_READ = /.test(_WORKER_SRC) && /\(visits\|visits-geo\|growth-data\|social\)\$/.test(_WORKER_SRC), 'WAVE96e: ANALYST_READ allow-list (visits/geo/growth/social) -- non-financial business metrics, analyst only');
+ok(/const STAFF_READ = /.test(_WORKER_SRC) && /config\|overview\|visits\|visits-geo\|growth-data\|social\|tickets\|inbox\|feedback/.test(_WORKER_SRC), 'WAVE96e: the fail-safe staff READ allow-list enumerates exactly the non-financial/operational reads both staff roles may GET (a route not listed is owner-only by default)');
 ok(/const _ownerOnly = OWNER_ONLY\.test\(path\) && path !== '\/api\/admin\/config';/.test(_WORKER_SRC), 'WAVE96e: OWNER_ONLY stays a HARD deny layer for known-sensitive routes (GET /config the one exemption) -- belt-and-suspenders over the allow-list');
-ok(/const _canRead = !_ownerOnly && \(STAFF_READ\.test\(path\) \|\| \(_role === 'support' && SUPPORT_READ\.test\(path\)\) \|\| \(_role === 'analyst' && ANALYST_READ\.test\(path\)\)\)/.test(_WORKER_SRC), 'WAVE96e: a non-owner GET is granted ONLY when it clears OWNER_ONLY AND is on the per-role allow-list (fail-safe whitelist)');
-ok(/if \(!_canRead\) \{ await audit\(env, \{ actor: _actor, staff_id: _staffId \}, req, 'admin\.denied'/.test(_WORKER_SRC), 'WAVE96e: a GET not on the role allow-list is denied (403) + audited -- so a new/unlisted admin route is owner-only by default');
+ok(/const _canRead = !_ownerOnly && STAFF_READ\.test\(path\);/.test(_WORKER_SRC), 'WAVE96e: a non-owner GET is granted ONLY when it clears OWNER_ONLY AND is on STAFF_READ (fail-safe whitelist -- an unlisted/new route is owner-only)');
+ok(/if \(!_canRead\) \{ await audit\(env, \{ actor: _actor, staff_id: _staffId \}, req, 'admin\.denied'/.test(_WORKER_SRC), 'WAVE96e: a GET not on STAFF_READ is denied (403) + audited -- so a new/unlisted admin route is owner-only by default');
 ok(!/OWNER_ONLY\.test\(path\) && !\(path === '\/api\/admin\/config' && method === 'GET'\)/.test(_WORKER_SRC), 'WAVE96e: the OLD fail-OPEN read check (deny only OWNER_ONLY, allow every other path to all staff) is REMOVED');
 ok(/const _money = \(_role === 'owner' \|\| _role === 'analyst'\);/.test(_WORKER_SRC), 'WAVE96e: overview computes _money (owner+analyst) so SUPPORT never receives financials');
 ok(/revenue: _money \? \{ total_cents: revTot\.c/.test(_WORKER_SRC) && /\} : \{ hidden: true \},/.test(_WORKER_SRC), 'WAVE96e: overview revenue block is stripped to {hidden:true} for the support role (no total/MRR/by-kind)');

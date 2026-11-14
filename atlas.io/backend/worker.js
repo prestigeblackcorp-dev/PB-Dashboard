@@ -6891,17 +6891,16 @@ function _alert(env, ectx, o) {
 // site-uptime above, never reachable by a support/analyst staff token.
 const OWNER_ONLY = /^\/api\/admin\/(delete|purge|restore|grant|members|transactions|purchases|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/(testcharge|testsub|dedup-subs|selftest|reconcile|recover|square-selftest)|payments-ledger|domains\/(testregister|selftest|dnsraw)|competitors|ai[/-]|counsel|brief|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|founder-costs|push\/|owners?|owner\/)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
-// WAVE96e SUPPORT-HQ ISOLATION: per-role READ ALLOW-LISTS (fail-safe). The admin-plane read gate below grants a non-owner
-// staff GET ONLY when the path matches the allow-list for that staff's role -- so an admin route in NEITHER list (a newly
-// added one included) is OWNER-ONLY by default. This closes the prior deny-list's fail-OPEN gap, where any path simply
-// absent from OWNER_ONLY was silently readable by EVERY staff token. SUPPORT and ANALYST are now DISJOINT specialties over
-// a shared bootstrap: both get config (feature flags; owner financials already stripped in its handler) + overview (the
-// console shell -- but overview/growth are money-STRIPPED for support, see the handlers). SUPPORT = customer triage
-// (tickets/inbox/feedback). ANALYST = business metrics (visits/geo/growth/social). Neither can read the other's surface,
-// and neither can read anything owner-only (members, transactions, pnl, security-log, bans, cohorts, ... all excluded).
-const STAFF_READ = /^\/api\/admin\/(config|overview)$/;                 // both staff roles (overview is money-stripped for support)
-const SUPPORT_READ = /^\/api\/admin\/(tickets|inbox|feedback)$/;        // support only -- customer-triage reads
-const ANALYST_READ = /^\/api\/admin\/(visits|visits-geo|growth-data|social)$/;   // analyst only -- non-financial business metrics (growth revenue is stripped for non-money roles in its handler)
+// WAVE96e SUPPORT-HQ ISOLATION: a FAIL-SAFE staff READ ALLOW-LIST. The admin-plane read gate below grants a non-owner staff
+// GET ONLY when the path is in STAFF_READ -- so an admin route NOT listed here (a newly-added one included) is OWNER-ONLY by
+// default. This closes the prior deny-list's fail-OPEN gap, where any path simply absent from OWNER_ONLY was silently
+// readable by EVERY staff token until someone remembered to deny it. STAFF_READ is the exact set of non-financial /
+// operational reads both staff roles may see: config (feature flags; owner financials already stripped in its handler),
+// the overview shell, visit analytics, growth, social handles, and the customer-triage queues. The SUPPORT vs ANALYST
+// distinction is NOT in what they can READ -- it is that overview/growth are money-STRIPPED for the support role (see the
+// handlers' _money gate) and that only support holds the triage WRITE exception (SUPPORT_WRITE). Anything owner-only
+// (members, transactions, pnl, security-log, bans, cohorts, config writes, ...) is excluded here and stays owner-only.
+const STAFF_READ = /^\/api\/admin\/(config|overview|visits|visits-geo|growth-data|social|tickets|inbox|feedback)$/;
 // #253 B3: allow-list of audit_log actions considered "security" events for the owner-only security-log view.
 // Deliberately narrow -- everyday tenant CRUD (bookings, billing, tenant.profile, etc.) never appears here, only
 // sign-in/access/permission activity. Checked in JS against every fetched row (not baked into the SQL WHERE clause)
@@ -10346,17 +10345,17 @@ function doReset(){
         // present-but-unmatched credential already returned 403 above (never silently == owner).
         // READS: (1) OWNER_ONLY is a hard DENY for the known-sensitive routes (money/PII/config/integrations/destructive),
         //   with the single documented exemption of GET /api/admin/config (feature flags; its handler strips owner
-        //   financials). (2) On TOP of that, a non-owner GET is granted ONLY if the path is in that role's read ALLOW-LIST
-        //   (STAFF_READ for both staff roles, plus SUPPORT_READ or ANALYST_READ) -- so a brand-new/unlisted admin route is
-        //   owner-only by DEFAULT. This replaces the prior deny-list-only read check, under which any path merely absent
-        //   from OWNER_ONLY was silently readable by EVERY staff token. The two layers are belt-and-suspenders: a route must
-        //   clear OWNER_ONLY *and* be explicitly allow-listed; adding a route to EITHER structure can only ever tighten.
-        //   SUPPORT (customer triage) vs ANALYST (business metrics) are disjoint; overview/growth are money-stripped for support.
+        //   financials). (2) On TOP of that, a non-owner GET is granted ONLY if the path is in the STAFF_READ allow-list --
+        //   so a brand-new/unlisted admin route is owner-only by DEFAULT. This replaces the prior deny-list-only read check,
+        //   under which any path merely absent from OWNER_ONLY was silently readable by EVERY staff token. The two layers are
+        //   belt-and-suspenders: a route must clear OWNER_ONLY *and* be on STAFF_READ; adding a route to either structure can
+        //   only ever tighten. SUPPORT and ANALYST read the SAME surface -- the isolation is that overview/growth are
+        //   money-stripped for support (the _money gate in those handlers) and only support holds a write exception.
         // WRITES: still owner-only except support's narrow triage exception (SUPPORT_WRITE). Unchanged.
         if (_role !== 'owner') {
           if (method === 'GET') {
             const _ownerOnly = OWNER_ONLY.test(path) && path !== '/api/admin/config';   // hard deny (config GET is the one exemption)
-            const _canRead = !_ownerOnly && (STAFF_READ.test(path) || (_role === 'support' && SUPPORT_READ.test(path)) || (_role === 'analyst' && ANALYST_READ.test(path)));
+            const _canRead = !_ownerOnly && STAFF_READ.test(path);
             if (!_canRead) { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.denied', { reason: 'role', role: _role, path: path }); return err(403, 'Your admin role does not permit this action.'); }
           } else if (!(_role === 'support' && SUPPORT_WRITE.test(path))) { await audit(env, { actor: _actor, staff_id: _staffId }, req, 'admin.denied', { reason: 'role', role: _role, path: path }); return err(403, 'Your admin role is read-only.'); }
         }
