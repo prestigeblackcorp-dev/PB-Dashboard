@@ -345,9 +345,11 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .modal-close { background: rgba(255,255,255,.06); border: none; border-radius: 10px;
   color: var(--muted); cursor: pointer; font-size: 16px; width: 34px; height: 34px; transition: background .15s, color .15s; }
 .modal-close:hover { background: rgba(255,255,255,.1); color: var(--text); }
-/* Contract/waiver can be many pages -- keep the close (X) pinned to the top of the scroll so there's
-   ALWAYS a way back to the dashboard, no matter how far down you scroll. Scoped to #contractModal. */
-#contractModal .modal-title { position: sticky; top: 0; z-index: 6; background: var(--card2); padding: 4px 0 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+/* Keep the close (X) pinned to the top of EVERY modal's scroll so there's ALWAYS a way back to the
+   dashboard, no matter how far down you scroll (previously scoped to #contractModal only -- owner
+   reported losing the X on tall modals on mobile). */
+.modal-title { position: sticky; top: 0; z-index: 6; background: var(--card2); padding-top: 2px; padding-bottom: 12px; margin-bottom: 8px; box-shadow: 0 1px 0 var(--border); }
+#contractModal .modal-title { padding: 4px 0 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border); box-shadow: none; }
 .fgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
 .ffull { grid-column: 1 / -1; }
 .fgroup { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
@@ -1558,12 +1560,14 @@ try{ if(sessionStorage.getItem('pb_splashSkip')){ sessionStorage.removeItem('pb_
 <div class="modal" id="invoiceModal">
   <div class="modal-bg" onclick="closeInvoiceModal()"></div>
   <div class="modal-card" style="max-width:620px;padding:0;overflow:hidden">
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">
-      <span style="font-weight:700;font-size:15px">&#128196; Invoice</span>
+    <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">
+        <span style="font-weight:700;font-size:15px">&#128196; Invoice</span>
+        <button class="modal-close" onclick="closeInvoiceModal()" style="flex:0 0 auto">&#10005;</button>
+      </div>
       <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn-sm" id="invEmailBtn">&#9993; Email to Customer</button>
-        <button class="btn btn-sm btn-gold" id="invPrintBtn">&#128424; Print</button>
-        <button class="modal-close" onclick="closeInvoiceModal()">&#10005;</button>
+        <button class="btn btn-sm" id="invEmailBtn" style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">&#9993; Email to Customer</button>
+        <button class="btn btn-sm btn-gold" id="invPrintBtn" style="flex:0 0 auto;white-space:nowrap">&#128424; Print</button>
       </div>
     </div>
     <div id="invoicePreview" style="background:#fff;overflow-y:auto;max-height:72vh;padding:24px 28px"></div>
@@ -20447,6 +20451,18 @@ function handleCSVImport(e){
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 //  INVOICE GENERATOR  (feature 1)
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+// Filename base for the saved/printed invoice (iOS share + "Save as PDF" both read document.title):
+// "Invoice - <Client> - <pickup> to <dropoff> - PBR-XXXXXX". Mirrors _contractFileBase().
+function _invoiceFileBase(b){
+  var nm=(((b&&b.name)||'Client')+'').trim().replace(/\s+/g,' ')||'Client';
+  var ref='PBR-'+String((b&&b.id)||'').slice(-6).toUpperCase();
+  var pick=(b&&(b.pickupDate||b.date))||'';
+  var drop=(b&&b.dropoffDate)||'';
+  var span='';
+  if(pick){ span=fmtDate(pick); if(drop && drop!==pick) span+=' to '+fmtDate(drop); }
+  var base='Invoice - '+nm+(span?' - '+span:'')+' - '+ref;
+  return base.replace(/[\/\\:*?"<>|]/g,'-').replace(/\s+/g,' ').trim();
+}
 function generateInvoice(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
   var addons=[];
@@ -20462,7 +20478,7 @@ function generateInvoice(id){
   if(Number(b.bouquet))   addons.push({lbl:'\uD83D\uDC90 Flower Bouquet',val:b.bouquet});
   var baseRev = Math.max(0,(Number(b.revenue)||0)-getAddons(b));
   var invNum  = '#PBR-'+b.id.slice(-6).toUpperCase();
-  $d('invoicePrintArea').innerHTML=
+  var invHtml =
     '<div class="inv-wrap">'+
     '<div class="inv-header">'+
       '<div><div class="inv-logo">Prestige Black Rentals</div><div class="inv-co">Dallas, TX \u00B7 prestigeblackrentals.com</div></div>'+
@@ -20492,18 +20508,27 @@ function generateInvoice(id){
     (b.notes?'<div class="inv-sec">Notes</div><div style="font-size:13px;color:#666;white-space:pre-wrap">'+esc(b.notes)+'</div>':'')+
     '<div class="inv-foot">Thank you for choosing Prestige Black Rentals \u00B7 Dallas, TX</div>'+
     '</div>';
-  var invHtml = $d('invoicePrintArea').innerHTML;
-
-  // Show in modal
+  // Pop the modal shell open IMMEDIATELY so it feels instant, then paint the heavier invoice body on
+  // the next frame instead of blocking the open on a full synchronous render (owner reported the
+  // invoice "doesn't pop up instantly"). invHtml was built as a string above; the hidden print area
+  // is filled lazily in the Print handler.
   var preview = $d('invoicePreview');
-  preview.innerHTML = invHtml;
+  preview.innerHTML = '<div style="padding:48px 0;text-align:center;color:#9a9a9a;font-size:13px">Loading invoice...</div>';
+  $d('invoiceModal').classList.add('open');
+  requestAnimationFrame(function(){ preview.innerHTML = invHtml; });
 
-  // Print button
+  // Print button -- fill the hidden print area now, and name the saved PDF / iOS share
+  // "Invoice - <client> - <dates>" via document.title (mirrors the contract print; without this the
+  // saved file was just "Invoice").
   $d('invPrintBtn').onclick = function(){
     var ip = $d('invoicePrintArea');
+    ip.innerHTML = invHtml;
     ip.classList.add('pb-printable');
+    var _oldTitle = document.title; document.title = _invoiceFileBase(b);
+    var _restore = function(){ try{ document.title = _oldTitle; }catch(e){} };
+    window.onafterprint = function(){ _restore(); window.onafterprint = null; };
     window.print();
-    setTimeout(function(){ ip.classList.remove('pb-printable'); }, 1000);
+    setTimeout(function(){ ip.classList.remove('pb-printable'); _restore(); }, 1000);
   };
 
   // Email button \u2014 same pattern as contract email
@@ -20528,8 +20553,6 @@ function generateInvoice(id){
       alert('No email address on file for this booking. Add one in the booking details first.');
     }
   };
-
-  $d('invoiceModal').classList.add('open');
 }
 
 function closeInvoiceModal(){
