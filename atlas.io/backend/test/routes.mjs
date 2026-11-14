@@ -6620,5 +6620,22 @@ ok((_WORKER_SRC.match(/_meterReconcileFree\(/g) || []).length >= 5, 'WAVE86 wire
 ok(/ADD COLUMN credits_tier TEXT/.test(_WORKER_SRC) && /ADD COLUMN email_tier TEXT/.test(_WORKER_SRC), 'WAVE86 schema: the credits_tier + email_tier basis columns are added (idempotent ALTER)');
 ok(/_heal_meterbasis_v1/.test(_WORKER_SRC) && /tier IN \('unlimited','diamond','gold','freecomp'\)/.test(_WORKER_SRC), 'WAVE86 heal: the one-time backfill + comp/unlimited marker reset heals already-drifted accounts (e.g. Azure) exactly once');
 
+// ==== WAVE96b: worker batch -- P1#2 portal customizations served + honored, P1#4 securityFor percent clamp, A4#2 review-stats cache bust, A10#2 billing-confirm RBAC ====
+// P1#2 -- the owner's saved portal customizations reach the customer: /data surfaces portalCfg, the served portal page honors the section toggles + welcome/perks/support
+ok(/var pc=\(pr\.settings&&pr\.settings\.portalCfg\)/.test(_WORKER_SRC), 'WAVE96b P1#2: /data reads the owner-saved portalCfg from the profile settings');
+ok(/var welcomeCard=\(PC\.welcome\)/.test(_WORKER_SRC), 'WAVE96b P1#2: the served portal renders the owner welcome message when one is set');
+ok(/var perksCard=\(PCS\.perks!==false&&\(PC\.perks\|\|\[\]\)\.length\)/.test(_WORKER_SRC), 'WAVE96b P1#2: the served portal shows the perks card only when the perks section is on and non-empty');
+ok(/var uploadCard=\(j\.storage&&PCS\.upload!==false\)/.test(_WORKER_SRC), 'WAVE96b P1#2: the served portal upload card honors the upload-section toggle');
+ok(/var docsCard=\(PCS\.documents!==false\)/.test(_WORKER_SRC), 'WAVE96b P1#2: the served portal documents card honors the documents-section toggle');
+// P1#4 -- a percent security hold is clamped to 0..100 server-side so a mis-entered value can never exceed the rental total (mirrors the client clamp)
+ok(/total \* Math\.min\(100, Number\(h\.value\) \|\| 0\) \/ 100/.test(_WORKER_SRC), 'WAVE96b P1#4: securityFor clamps a percent hold to <=100% of the total');
+// A4#2 -- the 10-min cached public review summary is invalidated whenever a review is written or changed, so the public page never serves a stale rating
+ok(/async function _revStatsBust\(env, tenantId\)/.test(_WORKER_SRC), 'WAVE96b A4#2: the _revStatsBust review-cache invalidation helper exists');
+ok(/JSON\.stringify\(\(clientData && clientData\.review\) \|\| null\)/.test(_WORKER_SRC), 'WAVE96b A4#2: the booking mirror-write busts the review cache only when the review blob actually changed');
+ok(/await _revStatsBust\(env, brow\.tenant_id\);/.test(_WORKER_SRC), 'WAVE96b A4#2: the /review portal submit busts the review cache');
+// A10#2 -- the two billing-confirm routes now require the billing permission, matching all 18 sibling billing routes (closes a privilege gap)
+ok(/'\/api\/billing\/crypto-confirm' && method === 'POST'\) \{[\s\S]{0,120}?if \(!_can\(ctx, 'billing'\)\) return err\(403, 'Billing permission required\.'\);/.test(_WORKER_SRC), 'WAVE96b A10#2: crypto-confirm requires the billing permission after the CSRF check');
+ok(/'\/api\/billing\/confirm-session' && method === 'POST'\) \{[\s\S]{0,120}?if \(!_can\(ctx, 'billing'\)\) return err\(403, 'Billing permission required\.'\);/.test(_WORKER_SRC), 'WAVE96b A10#2: confirm-session requires the billing permission after the CSRF check');
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
