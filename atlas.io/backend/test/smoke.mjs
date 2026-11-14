@@ -9,7 +9,7 @@
 //
 // Run locally (needs Node 20+):  node test/smoke.mjs
 
-import worker from '../worker.js';
+import worker, { priceQuote } from '../worker.js';
 import { readFileSync } from 'node:fs';
 
 // --- stub the network so no route makes a real request (competitor add snapshots a URL, etc.) ---
@@ -47,7 +47,7 @@ function mockDB() {
 
 const env = { DB: mockDB(), ADMIN_TOKEN: 'test-token', SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com' };
 const ctx = { waitUntil() {}, passThroughOnException() {} };
-const EXPECT_BUILD = '2026.11.13iw';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
+const EXPECT_BUILD = '2026.11.14ix';   // keep in lockstep with ATLAS_BUILD in worker.js + ATLAS_EXPECT_BUILD in admin.html
 
 function mkReq(method, path, opts = {}) {
   return new Request('https://atlasrental.io' + path, {
@@ -232,6 +232,23 @@ ok(r.status === 200 && j.ok === true && typeof j.count_24h === 'number', 'GET /a
   const cgEnvLive = { DB: cgDB(false), SESSION_KEY: 's', ENC_KEY: 'e', OWNER_EMAIL: 'o@x.com', PLATFORM_STRIPE_KEY: 'sk_live_x' };   // live mode = not test + a real platform key configured
   const crLive = await worker.fetch(new Request('https://atlasrental.io/api/data/bookings', { method: 'GET', headers: { 'Content-Type': 'application/json', 'Cookie': 'atlas_sid=' + SID, 'X-CSRF-Token': CSRF, 'Origin': 'https://atlasrental.io' } }), cgEnvLive, ctx);
   ok(crLive.status === 402, '#280/Part E (LIVE mode): cardless tenant is card-gated before any trial -> 402 (got ' + crLive.status + ')');
+}
+
+// 10) WAVE106 multi-rate (money): priceQuote is the charge authority. A chosen duration the asset's card offers is
+// priced at that card rate with NO auto weekly-split / long-rental discount (the explicit rate IS the deal); a
+// cardless/legacy booking (no chosen model, or one the card does not offer) stays byte-identical -- weekly-split
+// still fires. If quote==charge ever drifts here, a real customer is shown one price and charged another.
+{
+  const M = { rateModel: 'day', tax: 0, baseRate: 150, deposit: { mode: 'none' }, hold: { type: 'none' }, rules: [], payout: {} };
+  const A = [{ name: 'Van', rate: 100, card: { day: 100, week: 600 }, baseModel: 'day', weeklyRate: 600, wkDisc: 10 }];
+  const qDay = priceQuote(M, A, 'Van', 10, [], 0, 'day');
+  ok(qDay.totalCents === 100000 && qDay.rateModel === 'day' && qDay.discountCents === 0, 'WAVE106: card DAY x10 charges 100*10=$1000, no auto-discount (got ' + qDay.totalCents + '/' + qDay.rateModel + '/disc' + qDay.discountCents + ')');
+  const qWk = priceQuote(M, A, 'Van', 2, [], 0, 'week');
+  ok(qWk.totalCents === 120000 && qWk.rateModel === 'week', 'WAVE106: card WEEK x2 charges 600*2=$1200 (got ' + qWk.totalCents + '/' + qWk.rateModel + ')');
+  const qLeg = priceQuote(M, A, 'Van', 10, [], 0, null);
+  ok(qLeg.totalCents === 90000 && qLeg.usedWeekly === true, 'WAVE106: legacy (no chosen model) still weekly-splits to $900 -- byte-identical (got ' + qLeg.totalCents + '/usedWeekly' + qLeg.usedWeekly + ')');
+  const qBad = priceQuote(M, [{ name: 'Scooter', rate: 25, card: { hour: 5, day: 25 }, baseModel: 'day' }], 'Scooter', 3, [], 0, 'week');
+  ok(qBad.totalCents === 7500 && qBad.rateModel === 'day', 'WAVE106: an UNOFFERED chosen model safely falls back to legacy, never mis-charges (got ' + qBad.totalCents + '/' + qBad.rateModel + ')');
 }
 
 if (fails) { console.error('\nSMOKE FAILED (' + fails + ' assertion' + (fails > 1 ? 's' : '') + ') -- deploy blocked.'); process.exit(1); }

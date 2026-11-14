@@ -2474,8 +2474,9 @@ const Atlas = (function(){
   function _fbSel(key){ _fbPending=key||''; try{ Array.prototype.forEach.call(document.querySelectorAll('.fbpick'),function(el){ var on=el.getAttribute('data-fbkey')===key; el.style.borderColor=on?'rgba(201,169,98,.9)':'rgba(201,169,98,.25)'; el.style.boxShadow=on?'0 0 0 1px rgba(201,169,98,.6)':'none'; }); }catch(e){} var c=document.getElementById('fbpickConfirm'); if(!c) return; if(!key||!_FB_META[key]){ c.innerHTML=''; return; } c.innerHTML='<button class="btn btn--primary" style="width:100%" onclick="Atlas._fbCommit()">Make '+esc(_FB_META[key].name)+' my mark &mdash; permanently</button>'; }
   function _fbCommit(){ var key=_fbPending; if(!key||!_FB_META[key]) return; var cb=document.querySelector('#fbpickConfirm .btn'); if(cb){ cb.disabled=true; cb.textContent='Saving...'; } _api('/api/founder/badge',{method:'POST',body:{badge:key}}).then(function(res){ var j=res&&res.json; if(res.status>=200&&res.status<300&&j&&j.ok){ _founderInfo.badge=j.badge||key; try{ if(typeof S!=='undefined'&&S){ S.founderBadge=j.badge||key; save(); } }catch(e){} try{ closeModal(); }catch(e){} try{ toast('Your founder badge is set: '+((_FB_META[j.badge||key]||{}).name||'')); }catch(e){} try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } else { if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast((j&&j.error)||'Could not save your badge.'); }catch(e){} } }).catch(function(){ if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast('Network error -- try again.'); }catch(e){} }); }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.13jc';
+  var APP_VERSION='2026.11.14jd';
   var APP_CHANGELOG=[
+    'Rent by the hour, day, week AND month on the same item: set a price for each duration you offer (Settings &rarr; Money), and your booking site shows a clean Hourly / Daily / Weekly / Monthly toggle so each customer picks how long they want and watches the exact price update live. The duration they pick is the price they pay &mdash; your weekly rate is your weekly deal, with nothing re-added at checkout.',
     'Clearer setup &amp; help: the Connect step now shows every way to get paid (Stripe, Square, PayPal &mdash; or let Atlas process &amp; pay you out) and lists Live GPS tracking as a $29/mo add-on; every integration now links its own step-by-step Atlas guide right where you connect it; and the setup tips are bigger and easier to read.',
     'Your name on your account: sign-up now asks for your first and last name, and HQ shows that real name next to your business name &mdash; so your team and your records read &ldquo;Jane Smith &middot; JewelTime&rdquo; instead of just an email address.',
     'Simpler setup: when you rent something custom, you now name it in ONE box (just the singular) &mdash; Atlas fills in the plural automatically everywhere (e.g. &ldquo;drone&rdquo; &rarr; &ldquo;drones&rdquo;), with no separate singular/plural fields.',
@@ -4094,6 +4095,50 @@ const Atlas = (function(){
     if(dep!=null) mm.hold={type:'fixed', value:dep, collect:(m.hold&&m.hold.collect)||'hold', when:(m.hold&&m.hold.when)||'pickup'};   // a per-ASSET deposit still overrides the per-type/global refundable hold for this one asset
     if(wk!=null) mm.assetWeekly=wk;   // per-asset flat weekly price -> calcQuote's weekly branch
     return mm; }   // shallow copy with the asset's rate + its type's money rules + any per-asset deposit/weekly folded in (calcQuote reads the rest of S.money as-is)
+  // WAVE106 rate card (multi-duration pricing): a type -- or a single asset -- can offer several rate models at once.
+  // A card is {hour?,day?,week?,month?} = the per-period price for each duration offered (any subset). Stored per-type at
+  // S.money.byTypeCard[typeId] and per-asset at a.rateCard. A missing/empty card = single-rate legacy (rateModel+rate).
+  // 106a adds the STORE + EDITOR only; the booking duration picker + the quote switch land in 106b, so these resolvers
+  // are INERT for now (nothing quotes off them yet) and every existing single-rate tenant stays byte-identical.
+  var _RATE_MODELS=['hour','day','week','month'];   // canonical order, short -> long
+  function _rateModelLabel(rm){ return ({hour:'Hourly',day:'Daily',week:'Weekly',month:'Monthly'})[rm]||'Daily'; }
+  function _cardClean(c){ var o={}; if(c&&typeof c==='object') _RATE_MODELS.forEach(function(rm){ var v=Number(c[rm]); if(c[rm]!=null&&c[rm]!==''&&v>=0) o[rm]=v; }); return o; }   // keep only real (>=0) numeric entries, canonical order
+  function _cardHas(c){ return !!(c&&_RATE_MODELS.some(function(rm){return c[rm]!=null;})); }
+  function _cardModels(c){ return _RATE_MODELS.filter(function(rm){return c&&c[rm]!=null;}); }   // offered durations, short -> long
+  function _typeCard(id){ return _cardClean((S.money&&S.money.byTypeCard&&S.money.byTypeCard[id])||null); }
+  // The effective rate card for one asset: its OWN card, else its type's card, else a single-entry card derived from the
+  // legacy single rate -- so every asset always resolves to >=1 offered duration with no stored migration needed.
+  function _rateCardFor(name){ var a=(DATA.assets||[]).filter(function(x){return x.name===name;})[0]||null;
+    var rm=(S.money&&S.money.rateModel)||'day', out={}; out[rm]=_assetRate(name);   // the base model is ALWAYS offered, at the asset's effective rate
+    var ex=_cardClean(a&&a.rateCard); if(!_cardHas(ex)) ex=_typeCard(a&&a.type); if(!_cardHas(ex)) ex=_cardClean(S.money&&S.money.card);   // most-specific explicit card: per-asset -> per-type -> global
+    if(_cardHas(ex)) _RATE_MODELS.forEach(function(k){ if(ex[k]!=null) out[k]=ex[k]; });   // overlay the extra / overriding durations onto the base
+    return out; }
+  // WAVE106 global rate card (primary / single-type scope): stores the EXTRA durations beyond the base model in S.money.card.
+  // Pricing-capped like setTypeRate. 106a stores only -- the booking picker + quote switch that READ this land in 106b.
+  function setCard(rm,val){ if(!_guard('pricing','Changing pricing'))return; if(_RATE_MODELS.indexOf(rm)<0)return;
+    S.money.card=S.money.card||{}; var v=String(val==null?'':val).replace(/[^0-9.]/g,'');
+    if(v==='') delete S.money.card[rm]; else S.money.card[rm]=Math.max(0,Number(v)||0);
+    if(!_cardHas(_cardClean(S.money.card))){ S.money.card={}; }
+    try{ var el=document.getElementById('_dmMath_'+rm); if(el) el.innerHTML=_durationCompare(rm,S.money.card[rm],(S.money.rateModel||'day'),Number(S.money.baseRate)||0); }catch(e){}   // live before/after update WITHOUT re-rendering (oninput would otherwise steal focus mid-keystroke)
+    save(); try{ _autoSyncPublishedAssetsSoon(); }catch(e){} }
+  // "N days at your daily rate = $X -- your weekly price $Y saves Z%": the live before/after line that shows what a duration does.
+  function _nUnits(r,rm){ var n=(Math.abs(r-Math.round(r))<0.05)?String(Math.round(r)):r.toFixed(1); return n+' '+rm+(((Math.round(r*10)/10)===1)?'':'s'); }
+  function _durationCompare(dm,dmRate,rm,baseRate){ if(!(+dmRate>0)||!(+baseRate>0)||dm===rm) return '';
+    var r=_periodMsOf(dm)/_periodMsOf(rm), equiv=baseRate*r;
+    if(r>1){ var save=Math.round((1-dmRate/equiv)*100); return _nUnits(r,rm)+' at your '+_rateModelLabel(rm).toLowerCase()+' rate = '+money(equiv)+' &bull; your '+_rateModelLabel(dm).toLowerCase()+' price '+money(dmRate)+(save>0?(' <b style="color:var(--brand-700)">saves '+save+'%</b>'):(save<0?(' is '+(-save)+'% more'):' is the same')); }
+    if(r>0&&r<1){ return 'A full '+rm+' at this rate = '+money(dmRate/r)+' (your '+_rateModelLabel(rm).toLowerCase()+' rate is '+money(baseRate)+')'; }
+    return ''; }
+  // Settings > Money "Rental durations" editor (global/primary scope). The base-model row mirrors the Base rate above (read-only
+  // here); the other three durations are optional $ inputs with live before/after math. Per-type + per-asset cards reuse this later.
+  function _durationCardHtml(){ var m=S.money||{}, rm=m.rateModel||'day', card=_cardClean(m.card), sym=_baseSym(), base=Number(m.baseRate)||0;
+    var rows=_RATE_MODELS.map(function(dm){ var isBase=(dm===rm), label=_rateModelLabel(dm);
+      var cell = isBase
+        ? '<div class="rule-input" style="padding:0 10px;opacity:.7"><span>'+sym+'</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+base+'" disabled><span>/ '+dm+'</span></div><div class="hint" style="margin:3px 0 0">Your base rate (set above).</div>'
+        : '<div class="rule-input" style="padding:0 10px"><span>'+sym+'</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+(card[dm]!=null?card[dm]:'')+'" placeholder="not offered" inputmode="decimal" oninput="Atlas.setCard(\''+dm+'\',this.value)"><span>/ '+dm+'</span></div><div class="hint" id="_dmMath_'+dm+'" style="margin:3px 0 0">'+((card[dm]!=null)?_durationCompare(dm,card[dm],rm,base):'')+'</div>';
+      return '<div style="flex:1;min-width:150px"><label style="font-size:12px;font-weight:650;color:var(--ink);display:block;margin-bottom:4px">'+label+(isBase?' <span style="color:var(--muted);font-weight:400">&middot; base</span>':'')+'</label>'+cell+'</div>'; }).join('');
+    return '<div class="field" style="margin-top:2px"><label>Rental durations &amp; rates <span style="color:var(--muted);font-weight:400;font-size:12px">(optional &mdash; offer more than one length)</span></label>'
+      +'<div class="desc" style="margin:2px 0 9px">Let customers rent by the hour, day, week or month &mdash; set a price for each length you offer and they pick what fits. Leave a length blank to not offer it. When a customer books a length you price here, that exact price is charged; your automatic long-rental % discount below still applies to plain '+esc(rm)+' bookings. For length-specific deals, use <b>Promos</b>.</div>'
+      +'<div style="display:flex;gap:10px;flex-wrap:wrap">'+rows+'</div></div>'; }
   function _setTypeRate(id,rate){ S.money.byType=S.money.byType||{}; S.money.byType[id]=Math.max(0,Number(rate)||0); }
   function setTypeRate(id,val){ if(!_guard('pricing','Changing pricing'))return; S.money.byType=S.money.byType||{};   /* c13[2]: gate on the PRICING cap (like setMoney at 3823), not _canMod('settings') -- the server persists money only with 'pricing', so a pricing-capped delegate's rate change silently no-op'd while the AI reported a false "Done"; a settings-only actor is now correctly blocked (client matches server) */ var v=String(val==null?'':val).replace(/[^0-9.]/g,''); if(v==='') delete S.money.byType[id]; else S.money.byType[id]=Math.max(0,Number(v)||0); save(); try{ _autoSyncPublishedAssetsSoon(); }catch(e){} }   // per-type base rate (blank = fall back to global base). Auto-push to the live site (debounced): a per-type price change re-stamps the published snapshot so customers see it, same as a per-asset edit -- was NOT propagating (only _saveAssets triggered the sync).
   // Per-type MONEY RULES (period / deposit / security / long-rental discounts) -- run each asset type how that business is actually run
@@ -9801,6 +9846,7 @@ const Atlas = (function(){
             <option value="day" ${m.rateModel==='day'?'selected':''}>Per day</option><option value="hour" ${m.rateModel==='hour'?'selected':''}>Per hour</option><option value="week" ${m.rateModel==='week'?'selected':''}>Per week</option><option value="month" ${m.rateModel==='month'?'selected':''}>Per month</option></select></div>
           <div class="field"><label>Base rate</label><div class="rule-input" style="padding:0 12px"><span>${_baseSym()}</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="${m.baseRate}" oninput="Atlas.setMoney('baseRate',this.value)"><span>/ ${m.rateModel}</span></div></div>
         </div>
+        ${_durationCardHtml()}
         ${_fleetSel().length>1?('<div class="field" style="margin-top:2px"><label>Money rules per type</label><div class="desc" style="margin:2px 0 8px">You rent '+_fleetSel().length+' types &mdash; set each type its own rate, reserve-upfront, security deposit and long-rental discounts (e.g. a big security deposit on a jet and none on a chair, a steeper monthly discount on a property). Every field is optional; blank uses your defaults above, and any single '+esc(S.fleet.noun)+' can still override its rate.</div>'+_fleetSel().map(_typeMoneyCard).join('')+'</div>'):''}
         <div class="row2">
           <div class="field"><label>Currency <span style="color:var(--muted);font-weight:400;font-size:12px">(display)</span></label><select class="select" onchange="Atlas.setDisplayCurrency(this.value)">${CURRENCIES.map(function(c){ return '<option value="'+c+'"'+(((m.currency||'USD')===c)?' selected':'')+'>'+c+' '+_curSym(c)+'</option>'; }).join('')}</select></div>
@@ -12895,6 +12941,9 @@ const Atlas = (function(){
       if(m.deposit && m.deposit!==_g.deposit && m.deposit.mode){ o.depMode=String(m.deposit.mode); if(m.deposit.pct!=null) o.depPct=Number(m.deposit.pct)||0; }   // reserve-upfront: full|percent|none
       if(m.hold && m.hold!==_g.hold && m.hold.type){ o.secType=String(m.hold.type); o.secValue=Number(m.hold.value)||0; }   // security: fixed|percent|none -- supersedes the legacy `deposit` field in the new worker (incl. an explicit 'none' that WAIVES a global hold)
     }
+    try{ var _bm=(S.money&&S.money.rateModel)||'day', _fc=(typeof _rateCardFor==='function')?_rateCardFor(a.name):null;   // WAVE106 multi-rate: publish the OFFERED duration rate card (per-asset -> per-type -> global via _rateCardFor) so the booking site shows a duration toggle and the worker validates + charges the chosen duration. Emitted ONLY when >1 duration is offered; a single-rate asset stays byte-identical (no card field).
+      if(_fc){ var _cc={}, _extra=false; ['hour','day','week','month'].forEach(function(k){ if(_fc[k]!=null&&_fc[k]!==''&&Number(_fc[k])>=0){ _cc[k]=Number(_fc[k])||0; if(k!==_bm)_extra=true; } });
+        if(_extra){ _cc[_bm]=Number(o.rate)||0; o.card=_cc; o.baseModel=_bm; } } }catch(e){}
     return o; }); }   // turnaround: per-asset buffer minutes -> worker availability gates read _pa.turnaround (falls back to tenant default when absent)   // loc: per-asset location/branch -> lets the public booking site filter inventory by the customer's chosen location (served at worker public config; form filters additively)   // #361: carry the STABLE asset id into the published snapshot so the worker's double-book guard keys on it (survives a rename) with the name as fallback   // X3 FIX: carry qty into the published snapshot -- the worker availability guards read qty from pubSite.assets, so without this every asset stayed capped at 1 unit no matter what the owner set. extraIds too, so per-asset extras filtering is faithful on the live site.
   function _publicSiteConfig(){ var wk=_webKeys(), w=_web(); return { unit:S.money.rateModel||'day', noun:_adNoun(), nouns:_adNouns(), tax:Number(S.money.tax)||0, currency:(S.money.currency||'usd'),
     collectPhone:true, depositHold:!!(S.money.depositHold), terms:((S.legal&&S.legal.cancelPolicy)|| ''),
@@ -15756,7 +15805,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,_demoSeePricing,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,saveMoneyRules,setDisplayCurrency,setNotify,togglePush,setTypeRate,setTypeCfg,setCancelPolicy,setSenderAddress,connect,doConnect,disconnectIntegration,connectQuickbooks,connectXero,connectPaypal,connectSquare,connectCoinbase,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,setTaxTripCharges,syncTax,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,_demoSeePricing,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,saveMoneyRules,setDisplayCurrency,setNotify,togglePush,setTypeRate,setTypeCfg,setCard,setCancelPolicy,setSenderAddress,connect,doConnect,disconnectIntegration,connectQuickbooks,connectXero,connectPaypal,connectSquare,connectCoinbase,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,setTaxTripCharges,syncTax,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
