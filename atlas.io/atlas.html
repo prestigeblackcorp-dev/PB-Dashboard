@@ -2447,7 +2447,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.13io';
+  var APP_VERSION='2026.11.13ip';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -9119,7 +9119,7 @@ const Atlas = (function(){
   function _shiftDateLabel(d){ try{ var dt=new Date(d+'T12:00:00'); return dt.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+(d===_todayStr()?' (Today)':''); }catch(e){ return d; } }
   function _shiftsHtml(){ var today=_todayStr();
     var up=_shifts().filter(function(x){ return x.date>=today; }).sort(function(a,b){ return (a.date+a.start).localeCompare(b.date+b.start); });
-    var _ws=_schedWeekStart(), wkEnd=_schedDateFor(_ws,'SU');   // summarize the SAME upcoming Mon-Sun week the grid shows, so the two views' totals always agree (was a rolling today+7 window -> mismatched the grid once labor cost was shown in both)
+    var _ws=_schedViewMonday(), wkEnd=_schedDateFor(_ws,'SU');   // summarize the SAME Mon-Sun week the grid shows (audit WAVE94: _schedViewMonday so it tracks the week nav + includes the current week; was _schedWeekStart = upcoming Monday, which hid current-week shifts Tue-Sun)
     var hrs={}, cost={}, nm={}; up.forEach(function(x){ if(x.date>=_ws && x.date<=wkEnd && x.memberId!=='open'){ var k=x.memberId||x.memberName; hrs[k]=(hrs[k]||0)+_shiftHours(x); cost[k]=(cost[k]||0)+_shiftCost(x); nm[k]=x.memberName; } });   // group by member id so labor cost maps to the right pay rate; round summed hours to 1 decimal (was surfacing binary float garbage like 24.2999...h)
     var _rt=_anyRateSet(), _tH=0, _tC=0;
     var _chips=Object.keys(hrs).sort(function(a,b){ return String(nm[a]||'').localeCompare(String(nm[b]||'')); }).map(function(k){ var h=Math.round(hrs[k]*10)/10, ot=h>40; _tH+=hrs[k]; _tC+=cost[k]||0;
@@ -9252,6 +9252,7 @@ const Atlas = (function(){
       shifts.push(_schedMkShift(pid,pnm,day,start,end,w.role||'',weekStart)); });
     return {shifts:shifts, open:open}; }
   function _schedApply(res, weekStart){ var wkEnd=_schedDateFor(weekStart,'SU');
+    try{ _schedWeekOffset=Math.round((Date.parse(weekStart+'T12:00:00')-Date.parse(_schedCurMonday()+'T12:00:00'))/604800000); }catch(e){}   // audit WAVE94: jump the grid/summary to the week Atlas just built (the upcoming Monday) so the owner sees it immediately
     S.shifts=_shifts().filter(function(x){ return !(x.source==='ai' && x.date>=weekStart && x.date<=wkEnd); });   // idempotent regenerate: clear THIS week's Atlas-built shifts (manual ones stay)
     (res.shifts||[]).forEach(function(sh){ _shifts().push(sh); });
     save(); var filled=(res.shifts||[]).filter(function(s){ return s.memberId!=='open'; }).length;
@@ -9283,10 +9284,14 @@ const Atlas = (function(){
     var who=val('shWho'), date=val('shDate'), start=val('shStart')||sh.start, end=val('shEnd')||sh.end; if(!date){ toast('Pick a date'); return; }
     var nm; if(who==='open'){ nm='Open'; } else { var r=_shiftRoster().filter(function(x){ return x.id===who; })[0]; nm=r?r.name.replace(' (you)',''):((who===sh.memberId)?sh.memberName:'Team'); }
     var _ecf=(who!=='open')?_shiftConflict(who, date, start, end, id):null; if(_ecf && !confirm(nm+' already has a '+_ecf.start+'-'+_ecf.end+' shift on '+date+'. Save this overlapping shift anyway?')) return;   // scheduler: warn before double-booking the same person (excludes this shift's own id + open slots)
-    sh.memberId=who; sh.memberName=nm; sh.date=date; sh.start=start; sh.end=end; sh.role=(val('shRole')||'').trim(); sh.note=(val('shNote')||'').trim();
+    sh.memberId=who; sh.memberName=nm; sh.date=date; sh.start=start; sh.end=end; sh.role=(val('shRole')||'').trim(); sh.note=(val('shNote')||'').trim(); sh.published=false;   // audit WAVE94: an edited shift re-enters DRAFT so the owner is prompted to re-publish the change (the team saw the old version)
     save(); _logEvent('team','Shift edited: '+nm+' '+date+' '+start+'-'+end,{}); closeModal(); renderSet(); toast('Shift updated \u2014 '+_shiftHours({start:start,end:end})+'h'); }
   // ---- WAVE93: labor cost (per-person pay rate), weekly grid view, draft -> publish. All client-side; persists in S via save(). ----
   var _schedViewMode='list';           // 'list' (mobile-friendly, default) or 'grid' (Mon-Sun x people)
+  var _schedWeekOffset=0;              // audit WAVE94: which week the grid + weekly summary show. 0 = current week (Mon on-or-before today, so TODAY's shifts always show); +1 next, etc. Fixes current-week shifts being hidden when today is Tue-Sun (the old window started at the UPCOMING Monday).
+  function _schedCurMonday(){ var d=new Date(); d.setDate(d.getDate()-((d.getDay()+6)%7)); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }   // Monday on-or-before today
+  function _schedViewMonday(){ var d=new Date(_schedCurMonday()+'T12:00:00'); d.setDate(d.getDate()+_schedWeekOffset*7); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+  function schedWeekNav(n){ _schedSyncNL(); _schedWeekOffset+=(n|0); if(_schedWeekOffset<-26)_schedWeekOffset=-26; if(_schedWeekOffset>52)_schedWeekOffset=52; _schedRefresh(); }
   function _schedule(){ if(!S.schedule) S.schedule={}; if(!S.schedule.rates) S.schedule.rates={}; return S.schedule; }
   function _shiftRate(memberId){ var r=_schedule().rates; return (r&&r[memberId]!=null)?(Number(r[memberId])||0):0; }
   function _anyRateSet(){ var r=_schedule().rates||{}; for(var k in r){ if(r.hasOwnProperty(k)&&Number(r[k])>0) return true; } return false; }
@@ -9313,7 +9318,7 @@ const Atlas = (function(){
         return '<div style="display:flex;align-items:center;gap:10px"><span class="avatar" style="width:24px;height:24px;font-size:10px">'+esc((nm||'?')[0])+'</span><span style="flex:1;font-size:13px;color:var(--ink)">'+esc(nm)+'</span><div style="display:flex;align-items:center;gap:4px"><span style="color:var(--muted);font-size:12px">'+esc(sym)+'</span><input class="input" style="width:76px;padding:6px 8px" type="number" min="0" step="0.5" value="'+(rt>0?rt:'')+'" placeholder="0" onchange="Atlas.schedSetRate(\''+esc(id)+'\',this.value)"><span style="color:var(--muted);font-size:12px">/hr</span></div></div>'; }).join('')
       +'<div style="font-size:11px;color:var(--muted);margin-top:5px">Used only to estimate labor cost &mdash; never shown to renters.</div></div></details>'; }
   // Weekly grid: Mon-Sun columns x people rows, role-colored chips, daily + weekly labor cost, click a chip to edit, "+" to add. Horizontal-scroll wrapper keeps it usable on a phone.
-  function _scheduleGridHtml(){ var ws=_schedWeekStart(), days=_SCHED_DAYS, dates=days.map(function(d){ return _schedDateFor(ws,d); });
+  function _scheduleGridHtml(){ var ws=_schedViewMonday(), days=_SCHED_DAYS, dates=days.map(function(d){ return _schedDateFor(ws,d); });
     var inWk=_shifts().filter(function(x){ return x.date>=dates[0] && x.date<=dates[6]; });
     if(!inWk.length) return '<div class="bk-lenhint" style="margin:0">No shifts this week yet. Use <b>Build my week</b> above, or <b>Add a shift</b>.</div>';
     var rates=_anyRateSet(), dayLbl=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], today=_todayStr();
@@ -9346,8 +9351,9 @@ const Atlas = (function(){
   function _schedBodyHtml(){ var up=_shifts().filter(function(x){ return x.date>=_todayStr(); }), unp=_schedUnpublished();
     var seg=function(v,lbl){ var on=_schedViewMode===v; return '<button class="btn btn--ghost btn--sm" style="border:0;border-radius:0;'+(on?'background:var(--brand-050);color:var(--brand);font-weight:700':'color:var(--muted)')+'" onclick="Atlas.schedView(\''+v+'\')">'+lbl+'</button>'; };
     var toggle='<div style="display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden">'+seg('list','List')+seg('grid','Grid')+'</div>';
+    var _wm=_schedViewMonday(); var nav='<div style="display:inline-flex;align-items:center;gap:4px"><button class="btn btn--ghost btn--sm" style="padding:3px 9px" onclick="Atlas.schedWeekNav(-1)" title="Previous week">&lsaquo;</button><b style="color:var(--ink);font-size:12px;white-space:nowrap;min-width:84px;text-align:center">'+(_schedWeekOffset===0?'This week':('Week of '+esc(_schedDM(_wm))))+'</b><button class="btn btn--ghost btn--sm" style="padding:3px 9px" onclick="Atlas.schedWeekNav(1)" title="Next week">&rsaquo;</button></div>';
     var pub=up.length?(unp?('<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="chip" style="background:#fef3c7;color:#92400e;font-size:11px">Draft &middot; '+unp+' unpublished</span><button class="btn btn--primary btn--sm" onclick="Atlas.schedPublish()">Publish schedule</button></div>'):('<span class="chip" style="background:#dcfce7;color:#166534;font-size:11px">Published &middot; your team can see it</span>')):'';
-    var bar='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px">'+toggle+pub+'</div>';
+    var bar='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px">'+toggle+nav+pub+'</div>';
     return bar+(_schedViewMode==='grid'?_scheduleGridHtml():_shiftsHtml()); }
   function _member(id){ return (S.team||[]).filter(function(x){return x.id===id;})[0]; }
   function openPerm(id){ if(!_guard('teamManage','Managing team &amp; access'))return; var m=_member(id); if(!m)return; var p=m.perms||_permsAll(false); m.perms=p;
@@ -12309,7 +12315,7 @@ const Atlas = (function(){
       _sqBk.loaded=true; _sqBk.active=!!j.active; _sqBk.subscribed=!!j.subscribed; _sqBk.backup=j.backup||null; _sqBkRender();
     }).catch(function(){}); }
   function _sqBkRender(){ var el=document.getElementById('sqBkBlock'); if(!el) return;
-    if(!(_sqBk.active&&_sqBk.subscribed)){ el.innerHTML=''; return; }   // only for tenants paying Atlas via Square card-on-file
+    if(!(_sqBk.active&&_sqBk.subscribed&&!_stBk.subscribed)){ el.innerHTML=''; return; }   // only for tenants paying Atlas via Square card-on-file; hide when a Stripe sub is present (Stripe takes precedence -- the worker never Square-bills a stripe_sub tenant) so the two backup blocks are mutually exclusive
     var bk=_sqBk.backup;
     el.innerHTML='<div class="set-block"><h3>Backup card <span class="chip chip--muted" style="font-size:10px;vertical-align:middle;font-weight:600">Square</span></h3>'
       +'<div class="desc">Add a second card and we&rsquo;ll charge it automatically if your main card is ever declined &mdash; so your account never lapses over an expired or maxed-out card. You&rsquo;re still only billed once each month.</div>'
@@ -12345,7 +12351,7 @@ const Atlas = (function(){
   var _stBk={loaded:false,subscribed:false,backup:null};
   function _stBkLoad(){ if(!(ATLAS_BACKEND&&_apiCsrf)) return;
     _api('/api/billing/stripe/card',{method:'GET'}).then(function(res){ var j=(res&&res.json)||{};
-      _stBk.loaded=true; _stBk.subscribed=!!j.subscribed; _stBk.backup=j.backup||null; _stBkRender();
+      _stBk.loaded=true; _stBk.subscribed=!!j.subscribed; _stBk.backup=j.backup||null; _stBkRender(); try{_sqBkRender();}catch(e){}   // audit WAVE94: re-render the Square block once Stripe status is known so it hides if a stripe_sub exists (avoids both blocks showing during the async load race)
     }).catch(function(){}); }
   function _stBkRender(){ var el=document.getElementById('stBkBlock'); if(!el) return;
     if(!_stBk.subscribed){ el.innerHTML=''; return; }   // only for tenants paying Atlas via a Stripe card subscription
@@ -15657,7 +15663,7 @@ const Atlas = (function(){
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,pnlRevDrill,pnlNetDrill,pnlExpDrill,assetPnlSetPeriod,renderPnl,
     renderWebsite,goDomain,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,webScopedLinkPick,copyScopedLink,webSiteCreate,webAutoSites,webSiteEdit,webSiteSave,webSitePubToggle,webSiteDelete,webSiteCopy,webSiteDomainModal,webSiteDomainConnect,webSiteDomainVerify,webSiteDomainDisconnect,webEmailDomainModal,webEmailDomainConnect,webEmailDomainVerify,webEmailDomainDisconnect,webEmailDomainActivate,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomAutoRenew,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,webMetaImageUpload,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
-    openPerm,setRolePreset,setPerm,setMemberField,inviteMember,_renderInviteModal,_inviteSet,_invitePreset,_invitePerm,saveInvite,resendInvite,copyInviteLink,teamRetryLoad,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,schedSetRate,schedView,schedPublish,schedQuickAdd,
+    openPerm,setRolePreset,setPerm,setMemberField,inviteMember,_renderInviteModal,_inviteSet,_invitePreset,_invitePerm,saveInvite,resendInvite,copyInviteLink,teamRetryLoad,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,schedSetRate,schedView,schedPublish,schedQuickAdd,schedWeekNav,
     search,searchGo,_searchClose,
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,_uploadDocFile,uploadDocSave,regenDoc,deleteDoc,sendAgreement,uploadSigned,genWebLegal,sigFont,sigPrev,sigDrawToggle,sigDrawClear,saveSig,setTheme,toggleMenu,closeMenu,
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
