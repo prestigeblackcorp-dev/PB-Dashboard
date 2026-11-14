@@ -982,7 +982,7 @@ function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.
     {id:'k_mem', label:'Members', basis:'now', val:mem.total||0, fmt:function(v){return nfmt(v);}, sub:(_money?('<b>'+nfmt(mem.paid||0)+'</b> paying'):'businesses')},
     {id:'k_vis', label:'Website visits', basis:rl, val:vis.range||0, fmt:function(v){return nfmt(v);}, sub:nfmt(vis.today||0)+' today'},
     {id:'k_signup', label:'New signups', basis:rl, val:o.signups||0, fmt:function(v){return nfmt(v);}, sub:'new businesses'},
-    {id:'k_trial', label:'Trials', basis:'now', val:mem.trials||0, fmt:function(v){return nfmt(v);}, sub:nfmt(mem.trials_with_card||0)+' with card'},
+    {id:'k_trial', label:'Trials', basis:'now', val:(mem.trials_with_card||0), fmt:function(v){return nfmt(v);}, sub:(function(){var _inc=Math.max(0,(mem.trials||0)-(mem.trials_with_card||0)); return _inc?(nfmt(_inc)+' incomplete (no card)'):'all with card';})()},   // WAVE100: a trial REQUIRES a card -> count only carded (started) trials here; cardless signups (new 'pending' state + any legacy no-card 'trial') are surfaced as "N incomplete (no card)"
     {id:'k_bug', label:'Open bugs', basis:'now', val:bugs.open||0, fmt:function(v){return nfmt(v);}, sub:nfmt(bugs.total||0)+' total'},
     {id:'k_net', gold:(pnlNet.range_cents||0)>=0, label:'Net profit', basis:rl, val:pnlNet.range_cents||0, fmt:centsUSD, sub:(pnlNet.range_cents||0)<0?'revenue below expenses':'revenue minus expenses'},
     {id:'k_aispend', label:'AI spend', basis:rl, val:pnlAi.range_cents||0, fmt:centsUSD, sub:nfmt(((pnlAi.tokens&&pnlAi.tokens.input_tokens)||0)+((pnlAi.tokens&&pnlAi.tokens.output_tokens)||0))+' tokens metered'},
@@ -1132,7 +1132,7 @@ function kpiDrill(id){
     H=_dsec('Totals')+_dr('All-time revenue',centsUSD(rev.total_cents||0))+_dr('In '+esc(rl),centsUSD(rev.range_cents||0))+_dr('MRR (recurring / mo)',centsUSD(rev.mrr_cents||0))
      +_dsec('By type ('+esc(rl)+')')+(Object.keys(bk).filter(function(k){return (bk[k]||0)!==0;}).sort(function(a,b){return (bk[b]||0)-(bk[a]||0);}).map(function(k){ return _dr(esc(_purKindLabel(k)),centsUSD(bk[k]||0)); }).join('') || _dr('No revenue in '+esc(rl),centsUSD(0)));   // every kind, sorted -- matches the overview split + foots to the Revenue KPI (was a hardcoded 5 that dropped asset unlocks + all add-ons)
   } else if(id==='k_mem'){ T='Members'; var byt=mem.by_tier||{}, ms=DATA.members||[];
-    H=_dsec('Overview')+_dr('Total members',nfmt(mem.total||0))+_dr('Paying',nfmt(mem.paid||0))+_dr('Comped (free / internal)',nfmt(mem.comped||0))+_dr('On trial',nfmt(mem.trials||0));
+    H=_dsec('Overview')+_dr('Total members',nfmt(mem.total||0))+_dr('Paying',nfmt(mem.paid||0))+_dr('Comped (free / internal)',nfmt(mem.comped||0))+_dr('On trial (card on file)',nfmt(mem.trials_with_card||0))+_dr('Incomplete (no card)',nfmt(Math.max(0,(mem.trials||0)-(mem.trials_with_card||0))));   // WAVE100: split started trials (carded) from cardless incomplete signups
     var tk=Object.keys(byt); if(tk.length){ H+=_dsec('By tier'); for(var i=0;i<tk.length;i++) H+=_dr(esc(TIER_LABEL[tk[i]]||tk[i]),nfmt(byt[tk[i]])); }
     var top=ms.slice().sort(function(a,b){return (b.revenue_cents||0)-(a.revenue_cents||0);}).slice(0,8);
     if(top.length){ H+=_dsec('Top members by revenue'); top.forEach(function(m){ H+=_dr('<b>'+esc(m.name||m.email||'-')+'</b> <span class="mut">'+esc(TIER_LABEL[m.tier]||m.tier||'')+'</span>',centsUSD(m.revenue_cents||0)); }); }
@@ -1143,9 +1143,9 @@ function kpiDrill(id){
   } else if(id==='k_signup'){ T='New signups'; var ms2=(DATA.members||[]).slice().sort(function(a,b){return (b.created_at||0)-(a.created_at||0);});
     H=_dsec('Signups')+_dr('New in '+esc(rl),nfmt(o.signups||0))+_dr('Total members',nfmt(mem.total||0));
     if(ms2.length){ H+=_dsec('Most recent'); ms2.slice(0,10).forEach(function(m){ H+=_dr('<b>'+esc(m.name||m.email||'-')+'</b> <span class="mut">'+esc(m.plan||'')+'</span>',dstr(m.created_at)); }); }
-  } else if(id==='k_trial'){ T='Trials'; var tr=(DATA.members||[]).filter(function(m){return m.plan==='trial';});
-    H=_dsec('Trials')+_dr('On trial',nfmt(mem.trials||0))+_dr('With card on file',nfmt(mem.trials_with_card||0));
-    if(tr.length){ H+=_dsec('Trial accounts'); tr.slice(0,12).forEach(function(m){ var dl=daysLeft(m.trial_ends); H+=_dr('<b>'+esc(m.name||m.email||'-')+'</b>'+(m.card_on_file?' <span class="pill card">card</span>':''),(dl==null?'-':(dl<0?'expired':dl+'d left'))); }); }
+  } else if(id==='k_trial'){ T='Trials'; var tr=(DATA.members||[]).filter(function(m){return m.card_on_file && m.plan!=='active' && m.plan!=='past_due';}); var _incN=Math.max(0,(mem.trials||0)-(mem.trials_with_card||0));   // WAVE100: a started trial requires a card; cardless signups count as incomplete, not trials
+    H=_dsec('Trials')+_dr('Started trials (card on file)',nfmt(mem.trials_with_card||0))+_dr('Incomplete signups (no card)',nfmt(_incN));
+    if(tr.length){ H+=_dsec('Started trials'); tr.slice(0,12).forEach(function(m){ var dl=daysLeft(m.trial_ends); H+=_dr('<b>'+esc(m.name||m.email||'-')+'</b>',(dl==null?'-':(dl<0?'expired':dl+'d left'))); }); }
   } else if(id==='k_bug'){ T='Bug & idea inbox'; var bg=DATA.bugs||[], bo=o.bugs||{};
     H=_dsec('Counts')+_dr('Open',nfmt(bo.open||0))+_dr('Total',nfmt(bo.total||0));
     var open=bg.filter(function(x){return (x.status||'open')!=='resolved';});
@@ -1166,11 +1166,13 @@ function renderMembers(){ var q=($('memSearch').value||'').toLowerCase().trim();
   if(!rows.length){ $('memTbl').innerHTML='<tr><td><div class="empty"><svg width="26" height="26" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.6"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6" stroke="currentColor" stroke-width="1.6"/></svg><br>No members match.</div></td></tr>'; return; }
   var head='<thead><tr><th>Member</th><th>Plan</th><th class="hide-sm">Tier</th><th class="hide-sm">Joined</th><th style="text-align:right">Paid</th><th></th></tr></thead>';
   var body=rows.map(function(m){
+    var _mNoCard = !(m.card_on_file) && m.plan!=='active' && m.plan!=='past_due';   // WAVE100: no card on file -> the trial has NOT started (new 'pending' signup OR a legacy cardless 'trial'); a card is required to start a trial
     var plan = m.plan==='active' ? '<span class="pill active">Paid</span>'
              : m.plan==='past_due' ? '<span class="pill past">Past due</span>'
+             : _mNoCard ? '<span class="pill gray">Incomplete</span>'
              : '<span class="pill trial">Trial</span>';
     var dl = daysLeft(m.trial_ends);
-    var trialMeta = (m.plan==='trial' && dl!=null) ? ('<span class="pill '+(dl<0?'past':'gray')+'" style="margin-left:5px">'+(dl<0?'expired':dl+'d left')+'</span>') : '';
+    var trialMeta = (m.plan==='trial' && m.card_on_file && dl!=null) ? ('<span class="pill '+(dl<0?'past':'gray')+'" style="margin-left:5px">'+(dl<0?'expired':dl+'d left')+'</span>') : '';   // WAVE100: show "Nd left" only for a STARTED (carded) trial
     var cardTag = (m.plan==='trial') ? (m.card_on_file?'<span class="pill card" style="margin-left:5px">card</span>':'') : '';
     var extra = [];
     if(m.customers!=null) extra.push(nfmt(m.customers)+' customers');
@@ -1340,7 +1342,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.11.13it';
+var ATLAS_EXPECT_BUILD='2026.11.13iu';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }

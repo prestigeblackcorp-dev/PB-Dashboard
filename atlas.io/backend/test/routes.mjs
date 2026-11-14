@@ -6759,6 +6759,26 @@ ok(/if \(!\(_role === 'owner' \|\| _role === 'analyst'\) && _g\) \{/.test(_WORKE
   ok(/j\.ok\)\{ try\{ if\(!S\)\{ S=load\(\)\|\|fresh\(\); \} S\.tier=tier; S\.plan=\(j\.trial\?'trial':'active'\)/.test(_ATLAS_SRC), 'WAVE99: _squarePayGo seeds a null S BEFORE writing card.onFile, so a fresh-signup card save is actually persisted (was: S.tier=tier threw on null S and card-on-file was lost)');
   ok((_ATLAS_SRC.match(/if\(!S\)\{ S=load\(\)\|\|fresh\(\); \} if\(!S\.card\)S\.card=\{\}; S\.card\.onFile=true/g) || []).length >= 2, 'WAVE99: both _confirmTrialReturn card-on-file paths (offline + server-confirmed Stripe return) also null-guard S before persisting card.onFile');
   ok(!/j\.ok\)\{ try\{ S\.tier=tier; S\.plan=\(j\.trial/.test(_ATLAS_SRC), 'WAVE99: the OLD _squarePayGo success (S.tier=tier with no null guard, which threw on a fresh-signup null S) is gone');
+
+  // WAVE100: "a card must ALWAYS be entered to start the trial." Signup + SSO no longer pre-stamp plan='trial' when the card
+  // gate is ON -- they create a 'pending' account with NO trial clock, and the trial (plan='trial' + trial_ends) begins only
+  // at card-on-file (Square subscribe already did; the Stripe trial webhook now sets plan='trial' too -- it previously never
+  // touched plan). HQ counts only carded (started) trials and surfaces cardless signups (new 'pending' + any legacy no-card
+  // 'trial') as "incomplete". So the admin can never again show a trial with no card on file.
+  { const _WK = readFileSync(new URL('../../backend/worker.js', import.meta.url), 'utf8');
+    ok(/const _sgGate = await _cardGateOn\(env\);/.test(_WK), 'WAVE100: password signup computes the card gate before creating the tenant');
+    ok(/fleet, \(_sgGate \? 'pending' : 'trial'\), \(_sgGate \? null : \(now \+ 7 \* 24 \* 3600 \* 1000\)\)/.test(_WK), 'WAVE100: password signup defers the trial (plan=pending, no trial_ends) when the card gate is ON');
+    ok(/\(_ssoGate \? 'pending' : 'trial'\), \(_ssoGate \? null : \(_now \+ 7 \* 24 \* 3600 \* 1000\)\)/.test(_WK), 'WAVE100: SSO auto-provision defers the trial the same way');
+    ok(/if \(plan === 'pending'\) return 'ok';/.test(_WK), "WAVE100: _billingState treats 'pending' as ok so the CARD gate (needs_card) is what routes a no-card signup to the plan picker");
+    ok(/UPDATE tenants SET plan=\?, tier=\?, card_on_file=1, trial_ends=\?, stripe_customer=\?, stripe_sub=\?, updated_at=\? WHERE id=\?'\)\.bind\('trial'/.test(_WK), 'WAVE100: the Stripe trial webhook now STARTS the trial (sets plan=trial) at card-on-file');
+    ok(!/fleet, 'trial', now \+ 7 \* 24 \* 3600 \* 1000/.test(_WK), 'WAVE100: the OLD unconditional signup (plan=trial + 7-day clock regardless of card) is gone');
+    ok(!/'custom', 'trial', _now \+ 7 \* 24 \* 3600 \* 1000/.test(_WK), 'WAVE100: the OLD unconditional SSO signup (plan=trial regardless of card) is gone');
+  }
+  { const _ADM = readFileSync(new URL('../../admin.html', import.meta.url), 'utf8');
+    ok(/_mNoCard = !\(m\.card_on_file\) && m\.plan!=='active' && m\.plan!=='past_due'/.test(_ADM), 'WAVE100: HQ member badge marks a no-card account (pending OR legacy cardless trial) as Incomplete');
+    ok(/val:\(mem\.trials_with_card\|\|0\)/.test(_ADM), 'WAVE100: the HQ Trials tile counts only carded (started) trials');
+    ok(/incomplete \(no card\)/.test(_ADM), 'WAVE100: HQ surfaces cardless signups as "incomplete (no card)", not trials');
+  }
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
