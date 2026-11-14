@@ -573,22 +573,22 @@
   </section>
 
   <section class="hqsec" data-sec="revenue">
-  <div class="hqgroup">Revenue &amp; P&amp;L</div>
-  <!-- REVENUE BREAKDOWN + FUNNEL -->
-  <div class="card">
+  <div class="hqgroup" id="grpRevPnl">Revenue &amp; P&amp;L</div>
+  <!-- REVENUE BREAKDOWN + FUNNEL (WAVE96e: cardRev shows for owner + analyst; hidden for the support role) -->
+  <div class="card" id="cardRev">
     <div class="card-h"><h2>Revenue &amp; growth</h2><span class="sub" id="revSub"></span><div class="sp"></div><span class="sub" id="revNote"></span></div>
     <div class="split" id="revSplit"></div>
   </div>
 
-  <!-- EXPENSES + NET PROFIT (real metered AI-API spend + owner's fixed monthly costs vs Revenue) -->
-  <div class="card">
+  <!-- EXPENSES + NET PROFIT (real metered AI-API spend + owner's fixed monthly costs vs Revenue) -- WAVE96e: owner-only (pnl endpoint 403s for all staff) -->
+  <div class="card" id="cardPnl">
     <div class="card-h"><h2>Expenses &amp; net profit</h2><span class="sub" id="pnlSub"></span></div>
     <div class="split" id="pnlSplit"></div>
     <div class="card-b pad" id="pnlDetail"><div class="mut">Loading&hellip;</div></div>
   </div>
 
-  <!-- PLAN MARGINS: free weekly Atlas.io credits per tier vs plan price -- profitable even at 100% credit burn -->
-  <div class="card">
+  <!-- PLAN MARGINS: free weekly Atlas.io credits per tier vs plan price -- profitable even at 100% credit burn -- WAVE96e: owner-only -->
+  <div class="card" id="cardMargins">
     <div class="card-h"><h2>Plan margins</h2><span class="sub" id="marginSub"></span></div>
     <div class="card-b pad" id="marginBox"><div class="mut">Loading&hellip;</div></div>
   </div>
@@ -776,6 +776,18 @@ var TIER_LABEL = {starter:'Starter',pro:'Pro',enterprise:'Enterprise',business:'
 var _tok = '';
 var DATA = { overview:null, members:[], txns:[], bugs:[], tickets:[], aiCfg:null, visits:null, inbox:[], inboxCounts:{}, competitors:[], geo:null, purchases:null, growth:null, socialHandles:{}, socialPlatforms:{}, enterprise:{}, you:{}, security:null, errors:null, seo:null, uptime:null, funnel:null, uptime2:null, cohorts:null, funnelSeg:null };
 function _isOwner(){ return !!(DATA.you && DATA.you.role==='owner'); }
+/* WAVE96e Support-HQ isolation: who may see money. Owner + analyst (the metrics role) see revenue/MRR; the SUPPORT role
+   (customer triage) never does. The server is authoritative (it strips the figures from support's responses); this only
+   governs which tiles/cards we bother to render, so support gets a clean triage console instead of empty $0 money tiles. */
+function _canSeeMoney(){ return !!(DATA.you && (DATA.you.role==='owner'||DATA.you.role==='analyst')); }
+function _applyMoneyVis(){
+  var money=_canSeeMoney(), owner=_isOwner();
+  var set=function(id,show){ var el=$(id); if(el) el.style.display=show?'':'none'; };
+  set('cardRev', money);        // Revenue & growth split -- owner + analyst
+  set('cardPnl', owner);        // Expenses & net profit -- owner only (pnl endpoint is owner-only)
+  set('cardMargins', owner);    // Plan margins -- owner only
+  set('grpRevPnl', money);      // the "Revenue & P&L" group label (owner implies money, so == money)
+}
 function _isSuperOwner(){ return !!(DATA.you && (DATA.you.tier||0)>=2); }   /* tier-2+ = super-admin backup (or all-seeing root); tier-1 primary is NOT super */
 function applyTierBrand(){ var b=document.getElementById('hqBrand'); if(b) b.textContent=_isSuperOwner()?'ATLAS SHQ':'ATLAS HQ'; var s=document.getElementById('hqBrandSub'); if(s) s.textContent=_isSuperOwner()?'Super HQ':'Master Dashboard'; try{ if(_isSuperOwner()) document.title='Atlas SHQ \u2014 Super HQ'; }catch(e){}
   var tct=document.getElementById('tcTab'); if(tct) tct.style.display=_isSuperOwner()?'':'none';   /* the Take Control tab exists ONLY for the super-admin (tier 2+); the primary never sees it */
@@ -924,7 +936,7 @@ function loadAll(quiet){ _lastFetch=Date.now();
     if(r[2].json&&r[2].json.ok){ DATA.txns=r[2].json.transactions||[]; renderTxns(); }
     if(r[3].json&&r[3].json.ok){ DATA.bugs=r[3].json.feedback||[]; renderBugs(); }
     if(r[4]&&r[4].json&&r[4].json.ok){ DATA.tickets=r[4].json.tickets||[]; renderTickets(); }
-    if(r[5]&&r[5].json&&r[5].json.config){ DATA.aiCfg=r[5].json.config; DATA.enterprise=r[5].json.enterprise||{}; DATA.you=r[5].json.you||{}; renderEnterprise(); applyTierBrand(); } else { DATA.aiCfg={ai_hq_enabled:false,ai_available:false,needsDeploy:true}; } renderAI(); try{ renderSponge(); }catch(e){}
+    if(r[5]&&r[5].json&&r[5].json.config){ DATA.aiCfg=r[5].json.config; DATA.enterprise=r[5].json.enterprise||{}; DATA.you=r[5].json.you||{}; renderEnterprise(); applyTierBrand(); try{ _applyMoneyVis(); if(DATA.overview) paintOverview(); }catch(e){} } else { DATA.aiCfg={ai_hq_enabled:false,ai_available:false,needsDeploy:true}; } renderAI(); try{ renderSponge(); }catch(e){}   // WAVE96e: now that the role is known, re-apply money visibility + repaint KPIs (overview may have painted before config resolved)
     if(r[6]&&r[6].json&&r[6].json.ok){ DATA.visits=r[6].json; renderVisits(); }
     if(r[7]&&r[7].json&&r[7].json.ok){ DATA.inbox=r[7].json.messages||[]; DATA.inboxCounts=r[7].json.counts||{}; DATA.inboxCanSend=!!r[7].json.can_send; renderInbox(); }
     if(r[8]&&r[8].json&&r[8].json.ok){ DATA.competitors=r[8].json.competitors||[]; DATA.searchAvailable=!!r[8].json.search_available; renderCompetitors(); }
@@ -963,10 +975,11 @@ function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.
   // explicit. Range tiles (revenue, visits, signups, net, AI spend) carry the selected range AND their VALUE tracks
   // it; snapshot tiles (MRR, members, trials, open bugs) carry a live "now" because a date range does not apply to
   // a point-in-time count.
+  var _money=_canSeeMoney(), _own=_isOwner();   // WAVE96e: support (triage) sees no money tiles; analyst sees revenue/MRR; owner sees cost tiles too
   var kpis=[
     {id:'k_rev', hero:true, gold:true, label:'Revenue', basis:rl, val:rev.range_cents||0, fmt:centsUSD, sub:'<b>'+centsUSD(rev.total_cents||0)+'</b> all-time'},
     {id:'k_mrr', gold:true, label:'MRR', basis:'now', val:rev.mrr_cents||0, fmt:centsUSD, sub:'recurring / month'},
-    {id:'k_mem', label:'Members', basis:'now', val:mem.total||0, fmt:function(v){return nfmt(v);}, sub:'<b>'+nfmt(mem.paid||0)+'</b> paying'},
+    {id:'k_mem', label:'Members', basis:'now', val:mem.total||0, fmt:function(v){return nfmt(v);}, sub:(_money?('<b>'+nfmt(mem.paid||0)+'</b> paying'):'businesses')},
     {id:'k_vis', label:'Website visits', basis:rl, val:vis.range||0, fmt:function(v){return nfmt(v);}, sub:nfmt(vis.today||0)+' today'},
     {id:'k_signup', label:'New signups', basis:rl, val:o.signups||0, fmt:function(v){return nfmt(v);}, sub:'new businesses'},
     {id:'k_trial', label:'Trials', basis:'now', val:mem.trials||0, fmt:function(v){return nfmt(v);}, sub:nfmt(mem.trials_with_card||0)+' with card'},
@@ -975,10 +988,13 @@ function paintOverview(){ var o=DATA.overview||{}; var rev=o.revenue||{}, mem=o.
     {id:'k_aispend', label:'AI spend', basis:rl, val:pnlAi.range_cents||0, fmt:centsUSD, sub:nfmt(((pnlAi.tokens&&pnlAi.tokens.input_tokens)||0)+((pnlAi.tokens&&pnlAi.tokens.output_tokens)||0))+' tokens metered'},
     {id:'k_install', label:'App installs', basis:'now', val:ins.total||0, fmt:function(v){return nfmt(v);}, sub:'PWA / home-screen'}
   ];
+  // WAVE96e: drop the money tiles a role may not see (revenue/MRR -> support hidden; net profit/AI spend -> owner-only).
+  kpis = kpis.filter(function(k){ if(k.id==='k_rev'||k.id==='k_mrr') return _money; if(k.id==='k_net'||k.id==='k_aispend') return _own; return true; });
   $('kpis').innerHTML = kpis.map(function(k){ return '<div class="kpi'+(k.hero?' hero':'')+(k.gold?' gold':'')+'" onclick="kpiDrill(\''+k.id+'\')" role="button" tabindex="0" title="Click for the detail behind this number"><div class="glow"></div>'+
     '<div class="k-l">'+esc(k.label)+(k.basis?'<span class="k-basis'+(k.basis==='now'?' now':'')+'">'+esc(k.basis)+'</span>':'')+'</div><div class="k-v'+(k.gold?' money':'')+' num" id="'+k.id+'">'+(k.fmt(0))+'</div>'+
     '<div class="k-s num">'+k.sub+'</div></div>'; }).join('');
   kpis.forEach(function(k){ var el=$(k.id); if(el) animateNum(el, k.val, k.fmt); });
+  _applyMoneyVis();   // WAVE96e: hide the revenue/P&L cards for roles that can't see them (server also strips the data)
 
   // revenue split
   var byk = rev.by_kind||{};
@@ -1324,7 +1340,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.11.13is';
+var ATLAS_EXPECT_BUILD='2026.11.13it';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
