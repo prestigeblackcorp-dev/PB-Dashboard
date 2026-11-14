@@ -2447,7 +2447,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.13in';
+  var APP_VERSION='2026.11.13io';
   var APP_CHANGELOG=[
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
     'Per-type close-out fixes: powersports (Slingshots, UTVs) track miles by default, trailers no longer ask for an &ldquo;odometer&rdquo; they do not have, and the reading you enter at close-out now updates the asset so service reminders stay accurate',
@@ -9119,9 +9119,12 @@ const Atlas = (function(){
   function _shiftDateLabel(d){ try{ var dt=new Date(d+'T12:00:00'); return dt.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+(d===_todayStr()?' (Today)':''); }catch(e){ return d; } }
   function _shiftsHtml(){ var today=_todayStr();
     var up=_shifts().filter(function(x){ return x.date>=today; }).sort(function(a,b){ return (a.date+a.start).localeCompare(b.date+b.start); });
-    var wkEnd=(function(){ var d=new Date(); d.setDate(d.getDate()+7); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); })();
-    var hrs={}; up.forEach(function(x){ if(x.date<=wkEnd){ hrs[x.memberName]=(hrs[x.memberName]||0)+_shiftHours(x); } });
-    var sum=Object.keys(hrs).length? ('<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">'+Object.keys(hrs).sort().map(function(n){ return '<span class="chip chip--info" style="font-size:11.5px"><span class="dot"></span>'+esc(n)+': '+(Math.round(hrs[n]*10)/10)+'h this week</span>'; }).join('')+'</div>') : '';   // fix: round the summed weekly hours to 1 decimal (was surfacing binary float garbage like 24.2999...h)
+    var _ws=_schedWeekStart(), wkEnd=_schedDateFor(_ws,'SU');   // summarize the SAME upcoming Mon-Sun week the grid shows, so the two views' totals always agree (was a rolling today+7 window -> mismatched the grid once labor cost was shown in both)
+    var hrs={}, cost={}, nm={}; up.forEach(function(x){ if(x.date>=_ws && x.date<=wkEnd && x.memberId!=='open'){ var k=x.memberId||x.memberName; hrs[k]=(hrs[k]||0)+_shiftHours(x); cost[k]=(cost[k]||0)+_shiftCost(x); nm[k]=x.memberName; } });   // group by member id so labor cost maps to the right pay rate; round summed hours to 1 decimal (was surfacing binary float garbage like 24.2999...h)
+    var _rt=_anyRateSet(), _tH=0, _tC=0;
+    var _chips=Object.keys(hrs).sort(function(a,b){ return String(nm[a]||'').localeCompare(String(nm[b]||'')); }).map(function(k){ var h=Math.round(hrs[k]*10)/10, ot=h>40; _tH+=hrs[k]; _tC+=cost[k]||0;
+      return '<span class="chip'+(ot?'':' chip--info')+'" style="font-size:11.5px'+(ot?';background:#fef3c7;color:#92400e':'')+'"><span class="dot"></span>'+esc(nm[k])+': '+h+'h'+(_rt&&cost[k]>0?(' &middot; '+money(cost[k])):'')+(ot?' &middot; OT':'')+'</span>'; }).join('');
+    var sum=_chips? ('<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:'+(_rt&&_tC>0?'8px':'12px')+'">'+_chips+'</div>'+(_rt&&_tC>0?('<div style="font-size:12px;color:var(--muted);margin-bottom:12px">Week total: <b style="color:var(--ink)">'+(Math.round(_tH*10)/10)+'h</b> &middot; <b style="color:var(--ink)">'+money(_tC)+'</b> labor</div>'):'')) : '';
     if(!up.length) return sum+'<div class="bk-lenhint" style="margin:0">No shifts scheduled yet. Add one and your team can see who is on.</div>';
     var byDate={}; up.forEach(function(x){ (byDate[x.date]=byDate[x.date]||[]).push(x); });
     var body=Object.keys(byDate).sort().slice(0,10).map(function(d){
@@ -9129,20 +9132,21 @@ const Atlas = (function(){
         +byDate[d].map(function(x){ return '<div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-top:1px solid var(--line-2)"><span class="avatar" style="width:26px;height:26px;font-size:11px">'+esc((x.memberName||'?')[0])+'</span><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13px">'+esc(x.memberName)+'</b>'+(x.source==='ai'?' <span class="chip chip--brand" style="font-size:9.5px;padding:1px 6px;vertical-align:1px">Atlas.io</span>':'')+'<div style="font-size:11.5px;color:var(--muted)">'+esc(x.start)+' - '+esc(x.end)+' &middot; '+_shiftHours(x)+'h'+(x.role?(' &middot; '+esc(x.role)):'')+(x.note?(' &middot; '+esc(x.note)):'')+'</div></div><button class="icon-btn" onclick="Atlas.editShift(\''+x.id+'\')" title="Edit"><svg viewBox="0 0 18 18" fill="none"><path d="M12.4 3.1l2.5 2.5L7 13.5l-3.2.7.7-3.2 7.9-7.9z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></button><button class="icon-btn" style="color:var(--danger)" onclick="Atlas.rmShift(\''+x.id+'\')" title="Remove">'+_rmSvg()+'</button></div>'; }).join('')+'</div>';
     }).join('');
     return sum+body; }
-  function addShift(){ if(!_guard('teamManage','Scheduling shifts'))return; var roster=_shiftRoster();
+  function addShift(preWho,preDate){ if(!_guard('teamManage','Scheduling shifts'))return; var roster=_shiftRoster();
     openModal('<div class="modal__head"><h3>Add a shift</h3>'+_xBtn()+'</div><div class="modal__body">'
-      +'<div class="field"><label>Team member</label><select class="select" id="shWho">'+roster.map(function(r){ return '<option value="'+esc(r.id)+'">'+esc(r.name)+'</option>'; }).join('')+'</select></div>'
-      +'<div class="field"><label>Date</label><input class="input" id="shDate" type="date" value="'+_todayStr()+'"></div>'
+      +'<div class="field"><label>Team member</label><select class="select" id="shWho">'+roster.map(function(r){ return '<option value="'+esc(r.id)+'"'+(r.id===preWho?' selected':'')+'>'+esc(r.name)+'</option>'; }).join('')+'</select></div>'
+      +'<div class="field"><label>Role (optional)</label><input class="input" id="shRole" placeholder="Counter, Driver, Front desk..."></div>'
+      +'<div class="field"><label>Date</label><input class="input" id="shDate" type="date" value="'+((preDate&&/^\d{4}-\d{2}-\d{2}$/.test(preDate))?preDate:_todayStr())+'"></div>'
       +'<div class="row2"><div class="field"><label>Start</label><input class="input" id="shStart" type="time" value="09:00"></div><div class="field"><label>End</label><input class="input" id="shEnd" type="time" value="17:00"></div></div>'
       +'<div class="field"><label>Note (optional)</label><input class="input" id="shNote" placeholder="Front desk, deliveries, on-call..."></div>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveShift()">Add shift</button></div>'); }
-  function saveShift(){ if(!_guard('teamManage'))return; var who=val('shWho'), date=val('shDate'), start=val('shStart')||'09:00', end=val('shEnd')||'17:00';
+  function saveShift(){ if(!_guard('teamManage'))return; _schedSyncNL(); var who=val('shWho'), date=val('shDate'), start=val('shStart')||'09:00', end=val('shEnd')||'17:00';
     if(!date){ toast('Pick a date'); return; }
     var r=_shiftRoster().filter(function(x){return x.id===who;})[0]; var nm=r?r.name.replace(' (you)',''):'Team';
     var _scf=_shiftConflict(who, date, start, end, null); if(_scf && !confirm(nm+' already has a '+_scf.start+'-'+_scf.end+' shift on '+date+'. Add this overlapping shift anyway?')) return;   // scheduler: warn before double-booking the same person (additive -- owner can still confirm)
-    _shifts().push({ id:'sh'+Date.now().toString(36), memberId:who, memberName:nm, date:date, start:start, end:end, note:(val('shNote')||'').trim() });
+    _shifts().push({ id:'sh'+Date.now().toString(36), memberId:who, memberName:nm, date:date, start:start, end:end, role:(val('shRole')||'').trim(), note:(val('shNote')||'').trim() });
     save(); _logEvent('team','Shift added: '+nm+' '+date+' '+start+'-'+end,{}); closeModal(); renderSet(); toast('Shift added &mdash; '+_shiftHours({start:start,end:end})+'h'); }
-  function rmShift(id){ if(!_guard('teamManage'))return; S.shifts=_shifts().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Shift removed'); }
+  function rmShift(id){ if(!_guard('teamManage'))return; _schedSyncNL(); S.shifts=_shifts().filter(function(x){return x.id!==id;}); save(); renderSet(); toast('Shift removed'); }
   // ---- Atlas.io AI schedule builder: plain-English -> editable weekly shifts. Worker /api/schedule (AI) when deployed; heuristic parser + code solver as a zero-backend fallback. Same graceful-fallback pattern as the AIO council. ----
   var SCHED_EXAMPLE="Alice can't work Mon-Wed and only 6pm-close on the days she's available; Bob works Mon-Fri 9-5; I need 2 on the counter Sat 10-6";
   var _schedLastNL='';                 // remembers the owner's last prompt so a re-render keeps their words (not the example)
@@ -9275,12 +9279,76 @@ const Atlas = (function(){
       +'<div class="field"><label>Note (optional)</label><input class="input" id="shNote" value="'+esc(sh.note||'')+'" placeholder="Front desk, deliveries, on-call..."></div>'
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.saveShiftEdit(\''+sh.id+'\')">Save changes</button>'
       +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.closeModal();Atlas.rmShift(\''+sh.id+'\')">Remove shift</button></div>'); }
-  function saveShiftEdit(id){ if(!_guard('teamManage'))return; var sh=_shifts().filter(function(x){ return x.id===id; })[0]; if(!sh){ toast('Shift not found'); return; }
+  function saveShiftEdit(id){ if(!_guard('teamManage'))return; _schedSyncNL(); var sh=_shifts().filter(function(x){ return x.id===id; })[0]; if(!sh){ toast('Shift not found'); return; }
     var who=val('shWho'), date=val('shDate'), start=val('shStart')||sh.start, end=val('shEnd')||sh.end; if(!date){ toast('Pick a date'); return; }
     var nm; if(who==='open'){ nm='Open'; } else { var r=_shiftRoster().filter(function(x){ return x.id===who; })[0]; nm=r?r.name.replace(' (you)',''):((who===sh.memberId)?sh.memberName:'Team'); }
     var _ecf=(who!=='open')?_shiftConflict(who, date, start, end, id):null; if(_ecf && !confirm(nm+' already has a '+_ecf.start+'-'+_ecf.end+' shift on '+date+'. Save this overlapping shift anyway?')) return;   // scheduler: warn before double-booking the same person (excludes this shift's own id + open slots)
     sh.memberId=who; sh.memberName=nm; sh.date=date; sh.start=start; sh.end=end; sh.role=(val('shRole')||'').trim(); sh.note=(val('shNote')||'').trim();
     save(); _logEvent('team','Shift edited: '+nm+' '+date+' '+start+'-'+end,{}); closeModal(); renderSet(); toast('Shift updated \u2014 '+_shiftHours({start:start,end:end})+'h'); }
+  // ---- WAVE93: labor cost (per-person pay rate), weekly grid view, draft -> publish. All client-side; persists in S via save(). ----
+  var _schedViewMode='list';           // 'list' (mobile-friendly, default) or 'grid' (Mon-Sun x people)
+  function _schedule(){ if(!S.schedule) S.schedule={}; if(!S.schedule.rates) S.schedule.rates={}; return S.schedule; }
+  function _shiftRate(memberId){ var r=_schedule().rates; return (r&&r[memberId]!=null)?(Number(r[memberId])||0):0; }
+  function _anyRateSet(){ var r=_schedule().rates||{}; for(var k in r){ if(r.hasOwnProperty(k)&&Number(r[k])>0) return true; } return false; }
+  function _shiftCost(sh){ return (sh&&sh.memberId!=='open')?_r2(_shiftHours(sh)*_shiftRate(sh.memberId)):0; }   // labor cost = hours x the person's pay rate (open slots cost nothing until filled)
+  function _schedSyncNL(){ try{ var t=val('schedNL'); if(t!=null){ t=String(t).trim(); if(t && t!==SCHED_EXAMPLE) _schedLastNL=t; } }catch(e){} }   // keep the owner's typed prompt across a body refresh
+  function schedSetRate(id,v){ if(!_guard('teamManage'))return; _schedSyncNL(); _schedule().rates[id]=Math.max(0,parseFloat(v)||0); save(); _schedRefresh(); }
+  function _schedDM(d){ try{ return new Date(d+'T12:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}); }catch(e){ return d; } }
+  function _hhmmShort(hhmm){ var p=String(hhmm||'').split(':'); var h=parseInt(p[0],10); if(isNaN(h)) return esc(hhmm); var ap=h<12?'a':'p', h12=h%12; if(h12===0)h12=12; var mm=(p[1]&&p[1]!=='00')?(':'+p[1]):''; return h12+mm+ap; }
+  function _schedHue(s){ var h=0,str=String(s||'').toLowerCase(); for(var i=0;i<str.length;i++){ h=(h*31+str.charCodeAt(i))%360; } return h; }
+  function _schedChipStyle(role){ if(!role) return 'background:var(--line-2);color:var(--ink)'; var h=_schedHue(role); return 'background:hsla('+h+',70%,50%,.16);border:1px solid hsla('+h+',62%,50%,.4);color:var(--ink)'; }   // stable role color (both themes) without a positions table
+  function _schedUnpublished(){ var today=_todayStr(); return _shifts().filter(function(x){ return x.date>=today && !x.published; }).length; }
+  function schedPublish(){ if(!_guard('teamManage','Publishing the schedule'))return; _schedSyncNL(); var today=_todayStr(), n=0;
+    _shifts().forEach(function(x){ if(x.date>=today && !x.published){ x.published=true; n++; } });
+    if(!n){ toast('Nothing new to publish'); return; }
+    save(); _logEvent('team','Schedule published -- '+n+' shift'+(n===1?'':'s'),{}); _schedRefresh(); toast('Published '+n+' shift'+(n===1?'':'s')+' &mdash; your team can see the week'); }
+  function schedView(v){ _schedSyncNL(); _schedViewMode=(v==='grid'?'grid':'list'); _schedRefresh(); }
+  function schedQuickAdd(who,date){ if(!_guard('teamManage','Scheduling shifts'))return; _schedSyncNL(); addShift(who,date); }
+  function _schedRefresh(){ var el=document.getElementById('schedBody'); if(el) el.innerHTML=_schedBodyHtml(); }
+  // Pay-rate editor (collapsed by default) -- the only input labor cost needs; stays out of the way for owners who don't track it.
+  function _schedRatesHtml(){ var roster=_shiftRoster(), sym=_curSym(_baseCur());
+    return '<details style="margin:12px 0 2px"><summary style="cursor:pointer;font-size:12.5px;color:var(--muted);font-weight:600">Pay rates (optional) &mdash; show labor cost on the schedule</summary>'
+      +'<div style="margin-top:10px;display:flex;flex-direction:column;gap:7px">'
+      +roster.map(function(r){ var id=r.id, nm=r.name.replace(' (you)',''), rt=_shiftRate(id);
+        return '<div style="display:flex;align-items:center;gap:10px"><span class="avatar" style="width:24px;height:24px;font-size:10px">'+esc((nm||'?')[0])+'</span><span style="flex:1;font-size:13px;color:var(--ink)">'+esc(nm)+'</span><div style="display:flex;align-items:center;gap:4px"><span style="color:var(--muted);font-size:12px">'+esc(sym)+'</span><input class="input" style="width:76px;padding:6px 8px" type="number" min="0" step="0.5" value="'+(rt>0?rt:'')+'" placeholder="0" onchange="Atlas.schedSetRate(\''+esc(id)+'\',this.value)"><span style="color:var(--muted);font-size:12px">/hr</span></div></div>'; }).join('')
+      +'<div style="font-size:11px;color:var(--muted);margin-top:5px">Used only to estimate labor cost &mdash; never shown to renters.</div></div></details>'; }
+  // Weekly grid: Mon-Sun columns x people rows, role-colored chips, daily + weekly labor cost, click a chip to edit, "+" to add. Horizontal-scroll wrapper keeps it usable on a phone.
+  function _scheduleGridHtml(){ var ws=_schedWeekStart(), days=_SCHED_DAYS, dates=days.map(function(d){ return _schedDateFor(ws,d); });
+    var inWk=_shifts().filter(function(x){ return x.date>=dates[0] && x.date<=dates[6]; });
+    if(!inWk.length) return '<div class="bk-lenhint" style="margin:0">No shifts this week yet. Use <b>Build my week</b> above, or <b>Add a shift</b>.</div>';
+    var rates=_anyRateSet(), dayLbl=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], today=_todayStr();
+    var roster=_shiftRoster(), rowIds=[], rowName={};
+    roster.forEach(function(r){ rowIds.push(r.id); rowName[r.id]=r.name.replace(' (you)',''); });
+    inWk.forEach(function(x){ if(x.memberId!=='open' && rowIds.indexOf(x.memberId)<0){ rowIds.push(x.memberId); rowName[x.memberId]=x.memberName; } });
+    if(inWk.some(function(x){ return x.memberId==='open'; })){ rowIds.push('open'); rowName.open='Open / unfilled'; }
+    var daily=dates.map(function(dt){ return inWk.filter(function(x){ return x.date===dt; }).reduce(function(a,x){ return a+_shiftCost(x); },0); });
+    var skipL='position:sticky;left:0;background:var(--card);z-index:1';
+    var head='<tr><th style="text-align:left;padding:7px 9px;'+skipL+';z-index:2;font-size:11px">Team</th>'
+      +days.map(function(d,i){ var tdy=dates[i]===today; return '<th style="min-width:88px;padding:6px 7px;text-align:center;font-size:11px'+(tdy?';color:var(--brand)':'')+'">'+dayLbl[i]+'<div style="font-size:10px;font-weight:500;color:var(--muted)">'+esc(_schedDM(dates[i]))+'</div>'+(rates&&daily[i]>0?('<div style="font-size:9.5px;font-weight:600;color:var(--muted)">'+money(daily[i])+'</div>'):'')+'</th>'; }).join('')
+      +'<th style="min-width:66px;padding:6px 7px;text-align:center;font-size:11px">Week</th></tr>';
+    var body=rowIds.map(function(id){
+      var cells=dates.map(function(dt){
+        var chips=inWk.filter(function(x){ return x.memberId===id && x.date===dt; }).sort(function(a,b){ return _schedT(a.start)-_schedT(b.start); })
+          .map(function(x){ var cf=(id!=='open')?_shiftConflict(x.memberId,x.date,x.start,x.end,x.id):null;
+            return '<div onclick="Atlas.editShift(\''+x.id+'\')" title="Edit shift" style="cursor:pointer;'+_schedChipStyle(x.role)+';border-radius:7px;padding:3px 6px;margin-bottom:3px;font-size:10.5px;line-height:1.25">'+_hhmmShort(x.start)+'-'+_hhmmShort(x.end)+(x.role?('<div style="font-size:9px;opacity:.85">'+esc(x.role)+'</div>'):'')+(cf?' <span title="Overlaps another shift" style="color:var(--danger);font-weight:800">!</span>':'')+'</div>'; }).join('');
+        var add=(id!=='open')?('<div onclick="Atlas.schedQuickAdd(\''+esc(id)+'\',\''+dt+'\')" title="Add a shift" style="cursor:pointer;color:var(--muted);font-size:11px;text-align:center;border:1px dashed var(--line);border-radius:6px;line-height:1.5">+</div>'):'';
+        return '<td style="vertical-align:top;padding:4px;border-left:1px solid var(--line-2)">'+chips+add+'</td>'; }).join('');
+      var rh=inWk.filter(function(x){ return x.memberId===id; }).reduce(function(a,x){ return a+_shiftHours(x); },0);
+      var rc=inWk.filter(function(x){ return x.memberId===id; }).reduce(function(a,x){ return a+_shiftCost(x); },0);
+      var ot=rh>40;
+      return '<tr style="border-top:1px solid var(--line-2)"><td style="'+skipL+';font-weight:600;font-size:12px;white-space:nowrap;padding:6px 9px">'+esc(rowName[id])+(ot?' <span title="Over 40h" style="color:#b45309;font-size:10px;font-weight:700">OT</span>':'')+'</td>'+cells+'<td style="text-align:center;font-size:11px;padding:4px">'+(Math.round(rh*10)/10)+'h'+(rates&&rc>0?('<div style="font-size:10px;color:var(--muted)">'+money(rc)+'</div>'):'')+'</td></tr>'; }).join('');
+    var gH=inWk.reduce(function(a,x){ return a+_shiftHours(x); },0), gC=inWk.reduce(function(a,x){ return a+_shiftCost(x); },0);
+    var totRow='<tr style="border-top:2px solid var(--line)"><td style="'+skipL+';font-weight:700;font-size:11px;padding:6px 9px">Total</td>'
+      +dates.map(function(dt){ var dh=inWk.filter(function(x){ return x.date===dt; }).reduce(function(a,x){ return a+_shiftHours(x); },0); return '<td style="text-align:center;font-size:10.5px;color:var(--muted);padding:4px">'+(dh?((Math.round(dh*10)/10)+'h'):'')+'</td>'; }).join('')
+      +'<td style="text-align:center;font-weight:700;font-size:11px;padding:4px">'+(Math.round(gH*10)/10)+'h'+(rates&&gC>0?('<div style="font-size:10px;color:var(--muted)">'+money(gC)+'</div>'):'')+'</td></tr>';
+    return '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:10px"><table style="border-collapse:collapse;width:100%;min-width:600px"><thead>'+head+'</thead><tbody>'+body+totRow+'</tbody></table></div>'; }
+  // Shifts body = view toggle + draft/publish bar + (list | grid). Rebuilt in place by _schedRefresh so the NL box and pay-rate inputs above it keep focus/value.
+  function _schedBodyHtml(){ var up=_shifts().filter(function(x){ return x.date>=_todayStr(); }), unp=_schedUnpublished();
+    var seg=function(v,lbl){ var on=_schedViewMode===v; return '<button class="btn btn--ghost btn--sm" style="border:0;border-radius:0;'+(on?'background:var(--brand-050);color:var(--brand);font-weight:700':'color:var(--muted)')+'" onclick="Atlas.schedView(\''+v+'\')">'+lbl+'</button>'; };
+    var toggle='<div style="display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden">'+seg('list','List')+seg('grid','Grid')+'</div>';
+    var pub=up.length?(unp?('<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="chip" style="background:#fef3c7;color:#92400e;font-size:11px">Draft &middot; '+unp+' unpublished</span><button class="btn btn--primary btn--sm" onclick="Atlas.schedPublish()">Publish schedule</button></div>'):('<span class="chip" style="background:#dcfce7;color:#166534;font-size:11px">Published &middot; your team can see it</span>')):'';
+    var bar='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px">'+toggle+pub+'</div>';
+    return bar+(_schedViewMode==='grid'?_scheduleGridHtml():_shiftsHtml()); }
   function _member(id){ return (S.team||[]).filter(function(x){return x.id===id;})[0]; }
   function openPerm(id){ if(!_guard('teamManage','Managing team &amp; access'))return; var m=_member(id); if(!m)return; var p=m.perms||_permsAll(false); m.perms=p;
     openModal('<div class="modal__head"><h3>Access &mdash; '+esc(m.name)+'</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -9925,14 +9993,15 @@ const Atlas = (function(){
         <div style="overflow-x:auto"><table class="tbl" style="border:1px solid var(--line);border-radius:10px">${document.getElementById('teamTbl')?document.getElementById('teamTbl').innerHTML:''}</table></div>
         <p style="font-size:12.5px;color:var(--muted);margin-top:12px">Roles: <b>Owner</b> (everything), <b>Manager</b> (all but billing), <b>Staff</b> (bookings &amp; customers), <b>Viewer</b> (read-only). Fully customizable per person.</p>
       </div>
-      <div class="set-block"><h3>Shifts &amp; scheduling</h3><div class="desc">Assign shifts across the week so everyone knows who's on &mdash; with weekly hours per person, ready when you add payroll.</div>
+      <div class="set-block"><h3>Shifts &amp; scheduling</h3><div class="desc">Build the week in plain English, then fine-tune it &mdash; weekly hours and labor cost per person, draft until you publish.</div>
         <div style="border:1px solid var(--brand);background:var(--brand-050);border-radius:12px;padding:14px 15px;margin-bottom:16px">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><b style="color:var(--ink);font-size:14px">Build my week with Atlas.io</b><span class="chip chip--brand" style="font-size:10px;padding:2px 7px">AI</span></div>
           <div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">Tell Atlas.io who works when, in plain English &mdash; it drafts an editable week below that you can tweak, add to, or remove.</div>
           <textarea class="input" id="schedNL" rows="3" style="resize:vertical;font-family:inherit;font-size:13px">${esc(_schedLastNL||SCHED_EXAMPLE)}</textarea>
           <div style="display:flex;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap"><button class="btn btn--primary btn--sm" onclick="Atlas.schedBuildAI()">Build schedule</button><span style="font-size:11.5px;color:var(--muted)">Regenerates the upcoming week &mdash; clears the last Atlas-built shifts.</span></div>
         </div>
-        ${_shiftsHtml()}
+        ${_schedRatesHtml()}
+        <div id="schedBody">${_schedBodyHtml()}</div>
         <button class="btn btn--ghost btn--sm" style="margin-top:12px" onclick="Atlas.addShift()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Add a shift</button>
       </div>`;
     else if(setCur==='security'){
@@ -15588,7 +15657,7 @@ const Atlas = (function(){
     _ldPhotoPick,_ldPhotoClear,_ldRecToggle,pnlSetPeriod,pnlSetKind,pnlMarginDrill,pnlRevDrill,pnlNetDrill,pnlExpDrill,assetPnlSetPeriod,renderPnl,
     renderWebsite,goDomain,buildWebsite,setWebField,_webInlineEdit,_webInlineKey,toggleWebSection,setWebFont,setWebTemplate,setWebAccent,webFaqAdd,webFaqSet,webFaqRemove,webPostAdd,webPostSet,webPostRemove,webPostToggle,webPostAddFromForm,webPageAdd,webPageSet,webPageRemove,webPageToggle,webPageNavToggle,webPageSectionAdd,webPageSectionSet,webPageSectionRemove,webPageSectionMove,webSecReorder,webSecDragStart,webSecDragOver,webSecDragLeave,webSecDrop,webSecDragEnd,webPageSectionListSet,webPageSectionListAdd,webPageSectionListRemove,webSecImgUpload,webSecGalleryUpload,webPageAddFromForm,webPageStarterLanding,webEditPage,webPagesBack,aiDesignSite,aiEditPage,webSetHomePage,webFleetPriceSet,webSetDevice,webUndoDesign,webViewLegal,webBookNow,_wbQuote,webSubmitBooking,publishBookingSite,copyBookingLink,webScopedLinkPick,copyScopedLink,webSiteCreate,webAutoSites,webSiteEdit,webSiteSave,webSitePubToggle,webSiteDelete,webSiteCopy,webSiteDomainModal,webSiteDomainConnect,webSiteDomainVerify,webSiteDomainDisconnect,webEmailDomainModal,webEmailDomainConnect,webEmailDomainVerify,webEmailDomainDisconnect,webEmailDomainActivate,copyEmbed,webDomainMode,webRevertDomain,webConnectDomain,webVerifyDomain,webSearchDomain,webBuyDomain,confirmDomainBuy,webDomLoad,webDomManage,webDomAutoRenew,webDomCheckConn,webDomDns,webDomDnsReload,webDomDnsAdd,webDomDnsDel,webDomDnsSet,webDomDnsSave,buyWebsiteAddon,confirmWebsiteAddon,seoHealthLoad,seoHealthJump,webLoadSiteStats,webMetaImageUpload,
     setFleetType,fleetAlsoToggle,setCustomNoun,demoBig,demoPick,fleetLoc,fleetSearch,fleetStatusFilter,fleetShowAll,
-    openPerm,setRolePreset,setPerm,setMemberField,inviteMember,_renderInviteModal,_inviteSet,_invitePreset,_invitePerm,saveInvite,resendInvite,copyInviteLink,teamRetryLoad,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,
+    openPerm,setRolePreset,setPerm,setMemberField,inviteMember,_renderInviteModal,_inviteSet,_invitePreset,_invitePerm,saveInvite,resendInvite,copyInviteLink,teamRetryLoad,removeMember,previewAs,exitPreview,addShift,saveShift,rmShift,schedBuildAI,editShift,saveShiftEdit,schedSetRate,schedView,schedPublish,schedQuickAdd,
     search,searchGo,_searchClose,
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,_uploadDocFile,uploadDocSave,regenDoc,deleteDoc,sendAgreement,uploadSigned,genWebLegal,sigFont,sigPrev,sigDrawToggle,sigDrawClear,saveSig,setTheme,toggleMenu,closeMenu,
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
