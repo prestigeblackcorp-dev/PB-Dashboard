@@ -2447,7 +2447,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.13ir';
+  var APP_VERSION='2026.11.13is';
   var APP_CHANGELOG=[
     'Money-accuracy &amp; scheduling fixes: your Net Profit and P&amp;L now subtract consignment (owner) fees and broker fees, so take-home is no longer overstated when you rent on behalf of owners or split with a broker; a percentage security hold is capped at 100% (a carried-over dollar amount can no longer become a runaway authorization); a booking can only be cancelled or voided through its proper flow, so deposits, refunds and cancellation fees are always handled; and the team Scheduler&rsquo;s shift list now follows the exact week you page to with the week arrows',
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
@@ -3508,7 +3508,7 @@ const Atlas = (function(){
   }
   // Re-fetch the logged-in user's role and adopt/clear the self-actor (UI gating). Server enforcement is the real backstop; this keeps the UI honest.
   function _selfActorSig(){ try{ return _selfActor?(JSON.stringify(_selfActor.perms||null)+'|'+(_selfActor.role||'')):'owner'; }catch(e){ return ''; } }   // compact signature of this session's effective access, to detect a real change
-  function _refreshSelfRole(){ if(!ATLAS_BACKEND) return Promise.resolve(); return _api('/api/auth/me',{method:'GET'}).then(function(res){ if(res&&res.json&&res.json.user){ var was=!!_selfActor, _before=_selfActorSig(); _applySelfRole(res.json.user); var _after=_selfActorSig(); if((_selfActor||was) && _before!==_after){ try{ var ap=document.getElementById('view-app'); if(S&&S.onboarded&&ap&&!ap.classList.contains('hidden')){ buildApp(); toast('Your access was updated'); } }catch(e){} } } }).catch(function(){}); }   // rebuild ONLY when this user's access actually changed, so the periodic self-caps poll never needlessly rebuilds/flickers the teammate's UI; tell them when it does change
+  function _refreshSelfRole(){ if(!ATLAS_BACKEND) return Promise.resolve(); return _api('/api/auth/me',{method:'GET'}).then(function(res){ if(res&&res.json&&('payProcessor' in res.json)){ try{ if(typeof S!=='undefined'&&S) S.payProcessor=res.json.payProcessor; }catch(e){} }   /* WAVE96c MONEY: adopt the live platform processor on every keepalive so the checkout fast-path is correct even before /api/tenant/profile loads (server stays authoritative via the checkout backstops regardless) */ if(res&&res.json&&res.json.user){ var was=!!_selfActor, _before=_selfActorSig(); _applySelfRole(res.json.user); var _after=_selfActorSig(); if((_selfActor||was) && _before!==_after){ try{ var ap=document.getElementById('view-app'); if(S&&S.onboarded&&ap&&!ap.classList.contains('hidden')){ buildApp(); toast('Your access was updated'); } }catch(e){} } } }).catch(function(){}); }   // rebuild ONLY when this user's access actually changed, so the periodic self-caps poll never needlessly rebuilds/flickers the teammate's UI; tell them when it does change
   // Shared with the post-2FA success path (mfaSubmit): local session pointer + seed + server hydrate.
   async function _srvAuthSettle(email, tenantId){
     _lsSet(SK, {email:_emailKey(email), tenantId:tenantId});
@@ -3695,6 +3695,8 @@ const Atlas = (function(){
   function showSignupPlans(){
     var tiers=TIERS.filter(function(t){ return !t.owner && !t.comp; });
     var endStr=_signupTrialEndStr();
+    var _fOn=!!(_founderInfo.program || (typeof S!=='undefined'&&S&&S.founder));   // Bug A: when the founder program is live, the plan page must show the founding-member price (50% off) with the list price struck through -- until the 1,000 cap. Mirrors the worker _founderMult (0.5) that is actually charged.
+    var _fLeft=Math.max(0, _founderInfo.remaining||0);
     var incl=FEATURES.map(function(f){ return '<span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:4px 9px;margin:0 6px 6px 0"><svg viewBox="0 0 20 20" width="12" height="12" fill="none"><path d="M16 6L8.5 13.5 4 9" stroke="var(--brand)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'+f[1]+'</span>'; }).join('');
     var cards=tiers.map(function(t){ var feat=(t.id==='pro'); var chosen=!!(S && S.chosenPlan===t.id);   // #291: the plan they already picked (persists cross-device via the settings mirror) -- highlight it so they are brought back to their choice
       var price=(t.price%1===0)?t.price:t.price.toFixed(2);
@@ -3706,7 +3708,7 @@ const Atlas = (function(){
           +'<div style="min-width:0"><div style="font-size:16.5px;font-weight:800;color:var(--ink)">'+t.name+(web?' <span class="chip chip--brand" style="margin-left:4px;vertical-align:middle">Website included</span>':'')+'</div>'
           +'<div style="font-size:12.5px;color:var(--muted);margin-top:2px">'+_tierCap(t)+' &middot; '+t.credits.toLocaleString()+' Atlas.io credits/week</div>'
           +(unlocks?'<div style="font-size:11.5px;color:var(--brand);font-weight:600;margin-top:4px">'+unlocks+'</div>':'')+'</div>'
-          +'<div style="text-align:right;flex:none"><div style="font-size:22px;font-weight:850;color:var(--ink)" class="tnum">$'+price+(t.id==='unlimited'?'+':'')+'</div><div style="font-size:11px;color:var(--muted)">/month after trial</div></div>'
+          +'<div style="text-align:right;flex:none">'+(_fOn?('<div style="font-size:12.5px;color:var(--muted);text-decoration:line-through;line-height:1.2" class="tnum">$'+price+'</div><div style="font-size:22px;font-weight:850;color:var(--brand)" class="tnum">$'+(function(){var c=Math.round((t.price*100)*0.5)/100;return (c%1===0)?c:c.toFixed(2);})()+(t.id==='unlimited'?'+':'')+'</div>'):('<div style="font-size:22px;font-weight:850;color:var(--ink)" class="tnum">$'+price+(t.id==='unlimited'?'+':'')+'</div>'))+'<div style="font-size:11px;color:var(--muted)">/month after trial</div></div>'
         +'</div>'
         +'<button class="btn '+((chosen||feat)?'btn--primary':'btn--ghost')+' btn--full btn--sm" style="margin-top:12px" onclick="Atlas._signupPickPlan(\''+t.id+'\')">'+(chosen?'Continue with '+t.name:'Start 7-day free trial')+'</button>'
       +'</div>'; }).join('');
@@ -3714,7 +3716,8 @@ const Atlas = (function(){
     if(!e){ e=document.createElement('div'); e.id='planGate'; e.className='verify-gate pay-gate'; e.style.cssText='align-items:flex-start;overflow-y:auto'; document.body.appendChild(e); }
     e.innerHTML='<div style="max-width:680px;width:100%;margin:auto">'
       +'<div style="text-align:center;margin-bottom:6px"><h2 style="font-size:23px;margin:0 0 6px;color:var(--ink,#182420)">Choose your plan</h2>'
-      +'<p style="font-size:13.5px;color:var(--muted);margin:0 auto;max-width:520px;line-height:1.5">Start with a <b>7-day free trial</b>. Add a card now to reserve your plan &mdash; you will not be charged until <b>'+endStr+'</b>, and you can change or cancel anytime before then.</p></div>'
+      +'<p style="font-size:13.5px;color:var(--muted);margin:0 auto;max-width:520px;line-height:1.5">Start with a <b>7-day free trial</b>. Add a card now to reserve your plan &mdash; you will not be charged until <b>'+endStr+'</b>, and you can change or cancel anytime before then.</p>'
+      +(_fOn?('<div style="margin:10px auto 0;max-width:520px"><span style="display:inline-block;background:linear-gradient(90deg,rgba(201,169,98,.16),rgba(201,169,98,.05));border:1px solid rgba(201,169,98,.45);border-radius:999px;padding:5px 14px;font-size:12.5px;font-weight:750;color:var(--brand)">&#11088; Founding Member &mdash; 50% off plans for life'+(_fLeft?(' &middot; '+_fLeft.toLocaleString()+' of 1,000 spots left'):'')+'</span></div>'):'')+'</div>'
       +'<div style="margin:16px 0 6px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--surface,#fff)"><div style="font-size:12px;font-weight:700;color:var(--ink);margin-bottom:8px">Every plan includes</div><div style="display:flex;flex-wrap:wrap">'+incl+'</div></div>'
       +cards
       +'<details style="margin:6px 0 4px"><summary style="cursor:pointer;font-size:13px;color:var(--brand);font-weight:600;text-align:center;list-style:none;padding:6px">See the full feature comparison</summary><div style="margin-top:12px">'+((typeof _priceCompareHtml==='function')?_priceCompareHtml():'')+'</div></details>'
@@ -3722,6 +3725,7 @@ const Atlas = (function(){
       +'<p style="font-size:11.5px;color:var(--muted);text-align:center;margin-top:8px;line-height:1.5">Secure card entry on Stripe &middot; Atlas never sees your card number &middot; cancel anytime, keep your data.</p>'
       +'</div>';
     e.classList.add('on');
+    if(!_fOn && ATLAS_BACKEND){ _api('/api/founder/status',{method:'GET'}).then(function(res){ var j=res&&res.json; if(j&&j.enabled&&j.open){ _founderInfo.program=true; _founderInfo.open=true; _founderInfo.remaining=j.remaining||0; var g=document.getElementById('planGate'); if(g&&g.classList.contains('on')) showSignupPlans(); } }).catch(function(){}); }   // Bug A: if the founder program status wasn't loaded when the gate first painted, fetch it and re-render so founding-member pricing shows (one-shot: once program=true the guard above stops re-fetching)
   }
   function _hideSignupPlans(){ var e=document.getElementById('planGate'); if(e) e.classList.remove('on'); }
   function _signupPickPlan(tierId){ var t=_tier(tierId); if(!t) return;
@@ -5748,14 +5752,18 @@ const Atlas = (function(){
   function assetRmDoc(id,did){ var a=(DATA.assets||[]).filter(function(x){return x.id===id;})[0]; if(!a)return; a.vault=_asVault(a).filter(function(x){return x.id!==did;}); _saveAssets(); save(); openAsset(id); }
   // Send the rental agreement to this tenant/renter for e-signature, or upload an already-signed one -- documented on the unit.
   function sendAgreement(id){ if(!_guard('fleetEdit'))return; var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return;
+    if(a.agreement&&(a.agreement.status==='signed'||a.agreement.status==='uploaded')){ if(!confirm('This '+S.fleet.noun+' already has a '+(a.agreement.status==='uploaded'?'signed copy on file':'completed signature on file')+'.\n\nSending again starts a NEW signature request and REPLACES it -- the existing signature, timestamps and audit trail are cleared. This cannot be undone.\n\nContinue?'))return; }   // P2: never silently wipe a completed/uploaded signature when the Send/Resend button is clicked
     var tn=(val('aTenName')||(a.tenant&&a.tenant.name)||'').trim(); if(!tn){ toast('Add the '+((_fterm('book')==='reservation')?'tenant':'renter')+' first'); return; }
     var te=(val('aTenEmail')||(a.tenant&&a.tenant.email)||'').trim();
-    if(_legal().agreement.status==='none'){ toast('Build your rental agreement first in Settings > Contracts & Legal'); goSettings('legal'); return; }
-    if(/^\[Uploaded: /.test(String(_legal().agreement.text||''))){ toast('Your agreement is only a placeholder -- paste the real text in Settings > Contracts & Legal before sending'); goSettings('legal'); return; }   // never send an unreadable placeholder for signature
+    var _hasAssetAgr=!!(a.agreementText&&a.agreementText.trim());   // P2: a per-asset contract is the EXACT text the worker /sign honors (precedence asset>tenant); mirror it here so the in-person sign captures the right terms
+    if(!_hasAssetAgr){
+      if(_legal().agreement.status==='none'){ toast('Build your rental agreement first in Settings > Contracts & Legal'); goSettings('legal'); return; }
+      if(/^\[Uploaded: /.test(String(_legal().agreement.text||''))){ toast('Your agreement is only a placeholder -- paste the real text in Settings > Contracts & Legal before sending'); goSettings('legal'); return; }   // never send an unreadable placeholder for signature
+    }
     if(!a.tenant) a.tenant={}; a.tenant.name=tn; if(te) a.tenant.email=te;   // capture what's on screen so Send works without a separate Save
     var now=Date.now();
     var _dEmail=te||(a.tenant&&a.tenant.email)||'';
-    a.agreement={ status:'sent', sentAt:now, to:(te||tn), deliveredTo:_dEmail||null, deliveredAt:null, docText:_legal().agreement.text, events:[{e:'sent',at:now}] };   /* readiness HIGH: do NOT fabricate delivered/opened events in a LEGAL audit trail -- only real events are recorded. WAVE75: status 'sent' (was 'created', which no consumer matched -> the row never showed "Open signing view"/"Resend" and the 'opened' stamp never fired) */
+    a.agreement={ status:'sent', sentAt:now, to:(te||tn), deliveredTo:_dEmail||null, deliveredAt:null, docText:(_hasAssetAgr?a.agreementText.trim():_legal().agreement.text), events:[{e:'sent',at:now}] };   /* readiness HIGH: do NOT fabricate delivered/opened events in a LEGAL audit trail -- only real events are recorded. WAVE75: status 'sent' (was 'created', which no consumer matched -> the row never showed "Open signing view"/"Resend" and the 'opened' stamp never fired) */
     _saveAssets(); _logEvent('contract','Agreement sent for '+a.name+' to '+tn+(_dEmail?(' <'+_dEmail+'>'):''),{asset:a.id}); closeModal(); renderFleet();
     openModal('<div class="modal__body" style="text-align:center;padding:30px 24px">'
       +'<div class="sign-check sign-check--sent">&#9993;</div>'
@@ -5765,9 +5773,13 @@ const Atlas = (function(){
       +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px" onclick="Atlas.closeModal()">Done</button></div>'); }
   function uploadSigned(id){ if(!_guard('fleetEdit'))return; var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return;
     var inp=document.createElement('input'); inp.type='file'; inp.accept='.pdf,image/*,.doc,.docx';
-    inp.onchange=function(){ var f=inp.files&&inp.files[0]; if(!f)return; var now=Date.now(); var prev=a.agreement||{};
-      a.agreement={ status:'uploaded', uploadedAt:now, signedAt:now, sentAt:prev.sentAt, viewedAt:prev.viewedAt, to:prev.to, docText:prev.docText||_legal().agreement.text, file:f.name, events:(prev.events||[]).concat([{e:'uploaded',at:now}]) };
-      _saveAssets(); _logEvent('contract','Signed copy uploaded for '+a.name+' ('+f.name+')',{asset:a.id}); closeModal(); renderFleet(); toast('Signed copy documented: '+esc(f.name)); };
+    inp.onchange=function(){ var f=inp.files&&inp.files[0]; if(!f)return; var prev=a.agreement||{};
+      var _store=function(dataUrl){ var now=Date.now();   // P2: actually KEEP the uploaded signed copy (data URL) so "Signed copy on file" is true + recoverable -- mirrors the portal ID-upload honesty path
+        a.agreement={ status:'uploaded', uploadedAt:now, signedAt:now, sentAt:prev.sentAt, viewedAt:prev.viewedAt, to:prev.to, docText:prev.docText||((a.agreementText&&a.agreementText.trim())?a.agreementText:_legal().agreement.text), file:f.name, fileData:dataUrl||null, fileType:f.type||'', events:(prev.events||[]).concat([{e:'uploaded',at:now}]) };
+        _saveAssets(); _logEvent('contract','Signed copy uploaded for '+a.name+' ('+f.name+(dataUrl?'':', filename only')+')',{asset:a.id}); closeModal(); renderFleet(); toast(dataUrl?('Signed copy saved: '+esc(f.name)):('Filename recorded: '+esc(f.name)+' -- too large to store here; keep the original safe')); };
+      if(/^image\//.test(f.type)){ var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result||''),1600,0.8,function(u){ _store(u||null); }); }; r.onerror=function(){ _store(null); }; r.readAsDataURL(f); }
+      else if(f.size && f.size<=5000000){ var r2=new FileReader(); r2.onload=function(e){ _store(String(e.target.result||'')); }; r2.onerror=function(){ _store(null); }; r2.readAsDataURL(f); }
+      else { _store(null); } };
     inp.click(); }
   /* ---- real-time e-signature: what the client sees, the pad, submit, view, download ---- every step timestamped ---- */
   var _sig={drawing:false,ink:false,ctx:null,canvas:null};
@@ -5793,7 +5805,7 @@ const Atlas = (function(){
   function _sigResult(){ var typed=(val('sigType')||'').trim(); if(_sig.ink&&_sig.canvas) return {type:'draw', data:_sig.canvas.toDataURL('image/png'), name:typed}; if(typed) return {type:'type', data:typed, name:typed}; return null; }
   function _sigSync(){ var btn=document.getElementById('sigSubmit'); if(!btn)return; var has=(_sig&&_sig.ink)||((val('sigType')||'').trim().length>1); var agreed=(document.getElementById('sigAgree')||{}).checked; btn.disabled=!(has&&agreed); }
   function openSignFlow(id){ var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a)return; var lg=_legal();
-    var doc=(a.agreement&&a.agreement.docText)||lg.agreement.text;
+    var doc=(a.agreement&&a.agreement.docText)||((a.agreementText&&a.agreementText.trim())?a.agreementText:lg.agreement.text);   // P2: fall back to the per-asset contract (not just the generic tenant agreement) when no send-time snapshot exists
     if(!doc){ toast('Build your rental agreement first in Settings > Contracts & Legal'); goSettings('legal'); return; }
     var t=a.tenant||{}, who=t.name||('the '+_custNoun());
     if(a.agreement&&a.agreement.status==='sent'){ a.agreement.status='viewed'; a.agreement.viewedAt=Date.now(); (a.agreement.events=a.agreement.events||[]).push({e:'viewed',at:a.agreement.viewedAt}); _saveAssets(); }
@@ -5826,7 +5838,7 @@ const Atlas = (function(){
       +'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px" onclick="Atlas.closeModal()">Done</button></div>'); }
   function viewSignedDoc(id){ var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a||!a.agreement){ toast('Nothing to view yet'); return; } var ag=a.agreement;
     var sigHtml=''; if(ag.sig){ sigHtml=(ag.sig.type==='draw')?('<img src="'+esc(ag.sig.data)+'" alt="signature" style="max-height:72px">'):('<span class="sig-typed">'+esc(ag.sig.data)+'</span>'); }
-    else if(ag.status==='uploaded') sigHtml='<span style="color:var(--muted);font-size:13px">Signed copy uploaded'+(ag.file?(': '+esc(ag.file)):'')+'</span>';
+    else if(ag.status==='uploaded') sigHtml='<span style="color:var(--muted);font-size:13px">Signed copy uploaded'+(ag.file?(': '+esc(ag.file)):'')+(ag.fileData?'':' (filename only &mdash; file not stored)')+'</span>'+(ag.fileData?(' <button class="btn btn--ghost btn--sm" style="margin-left:8px" onclick="Atlas.openUploadedSigned(\''+id+'\')">Open file</button>'):'');
     var trail=[]; if(ag.sentAt)trail.push('Sent '+_stamp(ag.sentAt)); if(ag.deliveredAt)trail.push('Delivered to '+esc(ag.deliveredTo||'')+' '+_stamp(ag.deliveredAt)); if(ag.viewedAt)trail.push('Opened by renter '+_stamp(ag.viewedAt)); if(ag.signedAt)trail.push('Signed '+_stamp(ag.signedAt)); if(ag.uploadedAt)trail.push('Uploaded '+_stamp(ag.uploadedAt));
     var priv=(ag.signDevice)?'<div style="font-size:11px;color:var(--faint);margin-top:8px;display:flex;align-items:center;gap:6px"><svg viewBox="0 0 16 16" width="12" height="12" fill="none"><path d="M8 1l5 2v4c0 3-2 5-5 6-3-1-5-3-5-6V3l5-2z" stroke="currentColor" stroke-width="1.3"/></svg>Signing device and timestamp recorded for your records (kept private).</div>':'';
     openModal('<div class="modal__head"><h3>'+esc(a.name)+' agreement</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -5842,10 +5854,12 @@ const Atlas = (function(){
     if(ag.signDevice)txt+='Signing device and timestamp: recorded for your records\n';
     txt+='\nDocumented and timestamped by Atlas Rental.io';
     try{ var blob=new Blob([txt],{type:'text/plain'}); var url=URL.createObjectURL(blob); var el=document.createElement('a'); el.href=url; el.download=(a.name||'agreement').replace(/[^a-z0-9]+/gi,'-').toLowerCase()+'-agreement.txt'; el.click(); setTimeout(function(){URL.revokeObjectURL(url);},1500); toast('Downloaded'); }catch(e){ toast('Download not available here'); } }
+  function openUploadedSigned(id){ var a=DATA.assets.filter(function(x){return x.id===id;})[0]; if(!a||!a.agreement||!a.agreement.fileData){ toast('No stored file'); return; } var ag=a.agreement;   // P2: open/download the signed copy we actually stored on upload
+    try{ var link=document.createElement('a'); link.href=ag.fileData; link.download=ag.file||'signed-agreement'; document.body.appendChild(link); link.click(); document.body.removeChild(link); }catch(e){ toast('Could not open'); } }
   function _agreementRow(id,ro){ var a=DATA.assets.filter(function(x){return x.id===id;})[0]||{}; var ag=a.agreement; var chip;
     if(!ag) chip='<span class="chip chip--muted">None on file</span>';
     else if(ag.status==='signed') chip='<span class="chip chip--ok"><span class="dot"></span>Signed</span>';
-    else if(ag.status==='uploaded') chip='<span class="chip chip--ok"><span class="dot"></span>Signed copy on file</span>';
+    else if(ag.status==='uploaded') chip='<span class="chip chip--ok"><span class="dot"></span>'+(ag.fileData?'Signed copy on file':'Signed copy noted')+'</span>';
     else if(ag.status==='viewed') chip='<span class="chip chip--warn"><span class="dot"></span>Opened, awaiting signature</span>';
     else chip='<span class="chip chip--info"><span class="dot"></span>Sent, awaiting signature</span>';
     var stamps=''; if(ag){ var ls=[]; if(ag.sentAt)ls.push('Sent '+_stamp(ag.sentAt)); if(ag.deliveredAt)ls.push('Delivered to '+esc(ag.deliveredTo||'')+' '+_stamp(ag.deliveredAt)); if(ag.viewedAt)ls.push('Opened '+_stamp(ag.viewedAt)); if(ag.signedAt)ls.push('Signed '+_stamp(ag.signedAt)); if(ag.uploadedAt)ls.push('Uploaded '+_stamp(ag.uploadedAt)+(ag.file?(' ('+esc(ag.file)+')'):''));
@@ -12263,12 +12277,13 @@ const Atlas = (function(){
   }
   function _xBtn(){ return '<button class="icon-btn" aria-label="Close" onclick="Atlas.closeModal()"><svg viewBox="0 0 18 18" fill="none"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>'; }   // fix: a11y name on the modal close X (used ~48x)
   // ---- Atlas PLATFORM billing: send the owner to Stripe hosted Checkout on ATLAS's account (so Atlas gets paid). Live only. ----
-  function _billingCheckout(kind,params){ if(_isNativeApp()){ _manageOnWeb(kind); return; }   // app-store compliance: digital purchases happen on the web, never via in-app Stripe
-    if(typeof S!=='undefined'&&S&&S.payProcessor==='square'&&(kind==='trial'||kind==='plan')){ _squarePlanCheckout(kind,params); return; }   // WAVE52: platform swapped to Square -> subscriptions use the inline Square card form (card-on-file), not the Stripe redirect
+  function _billingCheckout(kind,params,_noSquare){ if(_isNativeApp()){ _manageOnWeb(kind); return; }   // app-store compliance: digital purchases happen on the web, never via in-app Stripe
+    if(!_noSquare&&typeof S!=='undefined'&&S&&S.payProcessor==='square'&&(kind==='trial'||kind==='plan')){ _squarePlanCheckout(kind,params); return; }   // WAVE52: platform swapped to Square -> subscriptions use the inline Square card form (card-on-file), not the Stripe redirect. WAVE96c: _noSquare is set by the Square->Stripe fallback so it can never bounce back here.
     var body={kind:kind}; for(var k in (params||{})) body[k]=params[k];
     toast('Opening secure checkout...');
     _api('/api/billing/checkout',{method:'POST',body:body}).then(function(res){
       if(res.status>=200&&res.status<300&&res.json&&res.json.url){ if(kind==='trial') _funnelEvent('checkout_open');   /* #297 funnel: Stripe trial checkout actually opened (sendBeacon survives the redirect) */ window.location.href=res.json.url; }
+      else if(!_noSquare&&res.json&&res.json.code==='use_square'&&(kind==='trial'||kind==='plan')){ try{ if(typeof S!=='undefined'&&S) S.payProcessor='square'; }catch(e){} _squarePlanCheckout(kind,params); }   // WAVE96c MONEY: server is authoritative -- this account bills via Square -> run the Square checkout even if the client's processor flag was stale/unset (e.g. fresh signup, before /api/auth/me). _noSquare guards against a bounce loop.
       else { toast((res.json&&res.json.error)||'Could not start checkout - please try again'); }
     }).catch(function(){ toast('Network error starting checkout'); }); }
   // CRYPTO platform checkout (Coinbase Commerce) -- the crypto twin of _billingCheckout. Same app-store guard; the server
@@ -12301,7 +12316,7 @@ const Atlas = (function(){
     return _sqSdkP; }
   function _squarePlanCheckout(kind,params){ params=params||{}; if(_isNativeApp()){ _manageOnWeb(kind); return; }
     _api('/api/billing/square/config').then(function(res){ var cfg=(res&&res.json)||{};
-      if(!cfg.ready||!cfg.appId||!cfg.locationId){ toast('Square checkout is not fully set up yet.'); return; }
+      if(!cfg.ready||!cfg.appId||!cfg.locationId){ _billingCheckout(kind,params,true); return; }   // WAVE96c MONEY: the toggle says Square but Square isn't live yet -> fall back to the Stripe checkout instead of dead-ending (the server's _platProcessor already returns 'stripe' in this state, so the Stripe rail is the correct one). _noSquare=true prevents a bounce.
       var tiers=TIERS.filter(function(t){return !t.owner && !t.comp && t.price>0;});
       var _sel=params.tier||((S&&S.tier)||'pro');
       openModal('<div class="modal__head"><h3>Start your plan</h3>'+_xBtn()+'</div><div class="modal__body">'
@@ -12317,6 +12332,7 @@ const Atlas = (function(){
     var tier=val('sqTier')||'pro';
     _sqCard.tokenize().then(function(r){ if(!r||r.status!=='OK'){ throw new Error((r&&r.errors&&r.errors[0]&&r.errors[0].message)||'Card was not accepted'); } return _api('/api/billing/square/subscribe',{method:'POST',body:{tier:tier,sourceId:r.token}}); }).then(function(res){ var j=(res&&res.json)||{};
       if(res.status>=200&&res.status<300&&j.ok){ try{ S.tier=tier; S.plan='active'; if(!S.card)S.card={}; S.card.onFile=true; if(j.last4)S.card.last4=j.last4; save(); }catch(e){} closeModal(); toast('Subscribed - card saved, billed monthly.'); try{ hidePaywall(); _hideSignupPlans(); if(typeof renderTrialBox==='function')renderTrialBox(); if(typeof renderSet==='function')renderSet(); if(typeof _postVerifyProceed==='function')_postVerifyProceed(); if(typeof buildApp==='function')buildApp(); }catch(e){} try{ _reHydrateSoon(); }catch(e){} }
+      else if(j.code==='use_stripe'){ try{ if(typeof S!=='undefined'&&S) S.payProcessor='stripe'; }catch(e){} closeModal(); _billingCheckout('plan',{tier:tier},true); }   // WAVE96c MONEY: platform flipped to Stripe mid-flow (toggle governs both rails) -> switch to the Stripe checkout. _noSquare=true so it can't bounce back to Square.
       else { if(er) er.textContent=String(j.error||j.message||'Payment failed'); if(b){ b.disabled=false; b.textContent='Subscribe'; } }
       _sqBusy=false;
     }).catch(function(e){ if(er) er.textContent=((e&&e.message)||'Payment failed'); if(b){ b.disabled=false; b.textContent='Subscribe'; } _sqBusy=false; }); }
@@ -15682,7 +15698,7 @@ const Atlas = (function(){
     setLegalField,buildDoc,reviewDoc,viewDoc,saveDoc,uploadDoc,_uploadDocFile,uploadDocSave,regenDoc,deleteDoc,sendAgreement,uploadSigned,genWebLegal,sigFont,sigPrev,sigDrawToggle,sigDrawClear,saveSig,setTheme,toggleMenu,closeMenu,
     navHide,navShow,navRename,navSetBar,navToggleBar,navReset,
     setCommsMode,setCommsField,setPendingResend,setPendingSmsToken,connectSms,toggleAuto,setAutoDays,chaChingToggle,setSaleEmail,verifyResendKey,openEmailPlans,buyEmailPlan,openEmailBuilder,insertToken,previewEmail,saveEmailTemplate,sendCampaign,sendTestEmail,
-    openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,sigClear,_sigSync,
+    openSignFlow,submitSignature,viewSignedDoc,downloadSignedDoc,openUploadedSigned,sigClear,_sigSync,
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,renderPayouts,downloadReport,drillReportRow,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,reviewShowAll,
     renderTracking,openTrackerConnect,openTrackerHelp,connectTrackerLive,connectTrackerGeneric,trkPickProvider,trkGenericAuthUpdate,trkConnTab,trkLiveFieldsUpdate,trkFieldsUpdate,trkConnect,editTrackerConnect,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkMapOpen,trkMapSave,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,

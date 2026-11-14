@@ -6637,5 +6637,37 @@ ok(/await _revStatsBust\(env, brow\.tenant_id\);/.test(_WORKER_SRC), 'WAVE96b A4
 ok(/'\/api\/billing\/crypto-confirm' && method === 'POST'\) \{[\s\S]{0,120}?if \(!_can\(ctx, 'billing'\)\) return err\(403, 'Billing permission required\.'\);/.test(_WORKER_SRC), 'WAVE96b A10#2: crypto-confirm requires the billing permission after the CSRF check');
 ok(/'\/api\/billing\/confirm-session' && method === 'POST'\) \{[\s\S]{0,120}?if \(!_can\(ctx, 'billing'\)\) return err\(403, 'Billing permission required\.'\);/.test(_WORKER_SRC), 'WAVE96b A10#2: confirm-session requires the billing permission after the CSRF check');
 
+// ==== WAVE96c MONEY: Bug A -- the signup plan page shows founding-member pricing (list price struck through, 50% off) until the 1,000 cap; Bug B -- the owner's processor toggle governs EVERY subscription rail (Stripe<->Square), authoritative server-side, with a safe fall-through to Stripe when Square is only partially configured ====
+// Bug B worker backstops -- the toggle is ENFORCED at the checkout routes (not merely hinted to the client), so a stale/unset client flag (e.g. a fresh signup before /api/auth/me) can never bill on the wrong rail:
+ok(/\(kind === 'plan' \|\| kind === 'trial'\) && env\.PLATFORM_SQUARE_APP_ID && \(await _platProcessor\(env\)\) === 'square'\) return json\(\{ ok: false, code: 'use_square'/.test(_WORKER_SRC), 'WAVE96c Bug B: /api/billing/checkout refuses the Stripe rail with code:use_square when Square is the live processor AND its app id is set (so the client can actually render the Square form -- a partial Square config falls through to Stripe, never stranded)');
+ok(/\(await _platProcessor\(env\)\) !== 'square'\) return json\(\{ ok: false, code: 'use_stripe'/.test(_WORKER_SRC), 'WAVE96c Bug B: /api/billing/square/subscribe refuses with code:use_stripe when Square is NOT the live processor (symmetric backstop so the toggle governs both rails)');
+ok(/let _pp = 'stripe'; try \{ _pp = await _platProcessor\(env\); \} catch \(e\) \{\}/.test(_WORKER_SRC), 'WAVE96c Bug B: /api/auth/me computes the live platform processor');
+ok(/founderProgram: await _founderProgramOn\(env\), payProcessor: _pp,/.test(_WORKER_SRC), 'WAVE96c Bug B: /api/auth/me returns payProcessor so the client routes checkout to the right rail from first boot');
+{
+  const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');   // block-local client source (same pattern as the WAVE96a client-guard block)
+  // Bug B client -- honor the server's rail decision, with a _noSquare guard that makes a Stripe<->Square bounce impossible:
+  ok(/function _billingCheckout\(kind,params,_noSquare\)\{/.test(_ATLAS_SRC), 'WAVE96c Bug B: _billingCheckout takes a _noSquare guard param (prevents a Square<->Stripe bounce loop)');
+  ok(/else if\(!_noSquare&&res\.json&&res\.json\.code==='use_square'&&\(kind==='trial'\|\|kind==='plan'\)\)\{/.test(_ATLAS_SRC), 'WAVE96c Bug B: _billingCheckout honors a server use_square refusal -> runs the Square checkout even if the client processor flag was stale/unset (fresh signup)');
+  ok(/if\(!cfg\.ready\|\|!cfg\.appId\|\|!cfg\.locationId\)\{ _billingCheckout\(kind,params,true\); return; \}/.test(_ATLAS_SRC), 'WAVE96c Bug B: _squarePlanCheckout falls back to the Stripe checkout when Square is not fully set up (no dead-end toast)');
+  ok(/else if\(j\.code==='use_stripe'\)\{[\s\S]{0,140}?_billingCheckout\('plan',\{tier:tier\},true\);/.test(_ATLAS_SRC), 'WAVE96c Bug B: _squarePayGo falls back to the Stripe checkout if the platform flips to Stripe mid-flow');
+  ok(/if\(res&&res\.json&&\('payProcessor' in res\.json\)\)\{ try\{ if\(typeof S!=='undefined'&&S\) S\.payProcessor=res\.json\.payProcessor;/.test(_ATLAS_SRC), 'WAVE96c Bug B: _refreshSelfRole adopts the live processor from /api/auth/me on every keepalive so the fast-path is correct before /api/tenant/profile loads');
+  // Bug A client -- founding-member pricing on the signup plan page:
+  ok(/var _fOn=!!\(_founderInfo\.program \|\| \(typeof S!=='undefined'&&S&&S\.founder\)\);/.test(_ATLAS_SRC), 'WAVE96c Bug A: showSignupPlans computes founder-on from the live program flag or this tenant already being a founder');
+  ok(/_fOn\?\('<div style="font-size:12\.5px;color:var\(--muted\);text-decoration:line-through/.test(_ATLAS_SRC), 'WAVE96c Bug A: when founder pricing is on, the plan page strikes through the list price');
+  ok(/var c=Math\.round\(\(t\.price\*100\)\*0\.5\)\/100;return \(c%1===0\)\?c:c\.toFixed\(2\)/.test(_ATLAS_SRC), 'WAVE96c Bug A: the founder price shown is the list price * 0.5 (mirrors the worker _founderMult 0.5 that is actually charged), formatted to cents only when needed');
+  ok(/&#11088; Founding Member &mdash; 50% off plans for life/.test(_ATLAS_SRC), 'WAVE96c Bug A: the signup plan page shows the Founding Member banner while the program is live');
+  ok(/if\(!_fOn && ATLAS_BACKEND\)\{ _api\('\/api\/founder\/status'/.test(_ATLAS_SRC), 'WAVE96c Bug A: showSignupPlans fetches /api/founder/status and re-renders so founder pricing shows even when it was not loaded at first paint');
+}
+
+// ==== WAVE96c-legal: per-asset signed-agreement UX -- confirm before replacing an existing signature, actually STORE the uploaded signed copy (image downscaled / <=5MB data URL / filename-only fallback) so it is openable, and honor a per-asset contract's own text ====
+{
+  const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');   // block-local client source
+  ok(/if\(a\.agreement&&\(a\.agreement\.status==='signed'\|\|a\.agreement\.status==='uploaded'\)\)\{ if\(!confirm\(/.test(_ATLAS_SRC), 'WAVE96c-legal: sendAgreement confirms before replacing an already-signed/uploaded agreement (no silent clobber of a signature)');
+  ok(/var _hasAssetAgr=!!\(a\.agreementText&&a\.agreementText\.trim\(\)\);/.test(_ATLAS_SRC), 'WAVE96c-legal: sendAgreement detects a per-asset contract (its own agreementText), which the worker /sign honors by precedence');
+  ok(/var _store=function\(dataUrl\)\{/.test(_ATLAS_SRC), 'WAVE96c-legal: uploadSigned KEEPS the signed copy via a _store(dataUrl) closure so "Signed copy on file" is true');
+  ok(/function openUploadedSigned\(id\)\{/.test(_ATLAS_SRC) && /downloadSignedDoc,openUploadedSigned,/.test(_ATLAS_SRC), 'WAVE96c-legal: openUploadedSigned opens the stored signed copy and is exposed on the Atlas API');
+  ok(/\(a\.agreementText&&a\.agreementText\.trim\(\)\)\?a\.agreementText:lg\.agreement\.text\)/.test(_ATLAS_SRC), 'WAVE96c-legal: viewSignedDoc falls back to the per-asset contract text when there is no captured docText');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
