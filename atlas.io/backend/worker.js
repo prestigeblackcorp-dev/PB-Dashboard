@@ -18402,6 +18402,8 @@ function _inkFor(hex) { try { var h = String(hex || '').replace('#', ''); if (h.
 // byte-identical to before (no span, no script).
 function _pubCurOn(prof) { return !!(prof && prof.settings && prof.settings.flags && prof.settings.flags.liveCurrency); }
 function _pubPriceSpan(prof, cents) { cents = Math.round(Number(cents) || 0); var s = money2(cents); return _pubCurOn(prof) ? ('<span class="apr" data-c="' + cents + '">' + s + '</span>') : s; }
+function _bkIsMultiRate(a) { var c = a && a.card; if (!c || typeof c !== 'object') return false; var k = ['hour', 'day', 'week', 'month'], n = 0; for (var i = 0; i < 4; i++) { if (c[k[i]] != null && Number(c[k[i]]) >= 0) n++; } return n >= 2; }   // WAVE106d: true when an asset offers a multi-duration rate card (>=2 of hour/day/week/month). The public showcase then prefixes its headline price with "from" to signal duration-based pricing (longer books at a better effective rate); a single-rate asset -- or any asset object without a card -- returns false -> display byte-identical.
+function _pubFromPfx(a) { return _bkIsMultiRate(a) ? 'from ' : ''; }   // WAVE106d: the "from " prefix for a multi-rate asset's headline price span, '' otherwise.
 function _pubCurScriptFor(bodyHtml) { return (typeof bodyHtml === 'string' && bodyHtml.indexOf('class="apr"') >= 0) ? _PUB_CUR_JS : ''; }
 const _PUB_CUR_JS = `(function(){
   try{
@@ -18744,7 +18746,7 @@ function _seoLandingHtml(prof, color, land, seob, reviews) {
       + '<div style="padding:10px 12px"><div style="font-weight:700">' + esc(nm) + '</div>'
       + (ty ? ('<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999">' + esc(ty) + '</div>') : '')
       + (a && a.desc ? ('<div style="font-size:12px;color:#666;margin-top:3px">' + esc(String(a.desc).slice(0, 140)) + '</div>') : '')
-      + (rate > 0 ? ('<div style="font-weight:700;color:var(--brand);margin-top:5px">' + _pubPriceSpan(prof, Math.round(rate * 100)) + ' / ' + esc(unit) + '</div>') : '')
+      + (rate > 0 ? ('<div style="font-weight:700;color:var(--brand);margin-top:5px">' + _pubFromPfx(a) + _pubPriceSpan(prof, Math.round(rate * 100)) + ' / ' + esc(unit) + '</div>') : '')
       + '</div></div>';
   }).join('');
   var faqHtml = faq.map(function (f) { return '<div style="border-top:1px solid #eee;padding:12px 0"><div style="font-weight:700">' + esc(f.q) + '</div><div class="muted" style="margin-top:4px">' + esc(f.a) + '</div></div>'; }).join('');
@@ -19133,7 +19135,7 @@ function _assetDetailHtml(prof, color, asset, seob, reviews) {
     + '<h1 style="margin:14px 0 2px;font-size:24px">' + esc(nm) + '</h1>'
     + (ty ? ('<div style="font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#999">' + esc(ty) + '</div>') : '')
     + ratingLine
-    + (rate > 0 ? ('<div style="font-weight:800;color:var(--brand);font-size:20px;margin-top:10px">' + _pubPriceSpan(prof, Math.round(rate * 100)) + ' <span style="font-size:14px;font-weight:600;color:#777">/ ' + esc(unit) + '</span></div>') : '')
+    + (rate > 0 ? ('<div style="font-weight:800;color:var(--brand);font-size:20px;margin-top:10px">' + _pubFromPfx(asset) + _pubPriceSpan(prof, Math.round(rate * 100)) + ' <span style="font-size:14px;font-weight:600;color:#777">/ ' + esc(unit) + '</span></div>') : '')
     + (dsc ? ('<p style="color:#444;font-size:15px;line-height:1.6;margin-top:12px;white-space:pre-wrap">' + esc(dsc) + '</p>') : '')
     + '<a class="btn" href="' + esc(bookHref) + '" style="max-width:260px">Book this ' + esc(noun) + '</a>'
     + '<div style="margin-top:12px"><a href="' + esc(home) + '#fleet" style="color:var(--brand);text-decoration:none;font-size:13.5px">&lsaquo; Back to all ' + _seoPlural(noun) + '</a></div></div>';
@@ -19507,7 +19509,7 @@ function _renderSection(s, prof, color, seob) {
           return '<div class="pg-fleet-card" style="border:1px solid #ececec;border-radius:12px;overflow:hidden;background:#fff">' + im
             + '<div style="padding:10px 12px"><div style="font-weight:700">' + esc(nm) + '</div>'
             + (ty ? ('<div style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#999">' + esc(ty) + '</div>') : '')
-            + (showPrice && rate > 0 ? ('<div style="font-weight:700;color:var(--brand);margin-top:5px">' + _pubPriceSpan(prof, Math.round(rate * 100)) + ' / ' + esc(unit) + '</div>') : '')
+            + (showPrice && rate > 0 ? ('<div style="font-weight:700;color:var(--brand);margin-top:5px">' + _pubFromPfx(a) + _pubPriceSpan(prof, Math.round(rate * 100)) + ' / ' + esc(unit) + '</div>') : '')
             + '<a class="btn" href="' + esc(bookHref) + '">' + esc(lbtn) + '</a></div></div>';
         }).join('');
         inner = (lh ? ('<h2>' + esc(lh) + '</h2>') : '') + '<div class="pg-grid cols' + _pgCols(p.columns) + '">' + lcards + '</div>';
