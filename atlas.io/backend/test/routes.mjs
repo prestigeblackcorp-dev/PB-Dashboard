@@ -484,9 +484,9 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
         },
         all: async () => ({ results: [] }),
         run: async () => {
-          if (/INSERT INTO users \(id,email,pw_hash,pw_salt,tenant_id,role,created_at\)/.test(sql)) {
-            const [id, email, pw_hash, pw_salt, tenant_id, role, created_at] = a;
-            users.set(id, { id, email, pw_hash, pw_salt, tenant_id, role, created_at, email_verified: 1, mfa_method: null, mfa_secret_enc: null, mfa_pending_enc: null, mfa_backup_json: null, mfa_pending_backup_json: null, mfa_enabled_at: null });
+          if (/INSERT INTO users \(id,email,pw_hash,pw_salt,tenant_id,role,first_name,last_name,created_at\)/.test(sql)) {   // WAVE104: signup INSERT now carries first_name/last_name before created_at
+            const [id, email, pw_hash, pw_salt, tenant_id, role, first_name, last_name, created_at] = a;
+            users.set(id, { id, email, pw_hash, pw_salt, tenant_id, role, first_name, last_name, created_at, email_verified: 1, mfa_method: null, mfa_secret_enc: null, mfa_pending_enc: null, mfa_backup_json: null, mfa_pending_backup_json: null, mfa_enabled_at: null });
             usersByEmail.set(email, id);
           } else if (/UPDATE users SET last_login=\? WHERE id=\?/.test(sql)) { const u = users.get(a[1]); if (u) u.last_login = a[0]; }
           else if (/UPDATE users SET mfa_pending_enc=\?, mfa_pending_backup_json=\? WHERE id=\?/.test(sql)) { const u = users.get(a[2]); if (u) { u.mfa_pending_enc = a[0]; u.mfa_pending_backup_json = a[1]; } }   // audit c5 [19]: setup stages codes in the pending column (promoted at confirm), not live mfa_backup_json
@@ -2921,7 +2921,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
         all: async () => ({ results: [] }),
         run: async () => {
           if (/INSERT INTO tenants \(id,name,fleet_type,plan,trial_ends,created_at,updated_at,tz\)/.test(sql)) { const [id, name, fleet, plan, trial_ends, created_at, updated_at, tz] = a; tenants.set(id, { id, name, fleet_type: fleet, plan, trial_ends, tier: null, stripe_sub: null, created_at, updated_at, tz }); }
-          else if (/INSERT INTO users \(id,email,pw_hash,pw_salt,tenant_id,role,created_at\)/.test(sql)) { const [id, email, pw_hash, pw_salt, tenant_id, role, created_at] = a; users.set(id, { id, email, pw_hash, pw_salt, tenant_id, role, created_at, email_verified: 1, mfa_method: null, caps: null }); usersByEmail.set(email, id); }
+          else if (/INSERT INTO users \(id,email,pw_hash,pw_salt,tenant_id,role,first_name,last_name,created_at\)/.test(sql)) { const [id, email, pw_hash, pw_salt, tenant_id, role, first_name, last_name, created_at] = a; users.set(id, { id, email, pw_hash, pw_salt, tenant_id, role, first_name, last_name, created_at, email_verified: 1, mfa_method: null, caps: null }); usersByEmail.set(email, id); }
           else if (/UPDATE users SET last_login/.test(sql)) { const u = users.get(a[1]); if (u) u.last_login = a[0]; }
           else if (/UPDATE users SET email_verified/.test(sql)) { const u = users.get(a[1]); if (u) u.email_verified = a[0]; }
           else if (/INSERT INTO sessions/.test(sql)) sessions.set(a[0], { id: a[0], user_id: a[1], tenant_id: a[2], csrf: a[3], created_at: a[4], idle_at: a[5], expires_at: a[6], revoked_at: null });
@@ -3664,7 +3664,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
         all: async () => ({ results: [] }),
         run: async () => {
           if (/INSERT INTO tenants \(id,name,fleet_type,plan,trial_ends,created_at,updated_at,tz\)/.test(sql)) { const [id, name, fleet, plan, trial_ends, created_at, updated_at, tz] = a; tenants.set(id, { id, name, fleet_type: fleet, plan, trial_ends, tier: null, stripe_sub: null, card_on_file: 0, created_at, updated_at, tz }); }
-          else if (/INSERT INTO users \(id,email,pw_hash,pw_salt,tenant_id,role,created_at\)/.test(sql)) { const [id, email, pw_hash, pw_salt, tenant_id, role, created_at] = a; users.set(id, { id, email, pw_hash, pw_salt, tenant_id, role, created_at, email_verified: 1, mfa_method: null, caps: null }); usersByEmail.set(email, id); }
+          else if (/INSERT INTO users \(id,email,pw_hash,pw_salt,tenant_id,role,first_name,last_name,created_at\)/.test(sql)) { const [id, email, pw_hash, pw_salt, tenant_id, role, first_name, last_name, created_at] = a; users.set(id, { id, email, pw_hash, pw_salt, tenant_id, role, first_name, last_name, created_at, email_verified: 1, mfa_method: null, caps: null }); usersByEmail.set(email, id); }
           else if (/UPDATE users SET last_login/.test(sql)) { const u = users.get(a[1]); if (u) u.last_login = a[0]; }
           else if (/UPDATE users SET email_verified/.test(sql)) { const u = users.get(a[1]); if (u) u.email_verified = a[0]; }
           else if (/INSERT INTO sessions/.test(sql)) sessions.set(a[0], { id: a[0], user_id: a[1], tenant_id: a[2], csrf: a[3], created_at: a[4], idle_at: a[5], expires_at: a[6], revoked_at: null });
