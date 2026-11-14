@@ -6521,7 +6521,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/UPDATE tenants SET credits_week=0, email_month=0 WHERE id=\?/.test(_WORKER_SRC), 'WAVE78: the true-up resets credits_week + email_month so the next metering touch refills at the current tier');
   ok(/\(\(TIER_CREDITS\[newTier\] \|\| 0\) > \(TIER_CREDITS\[oldTier\] \|\| 0\)\)/.test(_WORKER_SRC), 'WAVE78: a non-forced true-up fires only on a genuine allotment INCREASE so a downgrade or lateral never re-grants (no gifting)');
   ok((_WORKER_SRC.match(/tier='unlimited', stripe_sub=NULL, square_tier=NULL, square_period_end=NULL, credits_week=0, email_month=0/g) || []).length === 2, 'WAVE78: BOTH comp grants reset the period markers so a comp refills at the Unlimited tier allotment');
-  ok((_WORKER_SRC.match(/await _tierTrueUp\(env,/g) || []).length === 6, 'WAVE78: all six paid upgrade paths (crypto, Stripe checkout, subscription.updated active, Square, confirm-session, change-plan) call the true-up');
+  ok((_WORKER_SRC.match(/await _tierTrueUp\(env,/g) || []).length === 7, 'WAVE78 + WAVE96d: all seven paid/trial paths (crypto, Stripe checkout, subscription.updated active, Square immediate, Square trial, confirm-session, change-plan) call the true-up');
   ok(/if \(_u53 && _u53\.meta && _u53\.meta\.changes\) await _tierTrueUp/.test(_WORKER_SRC), 'WAVE78: the subscription.updated true-up fires only when the tier UPDATE actually applied (superseded-sub-safe)');
   ok(/body\.email\.toLowerCase\(\)\)\.run\(\); \} catch \(e\) \{\}/.test(_WORKER_SRC), 'WAVE78 regression: the api admin comp UPDATE stays INSIDE its try-catch (the new comment must not swallow the closing catch)');
 }
@@ -6649,7 +6649,7 @@ ok(/founderProgram: await _founderProgramOn\(env\), payProcessor: _pp,/.test(_WO
   ok(/function _billingCheckout\(kind,params,_noSquare\)\{/.test(_ATLAS_SRC), 'WAVE96c Bug B: _billingCheckout takes a _noSquare guard param (prevents a Square<->Stripe bounce loop)');
   ok(/else if\(!_noSquare&&res\.json&&res\.json\.code==='use_square'&&\(kind==='trial'\|\|kind==='plan'\)\)\{/.test(_ATLAS_SRC), 'WAVE96c Bug B: _billingCheckout honors a server use_square refusal -> runs the Square checkout even if the client processor flag was stale/unset (fresh signup)');
   ok(/if\(!cfg\.ready\|\|!cfg\.appId\|\|!cfg\.locationId\)\{ _billingCheckout\(kind,params,true\); return; \}/.test(_ATLAS_SRC), 'WAVE96c Bug B: _squarePlanCheckout falls back to the Stripe checkout when Square is not fully set up (no dead-end toast)');
-  ok(/else if\(j\.code==='use_stripe'\)\{[\s\S]{0,140}?_billingCheckout\('plan',\{tier:tier\},true\);/.test(_ATLAS_SRC), 'WAVE96c Bug B: _squarePayGo falls back to the Stripe checkout if the platform flips to Stripe mid-flow');
+  ok(/else if\(j\.code==='use_stripe'\)\{[\s\S]{0,140}?_billingCheckout\((?:_sqPlanKind\|\|)?'plan',\{tier:tier\},true\);/.test(_ATLAS_SRC), 'WAVE96c Bug B / WAVE96d: _squarePayGo falls back to the Stripe checkout if the platform flips to Stripe mid-flow (carries the original kind)');
   ok(/if\(res&&res\.json&&\('payProcessor' in res\.json\)\)\{ try\{ if\(typeof S!=='undefined'&&S\) S\.payProcessor=res\.json\.payProcessor;/.test(_ATLAS_SRC), 'WAVE96c Bug B: _refreshSelfRole adopts the live processor from /api/auth/me on every keepalive so the fast-path is correct before /api/tenant/profile loads');
   // Bug A client -- founding-member pricing on the signup plan page:
   ok(/var _fOn=!!\(_founderInfo\.program \|\| \(typeof S!=='undefined'&&S&&S\.founder\)\);/.test(_ATLAS_SRC), 'WAVE96c Bug A: showSignupPlans computes founder-on from the live program flag or this tenant already being a founder');
@@ -6667,6 +6667,27 @@ ok(/founderProgram: await _founderProgramOn\(env\), payProcessor: _pp,/.test(_WO
   ok(/var _store=function\(dataUrl\)\{/.test(_ATLAS_SRC), 'WAVE96c-legal: uploadSigned KEEPS the signed copy via a _store(dataUrl) closure so "Signed copy on file" is true');
   ok(/function openUploadedSigned\(id\)\{/.test(_ATLAS_SRC) && /downloadSignedDoc,openUploadedSigned,/.test(_ATLAS_SRC), 'WAVE96c-legal: openUploadedSigned opens the stored signed copy and is exposed on the Atlas API');
   ok(/\(a\.agreementText&&a\.agreementText\.trim\(\)\)\?a\.agreementText:lg\.agreement\.text\)/.test(_ATLAS_SRC), 'WAVE96c-legal: viewSignedDoc falls back to the per-asset contract text when there is no captured docText');
+}
+
+// ==== WAVE96d SQUARE PARITY: the Square card-on-file flow reaches FULL Stripe parity -- a signup gets the SAME 7-day free trial
+// (card saved, $0 today, first charge at trial end), the SAME branded + itemized welcome email, trial->paid conversion in the
+// hourly cron, an on-access self-heal so a good card unlocks instantly (zero lockout window), and referral reward on convert ====
+ok(/async function _sendTrialWelcome\(env, o\) \{/.test(_WORKER_SRC), 'WAVE96d: the branded trial-welcome helper exists (shared by Stripe + Square so both send the identical itemized welcome)');
+ok(/await _sendTrialWelcome\(env, \{ to: md\.email/.test(_WORKER_SRC), 'WAVE96d: the Stripe trial webhook sends the welcome via the shared helper (no more inline divergent copy)');
+ok(/const _trialOk = _wantTrial && !\(_tr && Number\(_tr\.trial_used\)\)/.test(_WORKER_SRC), 'WAVE96d: /api/billing/square/subscribe grants a 7-day free trial only when asked AND the tenant has never used one (mirrors Stripe trial_used)');
+ok(/UPDATE tenants SET plan='trial', tier=\?, card_on_file=1, trial_used=1, trial_ends=\?, square_period_end=\?/.test(_WORKER_SRC), 'WAVE96d: a Square trial saves the card + sets plan=trial with NO charge today (square_period_end = the trial end = the first-charge date)');
+ok(/plan IN \('active','past_due','trial'\) AND deleted_at IS NULL ORDER BY square_period_end/.test(_WORKER_SRC), 'WAVE96d: the hourly Square billing cron now CONVERTS a trial (plan=trial) to its first paid month when square_period_end passes');
+ok(/if \(_wasTrial\) \{ try \{ await _referralOnConvert\(env, null, t\.id\)/.test(_WORKER_SRC), 'WAVE96d: a Square trial converting to paid credits the referrer (idempotent) -- parity with the Stripe invoice.paid convert');
+ok(/async function _squareHealCharge\(env, tenantId, email, now\) \{/.test(_WORKER_SRC), 'WAVE96d: the on-access Square self-heal helper exists (charges a good card inline so there is no lockout window waiting for the hourly cron)');
+ok(/if \(await _squareHealCharge\(env, ctx\.tenant_id, ctx\.user\.email, Date\.now\(\)\)\)/.test(_WORKER_SRC), 'WAVE96d: /api/auth/me runs the Square self-heal on trial_expired -- a paying customer unlocks instantly on dashboard load (twin of the Stripe reconcile)');
+ok(/'sqbill:' \+ tenantId \+ ':' \+ \(t\.square_period_end \|\| now\)/.test(_WORKER_SRC), 'WAVE96d: the self-heal shares the cron idem key (sqbill:<tid>:<cycle>) so a concurrent cron charge DEDUPS at Square -- never a double charge');
+ok(/trialEligible: _sqTrialOk, trialDays: 7/.test(_WORKER_SRC), 'WAVE96d: /api/billing/square/config returns trialEligible so the client renders accurate 7-day-free-trial vs charge-now copy');
+{
+  const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');   // block-local client source
+  ok(/kind:\(_sqPlanKind\|\|'plan'\)/.test(_ATLAS_SRC), 'WAVE96d: the Square checkout passes the intent kind so a signup trial gets the free trial instead of an immediate charge');
+  ok(/_sqTrial=\(String\(kind\)==='trial'\) && \(cfg\.trialEligible!==false\)/.test(_ATLAS_SRC), 'WAVE96d: the Square modal shows the 7-day-free-trial treatment for an eligible signup trial');
+  ok(/S\.plan=\(j\.trial\?'trial':'active'\)/.test(_ATLAS_SRC), 'WAVE96d: a successful Square trial sets the local plan to trial (not active) so the UI reflects the real state');
+  ok(/Your card is saved now &mdash; <b>\$0 today<\/b>/.test(_ATLAS_SRC), 'WAVE96d: the Square trial modal copy is accurate -- $0 today, first charge at trial end (no longer "charged now")');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
