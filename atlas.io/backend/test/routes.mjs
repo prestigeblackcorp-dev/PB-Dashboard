@@ -6711,5 +6711,16 @@ ok(/if \(!\(_role === 'owner' \|\| _role === 'analyst'\) && _g\) \{/.test(_WORKE
   ok(/id="cardRev"/.test(_ADMIN_SRC) && /id="grpRevPnl"/.test(_ADMIN_SRC) && /id="cardPnl"/.test(_ADMIN_SRC), 'WAVE96e client: the money cards + the Revenue & P&L group label carry ids so they can be hidden per role');
 }
 
+{
+  // WAVE96f: signup/verify plan-gate crash -- "Start free trial does nothing after verifying email". A fresh signup OR a
+  // verify-on-a-new-device has no local tenant blob yet (store.loadTenant returns null), so _postVerifyProceed ran
+  // showSignupPlans() with S=null -> _tierUnlocks() read S.fleet and THREW -> the whole plan-gate render aborted and the
+  // button did nothing. Fix: _tierUnlocks tolerates a null S, and _postVerifyProceed seeds fresh() when load() is null.
+  const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');   // block-local tenant-app source
+  ok(/typeof S!=='undefined'&&S&&S\.fleet&&S\.fleet\.nouns\)\|\|'assets'/.test(_ATLAS_SRC), 'WAVE96f: _tierUnlocks guards a null S (fresh signup / new-device verify) -- was an unguarded S.fleet that threw and aborted the showSignupPlans() render so "Start free trial" did nothing');
+  ok(!/\+ 500 '\+\(\(S\.fleet&&/.test(_ATLAS_SRC), 'WAVE96f: the OLD unguarded _tierUnlocks form (+ 500 "+((S.fleet&&...) is removed');
+  ok(/if\(!S\)\{ try\{ if\(store\.session\(\)\) S=fresh\(\); \}catch\(e\)\{\} \}/.test(_ATLAS_SRC), 'WAVE96f: _postVerifyProceed seeds a fresh() S when load() returns null, so the plan gate + pick->checkout never run on a null S');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');

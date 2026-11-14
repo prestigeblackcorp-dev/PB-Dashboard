@@ -2447,7 +2447,7 @@ const Atlas = (function(){
   function _fNum(d){ d=_fHalf(d); return (d===Math.floor(d))?(''+d):d.toFixed(2); }
   function _fDisp(d){ d=Number(d)||0; if(!_isFounder()) return '$'+d; return '<span style="text-decoration:line-through;opacity:.5">$'+d+'</span> <span style="color:var(--brand);font-weight:850">$'+_fNum(d)+'</span>'; }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.13it';
+  var APP_VERSION='2026.11.13iu';
   var APP_CHANGELOG=[
     'Money-accuracy &amp; scheduling fixes: your Net Profit and P&amp;L now subtract consignment (owner) fees and broker fees, so take-home is no longer overstated when you rent on behalf of owners or split with a broker; a percentage security hold is capped at 100% (a carried-over dollar amount can no longer become a runaway authorization); a booking can only be cancelled or voided through its proper flow, so deposits, refunds and cancellation fees are always handled; and the team Scheduler&rsquo;s shift list now follows the exact week you page to with the week arrows',
     'Critical fix: a new booking created directly as Confirmed (a walk-in, phone, AI, or recurring booking) was silently failing to save on the server &mdash; now fixed. Also: a captured security deposit is no longer double-counted in your revenue, net profit and tax export; a record you delete can&rsquo;t quietly come back if the delete didn&rsquo;t reach the server; an erased customer stays erased even through the PB sync; and turning on push notifications is now CSRF-protected',
@@ -3820,6 +3820,7 @@ const Atlas = (function(){
     }).catch(function(){ toast('Network error'); });
   }
   function _postVerifyProceed(bs){ S=load();
+    if(!S){ try{ if(store.session()) S=fresh(); }catch(e){} }   // #bugfix: a fresh signup OR a verify-on-a-new-device has no local tenant blob yet -> load() returns null. showSignupPlans()->_tierUnlocks() then read S.fleet and THREW, so the plan gate never rendered and "Start free trial" did nothing. Seed the default (in-memory; persisted when they pick/onboard) so the whole post-verify path runs on a valid S. _tierUnlocks is also hardened to tolerate a null S as a belt-and-suspenders guard.
     if(bs && bs!=='ok' && !_isOwnerAcct()){ if(SIGNUP_PLAN_FIRST && PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !_isNativeApp() && bs==='needs_card'){ showSignupPlans(); return; } showPaywall(bs); return; }   // owner is comped -- never gated post-verify. #291: after email verify (often on a DIFFERENT device), a not-yet-carded user goes to the plan PICKER (their prior pick is highlighted), not the bare card gate. #280/#276: other locked states still hit the paywall.
     if(S && S.onboarded){ applyBrand(); buildApp(); show('app'); }
     else if(S && S.onboardStarted){ applyBrand(); step=Math.min(S.onboardStep||0,STEPS.length-1); show('onboarding'); renderStep(); }
@@ -12794,7 +12795,7 @@ const Atlas = (function(){
     return '<div class="set-block"><h3>Add-ons</h3><div class="desc">Extra features on your account. Cancel anytime.</div>'
       +as.map(function(a){ return '<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line-2)"><div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:14px">'+a.title+'</b><div style="font-size:12.5px;color:var(--muted)">'+esc(a.price)+' &middot; active</div></div><button class="btn btn--sm btn--danger" onclick="Atlas.removeAddon(\''+a.key+'\')">Cancel</button></div>'; }).join('')+'</div>'; }
   // What each plan unlocks beyond the one below it (sells the ladder in the Plans modal).
-  function _tierUnlocks(id){ var m={ starter:'Bookings, contracts, member portal, analytics', pro:'+ Live GPS tracking &amp; 3D map view', enterprise:'+ AI website builder, multi-location', business:'+ 500 '+((S.fleet&&S.fleet.nouns)||'assets')+', priority support', unlimited:'+ Unlimited everything' }; return m[id]||''; }
+  function _tierUnlocks(id){ var m={ starter:'Bookings, contracts, member portal, analytics', pro:'+ Live GPS tracking &amp; 3D map view', enterprise:'+ AI website builder, multi-location', business:'+ 500 '+((typeof S!=='undefined'&&S&&S.fleet&&S.fleet.nouns)||'assets')+', priority support', unlimited:'+ Unlimited everything' }; return m[id]||''; }
   function openWebsite(){ if(closeAio) closeAio(); go('website'); }
   /* ---- WEBSITE module: Atlas.io-built site from your data + domain connect/buy (Phase 3) ---- */
   function _web(){ if(!S.website) S.website={built:false,headline:'',tagline:'',about:'',showFleet:true,showAbout:true,showContact:true,posts:[],domain:{mode:'sub',custom:'',status:'live'}};
