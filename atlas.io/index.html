@@ -1531,6 +1531,7 @@ body.trk-fs-on .trk-fs-exit{display:grid}
       <h2 id="authTitle" style="text-align:center;font-size:24px;letter-spacing:-.02em">Create your account</h2>
       <p id="authLead" style="text-align:center;color:var(--muted);font-size:14px;margin:8px 0 24px">Start your 7-day free trial. No charge for 7 days - cancel anytime.</p>
       <div id="authErr" role="alert" style="display:none;background:var(--danger-bg);color:var(--danger-text);font-size:13px;font-weight:600;border-radius:9px;padding:10px 12px;margin-bottom:14px"></div>
+      <div class="field" id="authNameField"><label>Your name</label><div class="row2" style="gap:10px"><input class="input" id="authFirst" type="text" placeholder="First name" autocomplete="given-name" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"><input class="input" id="authLast" type="text" placeholder="Last name" autocomplete="family-name" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"></div></div>
       <div class="field" id="authEmailField"><label>Email address</label><input class="input" id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"></div>
       <div class="field"><label>Password</label><div style="position:relative;display:flex;align-items:center"><input class="input" id="authPass" type="password" placeholder="At least 8 characters" autocomplete="current-password" style="padding-right:60px" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"><button type="button" id="authPassEye" onclick="Atlas.authTogglePass()" style="position:absolute;right:8px;background:none;border:0;color:var(--muted);font-size:12.5px;font-weight:600;cursor:pointer;padding:6px;line-height:1">Show</button></div></div>
       <div class="field" id="authTokenField" style="display:none"><label>Owner setup token</label><input class="input" id="authToken" type="password" placeholder="Your OWNER_SETUP_TOKEN" autocomplete="off" autocapitalize="off" spellcheck="false" onkeydown="if(event.key==='Enter')Atlas.authSubmit()"><div style="font-size:12px;color:var(--muted);margin-top:4px">This is the platform-owner email. Enter your setup token (the Cloudflare secret) to claim it &mdash; this is NOT your login password.</div></div>
@@ -1988,11 +1989,11 @@ const Atlas = (function(){
       setInterval(function(){ try{ if(!document.hidden) _vping(); }catch(e){} }, 60000);   // heartbeat while the tab is visible, so "active now" ages out naturally when a visitor leaves/hides the tab
     }catch(e){} });
   // Server-authoritative signup/login -> the server assigns tenant_id + a CSRF token (held in memory).
-  function _srvAuth(mode,email,pass,setupToken){
+  function _srvAuth(mode,email,pass,setupToken,first,last){
     // A remembered device sends back its trusted_device token (see mfaSubmit) so the server can skip a repeat
     // 2FA challenge; sits in the JSON body (not a header) so it never needs a CORS allow-list change.
     var body = mode==='login' ? {email:email,password:pass,trusted_device:_mfaDeviceToken(email)}
-             : {email:email,password:pass,business:(S&&S.brand&&S.brand.name)||'My Rental Business',fleet:(S&&S.fleet&&S.fleet.id)||'cars',ref:_refStoredCode()};
+             : {email:email,password:pass,firstName:first||'',lastName:last||'',business:(S&&S.brand&&S.brand.name)||'My Rental Business',fleet:(S&&S.fleet&&S.fleet.id)||'cars',ref:_refStoredCode()};
     if(mode==='signup' && setupToken) body.setupToken=setupToken;   // owner-claim: the OWNER_SETUP_TOKEN rides in the signup body (never a header) so the reserved owner email can be created/recovered right on the website
     return _api('/api/auth/'+(mode==='login'?'login':'signup'),{method:'POST',body:body}).then(function(res){
       if(res.json && res.json.mfa_required){ return {mfa:true, method:res.json.method, challenge:res.json.challenge}; }
@@ -2473,8 +2474,9 @@ const Atlas = (function(){
   function _fbSel(key){ _fbPending=key||''; try{ Array.prototype.forEach.call(document.querySelectorAll('.fbpick'),function(el){ var on=el.getAttribute('data-fbkey')===key; el.style.borderColor=on?'rgba(201,169,98,.9)':'rgba(201,169,98,.25)'; el.style.boxShadow=on?'0 0 0 1px rgba(201,169,98,.6)':'none'; }); }catch(e){} var c=document.getElementById('fbpickConfirm'); if(!c) return; if(!key||!_FB_META[key]){ c.innerHTML=''; return; } c.innerHTML='<button class="btn btn--primary" style="width:100%" onclick="Atlas._fbCommit()">Make '+esc(_FB_META[key].name)+' my mark &mdash; permanently</button>'; }
   function _fbCommit(){ var key=_fbPending; if(!key||!_FB_META[key]) return; var cb=document.querySelector('#fbpickConfirm .btn'); if(cb){ cb.disabled=true; cb.textContent='Saving...'; } _api('/api/founder/badge',{method:'POST',body:{badge:key}}).then(function(res){ var j=res&&res.json; if(res.status>=200&&res.status<300&&j&&j.ok){ _founderInfo.badge=j.badge||key; try{ if(typeof S!=='undefined'&&S){ S.founderBadge=j.badge||key; save(); } }catch(e){} try{ closeModal(); }catch(e){} try{ toast('Your founder badge is set: '+((_FB_META[j.badge||key]||{}).name||'')); }catch(e){} try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } else { if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast((j&&j.error)||'Could not save your badge.'); }catch(e){} } }).catch(function(){ if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast('Network error -- try again.'); }catch(e){} }); }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.13ja';
+  var APP_VERSION='2026.11.13jb';
   var APP_CHANGELOG=[
+    'Your name on your account: sign-up now asks for your first and last name, and HQ shows that real name next to your business name &mdash; so your team and your records read &ldquo;Jane Smith &middot; JewelTime&rdquo; instead of just an email address.',
     'Simpler setup: when you rent something custom, you now name it in ONE box (just the singular) &mdash; Atlas fills in the plural automatically everywhere (e.g. &ldquo;drone&rdquo; &rarr; &ldquo;drones&rdquo;), with no separate singular/plural fields.',
     'Critical setup fix: after finishing setup, &ldquo;Open my dashboard&rdquo; could do nothing, the rates step could fail to load (so pricing looked stuck on daily with no hourly/weekly choice), and adding more than one item during setup could stall. The cause was an incomplete money profile coming back right after signup; Atlas now always fills in complete defaults (rate model, deposit and refundable security hold) so onboarding, the rate picker and your dashboard open every time.',
     'Founders Badge Collection: founding members now choose a collectible medallion &mdash; one of ten (The King, The Queen, The Shark, The Immortal and more) &mdash; as their permanent mark, shown on your billing &amp; membership card. Pick yours from the Founding Member panel; only the first 1,000 founders ever hold one.',
@@ -3433,6 +3435,7 @@ const Atlas = (function(){
       document.getElementById('authBtn').textContent='Join the team';
       document.getElementById('authSwitch').innerHTML='';
       if(_ef) _ef.style.display='none';                       // the invite token identifies the account -- no email needed
+      var _nfi=document.getElementById('authNameField'); if(_nfi) _nfi.style.display='none';   // WAVE104: no first/last name fields on the invite/join screen
       var _cwi=document.getElementById('authConsent'); if(_cwi) _cwi.style.display='none';
       var _fwi=document.getElementById('authForgot'); if(_fwi) _fwi.style.display='none';
       var _pwi=document.getElementById('authPass'); if(_pwi){ _pwi.type='password'; _pwi.setAttribute('autocomplete','new-password'); _pwi.placeholder='At least 8 characters'; }
@@ -3441,6 +3444,7 @@ const Atlas = (function(){
     }
     if(_ef) _ef.style.display='';                             // restore the email field for login/signup
     var login=_authMode==='login';
+    var _nf=document.getElementById('authNameField'); if(_nf) _nf.style.display=login?'none':'';   // WAVE104: first/last name only when creating an account
     document.getElementById('authTitle').textContent = login?'Welcome back':'Create your account';
     document.getElementById('authLead').textContent = login?'Sign in to your Atlas Rental.io dashboard.':'Start your 7-day free trial. No charge for 7 days - cancel anytime.';
     document.getElementById('authBtn').textContent = login?'Sign in':'Create account';
@@ -3492,6 +3496,8 @@ const Atlas = (function(){
     if(_authMode==='invite') return _acceptInviteSubmit();
     var email=(document.getElementById('authEmail')||{}).value||'', pass=(document.getElementById('authPass')||{}).value||'';
     if(_authMode==='signup'){ var _ag=document.getElementById('authAgree'); if(_ag && !_ag.checked){ _authErr('Please agree to the Terms & Privacy Policy to create your account.'); return; } }
+    var _first='', _last='';   // WAVE104: capture the person's real first/last name at signup so HQ shows a human owner name everywhere, not just the email
+    if(_authMode==='signup'){ _first=((document.getElementById('authFirst')||{}).value||'').trim(); _last=((document.getElementById('authLast')||{}).value||'').trim(); if(!_first||!_last){ _authErr('Please enter your first and last name.'); var _nel=document.getElementById(_first?'authLast':'authFirst'); if(_nel&&_nel.focus)_nel.focus(); return; } }
     // Friendly, instant checks BEFORE the server round-trip -- a non-technical user sees exactly what to fix (and the real 8-char rule) without a confusing "rejected" bounce. Trim stray spaces they often paste into the email.
     email=email.trim();
     if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ _authErr('Please enter a valid email address, like you@example.com.'); return; }
@@ -3506,7 +3512,7 @@ const Atlas = (function(){
         // Server owns identity: the Worker verifies + assigns tenant_id. We mirror a local session under that
         // SAME id so every existing (synchronous, instant) render keeps working -- then hydrate the server rows.
         var _tokEl=document.getElementById('authToken'); var _tok=(_tokEl&&_tokEl.value||'').trim();
-        r = await _srvAuth(_authMode, email, pass, _tok);
+        r = await _srvAuth(_authMode, email, pass, _tok, _first, _last);
         if(r.mfa){ _mfaBegin(email, r.method, r.challenge); return; }   // 2FA is on for this account -- show the code screen instead of finishing sign-in
         if(r.err){
           if(_authMode==='signup' && /reserved for the platform owner/i.test(r.err)){   // owner-claim: reveal the setup-token field so the reserved owner email can be claimed (or recovered) right here on the website

@@ -6818,6 +6818,28 @@ ok(/if \(!\(_role === 'owner' \|\| _role === 'analyst'\) && _g\) \{/.test(_WORKE
   ok(/onchange="Atlas\.setCustomNounSolo\(this\.value\)"/.test(_ATLAS_SRC), 'WAVE103: the custom-type naming input commits via the single-box solo setter (onboarding + settings)');
   ok(/setCustomNounSolo,_customNounPreview,/.test(_ATLAS_SRC), 'WAVE103: the one-box naming handlers are exported on Atlas so onchange/oninput resolve');
   ok(!/setCustomNoun\('nouns'/.test(_ATLAS_SRC), 'WAVE103: the separate manual Plural input is gone (no setCustomNoun(\'nouns\') caller remains)');
+
+  // WAVE104 OWNER NAME: signup captures the person's first + last name; HQ shows that human name next to the business name.
+  // The worker stores it on the users row (the business name stays tenants.name), /api/admin/members returns owner_name, and
+  // the website signup form requires first + last. (owner ask: "sign up should get first and last name and should use first
+  // and last in all hq places for customer name and once they enter business name that should show as well")
+  ok(/ALTER TABLE users ADD COLUMN first_name TEXT/.test(_WORKER_SRC), 'WAVE104: users.first_name column is created');
+  ok(/ALTER TABLE users ADD COLUMN last_name TEXT/.test(_WORKER_SRC), 'WAVE104: users.last_name column is created');
+  ok(/var _fn = \(vStr\(body\.firstName, 60\) && body\.firstName\.trim\(\)\)/.test(_WORKER_SRC), 'WAVE104: signup reads + bounds body.firstName into _fn');
+  ok(/var _ln = \(vStr\(body\.lastName, 60\) && body\.lastName\.trim\(\)\)/.test(_WORKER_SRC), 'WAVE104: signup reads + bounds body.lastName into _ln');
+  ok(/INSERT INTO users \(id,email,pw_hash,pw_salt,tenant_id,role,first_name,last_name,created_at\)/.test(_WORKER_SRC), 'WAVE104: the signup users INSERT has the first_name/last_name columns');
+  ok(/\.bind\(uid, body\.email\.toLowerCase\(\), hash, salt, tid, 'owner', _fn, _ln, now\)/.test(_WORKER_SRC), 'WAVE104: the signup users INSERT binds _fn,_ln');
+  ok(/var _ssoFirst = _ssoParts\.length \? _ssoParts\[0\]\.slice\(0, 60\) : null;/.test(_WORKER_SRC), 'WAVE104: SSO signup splits the Google display name into first/last');
+  ok(/\.bind\(_uid, _email, _rpw\.hash, _rpw\.salt, _tid, 'owner', 1, _ssoFirst, _ssoLast, _now\)/.test(_WORKER_SRC), 'WAVE104: the SSO users INSERT binds _ssoFirst,_ssoLast');
+  ok(/\(SELECT TRIM\(COALESCE\(first_name,''\)\|\|' '\|\|COALESCE\(last_name,''\)\) FROM users WHERE tenant_id=t\.id AND role='owner' ORDER BY created_at LIMIT 1\) AS owner_name,/.test(_WORKER_SRC), 'WAVE104: /api/admin/members returns owner_name (owner first + last)');
+  ok(/id="authFirst"/.test(_ATLAS_SRC) && /id="authLast"/.test(_ATLAS_SRC), 'WAVE104: the auth form has first + last name inputs');
+  ok(/function _srvAuth\(mode,email,pass,setupToken,first,last\)\{/.test(_ATLAS_SRC), 'WAVE104: _srvAuth takes first/last');
+  ok(/firstName:first\|\|'',lastName:last\|\|'',business:/.test(_ATLAS_SRC), 'WAVE104: the signup body sends firstName/lastName alongside the business name');
+  ok(/Please enter your first and last name\./.test(_ATLAS_SRC), 'WAVE104: signup validates that first + last name were entered');
+  ok(/_nf\.style\.display=login\?'none':''/.test(_ATLAS_SRC), 'WAVE104: the name fields show for signup and hide for login');
+  const _ADMIN_SRC = readFileSync(new URL('../../admin.html', import.meta.url), 'utf8');
+  ok(/esc\(\(m\.owner_name\|\|''\)\.trim\(\)\|\|m\.name\|\|'\(unnamed\)'\)/.test(_ADMIN_SRC), 'WAVE104: HQ members table leads with the owner name (falls back to the business name for legacy accounts)');
+  ok(/\+' '\+\(m\.owner_name\|\|''\)\)\.toLowerCase\(\)/.test(_ADMIN_SRC), 'WAVE104: HQ member search matches the owner name too');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
