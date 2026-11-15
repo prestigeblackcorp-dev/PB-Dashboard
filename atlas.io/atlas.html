@@ -2128,6 +2128,40 @@ const Atlas = (function(){
   }catch(e){ return {id:row.id}; } }
   var _staleRehydrateT=null;
   function _reHydrateSoon(){ if(_staleRehydrateT) return; _staleRehydrateT=setTimeout(function(){ _staleRehydrateT=null; try{ if(typeof _srvHydrate==='function'){ var _s=store.session(); if(_s) _srvHydrate(_s.tenantId); } }catch(e){} }, 800); }   // sync data-loss fix: debounce so one stale burst triggers ONE hydrate, not one per record
+  // ===== D1-SAFE SYNC WRITE QUEUE (root-cause fix for the "D1 DB is overloaded -- too many resources
+  // consumed within a 10 second window" storm) =====
+  // A large tenant (~250 dirty records) otherwise fired ~250 PUTs in one burst -> D1's rolling 10s
+  // resource budget blew -> EVERY write 500'd -> records stayed DIRTY -> the next _srvSyncPush re-burst
+  // the same 250 -> self-sustaining (observed 23k failed writes over 4 days on the largest tenant; D1 is
+  // shared tenant-scoped, so one tenant's burst can 500 OTHERS in the same window). This queue dispatches
+  // at most _WQ_MAX writes at a time, spaced by _WQ_GAP ms, and backs off (exponential, capped) whenever
+  // the server reports a 5xx/overload -- so the burst can never form and a failure can never retry-storm.
+  // A single interactive edit (1 dirty record) still dispatches IMMEDIATELY (no gap/cooldown pending yet);
+  // only a BACKLOG is paced. Records that fail stay dirty (handlers below unchanged) and re-drain safely.
+  var _wq=[], _wqActive=0, _wqLastAt=0, _wqCooldownUntil=0, _wqBackoff=0, _wqTimer=null, _wqRetryT=null, _wqInflight={};
+  var _WQ_MAX=2;            // at most 2 data writes in flight
+  var _WQ_GAP=250;          // >=250ms between dispatch starts (~4/sec, ~40 per 10s window -- well under D1's budget)
+  var _WQ_BACKOFF0=1500, _WQ_BACKOFF_MAX=30000;
+  function _wqOverload(){ _wqBackoff = _wqBackoff ? Math.min(_wqBackoff*2, _WQ_BACKOFF_MAX) : _WQ_BACKOFF0; _wqCooldownUntil = Date.now() + _wqBackoff;
+    if(!_wqRetryT){ _wqRetryT=setTimeout(function(){ _wqRetryT=null; try{ _srvSyncPush(); }catch(e){} }, _wqBackoff+300); } }   // after the cool-down, re-scan for still-dirty records so a backed-off backlog finishes draining with no user action (dedup keeps it bounded)
+  function _wqOk(){ _wqBackoff=0; }   // a success clears the backoff ramp
+  function _wqPump(){
+    if(_wqActive>=_WQ_MAX || !_wq.length) return;
+    var now=Date.now(), wait=Math.max(_wqCooldownUntil-now, (_wqLastAt+_WQ_GAP)-now, 0);
+    if(wait>0){ if(!_wqTimer){ _wqTimer=setTimeout(function(){ _wqTimer=null; _wqPump(); }, wait); } return; }
+    var fn=_wq.shift(); _wqActive++; _wqLastAt=now;
+    var p; try{ p=fn(); }catch(e){ p=null; }
+    var done=function(){ _wqActive--; _wqPump(); };
+    if(p&&typeof p.then==='function') p.then(done,done); else done();
+    if(_wqActive<_WQ_MAX && _wq.length && !_wqTimer){ _wqTimer=setTimeout(function(){ _wqTimer=null; _wqPump(); }, _WQ_GAP); }
+  }
+  // Enqueue a write. `k` dedupes: if a write for this key is already queued/in-flight, SKIP -- the record
+  // stays dirty (its hash != _pushedHash) so the NEXT _srvSyncPush re-enqueues it with the LATEST bytes.
+  // This keeps the queue bounded under repeated _srvSyncPush calls without ever losing an edit.
+  function _wqPush(k, fn){ if(typeof fn!=='function') return; if(k){ if(_wqInflight[k]) return; _wqInflight[k]=1; }
+    _wq.push(function(){ var clr=function(){ if(k) delete _wqInflight[k]; }; var p; try{ p=fn(); }catch(e){ p=null; }
+      if(p&&typeof p.then==='function') return p.then(function(v){ clr(); return v; }, function(){ clr(); }); clr(); return p; });
+    _wqPump(); }
   function _srvMirror(kind,item,hk,hv){ if(!ATLAS_BACKEND||!_apiCsrf||!item||!item.id) return; var body=_srvShape(kind,item);
     // #294 Gap 4: record the "synced" hash ONLY after the server actually accepted the write. If the PUT/POST fails
     // (network, or a too-large row rejected by D1), _pushedHash stays stale so the very next sync retries it -- instead
@@ -2143,18 +2177,18 @@ const Atlas = (function(){
         else if(kind==='assets' && item && item.id && typeof DATA!=='undefined' && Array.isArray(DATA.assets)){ DATA.assets.forEach(function(x){ if(x && x.id===item.id){ x._t=0; if(x.info && x.info._kt) x.info._kt={}; if(hk) _zeroJson=JSON.stringify(x); } }); if(typeof _saveAssets==='function') _saveAssets(); } }catch(e){}   // audit400 re-audit #35: the asset branch was missing -- a server-REFUSED asset edit (e.g. a 402 qty-raise past the plan cap) stayed stuck locally, inflating the client cap/availability. Reset the asset's _t (+ clear info._kt) so the re-hydrate adopts server truth, mirroring the bookings branch.
       if(hk) _pushedHash[hk] = _zeroJson || hv;   // audit400 re-audit #36: point _pushedHash at the ACTUAL persisted (_t=0) serialization, NOT the pushed (nonzero-_t) hv -- otherwise the refused record read 'dirty' forever (JSON.stringify(_t=0 blob) !== hv) and any next edit re-pushed it, re-triggering the refusal + error toast in a loop until the 800ms re-hydrate landed. Falls back to hv for a non-booking/asset refusal (unchanged).
       _reHydrateSoon(); }   // B1: the server REFUSED this write (e.g. a 409 slot clash). SURFACE it + stop the silent re-push loop + re-hydrate the authoritative version. audit400 A059/A064: the server did NOT persist this, but the optimistic local record may carry a NEWER _t, so newest-wins re-hydrate would KEEP the false "Confirmed" -> CLEAR _t (=0) so the server-authoritative row is adopted (one-shot; a genuine later edit re-bumps _t).
-    _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){ var j=(res&&res.json)||{};
-      if(res && res.status===404){ _api('/api/data/'+kind,{method:'POST',body:body}).then(function(r2){ var j2=(r2&&r2.json)||{}; if(r2&&r2.status>=200&&r2.status<300){ if(j2.deleted)_dropLocal(); else if(j2.stale)_stale(j2); else _ok(); } else if(r2&&r2.status>=500){ /* audit400 A010: transient 5xx -> leave the record DIRTY (do NOT _fail/mark synced) so the next _srvSyncPush retries, mirroring the network-error .catch */ } else if(r2&&r2.status>=400){ _fail(j2); } }).catch(function(){}); }
-      else if(res && res.status>=200 && res.status<300){ if(j.deleted)_dropLocal(); else if(j.stale)_stale(j); else _ok(); }
-      else if(res && res.status>=500){ /* audit400 A010: a transient 5xx (worker throw / D1 blip) is NOT a deliberate refusal -- leave the record DIRTY (do NOT _fail/mark synced) so the next _srvSyncPush retries it, mirroring the network-error .catch. A real 4xx (409/402/400) still _fail()s + marks done. */ }
+    _wqPush(hk, function(){ return _api('/api/data/'+kind+'/'+item.id,{method:'PUT',body:body}).then(function(res){ var j=(res&&res.json)||{};
+      if(res && res.status===404){ return _api('/api/data/'+kind,{method:'POST',body:body}).then(function(r2){ var j2=(r2&&r2.json)||{}; if(r2&&r2.status>=200&&r2.status<300){ _wqOk(); if(j2.deleted)_dropLocal(); else if(j2.stale)_stale(j2); else _ok(); } else if(r2&&r2.status>=500){ _wqOverload(); /* audit400 A010: transient 5xx -> leave the record DIRTY (do NOT _fail/mark synced) so the next _srvSyncPush retries, mirroring the network-error .catch */ } else if(r2&&r2.status>=400){ _fail(j2); } }).catch(function(){}); }
+      else if(res && res.status>=200 && res.status<300){ _wqOk(); if(j.deleted)_dropLocal(); else if(j.stale)_stale(j); else _ok(); }
+      else if(res && res.status>=500){ _wqOverload(); /* audit400 A010: a transient 5xx (worker throw / D1 blip / D1 overload) is NOT a deliberate refusal -- leave the record DIRTY (do NOT _fail/mark synced) so the next _srvSyncPush retries it, mirroring the network-error .catch. A real 4xx (409/402/400) still _fail()s + marks done. */ }
       else if(res && res.status>=400){ _fail(j); }
-    }).catch(function(){}); }
-  function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).then(function(res){ if(res && (res.status<300 || res.status===404)) delete _pushedHash[kind+':'+id]; }).catch(function(){}); }   // audit c3 [3]: clear the dirty marker ONLY after the DELETE is confirmed (2xx/404) -- it was cleared up-front, so a DROPPED/failed delete was marked synced and never retried, and the record resurrected on the next push. Keeping the key on failure lets the sync reconcile retry the delete.
+    }).catch(function(){}); }); }
+  function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; _wqPush('del:'+kind+':'+id, function(){ return _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).then(function(res){ if(res && res.status>=500){ _wqOverload(); } else { _wqOk(); if(res && (res.status<300 || res.status===404)) delete _pushedHash[kind+':'+id]; } }).catch(function(){}); }); }   // audit c3 [3]: clear the dirty marker ONLY after the DELETE is confirmed (2xx/404) -- it was cleared up-front, so a DROPPED/failed delete was marked synced and never retried, and the record resurrected on the next push. Keeping the key on failure lets the sync reconcile retry the delete. D1-SAFE: routed through the write queue (bounded/spaced/backoff) so a reconcile sweep of many deletes can't burst-overload D1.
   function _srvMirrorProfile(pend){ if(!ATLAS_BACKEND||!_apiCsrf||!S||_bootSync) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money'&&k!=='_actAs'&&k!=='_selfActor'&&k!=='_srvCustomers'&&k!=='obAssets'&&k!=='obDraft'&&k!=='firstAsset') settings[k]=S[k]; }   // _actAs/_selfActor are device-local preview state (never share across devices/teammates); _srvCustomers is a PII fetch-cache (re-fetched each hydrate). obAssets/obDraft/firstAsset are ONBOARDING-only drafts that carry big inline photos -> NEVER mirror them into the tenant row (they become real assets at seed, whose photos offload to R2 via #295); this closes the firstAsset-bloat vector at the source.
     // never mirror provider secrets in plaintext: send a shallow copy of the secret-bearing subtrees with the keys stripped (local S keeps them; the wire/server does not)
     if(settings.trackers){ var _tk={}; for(var _a in settings.trackers) _tk[_a]=settings.trackers[_a]; delete _tk.apiKey; settings.trackers=_tk; }
     if(settings.comms){ var _cm={}; for(var _b in settings.comms) _cm[_b]=settings.comms[_b]; delete _cm.resendKey; settings.comms=_cm; }
-    _api('/api/tenant/profile',{method:'PUT',body:{name:(S.brand&&S.brand.name)||'',brand:S.brand,money:S.money,settings:settings}}).then(function(res){ if(res&&res.status>=200&&res.status<300&&pend){ for(var _pk in pend) _pushedKeys[_pk]=pend[_pk]; } }).catch(function(){}); }
+    _wqPush('__profile', function(){ return _api('/api/tenant/profile',{method:'PUT',body:{name:(S.brand&&S.brand.name)||'',brand:S.brand,money:S.money,settings:settings}}).then(function(res){ if(res&&res.status>=500){ _wqOverload(); } else if(res&&res.status>=200&&res.status<300){ _wqOk(); if(pend){ for(var _pk in pend) _pushedKeys[_pk]=pend[_pk]; } } }).catch(function(){}); }); }
   function _profKeyJson(pk,val){ if((pk==='trackers'||pk==='comms') && val && typeof val==='object'){ var _c={}; for(var _k in val) _c[_k]=val[_k]; if(pk==='trackers') delete _c.apiKey; else delete _c.resendKey; return JSON.stringify(_c); } return JSON.stringify(val===undefined?null:val); }   // audit400 re-audit #17: the ON-THE-WIRE form of a profile key. trackers/comms have their BYO secret (apiKey/resendKey) stripped before the PUT, so change-detection + the hydrate reseed must compare the STRIPPED form -- else the local/merged copy (which grafts the secret back) never equals the server copy, the key is re-stamped dirty on EVERY sync + hydrate, and its stale _kt reverts another device's integration edits.
   // Diff current local state vs last-mirrored -> PUT the changed (stamp _t), DELETE the removed, PUT the profile if changed.
   function _srvSyncPush(){ if(!ATLAS_BACKEND||!_apiCsrf) return;
@@ -2493,7 +2527,7 @@ const Atlas = (function(){
   function _fbSel(key){ _fbPending=key||''; try{ Array.prototype.forEach.call(document.querySelectorAll('.fbpick'),function(el){ var on=el.getAttribute('data-fbkey')===key; el.style.borderColor=on?'rgba(201,169,98,.9)':'rgba(201,169,98,.25)'; el.style.boxShadow=on?'0 0 0 1px rgba(201,169,98,.6)':'none'; }); }catch(e){} var c=document.getElementById('fbpickConfirm'); if(!c) return; if(!key||!_FB_META[key]){ c.innerHTML=''; return; } c.innerHTML='<button class="btn btn--primary" style="width:100%" onclick="Atlas._fbCommit()">Make '+esc(_FB_META[key].name)+' my mark &mdash; permanently</button>'; }
   function _fbCommit(){ var key=_fbPending; if(!key||!_FB_META[key]) return; var cb=document.querySelector('#fbpickConfirm .btn'); if(cb){ cb.disabled=true; cb.textContent='Saving...'; } _api('/api/founder/badge',{method:'POST',body:{badge:key}}).then(function(res){ var j=res&&res.json; if(res.status>=200&&res.status<300&&j&&j.ok){ _founderInfo.badge=j.badge||key; try{ if(typeof S!=='undefined'&&S){ S.founderBadge=j.badge||key; save(); } }catch(e){} try{ closeModal(); }catch(e){} try{ toast('Your founder badge is set: '+((_FB_META[j.badge||key]||{}).name||'')); }catch(e){} try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } else { if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast((j&&j.error)||'Could not save your badge.'); }catch(e){} } }).catch(function(){ if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast('Network error -- try again.'); }catch(e){} }); }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.15jr';
+  var APP_VERSION='2026.11.15jt';
   var APP_CHANGELOG=[
     'Rent by the hour, day, week AND month on the same item: set a price for each duration you offer (Settings &rarr; Money), and your booking site shows a clean Hourly / Daily / Weekly / Monthly toggle so each customer picks how long they want and watches the exact price update live. The duration they pick is the price they pay &mdash; your weekly rate is your weekly deal, with nothing re-added at checkout. Extending one of these bookings now adds time in that same unit: extend a weekly booking and it moves the return date by the week and bills your weekly rate, not a day. And when you take a booking yourself from the dashboard, the booking form shows the same Hourly / Daily / Weekly / Monthly picker for a multi-rate item &mdash; so an owner-created booking is reserved and charged at the exact duration you choose, not your default one.',
     'Clearer setup &amp; help: the Connect step now shows every way to get paid (Stripe, Square, PayPal &mdash; or let Atlas process &amp; pay you out) and lists Live GPS tracking as a $29/mo add-on; every integration now links its own step-by-step Atlas guide right where you connect it; and the setup tips are bigger and easier to read.',
