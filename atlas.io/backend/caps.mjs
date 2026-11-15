@@ -24,7 +24,7 @@
  *    this equivalence route-by-route.
  */
 
-export const ATLAS_CAPS_VERSION = '2026.11.14-dept1';
+export const ATLAS_CAPS_VERSION = '2026.11.14-dept2';
 
 // def: which role presets include this cap by DEFAULT (when a staffer has no
 // explicit caps). 'both' = support+analyst; 'support' = support only (the write
@@ -46,7 +46,7 @@ export const STAFF_CAPS = [
   { key: 'support.tickets.act', group: 'Support', label: 'Support tickets - reply, claim, triage & notes', sens: 'pii', def: 'support',
     routes: [{ m: 'POST', p: '^/api/admin/ticket-reply$' }, { m: 'POST', p: '^/api/admin/ticket-status$' }, { m: 'POST', p: '^/api/admin/ticket-claim$' }, { m: 'POST', p: '^/api/admin/ticket-workstate$' }, { m: 'POST', p: '^/api/admin/ticket-note$' }] },   // WAVE-SUPPORT-DEPT1: an agent can claim-to-own, drive the internal lifecycle, and add internal notes on the tickets they work
   { key: 'support.supervise', group: 'Support', label: 'Support tickets - reassign & supervise (hand a ticket to another agent)', sens: 'pii', def: 'none',
-    routes: [{ m: 'POST', p: '^/api/admin/ticket-assign$' }] },   // WAVE-SUPPORT-DEPT1: grantable, in NO preset -> owner + explicitly-designated supervisors only. Lets a lead reassign/force-unassign a ticket owned by another agent.
+    routes: [{ m: 'POST', p: '^/api/admin/ticket-assign$' }, { m: 'GET', p: '^/api/admin/ticket-agents$' }] },   // WAVE-SUPPORT-DEPT1: grantable, in NO preset -> owner + explicitly-designated supervisors only. Lets a lead reassign/force-unassign a ticket owned by another agent. WAVE-SUPPORT-DEPT2: + GET ticket-agents (the roster the reassign picker reads) so a configured supervisor clears the default-deny read gate without owner-only /api/admin/staff.
   { key: 'support.inbox.view', group: 'Support', label: 'Support inbox (inbound email) - view', sens: 'pii', def: 'both',
     routes: [{ m: 'GET', p: '^/api/admin/inbox$' }] },
   { key: 'support.inbox.act', group: 'Support', label: 'Support inbox - reply & change status', sens: 'pii', def: 'support',

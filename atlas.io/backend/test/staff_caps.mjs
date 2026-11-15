@@ -33,7 +33,7 @@ const ROUTES = [
   ['GET', '/api/admin/config'], ['GET', '/api/admin/overview'], ['GET', '/api/admin/visits'], ['GET', '/api/admin/visits-geo'],
   ['GET', '/api/admin/growth-data'], ['GET', '/api/admin/social'], ['GET', '/api/admin/tickets'], ['GET', '/api/admin/inbox'], ['GET', '/api/admin/feedback'],
   ['POST', '/api/admin/ticket-reply'], ['POST', '/api/admin/ticket-status'], ['POST', '/api/admin/inbox/reply'], ['POST', '/api/admin/inbox/status'], ['POST', '/api/admin/feedback/update'],
-  ['POST', '/api/admin/ticket-claim'], ['POST', '/api/admin/ticket-workstate'], ['POST', '/api/admin/ticket-note'], ['POST', '/api/admin/ticket-assign'],   // WAVE-SUPPORT-DEPT1: claim-to-own + lifecycle + notes (support preset) and reassign (supervisor-only)
+  ['POST', '/api/admin/ticket-claim'], ['POST', '/api/admin/ticket-workstate'], ['POST', '/api/admin/ticket-note'], ['POST', '/api/admin/ticket-assign'], ['GET', '/api/admin/ticket-agents'],   // WAVE-SUPPORT-DEPT1: claim-to-own + lifecycle + notes (support preset) and reassign (supervisor-only); WAVE-SUPPORT-DEPT2: ticket-agents roster read (supervisor-only)
   ['GET', '/api/admin/members'], ['GET', '/api/admin/transactions'], ['GET', '/api/admin/purchases'], ['GET', '/api/admin/payments-ledger'],
   ['GET', '/api/admin/pnl'], ['GET', '/api/admin/founder-costs'], ['GET', '/api/admin/security-log'], ['GET', '/api/admin/errors'],
   ['GET', '/api/admin/bans'], ['GET', '/api/admin/attacks'], ['GET', '/api/admin/alerts'], ['GET', '/api/admin/counsel'], ['GET', '/api/admin/brief'],
@@ -85,8 +85,10 @@ ok(_staffCan(ticketsOnly, 'POST', '/api/admin/ticket-claim') === true, 'tickets-
 ok(_staffCan(ticketsOnly, 'POST', '/api/admin/ticket-workstate') === true, 'tickets-only: can drive the internal lifecycle');
 ok(_staffCan(ticketsOnly, 'POST', '/api/admin/ticket-note') === true, 'tickets-only: can add internal notes');
 ok(_staffCan(ticketsOnly, 'POST', '/api/admin/ticket-assign') === false, 'tickets-only: CANNOT reassign others (supervisor-only)');
+ok(_staffCan(ticketsOnly, 'GET', '/api/admin/ticket-agents') === false, 'tickets-only: CANNOT read the agent roster (supervisor-only)');
 const supervisor = ['hq.console', 'support.tickets.view', 'support.tickets.act', 'support.supervise'];
 ok(_staffCan(supervisor, 'POST', '/api/admin/ticket-assign') === true, 'supervisor (support.supervise): CAN reassign a ticket to another agent');
+ok(_staffCan(supervisor, 'GET', '/api/admin/ticket-agents') === true, 'supervisor: CAN read the agent roster for the reassign picker');
 ok(_staffCan(supervisor, 'POST', '/api/admin/ticket-claim') === true, 'supervisor: can also claim');
 ok(_staffCan(supervisor, 'POST', '/api/admin/grant') === false, 'supervisor: still blocked from comp/grant (hard rail)');
 ok(_staffCan(supervisor, 'GET', '/api/admin/members') === false, 'supervisor: still cannot view members (not granted)');
@@ -120,6 +122,7 @@ ok(capAllow('support', 'POST', '/api/admin/ticket-claim', agent), 'support agent
 ok(capAllow('support', 'POST', '/api/admin/ticket-workstate', agent), 'support agent: advance a test ticket through its lifecycle');
 ok(capAllow('support', 'POST', '/api/admin/ticket-note', agent), 'support agent: add an internal note to a test ticket');
 ok(!capAllow('support', 'POST', '/api/admin/ticket-assign', agent), 'support agent: BLOCKED from reassigning others (supervisor-only)');
+ok(!capAllow('support', 'GET', '/api/admin/ticket-agents', agent), 'support agent: BLOCKED from the agent roster (supervisor-only)');
 ok(!capAllow('support', 'GET', '/api/admin/members', agent), 'support agent: BLOCKED from members directory');
 ok(!capAllow('support', 'POST', '/api/admin/grant', agent), 'support agent: BLOCKED from comp/grant');
 ok(!capAllow('support', 'GET', '/api/admin/payments-ledger', agent), 'support agent: BLOCKED from the money ledger');
@@ -144,6 +147,7 @@ OWNER_ONLY_CAPS.forEach(function (c) { ok(!delegableKeys[c.key], 'owner-only cap
 ok(_capForRoute('POST', '/api/admin/ticket-reply') === 'support.tickets.act', '_capForRoute maps ticket-reply');
 ok(_capForRoute('POST', '/api/admin/ticket-claim') === 'support.tickets.act', '_capForRoute maps ticket-claim to support.tickets.act');
 ok(_capForRoute('POST', '/api/admin/ticket-assign') === 'support.supervise', '_capForRoute maps ticket-assign to the supervisor cap');
+ok(_capForRoute('GET', '/api/admin/ticket-agents') === 'support.supervise', '_capForRoute maps ticket-agents to the supervisor cap');
 ok(_capForRoute('POST', '/api/admin/grant') === null, '_capForRoute: dangerous route maps to NO cap');
 
 log('');
