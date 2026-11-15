@@ -2474,7 +2474,7 @@ const Atlas = (function(){
   function _fbSel(key){ _fbPending=key||''; try{ Array.prototype.forEach.call(document.querySelectorAll('.fbpick'),function(el){ var on=el.getAttribute('data-fbkey')===key; el.style.borderColor=on?'rgba(201,169,98,.9)':'rgba(201,169,98,.25)'; el.style.boxShadow=on?'0 0 0 1px rgba(201,169,98,.6)':'none'; }); }catch(e){} var c=document.getElementById('fbpickConfirm'); if(!c) return; if(!key||!_FB_META[key]){ c.innerHTML=''; return; } c.innerHTML='<button class="btn btn--primary" style="width:100%" onclick="Atlas._fbCommit()">Make '+esc(_FB_META[key].name)+' my mark &mdash; permanently</button>'; }
   function _fbCommit(){ var key=_fbPending; if(!key||!_FB_META[key]) return; var cb=document.querySelector('#fbpickConfirm .btn'); if(cb){ cb.disabled=true; cb.textContent='Saving...'; } _api('/api/founder/badge',{method:'POST',body:{badge:key}}).then(function(res){ var j=res&&res.json; if(res.status>=200&&res.status<300&&j&&j.ok){ _founderInfo.badge=j.badge||key; try{ if(typeof S!=='undefined'&&S){ S.founderBadge=j.badge||key; save(); } }catch(e){} try{ closeModal(); }catch(e){} try{ toast('Your founder badge is set: '+((_FB_META[j.badge||key]||{}).name||'')); }catch(e){} try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } else { if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast((j&&j.error)||'Could not save your badge.'); }catch(e){} } }).catch(function(){ if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast('Network error -- try again.'); }catch(e){} }); }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.14ji';
+  var APP_VERSION='2026.11.14jj';
   var APP_CHANGELOG=[
     'Rent by the hour, day, week AND month on the same item: set a price for each duration you offer (Settings &rarr; Money), and your booking site shows a clean Hourly / Daily / Weekly / Monthly toggle so each customer picks how long they want and watches the exact price update live. The duration they pick is the price they pay &mdash; your weekly rate is your weekly deal, with nothing re-added at checkout. Extending one of these bookings now adds time in that same unit: extend a weekly booking and it moves the return date by the week and bills your weekly rate, not a day. And when you take a booking yourself from the dashboard, the booking form shows the same Hourly / Daily / Weekly / Monthly picker for a multi-rate item &mdash; so an owner-created booking is reserved and charged at the exact duration you choose, not your default one.',
     'Clearer setup &amp; help: the Connect step now shows every way to get paid (Stripe, Square, PayPal &mdash; or let Atlas process &amp; pay you out) and lists Live GPS tracking as a $29/mo add-on; every integration now links its own step-by-step Atlas guide right where you connect it; and the setup tips are bigger and easier to read.',
@@ -3561,7 +3561,7 @@ const Atlas = (function(){
   }
   // Re-fetch the logged-in user's role and adopt/clear the self-actor (UI gating). Server enforcement is the real backstop; this keeps the UI honest.
   function _selfActorSig(){ try{ return _selfActor?(JSON.stringify(_selfActor.perms||null)+'|'+(_selfActor.role||'')):'owner'; }catch(e){ return ''; } }   // compact signature of this session's effective access, to detect a real change
-  function _refreshSelfRole(){ if(!ATLAS_BACKEND) return Promise.resolve(); return _api('/api/auth/me',{method:'GET'}).then(function(res){ if(res&&res.json&&('payProcessor' in res.json)){ try{ if(typeof S!=='undefined'&&S) S.payProcessor=res.json.payProcessor; }catch(e){} }   /* WAVE96c MONEY: adopt the live platform processor on every keepalive so the checkout fast-path is correct even before /api/tenant/profile loads (server stays authoritative via the checkout backstops regardless) */ if(res&&res.json&&res.json.user){ var was=!!_selfActor, _before=_selfActorSig(); _applySelfRole(res.json.user); var _after=_selfActorSig(); if((_selfActor||was) && _before!==_after){ try{ var ap=document.getElementById('view-app'); if(S&&S.onboarded&&ap&&!ap.classList.contains('hidden')){ buildApp(); toast('Your access was updated'); } }catch(e){} } } }).catch(function(){}); }   // rebuild ONLY when this user's access actually changed, so the periodic self-caps poll never needlessly rebuilds/flickers the teammate's UI; tell them when it does change
+  function _refreshSelfRole(){ if(!ATLAS_BACKEND) return Promise.resolve(); return _api('/api/auth/me',{method:'GET'}).then(function(res){ if(res&&res.json&&('payProcessor' in res.json)){ try{ if(typeof S!=='undefined'&&S) S.payProcessor=res.json.payProcessor; }catch(e){} }   /* WAVE96c MONEY: adopt the live platform processor on every keepalive so the checkout fast-path is correct even before /api/tenant/profile loads (server stays authoritative via the checkout backstops regardless) */ if(res&&res.json&&res.json.tenant){ try{ _adoptTrialState(res.json.tenant); }catch(e){} }   /* WAVE-COMP: adopt the server-authoritative trial end + any HQ "extra days" comp on every keepalive, so the countdown + billing box are correct everywhere */ if(res&&res.json&&res.json.user){ var was=!!_selfActor, _before=_selfActorSig(); _applySelfRole(res.json.user); var _after=_selfActorSig(); if((_selfActor||was) && _before!==_after){ try{ var ap=document.getElementById('view-app'); if(S&&S.onboarded&&ap&&!ap.classList.contains('hidden')){ buildApp(); toast('Your access was updated'); } }catch(e){} } } }).catch(function(){}); }   // rebuild ONLY when this user's access actually changed, so the periodic self-caps poll never needlessly rebuilds/flickers the teammate's UI; tell them when it does change
   // Shared with the post-2FA success path (mfaSubmit): local session pointer + seed + server hydrate.
   async function _srvAuthSettle(email, tenantId){
     _lsSet(SK, {email:_emailKey(email), tenantId:tenantId});
@@ -11908,6 +11908,8 @@ const Atlas = (function(){
           book:(_cq.length===1?_q0.b.id:''), nav:(_cq.length===1?'':'bookings')}); }
       // Returns & schedule + risk & money + new activity: real operational alerts derived from current bookings (no fake feed, no new state).
       var _now=Date.now(), _DAY=86400000;
+      var _cAt=Number(S&&S.trialCompAt)||0, _cDy=Number(S&&S.trialCompDays)||0;   // WAVE-COMP: a platform-granted trial extension -> surface it to the member at the top of the bell for ~2 weeks
+      if(_cAt>0 && (_now-_cAt)<14*_DAY){ var _cTe=Number(S.trialEnds), _cTd=(isFinite(_cTe)&&_cTe>0)?_fmtDate(_cTe):''; out.unshift({ic:'spark',t:(_cDy>0?('You were given '+_cDy+' extra trial day'+(_cDy===1?'':'s')):'Extra trial days added'),s:'A gift from the Atlas team'+(_cTd?(' \u{2014} your trial now runs through '+_cTd+', no charge until then.'):'.'),settings:'billing'}); }
       var _onRent=books.filter(function(b){ return b && b.status==='On rent'; });
       var _od=_onRent.filter(function(b){ return _bkEffectiveEndTs(b) < _now; });   // OVERDUE: still out, past the (extension-aware) return
       if(_od.length) out.push({ic:'clock',t:_od.length+' '+_fterm(_od.length===1?'book':'books')+' overdue for return',s:'Past the return date and not marked returned \u{2014} follow up or close '+(_od.length===1?'it':'them')+' out.',book:(_od.length===1?_od[0].id:''),nav:(_od.length===1?'':'bookings')});
@@ -11925,7 +11927,7 @@ const Atlas = (function(){
       if(_svcOv.length) out.push({ic:'clock',t:'Service due: '+_svcOv.slice(0,2).map(function(a){return a.name;}).join(', ')+(_svcOv.length>2?(' +'+(_svcOv.length-2)+' more'):''),s:_svcOv.length+' '+(_svcOv.length===1?S.fleet.noun:S.fleet.nouns)+' overdue for service.',nav:'fleet'});
       if(_svcSn.length) out.push({ic:'clock',t:'Service soon: '+_svcSn.slice(0,2).map(function(a){return a.name;}).join(', ')+(_svcSn.length>2?(' +'+(_svcSn.length-2)+' more'):''),s:_svcSn.length+' '+(_svcSn.length===1?S.fleet.noun:S.fleet.nouns)+' coming due for service.',nav:'fleet'});
       if(!(S.integrations&&S.integrations.stripe)) out.push({ic:'card',t:'Connect payments',s:'Accept cards and deposits by connecting Stripe.',settings:'integrations'});
-      if(S.plan!=='active') out.push({ic:'clock',t:'You are on the 7-day free trial',s:'Pick a plan any time \u{2014} your setup carries over.',settings:'billing'});
+      if(S.plan!=='active'){ var _dl=_trialDaysLeft(), _te3=Number(S.trialEnds), _td3=(isFinite(_te3)&&_te3>0)?_fmtDate(_te3):''; out.push({ic:'clock',t:(_dl>0?('Free trial \u{2014} '+_dl+' day'+(_dl===1?'':'s')+' left'):'Your free trial has ended'),s:(_td3?('Runs through '+_td3+'. '):'')+'Pick a plan any time \u{2014} your setup carries over.',settings:'billing'}); }   // WAVE-COMP: real days-left + end date (reflects any HQ comp), not a hardcoded "7-day"
       if(!assets.length) out.push({ic:'plus',t:'Add your first '+S.fleet.noun,s:'Add one to start taking '+_fterm('books')+'.',nav:'fleet'});
     }catch(e){}
     return out;
@@ -12410,7 +12412,20 @@ const Atlas = (function(){
     if(PAYMENTS_LIVE && ATLAS_BACKEND && !_isDemoTenant() && !(S.card && S.card.onFile)){ _billingCheckout('trial',{tier:S.tier||'pro'}); return; }
     setTimeout(function(){ toast('Welcome to '+S.brand.name+' on Atlas Rental.io'); if(added) setTimeout(function(){ toast(added+' added to your team - set their access in Team'); },1900); },300); }
   /* ---------- plan, tiers, Atlas.io credits &amp; billing (demo Stripe; real subscription + webhook come with the D1 worker) ---------- */
-  function _trialDaysLeft(){ if(!S) return 0; return Math.max(0, (S.trialDays||7) - Math.floor((Date.now()-(S.trialStartedAt||Date.now()))/86400000)); }
+  function _trialDaysLeft(){ if(!S) return 0; var te=Number(S.trialEnds); if(isFinite(te)&&te>0){ return Math.max(0, Math.ceil((te-Date.now())/86400000)); } return Math.max(0, (S.trialDays||7) - Math.floor((Date.now()-(S.trialStartedAt||Date.now()))/86400000)); }   // WAVE-COMP: prefer the SERVER trial end (S.trialEnds -- moves with any HQ comp) so the countdown is authoritative everywhere; the local countdown is only the demo/offline fallback
+  // WAVE-COMP: adopt the server-authoritative trial end + any platform "extra days" comp from /api/auth/me (polled every keepalive). In-memory only (mirrors the payProcessor adopt) -- the server re-sends it on every poll so it is always fresh; a brand-new comp fires a one-time toast and lights the bell.
+  function _adoptTrialState(tn){ if(!tn||typeof S==='undefined'||!S) return; try{
+      var te=Number(tn.trial_ends); if(isFinite(te)&&te>0) S.trialEnds=te;
+      var ca=Number(tn.trial_comp_at)||0, cd=Number(tn.trial_comp_days)||0;
+      if(ca>0){ S.trialCompAt=ca; S.trialCompDays=cd;
+        var seen=0; try{ seen=parseInt(localStorage.getItem('atlas_trialcomp_seen')||'0',10)||0; }catch(e){}
+        if(ca>seen){ try{ localStorage.setItem('atlas_trialcomp_seen',String(ca)); }catch(e){}
+          try{ if(S.onboarded){ var _t2=Number(S.trialEnds); toast((cd>0?('+'+cd+' day'+(cd===1?'':'s')):'Extra days')+' added to your trial'+((isFinite(_t2)&&_t2>0)?(' \u{2014} no charge until '+_fmtDate(_t2)):'')); } }catch(e){}
+        }
+      }
+      try{ if(typeof renderTrialBox==='function') renderTrialBox(); }catch(e){}
+      try{ if(typeof _notifPing==='function') _notifPing(); }catch(e){}
+    }catch(e){} }
   function _isActive(){ return !!S && S.plan==='active'; }
   function _fmtDate(t){ try{ return new Date(t).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }catch(e){ return ''; } }
   function _cardBrand(num){ num=String(num||'').replace(/\D/g,''); if(/^4/.test(num))return'Visa'; if(/^(5[1-5]|2[2-7])/.test(num))return'Mastercard'; if(/^3[47]/.test(num))return'Amex'; if(/^6/.test(num))return'Discover'; return'Card'; }
@@ -12433,7 +12448,7 @@ const Atlas = (function(){
       var d=_trialDaysLeft();
       var carded=!!(S.card && S.card.onFile);
       if(carded && d>0){   // NEW funnel: plan chosen + card on file -> show which plan starts when, not "choose a plan"
-        var _end=(S.trialStartedAt||Date.now())+(S.trialDays||7)*86400000;
+        var _end=(Number(S.trialEnds)>0&&isFinite(Number(S.trialEnds)))?Number(S.trialEnds):((S.trialStartedAt||Date.now())+(S.trialDays||7)*86400000);   // WAVE-COMP: server trial end (moves with HQ comp) first; local fallback for demo/offline
         el.innerHTML='<b>Free trial &middot; '+d+' day'+(d===1?'':'s')+' left</b><small>'+esc(t.name)+' starts '+_fmtDate(_end)+' &middot; card on file &middot; '+c.toLocaleString()+' credits</small><button class="btn btn--ghost btn--sm btn--full" style="margin-top:10px" onclick="Atlas.goSettings(\'billing\')">Manage plan</button>';
       } else {
         el.innerHTML = (d>0)
