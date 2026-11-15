@@ -6936,6 +6936,23 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/function _helpGuideUrl\(id\)\{ return 'https:\/\/atlasrental\.io\/guides\/'/.test(_ATLAS_SRC), 'WAVE105-F: _helpGuideUrl builds the /guides/*.html link');
   ok(/\$\{_helpGuideLink\(id,name\)\}/.test(_ATLAS_SRC), 'WAVE105-F: the generic connect modal shows the Atlas setup guide for every integration');
   ok(/_helpGuideLink\('paypal','PayPal'\)/.test(_ATLAS_SRC) && /_helpGuideLink\('square','Square'\)/.test(_ATLAS_SRC) && /_helpGuideLink\('coinbase','crypto payments'\)/.test(_ATLAS_SRC) && /_helpGuideLink\('web','booking embed'\)/.test(_ATLAS_SRC), 'WAVE105-F: the PayPal / Square / Coinbase / embed modals each link their Atlas guide too');
+
+  // WAVE-PA3 PER-ASSET EXTRA PRICING parity (owner quote == customer estimate == server charge) + delivery dedupe + booking P&L
+  // foreshadow + consignment owner payout schedule. The extra-price override (a.extraPrices[id]) must resolve IDENTICALLY on all
+  // three money surfaces or the customer is mischarged; these pin each surface. Delivery is now ONE per-asset-priced extra (no
+  // duplicate global rule). The foreshadow + payout schedule are owner-eyes-only and foot to _netProfit/_obPayouts.
+  ok(/extraPrices: \(function \(\) \{ if \(!a\.extraPrices \|\| typeof a\.extraPrices !== 'object'\) return undefined;/.test(_WORKER_SRC), 'WAVE-PA3: the public config SERVE publishes per-asset extraPrices (sanitized numeric>=0)');
+  ok(/var _epx = \(_pa\.extraPrices && typeof _pa\.extraPrices === 'object'\) \? Number\(_pa\.extraPrices\[_id\]\) : NaN;/.test(_WORKER_SRC), 'WAVE-PA3: the /book intake reads the per-asset extra price override');
+  ok(/price: \(isFinite\(_epx\) && _epx >= 0\) \? _epx : \(Number\(_e\.price\) \|\| 0\)/.test(_WORKER_SRC), 'WAVE-PA3: the AUTHORITATIVE charge uses the per-asset override price when valid, else the global catalog price');
+  ok(/if\(a\.extraPrices&&typeof a\.extraPrices==='object'\)\{ofr=ofr\.map\(function\(e\)\{var pv=a\.extraPrices\[e\.id\];/.test(_WORKER_SRC), 'WAVE-PA3: the public /book estimate (_exOffered) bakes per-asset extra prices so the shown total == the charge');
+  ok(/function _assetExtraPrice\(a,e\)\{/.test(_ATLAS_SRC), 'WAVE-PA3: the owner client has the _assetExtraPrice(a,e) override resolver');
+  ok(/if\(a && a\.extraPrices\)\{ cat=cat\.map/.test(_ATLAS_SRC), 'WAVE-PA3: _extrasCatalogFor applies per-asset overrides so the owner quote matches the charge');
+  ok(/if\(a\.extraPrices && typeof a\.extraPrices==='object'\)\{ var _xp=\{\}, _xn=0;/.test(_ATLAS_SRC), 'WAVE-PA3: the client publish snapshot carries per-asset extraPrices into the stored snapshot');
+  ok(!/\{ id:'delivery', name:'Delivery fee',\s+kind:'flat'/.test(_ATLAS_SRC), 'WAVE-PA3: there is NO default Delivery fee RULE (delivery is the per-asset extra -- single source of truth)');
+  ok(/String\(r\.name\|\|''\)==='Delivery fee' && r\.on!==true && Number\(r\.value\)===75 && r\.kind==='flat'/.test(_ATLAS_SRC), 'WAVE-PA3: _fillMoney strips ONLY the pristine legacy default delivery rule (non-destructive migration)');
+  ok(/var _ftake=_r2\(_revX-_fown-_ffb1-_ffb2-_fcost\);/.test(_ATLAS_SRC), 'WAVE-PA3: the booking P&L foreshadow take == revenue(ex-tax) - owner - broker(s) - cost (foots to _netProfit)');
+  ok(/function _ownerPayoutSchedule\(bks\)\{/.test(_ATLAS_SRC) && /Owner payout schedule <span/.test(_ATLAS_SRC), 'WAVE-PA3: the consignment owner weekly/monthly payout schedule exists + renders in Payouts');
+  ok(/if\(_ocad!=='book'\) a\.ownerFee\.payCadence=_ocad;/.test(_ATLAS_SRC), 'WAVE-PA3: the per-asset owner payCadence (weekly/monthly) is stored only when non-default (byte-identical otherwise)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
