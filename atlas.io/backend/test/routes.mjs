@@ -6515,8 +6515,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');   // block-local client source (same pattern as the WAVE79 client-guard block)
   ok(/function _obPayouts\(bks\)\{/.test(_ATLAS_SRC), 'WAVE96 P1: _obPayouts sums per-asset owner + broker fees (owner+b1+b2) from _bkPayouts');
   ok(/function _totalObPayouts\(\)\{ return _obPayouts/.test(_ATLAS_SRC), 'WAVE96 P1: _totalObPayouts rolls owner+broker payouts over the committed bookings');
-  ok(/- _totalPayouts\(\) - _totalObPayouts\(\) - _taxCollected\(\)/.test(_ATLAS_SRC), 'WAVE96 P1: _netProfit subtracts owner+broker payouts (take-home no longer overstated)');
-  ok(/net=base-exp-payout-obpay-tax/.test(_ATLAS_SRC), 'WAVE96 P1: _pnlSummary net subtracts obpay so _pnlSummary(all).net===_netProfit()');
+  ok(/- _totalPayouts\(\) - _totalObPayouts\(\) - _totalBkCosts\(\) - _taxCollected\(\)/.test(_ATLAS_SRC), 'WAVE96 P1 + WAVE-QA2: _netProfit subtracts owner+broker payouts AND per-booking costs (take-home no longer overstated)');
+  ok(/net=base-exp-payout-obpay-bkcost-tax/.test(_ATLAS_SRC), 'WAVE96 P1 + WAVE-QA2: _pnlSummary net subtracts obpay+bkcost so _pnlSummary(all).net===_netProfit()');
   ok(/net:_r2\(totalRev-exp-payout-obpay-tax\)/.test(_ATLAS_SRC), 'WAVE96 P1: _pnlByMonth monthly net subtracts owner+broker payouts');
   ok(/gNet=_r2\(gRev-gExp-strayPay-strayOb-strayTax\)/.test(_ATLAS_SRC), 'WAVE96 P1: _pnlByKind General/shared bucket subtracts stray owner+broker payouts so the by-type table foots');
   ok(/BK_STATUSES\.filter\(function\(s\)\{ return \(s!=='Cancelled'&&s!=='Voided'\)\|\|s===b\.status; \}\)/.test(_ATLAS_SRC), 'WAVE96 P1: the Save-changes status dropdown hides Cancelled/Voided (unless already there) -- those transitions must run bkCancelFlow/bkVoidFlow, not raw b.status');
@@ -6693,6 +6693,13 @@ ok(/async function _squareHealCharge\(env, tenantId, email, now\) \{/.test(_WORK
 ok(/if \(await _squareHealCharge\(env, ctx\.tenant_id, ctx\.user\.email, Date\.now\(\)\)\)/.test(_WORKER_SRC), 'WAVE96d: /api/auth/me runs the Square self-heal on trial_expired -- a paying customer unlocks instantly on dashboard load (twin of the Stripe reconcile)');
 ok(/'sqbill:' \+ tenantId \+ ':' \+ \(t\.square_period_end \|\| now\)/.test(_WORKER_SRC), 'WAVE96d: the self-heal shares the cron idem key (sqbill:<tid>:<cycle>) so a concurrent cron charge DEDUPS at Square -- never a double charge');
 ok(/trialEligible: _sqTrialOk, trialDays: 7/.test(_WORKER_SRC), 'WAVE96d: /api/billing/square/config returns trialEligible so the client renders accurate 7-day-free-trial vs charge-now copy');
+// WAVE-COMP: platform owner grants a tenant +N extra trial days -- compounding, Square charges on the NEW end, member notified. Source-level guards (the full path needs a live DB).
+ok(/if \(!_tr \|\| _tr\.plan !== 'trial'\) return err\(409/.test(_WORKER_SRC), 'WAVE-COMP: the trial-days comp only extends a tenant actually ON a trial (409 otherwise) -- never silently "extends" an active/paying member');
+ok(/const _newEnd = Math\.max\(_now, Number\(_tr\.trial_ends\) \|\| 0\) \+ _delta/.test(_WORKER_SRC), 'WAVE-COMP: the extension COMPOUNDS -- it stacks onto the current trial end (or now, if lapsed), so repeated +7s add up');
+ok(/const _newSqpe = _hasSq \? \(Math\.max\(_now, Number\(_tr\.square_period_end\) \|\| 0\) \+ _delta\)/.test(_WORKER_SRC) && /SET plan='trial', trial_ends=\?, square_period_end=\?, trial_comp_at=\?, trial_comp_days=\?/.test(_WORKER_SRC), 'WAVE-COMP: a comped trial pushes square_period_end out by the SAME delta in lockstep, so the Square billing cron charges the first month on the NEW trial end -- never the old date');
+ok(/next_bill: \(_hasSq \? _newSqpe : _newEnd\)/.test(_WORKER_SRC), 'WAVE-COMP: the grant returns next_bill (the new Square charge date) so HQ shows the member the correct first-charge date after a comp');
+ok(/SELECT id,name,fleet_type,plan,trial_ends,trial_comp_at,trial_comp_days,tier/.test(_WORKER_SRC) && /trialEnds: \(t && Number\(t\.trial_ends\)\)/.test(_WORKER_SRC), 'WAVE-COMP: /api/auth/me + /api/tenant/profile both return the server-authoritative trial end + comp stamp so the member app notifies (bell + countdown) everywhere');
+ok(/async function _sendTrialExtended\(env, em, tid, days, newEnd\)/.test(_WORKER_SRC), 'WAVE-COMP: the member is told on their account -- _sendTrialExtended emails them (+ best-effort web-push) that N extra trial days landed, with the new no-charge-until date');
 {
   const _ATLAS_SRC = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');   // block-local client source
   ok(/kind:\(_sqPlanKind\|\|'plan'\)/.test(_ATLAS_SRC), 'WAVE96d: the Square checkout passes the intent kind so a signup trial gets the free trial instead of an immediate charge');
