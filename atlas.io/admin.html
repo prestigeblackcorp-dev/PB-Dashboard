@@ -1262,10 +1262,10 @@ function tkOpen(id){ var t=(DATA.tickets||[]).filter(function(x){return x.id===i
     '<div class="modal-b"><div class="desc">'+esc(t.email||'')+' &middot; '+esc(t.category||'')+'</div>'+
       '<div class="tk-thread-a">'+thread+'</div>'+
       '<textarea id="tkReplyBox" rows="3" placeholder="Reply to the customer..." style="width:100%;margin-top:10px;padding:10px;border-radius:8px;border:1px solid rgba(128,140,160,.35);background:transparent;color:inherit;font-family:inherit;font-size:13px;box-sizing:border-box"></textarea><div id="tkAiMeta" class="mut" style="font-size:11.5px;margin-top:6px"></div></div>'+
-    '<div class="modal-f">'+((DATA.aiCfg&&DATA.aiCfg.ai_hq_enabled)?('<button class="btn ghost" onclick="aiDraft('+_oa(id)+')">Draft with AI</button>'):'')+'<button class="btn ghost" onclick="tkStatus('+_oa(id)+',\'resolved\')">Mark resolved</button><button class="btn gold" onclick="tkReply('+_oa(id)+')">Send reply</button></div>';
+    '<div class="modal-f">'+((DATA.aiCfg&&DATA.aiCfg.ai_hq_enabled)?('<button class="btn ghost" onclick="aiDraft('+_oa(id)+')">Draft with AI</button>'):'')+(t.status==='resolved'?('<button class="btn ghost" onclick="tkStatus('+_oa(id)+',\'open\')">Reopen</button>'):('<button class="btn ghost" onclick="tkStatus('+_oa(id)+',\'resolved\')">Mark resolved</button>'))+'<button class="btn gold" onclick="tkReply('+_oa(id)+')">Send reply</button></div>';
   $('scrim').classList.add('on'); }
 function tkReply(id){ var el=$('tkReplyBox'); var msg=el?(el.value||'').trim():''; if(msg.length<1){ toast('Write a reply'); return; }
-  api('/api/admin/ticket-reply',{method:'POST',body:{id:id,message:msg}}).then(function(r){ if(r.json&&r.json.ok){ closeModal(); toast('Reply sent'); loadAll(true); } else toast('Could not send'); }); }
+  api('/api/admin/ticket-reply',{method:'POST',body:{id:id,message:msg}}).then(function(r){ var j=r.json||{}; if(j.ok){ closeModal(); loadAll(true); if(j.emailed===false){ toast('Reply saved - email nudge failed ('+(j.email_reason||'error')+'). Follow up another way.'); } else { toast('Reply sent'); } } else toast(j.error||'Could not send'); }); }
 function tkStatus(id,status){ api('/api/admin/ticket-status',{method:'POST',body:{id:id,status:status}}).then(function(r){ if(r.json&&r.json.ok){ closeModal(); toast('Marked '+status); loadAll(true); } else toast('Could not update'); }); }
 
 /* ================= delete account (frees the login email so it can re-register) ================= */
@@ -1342,7 +1342,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.11.14iz';
+var ATLAS_EXPECT_BUILD='2026.11.14ja';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
