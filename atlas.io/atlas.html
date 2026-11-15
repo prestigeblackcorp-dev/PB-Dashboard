@@ -2475,7 +2475,7 @@ const Atlas = (function(){
   function _fbSel(key){ _fbPending=key||''; try{ Array.prototype.forEach.call(document.querySelectorAll('.fbpick'),function(el){ var on=el.getAttribute('data-fbkey')===key; el.style.borderColor=on?'rgba(201,169,98,.9)':'rgba(201,169,98,.25)'; el.style.boxShadow=on?'0 0 0 1px rgba(201,169,98,.6)':'none'; }); }catch(e){} var c=document.getElementById('fbpickConfirm'); if(!c) return; if(!key||!_FB_META[key]){ c.innerHTML=''; return; } c.innerHTML='<button class="btn btn--primary" style="width:100%" onclick="Atlas._fbCommit()">Make '+esc(_FB_META[key].name)+' my mark &mdash; permanently</button>'; }
   function _fbCommit(){ var key=_fbPending; if(!key||!_FB_META[key]) return; var cb=document.querySelector('#fbpickConfirm .btn'); if(cb){ cb.disabled=true; cb.textContent='Saving...'; } _api('/api/founder/badge',{method:'POST',body:{badge:key}}).then(function(res){ var j=res&&res.json; if(res.status>=200&&res.status<300&&j&&j.ok){ _founderInfo.badge=j.badge||key; try{ if(typeof S!=='undefined'&&S){ S.founderBadge=j.badge||key; save(); } }catch(e){} try{ closeModal(); }catch(e){} try{ toast('Your founder badge is set: '+((_FB_META[j.badge||key]||{}).name||'')); }catch(e){} try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } else { if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast((j&&j.error)||'Could not save your badge.'); }catch(e){} } }).catch(function(){ if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast('Network error -- try again.'); }catch(e){} }); }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.15jl';
+  var APP_VERSION='2026.11.15jm';
   var APP_CHANGELOG=[
     'Rent by the hour, day, week AND month on the same item: set a price for each duration you offer (Settings &rarr; Money), and your booking site shows a clean Hourly / Daily / Weekly / Monthly toggle so each customer picks how long they want and watches the exact price update live. The duration they pick is the price they pay &mdash; your weekly rate is your weekly deal, with nothing re-added at checkout. Extending one of these bookings now adds time in that same unit: extend a weekly booking and it moves the return date by the week and bills your weekly rate, not a day. And when you take a booking yourself from the dashboard, the booking form shows the same Hourly / Daily / Weekly / Monthly picker for a multi-rate item &mdash; so an owner-created booking is reserved and charged at the exact duration you choose, not your default one.',
     'Clearer setup &amp; help: the Connect step now shows every way to get paid (Stripe, Square, PayPal &mdash; or let Atlas process &amp; pay you out) and lists Live GPS tracking as a $29/mo add-on; every integration now links its own step-by-step Atlas guide right where you connect it; and the setup tips are bigger and easier to read.',
@@ -5259,10 +5259,10 @@ const Atlas = (function(){
     // asset no longer resolves to a known kind (renamed/deleted asset) -- so this table always foots to the all-kind total.
     var incomeInRange=_allIncomes().reduce(function(s,x){return s+((x.date>=B.from&&x.date<=B.to)?(x.amount||0):0);},0);
     var genExp=_ledger().expenses.reduce(function(s,e){ if(!_expInRange(e,B)) return s; var ek=e.assetKind||''; return s+((!ek||!known[ek])?(e.amount||0):0); },0);
-    var strayRev=0, strayPay=0, strayOb=0, strayTax=0;
-    (DATA.bookings||[]).forEach(function(b){ if(!_bkInRange(b,B)) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_bkEarnedRev(b); strayPay+=((b.quote&&b.quote.payoutAmt)||0); strayOb+=_obPayouts([b]); strayTax+=_bkTax(b); });   // audit c4 [10]: accumulate the stray (renamed/deleted-asset) bookings' sales tax too   // WAVE96 P1: + owner/broker payouts so the General/shared row still foots to _pnlSummary(all).net
+    var strayRev=0, strayPay=0, strayOb=0, strayBk=0, strayTax=0;
+    (DATA.bookings||[]).forEach(function(b){ if(!_bkInRange(b,B)) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_bkEarnedRev(b); strayPay+=((b.quote&&b.quote.payoutAmt)||0); strayOb+=_obPayouts([b]); strayBk+=_bkCosts([b]); strayTax+=_bkTax(b); });   // audit c4 [10]: accumulate the stray (renamed/deleted-asset) bookings' sales tax too   // WAVE96 P1: + owner/broker payouts so the General/shared row still foots to _pnlSummary(all).net   // WAVE-PA4: + stray per-booking direct costs (_bkCosts) -- each known-kind row subtracts its own bkcost via _pnlSummary, so the General/shared row must too or the by-type table over-states net
     (DATA.bookings||[]).forEach(function(b){ var t=_bDate(b); if(!b||b.status!=='Cancelled'||t<B.from||t>B.to) return; if(known[_assetKindByName(b.asset)]) return; strayRev+=_collectedCharges(b); });
-    var gRev=_r2(incomeInRange+strayRev), gExp=_r2(genExp), gNet=_r2(gRev-gExp-strayPay-strayOb-strayTax);   // audit c4 [10]: subtract stray tax so the General/shared row + the by-type table foot to _pnlSummary(all).net (each known-kind row already subtracts its own _bkTax)
+    var gRev=_r2(incomeInRange+strayRev), gExp=_r2(genExp), gNet=_r2(gRev-gExp-strayPay-strayOb-strayBk-strayTax);   // audit c4 [10]: subtract stray tax so the General/shared row + the by-type table foot to _pnlSummary(all).net (each known-kind row already subtracts its own _bkTax)   // WAVE-PA4: -strayBk too
     rows.push({kind:'General / shared',rev:gRev,exp:gExp,net:gNet,margin:(gRev>0?Math.round(gNet/gRev*1000)/10:0)});
     return rows; }
   function _pnlMonthLabel(d){ try{ return d.toLocaleDateString('en-US',{month:'short',year:'numeric'}); }catch(e){ return (d.getMonth()+1)+'/'+d.getFullYear(); } }
@@ -5276,13 +5276,30 @@ const Atlas = (function(){
       var exp=_ledger().expenses.filter(function(e){ return _expInRange(e,B)&&(all||(e.assetKind||'')===kind); }).reduce(function(s,e){return s+(e.amount||0);},0);
       var payout=bks.reduce(function(s,b){return s+((b.quote&&b.quote.payoutAmt)||0);},0);
       var obpay=_obPayouts(bks);   // WAVE96 P1: owner + broker payouts out of monthly net too
+      var bkcost=_bkCosts(bks);   // WAVE-PA4: per-booking direct costs (b.cost) out of monthly net too -- was ONLY in _netProfit/_pnlSummary, so the 12-month trend overstated net by the month's costs and did not foot to the P&L card; now it does.
       var tax=bks.reduce(function(s,b){return s+_bkTax(b);},0);   // Payments G4: sales tax out of monthly net too
       var totalRev=_r2(rev+cancelFee+income);
-      out.push({label:_pnlMonthLabel(d),rev:totalRev,exp:_r2(exp),net:_r2(totalRev-exp-payout-obpay-tax)}); }
+      out.push({label:_pnlMonthLabel(d),rev:totalRev,exp:_r2(exp),net:_r2(totalRev-exp-payout-obpay-bkcost-tax)}); }
     return out; }
+  // WAVE-PA4: inline-SVG net-profit-over-time trend for the P&L card. Reads the SAME _pnlByMonth rows the table below renders, so every
+  // bar foots to the cent. Diverging zero-baseline (profit up/green, loss down/red). No canvas: the card is injected via innerHTML, and
+  // inline SVG needs no post-render draw hook, scales crisply, and themes through the CSS tokens. Mobile-first (width:100%, height:auto).
+  function _pnlTrendSvg(rows){ if(!rows||!rows.length) return '';
+    var W=360,H=150, L=8,Rr=352, T=16,Bq=122, n=rows.length, slot=(Rr-L)/n, bw=Math.min(20, slot*0.62), rd=function(z){return Math.round(z*10)/10;};
+    var maxP=0,maxL=0; rows.forEach(function(m){ var v=m.net||0; if(v>maxP)maxP=v; if(-v>maxL)maxL=-v; });
+    var rng=maxP+maxL, zeroY=(rng>0)?(T+(Bq-T)*(maxP/rng)):Bq;   // all-profit -> baseline at bottom; all-loss -> baseline at top; mixed -> proportional
+    var bars='',labs='';
+    rows.forEach(function(m,i){ var cx=L+slot*i+slot/2, v=m.net||0, x=cx-bw/2, y,h,col;
+      if(v>=0){ h=(maxP>0?(v/maxP):0)*(zeroY-T); y=zeroY-h; col='var(--ok)'; } else { h=(maxL>0?((-v)/maxL):0)*(Bq-zeroY); y=zeroY; col='var(--danger)'; }
+      if(v!==0&&h<1.4) h=1.4;   // keep a non-zero month visible even when tiny vs the peak
+      bars+='<rect x="'+rd(x)+'" y="'+rd(y)+'" width="'+rd(bw)+'" height="'+rd(h)+'" rx="2" fill="'+col+'"><title>'+esc(m.label)+': '+money(m.net)+' net</title></rect>';
+      var lab=String(m.label||'').split(' ')[0].slice(0,3); labs+='<text x="'+rd(cx)+'" y="136" text-anchor="middle" font-size="7" fill="var(--muted)">'+esc(lab)+'</text>'; });
+    return '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;display:block" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Net profit by month, last 12 months, to the cent on hover">'
+      +'<line x1="'+L+'" y1="'+rd(zeroY)+'" x2="'+Rr+'" y2="'+rd(zeroY)+'" stroke="var(--line)" stroke-width="1"/>'+bars+labs+'</svg>'; }
   function _pnlCardHtml(){ var B=_pnlBounds(_pnlPeriod), s=_pnlSummary(B,_pnlKind);
     var revTotal=_r2(s.rev+s.cancelFee+s.income), netNeg=(s.net<0), kindLabel=(_pnlKind==='all')?'All types':_pnlKind;
     var byKind=_pnlByKind(B), byMonth=_pnlByMonth(_pnlKind);
+    var _maxNet=Math.max.apply(null,byKind.map(function(r){return Math.abs(r.net||0);}).concat([1]));   // WAVE-PA4: shared scale for the in-cell net-by-type bars (>=1 so an all-zero table never divides by 0)
     return '<div class="kpi-row" style="margin-bottom:12px">'
       +'<div class="kpi kpi--clk" onclick="Atlas.pnlRevDrill()"><div class="kpi__top"><span class="kpi__label">Revenue</span></div><div class="kpi__val tnum">'+money(revTotal)+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
       +'<div class="kpi kpi--clk" onclick="Atlas.pnlExpDrill()"><div class="kpi__top"><span class="kpi__label">Expenses</span></div><div class="kpi__val tnum" style="color:var(--danger)">'+money(s.exp)+'</div><div class="kpi__hint">View breakdown &rarr;</div></div>'
@@ -5294,8 +5311,12 @@ const Atlas = (function(){
       +'<div style="font-size:12px;color:var(--muted);margin-bottom:14px">'+esc(B.label)+' &middot; '+esc(kindLabel)+'</div>'
       +'<div style="overflow-x:auto;margin-bottom:18px"><table class="tbl"><thead><tr><th>Type</th><th>Revenue</th><th>Expenses</th><th>Net</th><th>Margin</th></tr></thead><tbody>'
       +byKind.map(function(r){ var neg=(r.net<0), clk=(r.kind!=='General / shared');
-        return '<tr'+(clk?(' style="cursor:pointer" onclick="Atlas.pnlSetKind(\''+_jsAttr(r.kind)+'\')"'):'')+'><td><b>'+esc(r.kind)+'</b></td><td class="tnum">'+money(r.rev)+'</td><td class="tnum">'+money(r.exp)+'</td><td class="tnum"'+(neg?' style="color:var(--danger)"':'')+'><b>'+money(r.net)+'</b></td><td class="tnum">'+(r.margin||0)+'%</td></tr>'; }).join('')
+        var _npct=Math.max(2,Math.round(Math.abs(r.net||0)/_maxNet*100));   // WAVE-PA4: in-cell net-by-type bar, shared scale, >=2% so a tiny non-zero net still shows
+        var _nbar='<div style="height:3px;background:var(--line);border-radius:2px;margin-top:4px"><div style="height:100%;width:'+_npct+'%;background:'+(neg?'var(--danger)':'var(--ok)')+';border-radius:2px"></div></div>';
+        return '<tr'+(clk?(' style="cursor:pointer" onclick="Atlas.pnlSetKind(\''+_jsAttr(r.kind)+'\')"'):'')+'><td><b>'+esc(r.kind)+'</b></td><td class="tnum">'+money(r.rev)+'</td><td class="tnum">'+money(r.exp)+'</td><td class="tnum"'+(neg?' style="color:var(--danger)"':'')+'><b>'+money(r.net)+'</b>'+_nbar+'</td><td class="tnum">'+(r.margin||0)+'%</td></tr>'; }).join('')
       +'</tbody></table></div>'
+      +'<div style="font-size:12px;color:var(--muted);margin:2px 0 6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b style="color:var(--text)">Net profit trend</b><span>last 12 months'+(_pnlKind==='all'?'':(' &middot; '+esc(_pnlKind)))+'</span><span style="display:inline-flex;align-items:center;gap:4px"><span style="width:9px;height:9px;border-radius:2px;background:var(--ok);display:inline-block"></span>profit <span style="width:9px;height:9px;border-radius:2px;background:var(--danger);display:inline-block;margin-left:6px"></span>loss</span></div>'
+      +'<div style="margin-bottom:16px">'+_pnlTrendSvg(byMonth)+'</div>'
       +'<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Month</th><th>Revenue</th><th>Expenses</th><th>Net</th></tr></thead><tbody>'
       +byMonth.map(function(m){ var neg=(m.net<0); return '<tr><td>'+esc(m.label)+'</td><td class="tnum">'+money(m.rev)+'</td><td class="tnum">'+money(m.exp)+'</td><td class="tnum" style="color:'+(neg?'var(--danger)':'var(--ok)')+'"><b>'+money(m.net)+'</b></td></tr>'; }).join('')
       +'</tbody></table></div>'; }
