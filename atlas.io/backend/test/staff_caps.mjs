@@ -19,7 +19,7 @@ function ok(c, m) { if (c) { passes++; } else { fails++; log('  FAIL: ' + m); } 
 
 // ---- the PRE-RBAC gate, copied VERBATIM from worker.js, to prove equivalence ----
 const OWNER_ONLY = /^\/api\/admin\/(delete|purge|restore|grant|members|transactions|purchases|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/(testcharge|testsub|dedup-subs|selftest|reconcile|recover|square-selftest)|payments-ledger|domains\/(testregister|selftest|dnsraw)|competitors|ai[/-]|counsel|brief|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|founder-costs|push\/|owners?|owner\/)/;
-const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|inbox\/(status|reply))$/;
+const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|ticket-claim|ticket-workstate|ticket-note|inbox\/(status|reply))$/;   // WAVE-SUPPORT-DEPT1: kept verbatim in lockstep with worker.js -- claim/workstate/note join the support write-set; ticket-assign (supervisor) does NOT.
 const STAFF_READ = /^\/api\/admin\/(config|overview|visits|visits-geo|growth-data|social|tickets|inbox|feedback)$/;
 function legacyAllow(role, method, path) {
   if (role === 'owner') return true;
@@ -33,6 +33,7 @@ const ROUTES = [
   ['GET', '/api/admin/config'], ['GET', '/api/admin/overview'], ['GET', '/api/admin/visits'], ['GET', '/api/admin/visits-geo'],
   ['GET', '/api/admin/growth-data'], ['GET', '/api/admin/social'], ['GET', '/api/admin/tickets'], ['GET', '/api/admin/inbox'], ['GET', '/api/admin/feedback'],
   ['POST', '/api/admin/ticket-reply'], ['POST', '/api/admin/ticket-status'], ['POST', '/api/admin/inbox/reply'], ['POST', '/api/admin/inbox/status'], ['POST', '/api/admin/feedback/update'],
+  ['POST', '/api/admin/ticket-claim'], ['POST', '/api/admin/ticket-workstate'], ['POST', '/api/admin/ticket-note'], ['POST', '/api/admin/ticket-assign'],   // WAVE-SUPPORT-DEPT1: claim-to-own + lifecycle + notes (support preset) and reassign (supervisor-only)
   ['GET', '/api/admin/members'], ['GET', '/api/admin/transactions'], ['GET', '/api/admin/purchases'], ['GET', '/api/admin/payments-ledger'],
   ['GET', '/api/admin/pnl'], ['GET', '/api/admin/founder-costs'], ['GET', '/api/admin/security-log'], ['GET', '/api/admin/errors'],
   ['GET', '/api/admin/bans'], ['GET', '/api/admin/attacks'], ['GET', '/api/admin/alerts'], ['GET', '/api/admin/counsel'], ['GET', '/api/admin/brief'],
@@ -80,6 +81,15 @@ ok(_staffCan(ticketsOnly, 'GET', '/api/admin/feedback') === false, 'tickets-only
 ok(_staffCan(ticketsOnly, 'POST', '/api/admin/feedback/update') === false, 'tickets-only: CANNOT triage bugs');
 ok(_staffCan(ticketsOnly, 'GET', '/api/admin/members') === false, 'tickets-only: CANNOT view members');
 ok(_staffSeeMoney('support', JSON.stringify(ticketsOnly)) === false, 'tickets-only: CANNOT see money');
+ok(_staffCan(ticketsOnly, 'POST', '/api/admin/ticket-claim') === true, 'tickets-only: can claim-to-own');
+ok(_staffCan(ticketsOnly, 'POST', '/api/admin/ticket-workstate') === true, 'tickets-only: can drive the internal lifecycle');
+ok(_staffCan(ticketsOnly, 'POST', '/api/admin/ticket-note') === true, 'tickets-only: can add internal notes');
+ok(_staffCan(ticketsOnly, 'POST', '/api/admin/ticket-assign') === false, 'tickets-only: CANNOT reassign others (supervisor-only)');
+const supervisor = ['hq.console', 'support.tickets.view', 'support.tickets.act', 'support.supervise'];
+ok(_staffCan(supervisor, 'POST', '/api/admin/ticket-assign') === true, 'supervisor (support.supervise): CAN reassign a ticket to another agent');
+ok(_staffCan(supervisor, 'POST', '/api/admin/ticket-claim') === true, 'supervisor: can also claim');
+ok(_staffCan(supervisor, 'POST', '/api/admin/grant') === false, 'supervisor: still blocked from comp/grant (hard rail)');
+ok(_staffCan(supervisor, 'GET', '/api/admin/members') === false, 'supervisor: still cannot view members (not granted)');
 
 const viewer = ['hq.console', 'ops.overview', 'support.tickets.view', 'support.inbox.view', 'support.bugs.view', 'analytics.view', 'social.view', 'members.view'];
 ok(_staffCan(viewer, 'GET', '/api/admin/tickets') === true, 'viewer: can view tickets');
@@ -106,6 +116,10 @@ ok(capAllow('support', 'GET', '/api/admin/inbox', agent), 'support agent: open t
 ok(capAllow('support', 'POST', '/api/admin/ticket-reply', agent), 'support agent: reply to a test ticket');
 ok(capAllow('support', 'POST', '/api/admin/ticket-status', agent), 'support agent: close a test ticket');
 ok(capAllow('support', 'POST', '/api/admin/feedback/update', agent), 'support agent: triage a test bug report');
+ok(capAllow('support', 'POST', '/api/admin/ticket-claim', agent), 'support agent: claim a test ticket (claim-to-own)');
+ok(capAllow('support', 'POST', '/api/admin/ticket-workstate', agent), 'support agent: advance a test ticket through its lifecycle');
+ok(capAllow('support', 'POST', '/api/admin/ticket-note', agent), 'support agent: add an internal note to a test ticket');
+ok(!capAllow('support', 'POST', '/api/admin/ticket-assign', agent), 'support agent: BLOCKED from reassigning others (supervisor-only)');
 ok(!capAllow('support', 'GET', '/api/admin/members', agent), 'support agent: BLOCKED from members directory');
 ok(!capAllow('support', 'POST', '/api/admin/grant', agent), 'support agent: BLOCKED from comp/grant');
 ok(!capAllow('support', 'GET', '/api/admin/payments-ledger', agent), 'support agent: BLOCKED from the money ledger');
@@ -128,6 +142,8 @@ ok(STAFF_CAPS.length > 0 && OWNER_ONLY_CAPS.length > 0, 'taxonomy present');
 const delegableKeys = {}; STAFF_CAPS.forEach(function (c) { delegableKeys[c.key] = 1; });
 OWNER_ONLY_CAPS.forEach(function (c) { ok(!delegableKeys[c.key], 'owner-only cap not delegable: ' + c.key); });
 ok(_capForRoute('POST', '/api/admin/ticket-reply') === 'support.tickets.act', '_capForRoute maps ticket-reply');
+ok(_capForRoute('POST', '/api/admin/ticket-claim') === 'support.tickets.act', '_capForRoute maps ticket-claim to support.tickets.act');
+ok(_capForRoute('POST', '/api/admin/ticket-assign') === 'support.supervise', '_capForRoute maps ticket-assign to the supervisor cap');
 ok(_capForRoute('POST', '/api/admin/grant') === null, '_capForRoute: dangerous route maps to NO cap');
 
 log('');
