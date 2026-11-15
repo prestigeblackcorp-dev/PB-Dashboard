@@ -20,7 +20,7 @@ function ok(c, m) { if (c) { passes++; } else { fails++; log('  FAIL: ' + m); } 
 // ---- the PRE-RBAC gate, copied VERBATIM from worker.js, to prove equivalence ----
 const OWNER_ONLY = /^\/api\/admin\/(delete|purge|restore|grant|members|transactions|purchases|config|roles|staff|backup|export-tenant|social\/(connect|disconnect|publish)|payments\/(testcharge|testsub|dedup-subs|selftest|reconcile|recover|square-selftest)|payments-ledger|domains\/(testregister|selftest|dnsraw)|competitors|ai[/-]|counsel|brief|bans?|unban|attacks|alerts|security-log|errors|seo-health|site-uptime|funnel|analytics\/|monitor\/|pnl|founder-costs|push\/|owners?|owner\/)/;
 const SUPPORT_WRITE = /^\/api\/admin\/(feedback\/update|ticket-reply|ticket-status|ticket-claim|ticket-workstate|ticket-note|inbox\/(status|reply))$/;   // WAVE-SUPPORT-DEPT1: kept verbatim in lockstep with worker.js -- claim/workstate/note join the support write-set; ticket-assign (supervisor) does NOT.
-const STAFF_READ = /^\/api\/admin\/(config|overview|visits|visits-geo|growth-data|social|tickets|inbox|feedback)$/;
+const STAFF_READ = /^\/api\/admin\/(config|overview|visits|visits-geo|growth-data|social|tickets|ticket-customer|inbox|feedback)$/;   // WAVE-SUPPORT-F0a: mirror the worker -- ticket-customer is a capless-support read (money-stripped in-handler)
 function legacyAllow(role, method, path) {
   if (role === 'owner') return true;
   if (method === 'GET') { const ownerOnly = OWNER_ONLY.test(path) && path !== '/api/admin/config'; return !ownerOnly && STAFF_READ.test(path); }
@@ -31,7 +31,7 @@ function capAllow(role, method, path, capsJson) { return _staffCan(_effectiveSta
 // ---- comprehensive admin route universe (staff-safe + owner-only + destructive) ----
 const ROUTES = [
   ['GET', '/api/admin/config'], ['GET', '/api/admin/overview'], ['GET', '/api/admin/visits'], ['GET', '/api/admin/visits-geo'],
-  ['GET', '/api/admin/growth-data'], ['GET', '/api/admin/social'], ['GET', '/api/admin/tickets'], ['GET', '/api/admin/inbox'], ['GET', '/api/admin/feedback'],
+  ['GET', '/api/admin/growth-data'], ['GET', '/api/admin/social'], ['GET', '/api/admin/tickets'], ['GET', '/api/admin/ticket-customer'], ['GET', '/api/admin/inbox'], ['GET', '/api/admin/feedback'],   // WAVE-SUPPORT-F0a: ticket-customer (in-ticket account panel) rides the support.tickets.view cap
   ['POST', '/api/admin/ticket-reply'], ['POST', '/api/admin/ticket-status'], ['POST', '/api/admin/inbox/reply'], ['POST', '/api/admin/inbox/status'], ['POST', '/api/admin/feedback/update'],
   ['POST', '/api/admin/ticket-claim'], ['POST', '/api/admin/ticket-workstate'], ['POST', '/api/admin/ticket-note'], ['POST', '/api/admin/ticket-assign'], ['GET', '/api/admin/ticket-agents'],   // WAVE-SUPPORT-DEPT1: claim-to-own + lifecycle + notes (support preset) and reassign (supervisor-only); WAVE-SUPPORT-DEPT2: ticket-agents roster read (supervisor-only)
   ['GET', '/api/admin/members'], ['GET', '/api/admin/transactions'], ['GET', '/api/admin/purchases'], ['GET', '/api/admin/payments-ledger'],
@@ -76,6 +76,8 @@ DANGER.forEach(function (r) { ok(_staffCan(ALLCAPS, r[0], r[1]) === false, 'HARD
 // ===== TEST 3: persona scoping =====
 const ticketsOnly = ['hq.console', 'support.tickets.view', 'support.tickets.act'];
 ok(_staffCan(ticketsOnly, 'GET', '/api/admin/tickets') === true, 'tickets-only: can view tickets');
+ok(_staffCan(ticketsOnly, 'GET', '/api/admin/ticket-customer') === true, 'tickets-only: can read the in-ticket customer panel (rides support.tickets.view)');   // WAVE-SUPPORT-F0a
+ok(_staffCan(['analytics.view'], 'GET', '/api/admin/ticket-customer') === false, 'F0a: ticket-customer REQUIRES support.tickets.view -- an analytics-only staffer cannot reach the account panel');
 ok(_staffCan(ticketsOnly, 'POST', '/api/admin/ticket-reply') === true, 'tickets-only: can reply tickets');
 ok(_staffCan(ticketsOnly, 'GET', '/api/admin/feedback') === false, 'tickets-only: CANNOT view bugs');
 ok(_staffCan(ticketsOnly, 'POST', '/api/admin/feedback/update') === false, 'tickets-only: CANNOT triage bugs');
@@ -113,6 +115,7 @@ ok(_staffSeeMoney('support', null) === false, 'support (capless preset): no mone
 // ===== TEST 4: Support-HQ workflow simulation -- a support agent handling a test ticket + bug =====
 const agent = JSON.stringify(_defaultStaffCaps('support'));
 ok(capAllow('support', 'GET', '/api/admin/tickets', agent), 'support agent: open the ticket queue');
+ok(capAllow('support', 'GET', '/api/admin/ticket-customer', agent), 'support agent: open the in-ticket customer-intelligence panel');   // WAVE-SUPPORT-F0a
 ok(capAllow('support', 'GET', '/api/admin/feedback', agent), 'support agent: open the bug queue');
 ok(capAllow('support', 'GET', '/api/admin/inbox', agent), 'support agent: open the inbox');
 ok(capAllow('support', 'POST', '/api/admin/ticket-reply', agent), 'support agent: reply to a test ticket');

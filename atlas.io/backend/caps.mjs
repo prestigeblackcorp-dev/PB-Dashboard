@@ -24,7 +24,7 @@
  *    this equivalence route-by-route.
  */
 
-export const ATLAS_CAPS_VERSION = '2026.11.14-dept2';
+export const ATLAS_CAPS_VERSION = '2026.11.14-f0a';
 
 // def: which role presets include this cap by DEFAULT (when a staffer has no
 // explicit caps). 'both' = support+analyst; 'support' = support only (the write
@@ -42,7 +42,7 @@ export const STAFF_CAPS = [
 
   // ---- Support (the core staff job): split VIEW (read) vs ACT (reply/triage) ----
   { key: 'support.tickets.view', group: 'Support', label: 'Support tickets - view', sens: 'pii', def: 'both',
-    routes: [{ m: 'GET', p: '^/api/admin/tickets$' }] },
+    routes: [{ m: 'GET', p: '^/api/admin/tickets$' }, { m: 'GET', p: '^/api/admin/ticket-customer$' }] },   // WAVE-SUPPORT-F0a: + the in-ticket customer-intelligence panel (account context for the ONE tenant on the ticket; revenue is money-gated in-handler)
   { key: 'support.tickets.act', group: 'Support', label: 'Support tickets - reply, claim, triage & notes', sens: 'pii', def: 'support',
     routes: [{ m: 'POST', p: '^/api/admin/ticket-reply$' }, { m: 'POST', p: '^/api/admin/ticket-status$' }, { m: 'POST', p: '^/api/admin/ticket-claim$' }, { m: 'POST', p: '^/api/admin/ticket-workstate$' }, { m: 'POST', p: '^/api/admin/ticket-note$' }] },   // WAVE-SUPPORT-DEPT1: an agent can claim-to-own, drive the internal lifecycle, and add internal notes on the tickets they work
   { key: 'support.supervise', group: 'Support', label: 'Support tickets - reassign & supervise (hand a ticket to another agent)', sens: 'pii', def: 'none',
