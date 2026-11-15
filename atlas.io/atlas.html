@@ -2475,7 +2475,7 @@ const Atlas = (function(){
   function _fbSel(key){ _fbPending=key||''; try{ Array.prototype.forEach.call(document.querySelectorAll('.fbpick'),function(el){ var on=el.getAttribute('data-fbkey')===key; el.style.borderColor=on?'rgba(201,169,98,.9)':'rgba(201,169,98,.25)'; el.style.boxShadow=on?'0 0 0 1px rgba(201,169,98,.6)':'none'; }); }catch(e){} var c=document.getElementById('fbpickConfirm'); if(!c) return; if(!key||!_FB_META[key]){ c.innerHTML=''; return; } c.innerHTML='<button class="btn btn--primary" style="width:100%" onclick="Atlas._fbCommit()">Make '+esc(_FB_META[key].name)+' my mark &mdash; permanently</button>'; }
   function _fbCommit(){ var key=_fbPending; if(!key||!_FB_META[key]) return; var cb=document.querySelector('#fbpickConfirm .btn'); if(cb){ cb.disabled=true; cb.textContent='Saving...'; } _api('/api/founder/badge',{method:'POST',body:{badge:key}}).then(function(res){ var j=res&&res.json; if(res.status>=200&&res.status<300&&j&&j.ok){ _founderInfo.badge=j.badge||key; try{ if(typeof S!=='undefined'&&S){ S.founderBadge=j.badge||key; save(); } }catch(e){} try{ closeModal(); }catch(e){} try{ toast('Your founder badge is set: '+((_FB_META[j.badge||key]||{}).name||'')); }catch(e){} try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } else { if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast((j&&j.error)||'Could not save your badge.'); }catch(e){} } }).catch(function(){ if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast('Network error -- try again.'); }catch(e){} }); }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.15jm';
+  var APP_VERSION='2026.11.15jn';
   var APP_CHANGELOG=[
     'Rent by the hour, day, week AND month on the same item: set a price for each duration you offer (Settings &rarr; Money), and your booking site shows a clean Hourly / Daily / Weekly / Monthly toggle so each customer picks how long they want and watches the exact price update live. The duration they pick is the price they pay &mdash; your weekly rate is your weekly deal, with nothing re-added at checkout. Extending one of these bookings now adds time in that same unit: extend a weekly booking and it moves the return date by the week and bills your weekly rate, not a day. And when you take a booking yourself from the dashboard, the booking form shows the same Hourly / Daily / Weekly / Monthly picker for a multi-rate item &mdash; so an owner-created booking is reserved and charged at the exact duration you choose, not your default one.',
     'Clearer setup &amp; help: the Connect step now shows every way to get paid (Stripe, Square, PayPal &mdash; or let Atlas process &amp; pay you out) and lists Live GPS tracking as a $29/mo add-on; every integration now links its own step-by-step Atlas guide right where you connect it; and the setup tips are bigger and easier to read.',
@@ -12196,6 +12196,10 @@ const Atlas = (function(){
         +'<div class="desc" style="margin:4px 0 10px">Ping your other tools when bookings happen &mdash; managed in its own place now.</div>'
         +'<button class="btn btn--ghost" onclick="Atlas.openWebhooks()">Open webhooks</button>'
       +'</div>'
+      +'<div style="margin-top:18px;border-top:1px solid var(--line,rgba(0,0,0,.1));padding-top:14px"><b style="font-size:13px">Receive bookings from your site</b>'
+        +'<div class="desc" style="margin:4px 0 10px">The reverse of the read API &mdash; let your own website or checkout <b>send completed bookings into Atlas</b> (signed, so only you can). They appear here with the same calendar, payouts and KPIs.</div>'
+        +'<button class="btn btn--ghost" onclick="Atlas.openIngest()">Set up inbound bookings</button>'
+      +'</div>'
       +'</div>');
     _devKeysLoad();
   }
@@ -12233,6 +12237,57 @@ const Atlas = (function(){
   function devHookTest(id){ toast('Sending test event...'); _api('/api/tenant/webhooks',{method:'POST',body:{test:id}}).then(function(res){ var j=res.json||{}; if(j.ok){ toast(j.delivered?('Delivered (HTTP '+j.status+')'):('Your endpoint returned '+(j.status||'no response'))); } else toast((j.error)||'Could not send'); }).catch(function(){ toast('Network error'); }); }
   function devHookDelete(id){ if(!_canMod('settings')){ toast('Your role cannot manage webhooks'); return; } if(!confirm('Delete this webhook endpoint? Atlas stops sending events to it immediately.')) return;
     _api('/api/tenant/webhooks?id='+encodeURIComponent(id),{method:'DELETE'}).then(function(){ toast('Endpoint deleted'); _devHooksLoad(); }).catch(function(){ toast('Could not delete'); }); }
+  // ===== WAVE5-INGEST: receive bookings from the tenant's OWN site (inbound signed postback) -- the inbound twin of webhooks =====
+  function openIngest(){
+    if(!ATLAS_BACKEND || !_apiCsrf){ openModal('<div class="modal__head"><h3>Receive bookings from your site</h3>'+_xBtn()+'</div><div class="modal__body"><div class="bk-lenhint" style="margin:0">Sign in to your Atlas account to set this up.</div></div>'); return; }
+    openModal('<div class="modal__head"><h3>Receive bookings from your site</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="desc" style="margin:0 0 12px">Already take bookings on your own website or checkout? Have it <b>send each completed booking to Atlas</b> and it shows up here automatically &mdash; same calendar, payouts and KPIs as a booking made on your Atlas page. Every request is signed with your secret, so only you can send them.</div>'
+      +'<div id="ingBody"><div style="color:var(--muted);font-size:13px">Loading&hellip;</div></div>'
+      +'</div>');
+    _ingestLoad();
+  }
+  function _ingestLoad(){ _api('/api/ingest-key').then(function(res){ var el=document.getElementById('ingBody'); if(!el) return; var j=(res&&res.json)||{};
+    if(j.platform_enabled===false){ el.innerHTML='<div class="bk-lenhint" style="margin:0">The developer platform is not switched on for Atlas yet. Once it is, you can generate a signing secret here and start sending bookings from your own site.</div>'; return; }
+    var endp=esc(j.endpoint||'');
+    var head=j.enabled
+      ? ('<div class="conn-row"><div class="conn-row__t"><b>Active</b><small><code>'+esc(j.prefix||'')+'&hellip;</code> &middot; '+(j.last_used_at?('last booking '+_devAgo(j.last_used_at)):'no bookings received yet')+'</small></div></div>')
+      : ('<div style="color:var(--muted);font-size:13px">Not set up yet &mdash; generate a signing secret to begin.</div>');
+    el.innerHTML=head
+      +'<div class="field" style="margin-top:12px"><label>Your endpoint</label><input class="input" readonly value="'+endp+'" style="font-family:ui-monospace,monospace;font-size:12px" onclick="this.select()"></div>'
+      +'<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn btn--primary" onclick="Atlas.ingestMint()">'+(j.enabled?'Regenerate secret':'Generate signing secret')+'</button>'+(j.enabled?'<button class="btn btn--ghost" onclick="Atlas.ingestRevoke()">Turn off</button>':'')+'</div>'
+      +(j.enabled?'<div style="color:var(--muted);font-size:12px;margin-top:8px">Regenerating replaces the old secret &mdash; update your site with the new one.</div>':'')
+      +_ingestDocsHtml(j.endpoint||'');
+  }).catch(function(){ var el=document.getElementById('ingBody'); if(el) el.innerHTML='<div style="color:var(--muted);font-size:13px">Could not load.</div>'; }); }
+  function _ingestDocsHtml(endpoint){
+    var snip=['// Node.js -- sign each booking and POST it to Atlas',
+      'const crypto = require("crypto");',
+      'const SECRET = "atlin_...";  // your signing secret (shown once)',
+      'const body = JSON.stringify({',
+      '  external_id: "YOUR-BOOKING-ID", // your id -- a resend never duplicates',
+      '  ts: Date.now(),                 // valid for 5 minutes',
+      '  name: "Jane Doe", email: "jane@example.com", phone: "",',
+      '  asset: "Asset name", periods: 2, start: Date.now(),',
+      '  amount_cents: 24000,            // pre-tax subtotal (Atlas adds tax/fees/payout)',
+      '  paid: true                      // optional: money already collected on your site',
+      '});',
+      'const sig = crypto.createHmac("sha256", SECRET).update(body).digest("hex");',
+      'await fetch("'+endpoint+'", { method: "POST",',
+      '  headers: { "Content-Type": "application/json", "X-Atlas-Signature": "sha256="+sig },',
+      '  body });'].join('\n');
+    return '<div style="margin-top:16px;border-top:1px solid var(--line,rgba(0,0,0,.1));padding-top:12px"><b style="font-size:13px">How to send a booking</b>'
+      +'<pre style="background:var(--surface-2,rgba(0,0,0,.05));border-radius:8px;padding:10px;overflow-x:auto;font-size:11.5px;line-height:1.5;margin:8px 0 0"><code>'+esc(snip)+'</code></pre>'
+      +'<div style="color:var(--muted);font-size:12px;margin-top:8px">Sign the exact body bytes with HMAC-SHA256 and your secret. Required: <code>external_id</code>, <code>ts</code>, <code>name</code>, <code>email</code>. Leave out <code>amount_cents</code> to have Atlas price it from the asset&rsquo;s own rate.</div></div>';
+  }
+  function ingestMint(){ if(!_canMod('settings')){ toast('Your role cannot manage this'); return; }
+    _api('/api/ingest-key',{method:'POST'}).then(function(res){ var j=(res&&res.json)||{};
+      if(j.ok&&j.secret){ _ingestShowSecret(j.secret,j.endpoint||''); } else toast((j.message||j.error)||'Could not generate'); }).catch(function(){ toast('Network error'); }); }
+  function _ingestShowSecret(secret,endpoint){ openModal('<div class="modal__head"><h3>Copy your signing secret</h3>'+_xBtn()+'</div><div class="modal__body">'
+      +'<div class="bk-lenhint" style="margin:0 0 12px;border-color:var(--brand);color:var(--ink)">This is the only time your signing secret is shown. Put it in your website or checkout code to sign each booking you send to Atlas, and store it somewhere safe.</div>'
+      +'<div style="display:flex;gap:8px"><input class="input" id="devSecret" readonly value="'+esc(secret)+'" style="flex:1;font-family:ui-monospace,monospace;font-size:12px" onclick="this.select()"><button class="btn btn--primary" onclick="Atlas._devCopy()">Copy</button></div>'
+      +(endpoint?('<div class="field" style="margin-top:12px"><label>Your endpoint</label><input class="input" readonly value="'+esc(endpoint)+'" style="font-family:ui-monospace,monospace;font-size:12px" onclick="this.select()"></div>'):'')
+      +'<button class="btn btn--ghost btn--full" style="margin-top:14px" onclick="Atlas.openIngest()">Done</button></div>'); }
+  function ingestRevoke(){ if(!_canMod('settings')){ toast('Your role cannot manage this'); return; } if(!confirm('Turn off inbound bookings? Your site can no longer send bookings to Atlas until you generate a new secret.')) return;
+    _api('/api/ingest-key/revoke',{method:'POST'}).then(function(){ toast('Inbound bookings turned off'); _ingestLoad(); }).catch(function(){ toast('Could not turn off'); }); }
   // ===== Webhooks: plain-English, first-class module (own Settings card + modal; reuses the /api/tenant/webhooks plumbing above) =====
   function openWebhooks(){
     if(!ATLAS_BACKEND || !_apiCsrf){ openModal('<div class="modal__head"><h3>Webhooks</h3>'+_xBtn()+'</div><div class="modal__body"><div class="bk-lenhint" style="margin:0">Sign in to your Atlas account to set up webhooks &mdash; this is available once you are signed in.</div></div>'); return; }
@@ -12462,17 +12517,18 @@ const Atlas = (function(){
   function _modalEmbed(){
     var url=_bookingLink(), pub=(typeof _bookingSitePublished==='function' ? _bookingSitePublished() : false);
     var snip='<iframe src="'+url+'" title="Book with us" loading="lazy" style="width:100%;min-height:820px;border:0;border-radius:16px"></iframe>';
+    var btn='<a href="'+url+'" target="_blank" rel="noopener" style="display:inline-block;background:#1E6E4E;color:#fff;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:10px;font-family:system-ui,-apple-system,sans-serif">Book now</a>';
     var body = pub
-      ? ('<p style="font-size:13px;color:var(--muted);margin:0 0 12px">Paste this into any page of your existing website. It embeds your live Atlas booking site &mdash; bookings flow straight into this dashboard, branded as you.</p>'
-         +'<div class="field"><label>Your booking embed snippet</label><textarea class="input mono" id="embedCode" readonly rows="4" style="resize:vertical;font-size:12px;line-height:1.5" onclick="this.select()">'+esc(snip)+'</textarea></div>'
-         +'<button class="btn btn--primary btn--full" onclick="Atlas.copyEmbed()">Copy snippet</button>'
-         +'<p style="font-size:12px;color:var(--muted);margin-top:10px">Prefer a link? Point any button at <a href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(url)+'</a></p>'
+      ? ('<p style="font-size:13px;color:var(--muted);margin:0 0 12px">Add your Atlas booking to a website you already have &mdash; bookings flow straight into this dashboard, branded as you. Pick whichever fits your site.</p>'
+         +'<div class="field"><label>1 &middot; Full booking page</label><div style="font-size:12px;color:var(--muted);margin:-4px 0 6px">Shows your whole booking site inside one of your pages.</div><textarea class="input mono" id="embedCode" readonly rows="3" style="resize:vertical;font-size:12px;line-height:1.5" onclick="this.select()">'+esc(snip)+'</textarea><button class="btn btn--ghost btn--sm" style="margin-top:6px" onclick="Atlas.copyEmbed(\'embedCode\')">Copy embed</button></div>'
+         +'<div class="field" style="margin-top:14px"><label>2 &middot; A &ldquo;Book now&rdquo; button</label><div style="font-size:12px;color:var(--muted);margin:-4px 0 6px">A button that opens your booking site in a new tab &mdash; restyle it to match your site.</div><textarea class="input mono" id="embedBtnCode" readonly rows="3" style="resize:vertical;font-size:12px;line-height:1.5" onclick="this.select()">'+esc(btn)+'</textarea><button class="btn btn--ghost btn--sm" style="margin-top:6px" onclick="Atlas.copyEmbed(\'embedBtnCode\')">Copy button</button></div>'
+         +'<div class="field" style="margin-top:14px"><label>3 &middot; A direct link</label><div style="display:flex;gap:8px"><input class="input mono" id="embedLink" readonly value="'+esc(url)+'" style="flex:1;font-size:12px" onclick="this.select()"><button class="btn btn--ghost btn--sm" onclick="Atlas.copyEmbed(\'embedLink\')">Copy link</button></div><div style="font-size:12px;color:var(--muted);margin-top:6px">Point any existing button, bio link or social profile at this.</div></div>'
          +_helpGuideLink('web','booking embed'))
-      : ('<p style="font-size:13px;color:var(--muted);margin:0 0 14px">Publish your booking site first &mdash; then your personal embed snippet appears here, ready to copy.</p>'
+      : ('<p style="font-size:13px;color:var(--muted);margin:0 0 14px">Publish your booking site first &mdash; then your embed snippet, a ready-made button and a direct link all appear here, ready to copy.</p>'
          +'<button class="btn btn--primary btn--full" onclick="Atlas.closeModal();Atlas.go(\'website\')">Go to Website &amp; publish</button>');
-    openModal('<div class="modal__head"><h3>Embed your booking site</h3>'+_xBtn()+'</div><div class="modal__body">'+body+'</div>');
+    openModal('<div class="modal__head"><h3>Add booking to your site</h3>'+_xBtn()+'</div><div class="modal__body">'+body+'</div>');
   }
-  function copyEmbed(){ var t=document.getElementById('embedCode'); if(t){ try{ t.select(); navigator.clipboard.writeText(t.value); }catch(e){} } toast('Embed snippet copied'); }
+  function copyEmbed(id){ var t=document.getElementById(id||'embedCode'); if(t){ try{ t.select(); navigator.clipboard.writeText(t.value); }catch(e){} } toast('Copied'); }
   function openModal(html){ openModal._lastFocus=document.activeElement; var _m=document.getElementById('modal'); _m.innerHTML=html; try{ var _h=_m.querySelector('h3'); if(_h) _m.setAttribute('aria-label',(_h.textContent||'').trim().slice(0,80)); }catch(e){} document.getElementById('modalScrim').classList.add('on'); try{ _m.setAttribute('tabindex','-1'); _m.focus(); }catch(e){} if(!openModal._escBound){ openModal._escBound=1; document.addEventListener('keydown',function(e){ var _s=document.getElementById('modalScrim'); if(!_s||!_s.classList.contains('on')) return; if(e.key==='Escape'){ closeModal(); return; } if(e.key==='Tab'){ var _md=document.getElementById('modal'); var _f=Array.prototype.slice.call(_md.querySelectorAll('a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type=hidden]),select:not([disabled]),[tabindex]:not([tabindex="-1"])')).filter(function(el){ return el.offsetWidth>0||el.offsetHeight>0||el===document.activeElement; }); if(!_f.length){ e.preventDefault(); try{_md.focus();}catch(_e){} return; } var _first=_f[0],_last=_f[_f.length-1],_a=document.activeElement; if(!_md.contains(_a)){ e.preventDefault(); _first.focus(); return; } if(e.shiftKey&&_a===_first){ e.preventDefault(); _last.focus(); } else if(!e.shiftKey&&_a===_last){ e.preventDefault(); _first.focus(); } } }); } }   // #a11y WCAG 2.4.3: trap Tab within the open modal (was: Tab escaped to the page behind); Escape still closes
   function closeModal(){ _signupCheckoutActive=false; var _scM=document.getElementById('modalScrim'); if(_scM){ _scM.classList.remove('on'); _scM.classList.remove('checkout-top'); }   /* WAVE97: closing ANY modal ends the checkout-suppression + drops the z-lift. If the user bailed on the card form while still needs_card, the paywall underneath is revealed again and the next 402 can re-show it. */ try{ if(openModal._lastFocus&&openModal._lastFocus.focus) openModal._lastFocus.focus(); }catch(e){} if(_livePollDeferredBuild){ _livePollDeferredBuild=false; try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } }   // flush a live-poll refresh that was held back while this modal was open
 
@@ -15981,7 +16037,7 @@ const Atlas = (function(){
     applyBkPromo,addPromo,savePromo,promoEdit,savePromoEdit,togglePromo,deletePromo,setLoyalty,custRedeem,custLoyalty,saveCustLoyalty,custLoyaltyReset,loyaltyResetAll,setLogFilter,setLogSearch,renderReports,renderPayouts,downloadReport,drillReportRow,applySitePromo,replyReview,reviewRemoveReply,reviewToggleHidden,reviewShowAll,
     renderTracking,openTrackerConnect,openTrackerHelp,connectTrackerLive,connectTrackerGeneric,trkPickProvider,trkGenericAuthUpdate,trkConnTab,trkLiveFieldsUpdate,trkFieldsUpdate,trkConnect,editTrackerConnect,disconnectTracker,gfEdit,gfSave,gfRemove,trkSelect,trkRoute,trkNavApp,trkGuideUpdate,trkRefresh,trkMapOpen,trkMapSave,trkFullscreen,trkNav3d,exitNav3d,
     openPortal,portalView,portalSubmitSig,portalPay,portalPayInstallment,portalUpload,portalDoc,_viewPortalDoc,setPortalField,togglePortalSection,addPortalPerk,editPortalPerk,removePortalPerk,autoGenPerks,portalWidgetPicker,portalAddWidget,portalEditWidget,portalToggleWidget,portalRemoveWidget,portalMoveWidget,portalWidgetItem,portalAddWidgetItem,portalRemoveWidgetItem,portalPayWidget,portalSetStars,portalSubmitReview,portalSavePrefs,
-    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,pbSyncNow,openWebhooks,devKeyCreate,devKeyRevoke,_devCopy,devHookCreate,devHookTest,devHookDelete,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
+    openReceipt,downloadReceipt,sendReceipt,setWebKey,removeWebKey,openDeveloper,pbSyncNow,openWebhooks,devKeyCreate,devKeyRevoke,_devCopy,devHookCreate,devHookTest,devHookDelete,openIngest,ingestMint,ingestRevoke,openLiveDashboard,checkUpdates,viewChangelog,toggleFlag,installApp,sendFeedback,reportBug,_fbSet,sendQuickFeedback,openTicket,submitTicket,viewTicket,ticketReply,compGrant,compRevoke,domainSearch,domainSell,setDbizField,
     mfaEnableEmail,openMfaSetupTotp,mfaConfirmTotp,_mfaDownloadCodes,openMfaDisable,mfaDisableSubmit,mfaStepupToggle,
     S:()=>S,save2:save,setBackend};
 })();

@@ -6961,6 +6961,32 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/var _ftake=_r2\(_revX-_fown-_ffb1-_ffb2-_fcost\);/.test(_ATLAS_SRC), 'WAVE-PA3: the booking P&L foreshadow take == revenue(ex-tax) - owner - broker(s) - cost (foots to _netProfit)');
   ok(/function _ownerPayoutSchedule\(bks\)\{/.test(_ATLAS_SRC) && /Owner payout schedule <span/.test(_ATLAS_SRC), 'WAVE-PA3: the consignment owner weekly/monthly payout schedule exists + renders in Payouts');
   ok(/if\(_ocad!=='book'\) a\.ownerFee\.payCadence=_ocad;/.test(_ATLAS_SRC), 'WAVE-PA3: the per-asset owner payCadence (weekly/monthly) is stored only when non-default (byte-identical otherwise)');
+  // ---- WAVE5-INGEST: inbound signed booking postback (connect-your-site) ----
+  ok(/CREATE TABLE IF NOT EXISTS ingest_keys \(tenant_id TEXT PRIMARY KEY, secret_enc TEXT, prefix TEXT/.test(_WORKER_SRC), 'WAVE5-INGEST: ingest_keys table (one per-tenant signing secret, encrypted at rest)');
+  ok(/CREATE TABLE IF NOT EXISTS ingest_events \(tenant_id TEXT, external_id TEXT, booking_id TEXT, at INTEGER, PRIMARY KEY\(tenant_id, external_id\)\)/.test(_WORKER_SRC), 'WAVE5-INGEST: ingest_events idempotency ledger keyed on (tenant, external_id)');
+  ok(/async function _ingestSecretOf\(env, tid\) \{[\s\S]*?if \(!r \|\| r\.revoked_at \|\| !r\.secret_enc\) return '';/.test(_WORKER_SRC), 'WAVE5-INGEST: _ingestSecretOf returns "" when no secret / revoked (endpoint fails CLOSED)');
+  ok(/const _ingm = path\.match\(\/\^\\\/api\\\/ingest\\\/\(\[a-z0-9-\]\{1,63\}\)\$\/\);/.test(_WORKER_SRC), 'WAVE5-INGEST: the /api/ingest/<slug> endpoint exists');
+  ok(/if \(!_isec\) return err\(403, 'Inbound ingestion is not enabled for this site\.'\);/.test(_WORKER_SRC), 'WAVE5-INGEST: fail-closed -- no minted secret -> 403, never ingests');
+  ok(/const _iexp = await _whSignHex\(_isec, _iraw\);[\s\S]*?if \(!_isig \|\| !_iexp \|\| !_ctEq\(_isig, _iexp\)\)/.test(_WORKER_SRC), 'WAVE5-INGEST: HMAC-SHA256 verify over the RAW body with constant-time compare (same scheme as outbound webhooks)');
+  ok(/if \(!_its \|\| Math\.abs\(Date\.now\(\) - _its\) > 300000\) return err\(400,/.test(_WORKER_SRC), 'WAVE5-INGEST: 5-minute replay window on the signed ts');
+  ok(/if \(!_ixid\) return err\(400, 'external_id is required/.test(_WORKER_SRC), 'WAVE5-INGEST: external_id (idempotency key) is required');
+  ok(/INSERT OR IGNORE INTO ingest_events \(tenant_id, external_id, booking_id, at\)/.test(_WORKER_SRC), 'WAVE5-INGEST: idempotent claim -- a retried postback returns the SAME booking, never a duplicate');
+  ok(/if \(_iAmt != null\) \{ _iq = \{ subtotalCents: _iAmt \}; _reprice\(_iprof\.money, _iq\); \}/.test(_WORKER_SRC), 'WAVE5-INGEST: an integrator-sent amount_cents is repriced through the tenant money model (tax/fees/payout) so the ingested booking foots to KPIs');
+  ok(/else \{ _iq = priceQuote\(_iprof\.money, _ipub, _iasset, _iper, \[\], _istart, _ichosen\); \}/.test(_WORKER_SRC), 'WAVE5-INGEST: no amount -> price from the published asset rate x periods, exactly like the Atlas site');
+  ok(/audit\(env, \{ tenant_id: _iprof\.id \}, req, 'booking\.ingested'/.test(_WORKER_SRC), 'WAVE5-INGEST: a created booking writes a booking.ingested audit row');
+  ok(/const _iplain = 'atlin_' \+ randId\(40\)/.test(_WORKER_SRC) && /_istore = await encSecret\(env, _iplain, 'ingest:' \+ _ikc\.tenant_id\);/.test(_WORKER_SRC), 'WAVE5-INGEST: mint generates an atlin_ secret stored ENCRYPTED at rest');
+  ok(/method === 'POST' && !csrfOk\(req, _ikc\)\) return err\(403, 'Bad CSRF token\.'\);[\s\S]*?if \(!_can\(_ikc, 'settings'\)\)/.test(_WORKER_SRC), 'WAVE5-INGEST: key management is CSRF-guarded + Settings-capability gated');
+  ok(/ok: false, error: 'api_disabled'/.test(_WORKER_SRC), 'WAVE5-INGEST: the endpoint + mint are gated behind the dev_api_enabled platform switch (OFF by default)');
+  // WAVE5-INGEST client UI + option-3 embed polish
+  ok(/function openIngest\(\)\{/.test(_ATLAS_SRC), 'WAVE5-INGEST: client openIngest() modal exists');
+  ok(/function _ingestLoad\(\)\{ _api\('\/api\/ingest-key'\)/.test(_ATLAS_SRC), 'WAVE5-INGEST: _ingestLoad reads the per-tenant key status from /api/ingest-key');
+  ok(/_api\('\/api\/ingest-key',\{method:'POST'\}\)/.test(_ATLAS_SRC), 'WAVE5-INGEST: ingestMint POSTs to mint the signing secret');
+  ok(/_api\('\/api\/ingest-key\/revoke',\{method:'POST'\}\)/.test(_ATLAS_SRC), 'WAVE5-INGEST: ingestRevoke turns inbound bookings off');
+  ok(/createHmac\("sha256", SECRET\)\.update\(body\)\.digest\("hex"\)/.test(_ATLAS_SRC), 'WAVE5-INGEST: the in-app docs show the correct HMAC-SHA256 signing snippet');
+  ok(/if\(j\.platform_enabled===false\)\{/.test(_ATLAS_SRC), 'WAVE5-INGEST: the UI honors the platform dev_api_enabled gate (shows a not-enabled-yet note)');
+  ok(/onclick="Atlas\.openIngest\(\)">Set up inbound bookings<\/button>/.test(_ATLAS_SRC), 'WAVE5-INGEST: the Developer API modal links to the inbound-bookings setup');
+  ok(/openIngest,ingestMint,ingestRevoke,/.test(_ATLAS_SRC), 'WAVE5-INGEST: the 3 inbound fns are exported on the Atlas object');
+  ok(/A &ldquo;Book now&rdquo; button/.test(_ATLAS_SRC) && /function copyEmbed\(id\)\{/.test(_ATLAS_SRC), 'WAVE5 option-3: the embed modal offers full-embed + a Book-now button + a direct link (copyEmbed(id) generalized)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
