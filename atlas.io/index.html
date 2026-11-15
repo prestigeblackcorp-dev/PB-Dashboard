@@ -2150,7 +2150,7 @@ const Atlas = (function(){
       else if(res && res.status>=400){ _fail(j); }
     }).catch(function(){}); }
   function _srvDelete(kind,id){ if(!ATLAS_BACKEND||!_apiCsrf||!id) return; _api('/api/data/'+kind+'/'+id,{method:'DELETE'}).then(function(res){ if(res && (res.status<300 || res.status===404)) delete _pushedHash[kind+':'+id]; }).catch(function(){}); }   // audit c3 [3]: clear the dirty marker ONLY after the DELETE is confirmed (2xx/404) -- it was cleared up-front, so a DROPPED/failed delete was marked synced and never retried, and the record resurrected on the next push. Keeping the key on failure lets the sync reconcile retry the delete.
-  function _srvMirrorProfile(pend){ if(!ATLAS_BACKEND||!_apiCsrf||!S||_bootSync) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money'&&k!=='_actAs'&&k!=='_selfActor'&&k!=='_srvCustomers') settings[k]=S[k]; }   // _actAs/_selfActor are device-local preview state (never share across devices/teammates); _srvCustomers is a PII fetch-cache (re-fetched each hydrate)
+  function _srvMirrorProfile(pend){ if(!ATLAS_BACKEND||!_apiCsrf||!S||_bootSync) return; var settings={}; for(var k in S){ if(k!=='brand'&&k!=='money'&&k!=='_actAs'&&k!=='_selfActor'&&k!=='_srvCustomers'&&k!=='obAssets'&&k!=='obDraft'&&k!=='firstAsset') settings[k]=S[k]; }   // _actAs/_selfActor are device-local preview state (never share across devices/teammates); _srvCustomers is a PII fetch-cache (re-fetched each hydrate). obAssets/obDraft/firstAsset are ONBOARDING-only drafts that carry big inline photos -> NEVER mirror them into the tenant row (they become real assets at seed, whose photos offload to R2 via #295); this closes the firstAsset-bloat vector at the source.
     // never mirror provider secrets in plaintext: send a shallow copy of the secret-bearing subtrees with the keys stripped (local S keeps them; the wire/server does not)
     if(settings.trackers){ var _tk={}; for(var _a in settings.trackers) _tk[_a]=settings.trackers[_a]; delete _tk.apiKey; settings.trackers=_tk; }
     if(settings.comms){ var _cm={}; for(var _b in settings.comms) _cm[_b]=settings.comms[_b]; delete _cm.resendKey; settings.comms=_cm; }
@@ -2493,7 +2493,7 @@ const Atlas = (function(){
   function _fbSel(key){ _fbPending=key||''; try{ Array.prototype.forEach.call(document.querySelectorAll('.fbpick'),function(el){ var on=el.getAttribute('data-fbkey')===key; el.style.borderColor=on?'rgba(201,169,98,.9)':'rgba(201,169,98,.25)'; el.style.boxShadow=on?'0 0 0 1px rgba(201,169,98,.6)':'none'; }); }catch(e){} var c=document.getElementById('fbpickConfirm'); if(!c) return; if(!key||!_FB_META[key]){ c.innerHTML=''; return; } c.innerHTML='<button class="btn btn--primary" style="width:100%" onclick="Atlas._fbCommit()">Make '+esc(_FB_META[key].name)+' my mark &mdash; permanently</button>'; }
   function _fbCommit(){ var key=_fbPending; if(!key||!_FB_META[key]) return; var cb=document.querySelector('#fbpickConfirm .btn'); if(cb){ cb.disabled=true; cb.textContent='Saving...'; } _api('/api/founder/badge',{method:'POST',body:{badge:key}}).then(function(res){ var j=res&&res.json; if(res.status>=200&&res.status<300&&j&&j.ok){ _founderInfo.badge=j.badge||key; try{ if(typeof S!=='undefined'&&S){ S.founderBadge=j.badge||key; save(); } }catch(e){} try{ closeModal(); }catch(e){} try{ toast('Your founder badge is set: '+((_FB_META[j.badge||key]||{}).name||'')); }catch(e){} try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } else { if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast((j&&j.error)||'Could not save your badge.'); }catch(e){} } }).catch(function(){ if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast('Network error -- try again.'); }catch(e){} }); }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.15jq';
+  var APP_VERSION='2026.11.15jr';
   var APP_CHANGELOG=[
     'Rent by the hour, day, week AND month on the same item: set a price for each duration you offer (Settings &rarr; Money), and your booking site shows a clean Hourly / Daily / Weekly / Monthly toggle so each customer picks how long they want and watches the exact price update live. The duration they pick is the price they pay &mdash; your weekly rate is your weekly deal, with nothing re-added at checkout. Extending one of these bookings now adds time in that same unit: extend a weekly booking and it moves the return date by the week and bills your weekly rate, not a day. And when you take a booking yourself from the dashboard, the booking form shows the same Hourly / Daily / Weekly / Monthly picker for a multi-rate item &mdash; so an owner-created booking is reserved and charged at the exact duration you choose, not your default one.',
     'Clearer setup &amp; help: the Connect step now shows every way to get paid (Stripe, Square, PayPal &mdash; or let Atlas process &amp; pay you out) and lists Live GPS tracking as a $29/mo add-on; every integration now links its own step-by-step Atlas guide right where you connect it; and the setup tips are bigger and easier to read.',
@@ -3137,7 +3137,7 @@ const Atlas = (function(){
   function fresh(){ return {brand:{name:'Your Company',color:'#1E6E4E',logo:null,initial:'Y',subdomain:'yourcompany'},
     fleet:FLEET_TYPES[0], money:defaultMoney(), integrations:{}, owner:'Owner', trialDays:7,
     plan:'trial', tier:'pro', trialStartedAt:Date.now(), subscribedAt:null, card:null, credits:null,
-    onboarded:false, onboardStarted:false, onboardStep:0, firstAsset:{}, invite:{}, team:[], _actAs:null,
+    onboarded:false, onboardStarted:false, onboardStep:0, firstAsset:{}, obAssets:[], obDraft:{}, invite:{}, team:[], _actAs:null,
     legal:{ jur:{country:'United States', region:''}, agreement:{status:'none', text:'', flags:[]}, tos:{status:'none', text:''}, privacy:{status:'none', text:''} },
     comms:_defaultComms(), promos:[], events:[], trackers:null, portalCfg:null,
     website:{ built:false, headline:'', tagline:'', about:'', showFleet:true, showAbout:true, showContact:true, posts:[],
@@ -3470,7 +3470,7 @@ const Atlas = (function(){
   }
 
   /* ============================== ONBOARDING ============================== */
-  let step=0; const STEPS=['welcome','identity','fleet','money','connect','asset','invite','done'];
+  let step=0; const STEPS=['welcome','identity','fleet','money','connect','asset','founder','invite','explain','done'];   // Wave1: 'founder' (badge pick, shown only to founders while the program is open) + 'explain' ("Here's your Atlas" dashboard tour). 'founder' auto-drops out via _steps() when not a founder.
   var _authMode='signup';
   var _inviteToken='';                 // set when arriving via /?invite=<token> (teammate accepting an invite)
   var _selfActor=null;                 // RUNTIME-ONLY (never persisted to the shared tenant blob): the gating actor for a logged-in NON-owner. null = owner / full access.
@@ -3952,28 +3952,51 @@ const Atlas = (function(){
   function renderStep(){
     _ensureMoney();   // LIVE-FIX: the money step reads S.money.deposit.mode + rate model; a partial profile would throw so the rate picker + later asset steps never rendered
     if(_isOwnerAcct() && S && !S.onboarded){ S.onboarded=true; S.onboardStarted=false; save(); applyBrand(); buildApp(); show('app'); return; }   // owner mirrors Prestige Black -- branding + fleet + money arrive from the PB bridge (read-only), NOT a manual setup wizard -> skip straight to the dashboard (and stay skipped on reload)
-    const total=STEPS.length-1;
+    var VS=_steps();                                   // Wave1: the ACTIVE step list (drops 'founder' for non-founders); every flow fn indexes into this, never raw STEPS
+    if(step>VS.length-1) step=VS.length-1; if(step<0) step=0;   // defensive re-clamp: a persisted onboardStep from a longer/shorter active list (or a program that just closed) can't land out of range
+    const total=VS.length-1;
     document.getElementById('obBar').style.width=Math.round(step/total*100)+'%';
     document.getElementById('obCount').textContent = step===0?'Welcome':(step>=total?'All set':'Step '+step+' of '+(total-1));
-    const c=document.getElementById('obCard'); c.innerHTML=OB[STEPS[step]](); applyBrand();
+    const c=document.getElementById('obCard'); c.innerHTML=OB[VS[step]](); applyBrand();
   }
   // Re-read the CURRENT step's inputs from the DOM before advancing. A pre-filled value="" fires no oninput event,
   // so a click-through owner would otherwise land on an empty fleet / "Your Company" -- capture what is on screen.
   function _captureOB(){ try{
-    var an=document.getElementById('obAssetName'); if(an){ S.firstAsset=S.firstAsset||{}; S.firstAsset.name=String(an.value||'').trim(); }
-    var ar=document.getElementById('obAssetRate'); if(ar){ S.firstAsset=S.firstAsset||{}; var rv=parseFloat(String(ar.value||'').replace(/[^0-9.]/g,'')); if(rv>0) S.firstAsset.rate=rv; }
+    var an=document.getElementById('obAssetName'); if(an){ S.obDraft=S.obDraft||{}; S.obDraft.name=String(an.value||'').trim(); }
+    var ar=document.getElementById('obAssetRate'); if(ar){ S.obDraft=S.obDraft||{}; var rv=parseFloat(String(ar.value||'').replace(/[^0-9.]/g,'')); if(rv>0) S.obDraft.rate=rv; }
     var bn=document.getElementById('fName'); if(bn && String(bn.value||'').trim()){ S.brand.name=String(bn.value).trim(); S.brand.initial=(S.brand.name[0]||'A').toUpperCase(); }
     S.brand=S.brand||{};   // where you operate -> lets the AI research your market, price locally + line up nearby partners
     var _c=document.getElementById('fCity'); if(_c) S.brand.city=String(_c.value||'').trim();
     var _z=document.getElementById('fZip'); if(_z) S.brand.zip=String(_z.value||'').trim();
     var _ar=document.getElementById('fArea'); if(_ar) S.brand.area=String(_ar.value||'').trim();
   }catch(e){} }
-  function next(){ _captureOB();
+  function next(){ _captureOB(); var VS=_steps();
     // gapless-onboarding guard: the business name brands the whole app/portal/contracts -- never let a click-through
     // advance on the blank "Your Company" default (was: silently committed everywhere).
-    if(STEPS[step]==='identity'){ var _nm=((S.brand&&S.brand.name)||'').trim(); if(!_nm||/^your company$/i.test(_nm)){ var _el=document.getElementById('fName'); if(_el){ try{_el.focus();}catch(e){} } toast('Add your business name to continue'); return; } }
-    if(step<STEPS.length-1){step++; S.onboardStep=step; save(); renderStep(); window.scrollTo(0,0);} }
+    if(VS[step]==='identity'){ var _nm=((S.brand&&S.brand.name)||'').trim(); if(!_nm||/^your company$/i.test(_nm)){ var _el=document.getElementById('fName'); if(_el){ try{_el.focus();}catch(e){} } toast('Add your business name to continue'); return; } }
+    if(step<VS.length-1){step++; S.onboardStep=step; save(); renderStep(); window.scrollTo(0,0);} }
   function back(){ if(step>0){step--; S.onboardStep=step; save(); renderStep(); window.scrollTo(0,0);} }
+  // Wave1: which onboarding steps are active for THIS user. 'founder' shows only while the founder program is open AND
+  // this account is a founder (server-authoritative via _isFounder(); falls back to the persisted S.founder on cold boot).
+  // Everyone else never sees it -- so after the first 1,000 founders the step quietly disappears with zero other changes.
+  function _obVisible(name){ if(name==='founder') return !!(_isFounder() || (typeof S!=='undefined' && S && S.founder)); return true; }
+  function _steps(){ return STEPS.filter(_obVisible); }
+  // Multi-asset onboarding: the form edits S.obDraft; "Add" pushes a finished draft into S.obAssets (up to the plan cap),
+  // then clears the form so you can add another. Photos ride along inline until seedData turns the list into real assets,
+  // whose photos then offload to R2 (#295). None of obDraft/obAssets is ever mirrored into the tenant row (_srvMirrorProfile).
+  function _obAddAsset(){ _captureOB(); var d=S.obDraft||{}; var nm=String(d.name||'').trim();
+    if(!nm){ var el=document.getElementById('obAssetName'); if(el){ try{el.focus();}catch(e){} } try{ toast('Name this '+S.fleet.noun+' to add it'); }catch(e){} return; }
+    var capN=_assetCapNum(); S.obAssets=Array.isArray(S.obAssets)?S.obAssets:[];
+    if(capN>0 && S.obAssets.length>=capN){ try{ toast('You have reached your plan cap of '+capN+' '+(S.fleet.nouns||'assets')); }catch(e){} return; }
+    var a={ id:_assetId(), name:nm, rate:(parseFloat(d.rate)||S.money.baseRate), status:(d.status==='Maintenance'?'Maintenance':'Available'), util:0 };
+    if(d.photo) a.photo=d.photo;
+    S.obAssets.push(a); S.obDraft={}; save(); renderStep();
+    try{ toast(nm+' added'); }catch(e){} }
+  function _obDelAsset(id){ S.obAssets=(Array.isArray(S.obAssets)?S.obAssets:[]).filter(function(a){ return a.id!==id; }); save(); renderStep(); }
+  // Founder badge pick DURING onboarding: record the choice locally (so it shows selected + persists), and let finish()
+  // POST it once (set-once server-side). Settings > Billing stays the change-later/fallback path. Decoupled from the modal
+  // picker (_founderBadgePick) so there's no closeModal/buildApp side effect mid-onboarding.
+  function _obFbPick(key){ if(!key||!_FB_META[key]) return; S.founderBadge=key; save(); renderStep(); }
   const OB={
     welcome:()=>`
       <div style="text-align:center;padding:6px 0 4px">
@@ -4054,25 +4077,79 @@ const Atlas = (function(){
       <p style="font-size:12.5px;color:var(--muted);margin-top:10px">You can connect these anytime from Settings &rarr; Integrations, with step-by-step guides for each.</p>
       ${obNav()}`,
 
-    asset:()=>`
-      <h2>Add your first ${S.fleet.noun}</h2><p class="ob-card__lead">Just enough to go live. You can bulk-import the rest later.</p>
-      <div class="field"><label>${cap(S.fleet.noun)} name</label><input class="input" id="obAssetName" placeholder="e.g. ${S.fleet.sample[0]}" value="${esc(S.firstAsset.name||'')}" oninput="Atlas.setField('firstAsset.name',this.value)"></div>
-      <div class="row2">
-        <div class="field"><label>${({hour:'Hourly',week:'Weekly',month:'Monthly'})[S.money.rateModel]||'Daily'} rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="obAssetRate" style="width:auto;flex:1;text-align:left" value="${S.firstAsset.rate||S.money.baseRate}" oninput="Atlas.setField('firstAsset.rate',this.value)"></div></div>
-        <div class="field"><label>Status</label><select class="select" onchange="Atlas.setField('firstAsset.status',this.value)"><option ${S.firstAsset.status==='Maintenance'?'':'selected'}>Available</option><option ${S.firstAsset.status==='Maintenance'?'selected':''}>Maintenance</option></select></div>
-      </div>
-      <div class="field" style="margin-bottom:4px"><label>Photo</label>
-        <label class="logo-drop" for="obAssetPhoto"><div class="logo-drop__prev" id="obAssetPrev">${S.firstAsset.photo?`<img src="${esc(S.firstAsset.photo)}" alt="asset photo">`:`<svg viewBox="0 0 24 24" width="26" height="26" fill="none" style="color:var(--faint)"><path d="M3 6h18v12H3zM3 15l5-4 4 3 3-2 6 4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`}</div>
-        <div><b style="color:var(--ink);font-size:14px">Add a photo</b><div style="font-size:12.5px;color:var(--muted)">Optional &mdash; makes your portal shine.</div></div></label>
-        <input type="file" id="obAssetPhoto" accept="image/*" style="display:none" onchange="Atlas._obAssetPhoto(this)"></div>${''/* fix: dead dropzone now wired -> stores S.firstAsset.photo with a live preview (carried into the created asset at seed) */}
-      ${obNav()}`,
+    asset:()=>{
+      var list=Array.isArray(S.obAssets)?S.obAssets:[]; var capN=_assetCapNum(); var atCap=(capN>0 && list.length>=capN);
+      var P=_extPrices(); var d=S.obDraft||{}; var rateLbl=({hour:'Hourly',week:'Weekly',month:'Monthly'})[S.money.rateModel]||'Daily'; var rm=(S.money.rateModel||'day').charAt(0);
+      var listHtml = list.length ? ('<div style="display:grid;gap:8px;margin:2px 0 13px">'+list.map(function(a){
+          var thumb=a.photo
+            ? ('<div style="width:40px;height:40px;border-radius:9px;flex:none;overflow:hidden"><img src="'+esc(a.photo)+'" alt="" style="width:100%;height:100%;object-fit:cover"></div>')
+            : ('<div style="width:40px;height:40px;border-radius:9px;flex:none;background:var(--brand-100);color:var(--brand-700);display:grid;place-items:center;font-weight:800">'+esc((a.name||'?').charAt(0).toUpperCase())+'</div>');
+          return '<div style="display:flex;gap:11px;align-items:center;padding:9px 11px;border:1px solid var(--line);border-radius:11px;background:var(--surface)">'+thumb
+            +'<div style="flex:1;min-width:0"><b style="color:var(--ink);font-size:13.5px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(a.name)+'</b><div style="font-size:12px;color:var(--muted)">'+money(a.rate)+'/'+rm+' &middot; '+esc(a.status||'Available')+'</div></div>'
+            +'<button class="icon-btn" aria-label="Remove '+esc(a.name)+'" onclick="Atlas._obDelAsset(\''+a.id+'\')"><svg viewBox="0 0 18 18" fill="none"><path d="M5 5l8 8M13 5l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>';
+        }).join('')+'</div>') : '';
+      var countLine = list.length ? ('<div class="bk-lenhint" style="margin:0 0 11px"><b>'+list.length+'</b> '+esc(list.length===1?S.fleet.noun:(S.fleet.nouns||(S.fleet.noun+'s')))+' added'+(capN>0?(' &middot; '+Math.max(0,capN-list.length)+' of '+capN+' left on your plan'):'')+'</div>') : '';
+      var head = list.length
+        ? ('<h2>Add another '+esc(S.fleet.noun)+'</h2><p class="ob-card__lead">Add as many as you like now &mdash; or continue and bulk-import the rest anytime.</p>')
+        : ('<h2>Add your first '+esc(S.fleet.noun)+'</h2><p class="ob-card__lead">Just enough to go live. Add more right here, or bulk-import later.</p>');
+      var body = atCap ? (
+        '<div style="border:1.5px solid var(--brand);border-radius:13px;padding:15px 16px;background:var(--brand-50,rgba(30,110,78,.06))">'
+        +'<div style="font-weight:800;font-size:14px;color:var(--ink)">You have added all '+capN+' '+esc(S.fleet.nouns||'assets')+' your plan includes</div>'
+        +'<div style="font-size:12.5px;color:var(--muted);margin:5px 0 12px;line-height:1.5">Need room for more? Add a block of '+(P.assetBlockUnits||10)+' units for '+_extC(P.assetBlock)+'/mo &mdash; one tap, cancel anytime. You come right back here to keep adding.</div>'
+        +'<button class="btn btn--primary btn--full" onclick="Atlas.buyAssetBlock()">Add '+(P.assetBlockUnits||10)+' more units &mdash; '+_extC(P.assetBlock)+'/mo</button></div>'
+      ) : (
+        '<div class="field"><label>'+cap(S.fleet.noun)+' name</label><input class="input" id="obAssetName" placeholder="e.g. '+esc(S.fleet.sample[0])+'" value="'+esc(d.name||'')+'" oninput="Atlas.setField(\'obDraft.name\',this.value)"></div>'
+        +'<div class="row2"><div class="field"><label>'+rateLbl+' rate</label><div class="rule-input" style="padding:0 12px"><span>$</span><input class="tnum" id="obAssetRate" style="width:auto;flex:1;text-align:left" value="'+esc(String(d.rate||S.money.baseRate))+'" oninput="Atlas.setField(\'obDraft.rate\',this.value)"></div></div>'
+        +'<div class="field"><label>Status</label><select class="select" onchange="Atlas.setField(\'obDraft.status\',this.value)"><option '+(d.status==='Maintenance'?'':'selected')+'>Available</option><option '+(d.status==='Maintenance'?'selected':'')+'>Maintenance</option></select></div></div>'
+        +'<div class="field" style="margin-bottom:10px"><label>Photo</label>'
+        +'<label class="logo-drop" for="obAssetPhoto"><div class="logo-drop__prev" id="obAssetPrev">'+(d.photo?('<img src="'+esc(d.photo)+'" alt="asset photo">'):'<svg viewBox="0 0 24 24" width="26" height="26" fill="none" style="color:var(--faint)"><path d="M3 6h18v12H3zM3 15l5-4 4 3 3-2 6 4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>')+'</div>'
+        +'<div><b style="color:var(--ink);font-size:14px">Add a photo</b><div style="font-size:12.5px;color:var(--muted)">Optional &mdash; makes your portal shine.</div></div></label>'
+        +'<input type="file" id="obAssetPhoto" accept="image/*" style="display:none" onchange="Atlas._obAssetPhoto(this)"></div>'
+        +'<button class="btn btn--ghost btn--full" onclick="Atlas._obAddAsset()"><svg viewBox="0 0 16 16" fill="none" style="width:14px;height:14px;vertical-align:-2px"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg> Add '+(list.length?'another ':'this ')+esc(S.fleet.noun)+'</button>'
+      );
+      return head + countLine + listHtml + body + obNav('Continue');
+    },
+
+    founder:()=>{
+      var picked=(typeof S!=='undefined'&&S&&S.founderBadge)||(_founderInfo&&_founderInfo.badge)||'';
+      var no=((typeof S!=='undefined'&&S&&S.founderNo)||(_founderInfo&&_founderInfo.no)||0);
+      var cards=_FB_ORDER.map(function(k){ var m=_FB_META[k]; var on=(k===picked);
+        return '<button type="button" onclick="Atlas._obFbPick(\''+k+'\')" style="cursor:pointer;background:rgba(201,169,98,.05);border:1.5px solid '+(on?'rgba(201,169,98,.95)':'rgba(201,169,98,.28)')+';border-radius:14px;padding:11px 7px;text-align:center'+(on?';box-shadow:0 0 0 1px rgba(201,169,98,.6)':'')+'">'+_founderBadgeSvg(k,78)+'<div style="font-size:11.5px;font-weight:800;color:var(--ink);margin-top:5px">'+esc(m.name)+'</div><div style="font-size:9.5px;color:var(--muted);letter-spacing:.03em">'+esc(m.tag)+'</div></button>';
+      }).join('');
+      return '<h2>Claim your Founding Member badge</h2>'
+        +'<p class="ob-card__lead">You are one of the first 1,000 on Atlas'+(no?(' &mdash; <b>#'+no.toLocaleString()+' of 1,000</b>'):'')+'. Pick the permanent mark you will carry: <b>50% off plans for life</b>, beta-first access, and founder status that never expires.</p>'
+        +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(102px,1fr));gap:10px;margin:12px 0 6px">'+cards+'</div>'
+        +'<div class="hint" style="margin-top:4px">'+(picked?('Selected: <b>'+esc((_FB_META[picked]||{}).name||'')+'</b>. It locks in permanently when you finish setup &mdash; change your pick until then.'):'Tap a badge to choose &mdash; or skip and pick later in Settings &rsaquo; Billing.')+'</div>'
+        + obNav(picked?'Continue':'Skip for now');
+    },
 
     invite:()=>`
       <h2>Invite your team</h2><p class="ob-card__lead">Add employees now or skip &mdash; you can manage roles anytime.</p>
       <div class="field"><label>Teammate email</label><input class="input" placeholder="name@yourcompany.com" value="${esc(S.invite.email||'')}" oninput="Atlas.setField('invite.email',this.value)"></div>
       <div class="field"><label>Role</label><select class="select" onchange="Atlas.setField('invite.role',this.value)"><option value="manager"${S.invite.role==='manager'?' selected':''}>Manager &mdash; everything except billing &amp; team</option><option value="desk"${(S.invite.role==='desk'||!S.invite.role)?' selected':''}>Front desk &mdash; bookings &amp; customers</option><option value="viewer"${S.invite.role==='viewer'?' selected':''}>Read-only &mdash; view only</option></select></div>${''/* the shown option now reflects S.invite.role and defaults to Staff -- matching the 'desk' fallback at finish() so the created teammate's role never silently differs from what was displayed */}
       <div class="hint" style="margin-top:4px">Add more teammates anytime from Settings &rsaquo; Team after setup.</div>${''/* fix: the old '+ Add another' button only toasted a false 'Invitation queued' and queued nothing -- replaced with honest guidance (onboarding creates one invite; the rest are added in Settings > Team) */}
-      ${obNav('Review &amp; finish')}`,
+      ${obNav('Continue')}`,
+
+    explain:()=>{
+      var fl=esc(S.fleet.label||'assets'); var dep=((S.money&&S.money.deposit&&S.money.deposit.mode)||'deposit');
+      var depTxt=(dep==='full')?'pay-in-full':((dep==='percent')?((S.money.deposit.pct||50)+'% deposit'):((dep==='none')?'pay-at-pickup':'deposit'));
+      var rows=[
+        ['Overview','Your daily command center','Live revenue, utilization and today\'s pickups &amp; returns &mdash; built from the bookings and the '+fl+' you just added.'],
+        [esc(cap(S.fleet.nouns||'Assets')),'Your fleet','Every '+esc(S.fleet.noun)+' you added lives here with its rate, status and photo. Add, edit or bulk-import anytime.'],
+        ['Bookings &amp; Calendar','Reservations &amp; availability','New reservations (from you or your booking site) land here; the calendar auto-blocks those dates so you never double-book.'],
+        ['Customers','Your renters, automatically','Built from real bookings &mdash; contact details, trip history and lifetime spend, with no manual data entry.'],
+        ['Money &amp; Analytics','Revenue, deposits &amp; profit','Your rates, the '+esc(depTxt)+' rule, taxes and fees feed P&amp;L, payouts and forecasts to the cent.'],
+        ['Booking site &amp; Portal','Take bookings online','Your branding, '+fl+' and money rules publish to a booking page customers can reserve from directly.'],
+        ['Atlas AI','Your operator copilot','Ask it to price, draft messages, research your market and handle busywork &mdash; tuned to your '+fl+' setup.'],
+        ['Settings','Change anything, anytime','Brand, money rules, team, integrations and billing &mdash; nothing you picked is locked in.']
+      ];
+      return '<h2>Here is your Atlas</h2>'
+        +'<p class="ob-card__lead">Everything you just set up now powers your dashboard. Here is what each area does &mdash; and where your choices show up.</p>'
+        +'<div style="display:grid;gap:8px;margin:12px 0 4px">'+rows.map(function(x){
+          return '<div style="display:flex;gap:11px;align-items:flex-start;padding:11px 13px;border:1px solid var(--line);border-radius:11px;background:var(--surface)"><div style="width:7px;height:7px;border-radius:50%;background:var(--brand);margin-top:6px;flex:none"></div><div style="min-width:0"><b style="color:var(--ink);font-size:13.5px">'+x[0]+'</b> <span style="color:var(--brand-700);font-size:11.5px;font-weight:700">'+x[1]+'</span><div style="font-size:12.5px;color:var(--muted);margin-top:2px;line-height:1.5">'+x[2]+'</div></div></div>';
+        }).join('')+'</div>'
+        + obNav('Continue');
+    },
 
     done:()=>`
       <div style="text-align:center;padding:8px 0">
@@ -5017,9 +5094,11 @@ const Atlas = (function(){
     if(!DATA.assets.length){
       if(demo){ DATA.assets=names.slice(0,6).map((n,i)=>({name:n,rate:Math.round(S.money.baseRate*(1+(i%3-1)*.25)),
         status:i===4?'On rent':i===2?'Maintenance':'Available',util:[86,72,0,64,91,48][i],_seed:true})); }   // audit c4 [5]: tag seeded SAMPLE assets so a fleet-type change reseeds ONLY these, never a real asset whose name coincidentally matches a sample
-      else if(S.firstAsset && (S.firstAsset.name||'').trim()){ var _fa={ id:_assetId(), name:S.firstAsset.name.trim(),
-        rate:parseFloat(S.firstAsset.rate)||S.money.baseRate, status:(S.firstAsset.status==='Maintenance'?'Maintenance':'Available'), util:0 }; if(S.firstAsset.photo)_fa.photo=S.firstAsset.photo; DATA.assets=[_fa]; S.firstAsset={}; try{save();}catch(e){} }   // fix: carry the onboarding photo onto the first asset. audit c4 [4]: consume the onboarding seed after it is placed once, so intentionally deleting your last asset does NOT resurrect the first asset on the next boot (seedData runs on every rebuild).
-      else DATA.assets=[];
+      else { var _obq=(Array.isArray(S.obAssets)?S.obAssets.slice():[]);   // Wave1: seed EVERY onboarding asset (multi-asset), not just the first
+        var _d=S.obDraft||{}; if(String(_d.name||'').trim()){ var _da={ id:_assetId(), name:String(_d.name).trim(), rate:parseFloat(_d.rate)||S.money.baseRate, status:(_d.status==='Maintenance'?'Maintenance':'Available'), util:0 }; if(_d.photo)_da.photo=_d.photo; _obq.push(_da); }   // forgiving: a draft typed but not explicitly "Add"ed still becomes an asset
+        if(!_obq.length && S.firstAsset && (S.firstAsset.name||'').trim()){ var _fa={ id:_assetId(), name:S.firstAsset.name.trim(), rate:parseFloat(S.firstAsset.rate)||S.money.baseRate, status:(S.firstAsset.status==='Maintenance'?'Maintenance':'Available'), util:0 }; if(S.firstAsset.photo)_fa.photo=S.firstAsset.photo; _obq.push(_fa); }   // legacy single-asset onboarding fallback
+        _obq.forEach(function(a){ if(!a.id)a.id=_assetId(); if(typeof a.util!=='number')a.util=0; });
+        DATA.assets=_obq; S.obAssets=[]; S.obDraft={}; S.firstAsset={}; try{save();}catch(e){} }   // audit c4 [4]: consume the onboarding seed once (seedData runs on every rebuild) so deleting your last asset never resurrects a seed. Photos ride inline here, then offload to R2 (#295) on the next sync -- they never touch the tenant settings row (_srvMirrorProfile excludes obAssets/obDraft/firstAsset).
       store.saveAssets(DATA.assets);
     }
     var _fix=false; DATA.assets.forEach(function(a){ if(!a.id){ a.id=_assetId(); _fix=true; } }); if(_fix) store.saveAssets(DATA.assets);
@@ -11889,7 +11968,7 @@ const Atlas = (function(){
       +'</div>'); }
   function _suGoal(el){ _suGoalV=el.textContent; try{ [].forEach.call(el.parentElement.children,function(c){ c.classList.toggle('on',c===el); }); }catch(e){} }
   function _suPhoto(inp){ var f=inp&&inp.files&&inp.files[0]; if(!f)return; var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result||''),900,0.72,function(out){ _suPhotoData=out; var p=document.getElementById('suPhotoPrev'); if(p)p.innerHTML='<img src="'+out+'" alt="asset photo">'; }); }; r.readAsDataURL(f); }   // fix: downscale like the fleet photo picker so the saved image is light + renders on portal/website/fleet
-  function _obAssetPhoto(inp){ var f=inp&&inp.files&&inp.files[0]; if(!f)return; var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result||''),900,0.72,function(out){ if(!S.firstAsset)S.firstAsset={}; S.firstAsset.photo=out; try{save();}catch(_){} var p=document.getElementById('obAssetPrev'); if(p)p.innerHTML='<img src="'+out+'" alt="asset photo">'; }); }; r.readAsDataURL(f); }   // fix: onboarding first-asset photo capture (downscaled, previewed, persisted)
+  function _obAssetPhoto(inp){ var f=inp&&inp.files&&inp.files[0]; if(!f)return; var r=new FileReader(); r.onload=function(e){ _downscaleImg(String(e.target.result||''),900,0.72,function(out){ if(!S.obDraft)S.obDraft={}; S.obDraft.photo=out; try{save();}catch(_){} var p=document.getElementById('obAssetPrev'); if(p)p.innerHTML='<img src="'+out+'" alt="asset photo">'; }); }; r.readAsDataURL(f); }   // fix: onboarding first-asset photo capture (downscaled, previewed, persisted)
   function setupFinish(){ var city=(val('suCity')||'').trim(), nm=(val('suAsset')||'').trim();
     S.brand=S.brand||{}; if(city) S.brand.city=city; S.setup=S.setup||{}; S.setup.goal=_suGoalV; S.setup.done=true;
     if(nm){ var _suVc=_vehCap(); if(_suVc!==Infinity && _fleetUnits()>=_suVc){ try{ promptUpgrade('vehicles'); }catch(e){} nm=''; }   /* c15[11]: enforce the plan unit-cap here too -- setupFinish (AI setup assistant) was the ONLY asset-create path with no cap check, letting an over-cap asset be pushed past the paid plan (mirror addVehicle / _aioAddAsset: _fleetUnits()>=_vehCap()) */ else { var a={id:_assetId(),name:nm,rate:_typeRate(_fleetSel()[0]),status:'Available',util:0,tenant:null}; if(_suPhotoData)a.photo=_suPhotoData; if(_fleetSel().length>1)a.type=_fleetSel()[0]; DATA.assets.push(a); _saveAssets(); } }
@@ -12601,6 +12680,8 @@ const Atlas = (function(){
         added=(String(iv.email).split('@')[0]||'Teammate').replace(/[._-]+/g,' ').replace(/\b\w/g,function(c){return c.toUpperCase();});
         S.team.push({ id:'m'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), name:added, email:iv.email, role:role, perms:(ROLE_PRESETS[role]?ROLE_PRESETS[role].make():_permsAll(false)) });
       } }
+    // FOUNDER (Wave1): commit the badge chosen during onboarding. Set-once server-side; Settings > Billing stays the change-later/fallback path. Fire-and-forget so it never blocks finishing setup.
+    try{ if((_isFounder()||(S&&S.founder)) && S.founderBadge && ATLAS_BACKEND && _apiCsrf){ _api('/api/founder/badge',{method:'POST',body:{badge:S.founderBadge}}).then(function(res){ try{ var j=res&&res.json; if(j&&j.ok){ _founderInfo.badge=j.badge||S.founderBadge; } }catch(e){} }).catch(function(){}); } }catch(e){}
     save(); applyBrand(); buildApp(); show('app');
     if(iv.email && String(iv.email).indexOf('@')<=0){ setTimeout(function(){ toast('That teammate email looked off &mdash; you can add them anytime from Team'); },900); }   // was silently dropped
     _kickLiveTour();   // always kick the one-time guided tour after setup (a checkout redirect below cancels the pending timer; the post-return reload path re-kicks it, so it fires exactly once)
@@ -16086,7 +16167,7 @@ const Atlas = (function(){
 
   return {startTrial,demo,demoStart,demoSkip,exitDemo,_demoSeePricing,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,saveMoneyRules,setDisplayCurrency,setNotify,togglePush,setTypeRate,setTypeCfg,setCard,setCancelPolicy,setSenderAddress,connect,doConnect,disconnectIntegration,connectQuickbooks,connectXero,connectPaypal,connectSquare,connectCoinbase,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,setTaxTripCharges,syncTax,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
-    openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,setupFinish,
+    openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,_obAddAsset,_obDelAsset,_obFbPick,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
     setBrandName,setBizTz,setBrandColor,setBrandColorHex,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,revOptApply,revOptAsk,setAutoPrice,autoPriceRevertAll,autoPriceRevertOne,
     goAuth,authSubmit,authTogglePass,ssoLogin,setMoneyStack,bkSaveCard,bkChargeCard,_bkChargeCardSubmit,_askModal,_askOk,_bkRecordPaySubmit,bkRecordPayment,setTipping,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,changePassword,_changePwGo,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,openEmailPacks,buyEmails,buyEmailAddon,buyAddon,removeAddon,renderExtras,buyLocation,buySite,buyAssetBlock,buyTracking,_cryptoCheckout,_cryptoPlanPrompt,_cryptoPlanGo,_squarePlanCheckout,_squarePayGo,_sqBackupAdd,_sqBackupGo,_sqBackupRemove,_stBackupAdd,_stBackupRemove,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,_founderBadgePick,_fbSel,_fbCommit,
