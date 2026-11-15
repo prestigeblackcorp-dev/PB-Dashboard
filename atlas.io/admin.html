@@ -498,6 +498,20 @@
   </section>
 
   <section class="hqsec" data-sec="support">
+  <!-- WAVE-SUPPORT-DEPT4: unified cross-channel triage queue (tickets + inbox email + bug/idea reports in one urgency-sorted list) -->
+  <div class="hqgroup">Triage</div>
+  <div class="card">
+    <div class="card-h"><h2>Unified queue</h2><span class="sub" id="triageSub"></span><div class="sp"></div>
+      <div class="seg" id="triageSeg">
+        <button class="on" data-s="open" onclick="setTriageSeg(this)">Needs action</button>
+        <button data-s="all" onclick="setTriageSeg(this)">All</button>
+      </div>
+    </div>
+    <div id="triageList"></div>
+  </div>
+  </section>
+
+  <section class="hqsec" data-sec="support">
   <!-- SUPPORT INBOX (inbound email -> AI draft -> you Send) -->
   <div class="hqgroup">Customer support</div>
   <div class="card">
@@ -942,6 +956,7 @@ function loadAll(quiet){ _lastFetch=Date.now();
     if(r[5]&&r[5].json&&r[5].json.config){ DATA.aiCfg=r[5].json.config; DATA.enterprise=r[5].json.enterprise||{}; DATA.you=r[5].json.you||{}; _tkEnsureAgents(); renderEnterprise(); applyTierBrand(); try{ _applyMoneyVis(); if(DATA.overview) paintOverview(); }catch(e){} } else { DATA.aiCfg={ai_hq_enabled:false,ai_available:false,needsDeploy:true}; } renderAI(); try{ renderSponge(); }catch(e){}   // WAVE96e: now that the role is known, re-apply money visibility + repaint KPIs (overview may have painted before config resolved)
     if(r[6]&&r[6].json&&r[6].json.ok){ DATA.visits=r[6].json; renderVisits(); }
     if(r[7]&&r[7].json&&r[7].json.ok){ DATA.inbox=r[7].json.messages||[]; DATA.inboxCounts=r[7].json.counts||{}; DATA.inboxCanSend=!!r[7].json.can_send; renderInbox(); }
+    try{ renderTriage(); }catch(e){}   // WAVE-SUPPORT-DEPT4: refresh the unified queue once tickets/bugs/inbox are all in
     if(r[8]&&r[8].json&&r[8].json.ok){ DATA.competitors=r[8].json.competitors||[]; DATA.searchAvailable=!!r[8].json.search_available; renderCompetitors(); }
     if(r[9]&&r[9].json&&r[9].json.ok){ DATA.geo=r[9].json; renderGeo(); }
     if(r[10]&&r[10].json&&r[10].json.ok){ DATA.purchases=r[10].json; renderPurchases(); }
@@ -1245,6 +1260,24 @@ function renderBugs(){ var b=DATA.bugs||[];
   }).join('');
 }
 function bugStatus(id, status){ api('/api/admin/feedback/update',{method:'POST',body:{id:id,status:status}}).then(function(r){ if(r.json&&r.json.ok){ toast('Marked '+status); loadAll(true); } else toast('Could not update'); }); }
+/* ================= WAVE-SUPPORT-DEPT4: unified cross-channel triage queue ================= */
+var _triageSeg='open';
+function setTriageSeg(btn){ Array.prototype.forEach.call($('triageSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _triageSeg=btn.getAttribute('data-s'); renderTriage(); }
+function renderTriage(){
+  var el=$('triageList'); if(!el) return; var all=(_triageSeg==='all'), items=[];
+  (DATA.tickets||[]).forEach(function(t){ var open=(t.status!=='resolved'); if(!(all||open)) return; var od=_tkOverdue(t); items.push({ch:'Ticket',cls:'trial',when:t.updated_at||0,unread:(!!t.unread||od),prio:(od?3:(t.priority==='high'?2:0)),title:t.subject||'(no subject)',who:t.email||t.tenant_id||'',badge:(t.work_state?_wsPill(t.work_state):_tkPill(t.status))+(t.priority==='high'?' <span class="pill past">Urgent</span>':'')+(od?' <span class="pill past">Overdue</span>':''),fn:'tkOpen',id:t.id}); });
+  (DATA.inbox||[]).forEach(function(m){ var open=(m.status==='new'); if(!(all||open)) return; items.push({ch:'Email',cls:'active',when:m.received_at||0,unread:(m.status==='new'),prio:(m.status==='new'?1:0),title:m.subject||'(no subject)',who:m.from_name||m.from_email||'',badge:'<span class="pill '+(m.status==='new'?'trial':(m.status==='replied'?'active':'gray'))+'">'+esc(m.status||'new')+'</span>',fn:'inboxOpen',id:m.id}); });
+  (DATA.bugs||[]).forEach(function(f){ var st=f.status||'new'; var open=(st!=='resolved'); if(!(all||open)) return; items.push({ch:(f.type==='bug'?'Bug':'Idea'),cls:'gray',when:f.created_at||0,unread:(st==='new'),prio:(st==='new'&&f.type==='bug'?1:0),title:(f.message||'(no detail)').slice(0,80),who:f.email||f.tenant_id||'',badge:(st!=='new'?'<span class="pill gray">'+esc(st)+'</span>':'<span class="pill trial">new</span>'),fn:'bugPeek',id:f.id}); });
+  var need=items.filter(function(x){return x.unread;}).length; var ts=$('triageSub'); if(ts) ts.textContent=(all?(items.length+' total'):(need+' need action'));
+  if(!items.length){ el.innerHTML='<div class="empty" style="padding:16px"><svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M20 6 9 17l-5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><br>Nothing needs action.<br><span style="font-size:11.5px">Open tickets, new emails and fresh bug reports land here in one queue.</span></div>'; return; }
+  items.sort(function(a,b){ if(b.prio!==a.prio) return b.prio-a.prio; return (b.when||0)-(a.when||0); });
+  el.innerHTML=items.map(function(it){ return '<div class="bug'+(it.unread?' tk-unread':'')+'" style="cursor:pointer" onclick="'+it.fn+'('+_oa(it.id)+')"><div class="bug-top">'+(it.unread?'<span class="tk-dot"></span>':'')+'<span class="pill '+it.cls+'" style="font-size:10px;letter-spacing:.3px">'+it.ch+'</span> <b style="font-size:13px">'+esc(it.title)+'</b><div class="sp" style="flex:1"></div>'+it.badge+'</div><div class="bug-meta">'+esc(it.who)+' &middot; '+ago(it.when)+'</div></div>'; }).join('');
+}
+function bugPeek(id){ var f=(DATA.bugs||[]).filter(function(x){return x.id===id;})[0]; if(!f) return; var isbug=(f.type==='bug'),st=f.status||'new';
+  $('modal').innerHTML='<div class="modal-h"><h3>'+(isbug?'Bug report':'Idea')+'</h3><div class="sp" style="flex:1"></div><span class="pill '+(st==='resolved'?'gray':(st==='seen'?'active':'trial'))+'">'+esc(st)+'</span><button class="icon-btn" onclick="closeModal()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>'+
+    '<div class="modal-b"><div class="desc">'+esc(f.email||f.tenant_id||'')+(f.page?(' &middot; '+esc(f.page)):'')+' &middot; '+dstr(f.created_at)+'</div><div style="white-space:pre-wrap;font-size:13px;line-height:1.55;background:rgba(128,140,160,.06);border:1px solid var(--line);border-radius:10px;padding:12px;margin:8px 0">'+esc(f.message||'')+'</div></div>'+
+    '<div class="modal-f"><button class="btn ghost" onclick="closeModal();bugStatus('+_oa(id)+',\'seen\')">Mark seen</button><button class="btn gold" onclick="closeModal();bugStatus('+_oa(id)+',\'resolved\')">Resolve</button></div>';
+  $('scrim').classList.add('on'); }
 
 /* ================= support tickets ================= */
 function setTkSeg(btn){ Array.prototype.forEach.call($('tkSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _tkSeg=btn.getAttribute('data-s'); loadAll(true); }
@@ -1375,7 +1408,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.11.14je';
+var ATLAS_EXPECT_BUILD='2026.11.14jf';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
