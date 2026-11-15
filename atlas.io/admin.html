@@ -748,6 +748,9 @@
     <div class="card-h"><h2>Support tickets</h2><div class="sp"></div>
       <div class="seg" id="tkSeg">
         <button class="on" data-s="open" onclick="setTkSeg(this)">Open</button>
+        <button data-s="mine" onclick="setTkSeg(this)">Mine</button>
+        <button data-s="unclaimed" onclick="setTkSeg(this)">Unclaimed</button>
+        <button data-s="overdue" onclick="setTkSeg(this)">Overdue</button>
         <button data-s="all" onclick="setTkSeg(this)">All</button>
       </div>
     </div>
@@ -914,7 +917,7 @@ function loadAll(quiet){ _lastFetch=Date.now();
     api('/api/admin/members'),
     api('/api/admin/transactions?limit=40'),
     api('/api/admin/feedback?status='+(_bugSeg==='all'?'all':'open')),
-    api('/api/admin/tickets?status='+(_tkSeg==='all'?'all':'open')),
+    api('/api/admin/tickets?status='+((_tkSeg==='all'||_tkSeg==='mine')?'all':'open')),
     api('/api/admin/config'),
     api('/api/admin/visits?range='+_range),
     api('/api/admin/inbox?status='+(_inboxSeg==='all'?'':_inboxSeg)),
@@ -1246,27 +1249,51 @@ function bugStatus(id, status){ api('/api/admin/feedback/update',{method:'POST',
 /* ================= support tickets ================= */
 function setTkSeg(btn){ Array.prototype.forEach.call($('tkSeg').children,function(b){b.classList.remove('on');}); btn.classList.add('on'); _tkSeg=btn.getAttribute('data-s'); loadAll(true); }
 function _tkPill(s){ var m={open:['Open','trial'],answered:['Answered','active'],resolved:['Resolved','gray']}, x=m[s]||m.open; return '<span class="pill '+x[1]+'">'+x[0]+'</span>'; }
-function renderTickets(){ var ts=DATA.tickets||[];
-  if(!ts.length){ $('supportList').innerHTML='<div class="empty"><svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><br>No support tickets.<br><span style="font-size:11.5px">Tenant tickets land here for you to reply.</span></div>'; return; }
+/* WAVE-SUPPORT-DEPT1b: agent-workspace helpers (ownership + internal lifecycle + SLA) */
+function _wsPill(ws){ if(!ws) return ''; var m={new:['New','gray'],claimed:['Claimed','trial'],investigating:['Investigating','trial'],pending:['Pending','active'],escalated:['Escalated','past'],resolved:['Resolved','gray'],closed:['Closed','gray']}, x=m[ws]; return x?('<span class="pill '+x[1]+'" title="internal status">'+x[0]+'</span>'):''; }
+function _tkMine(t){ return !!(DATA.you&&DATA.you.staff_id&&t.assignee_staff_id===DATA.you.staff_id); }
+function _tkOverdue(t){ return !!(t.sla_due_at && Date.now()>t.sla_due_at && t.work_state!=='resolved' && t.work_state!=='closed' && t.status!=='resolved'); }
+function _tkAssignBadge(t){ if(t.assignee_name) return '<span class="pill '+(_tkMine(t)?'active':'gray')+'" title="owner">'+(_tkMine(t)?'You':esc(t.assignee_name))+'</span>'; return '<span class="pill" style="opacity:.55" title="unclaimed">Unclaimed</span>'; }
+function _tkNo(t){ return t.ticket_no?('<span class="mut" style="font-size:11.5px">#'+t.ticket_no+'</span> '):''; }
+function renderTickets(){ var ts=DATA.tickets||[]; var seg=_tkSeg;
+  ts=ts.filter(function(t){
+    if(seg==='mine') return _tkMine(t);
+    if(seg==='unclaimed') return !t.assignee_staff_id && t.status!=='resolved';
+    if(seg==='overdue') return _tkOverdue(t);
+    if(seg==='open') return t.status!=='resolved';
+    return true;   /* all */
+  });
+  if(!ts.length){ var emp=(seg==='mine'?'No tickets assigned to you.':(seg==='unclaimed'?'No unclaimed tickets - the queue is clear.':(seg==='overdue'?'Nothing past its SLA.':'No support tickets.'))); $('supportList').innerHTML='<div class="empty"><svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><br>'+emp+'<br><span style="font-size:11.5px">Tenant tickets land here for you to claim and reply.</span></div>'; return; }
   $('supportList').innerHTML = ts.map(function(t){
-    var last=(t.messages&&t.messages.length)?t.messages[t.messages.length-1]:null;
-    return '<div class="bug'+(t.unread?' tk-unread':'')+'" style="cursor:pointer" onclick="tkOpen('+_oa(t.id)+')"><div class="bug-top">'+(t.unread?'<span class="tk-dot"></span>':'')+'<b style="font-size:13.5px">'+esc(t.subject||'(no subject)')+'</b><div class="sp" style="flex:1"></div>'+_tkPill(t.status)+(t.priority==='high'?' <span class="pill past">Urgent</span>':'')+'</div>'+
-      '<div class="bug-msg" style="font-size:12.5px">'+(last?esc((last.by==='owner'?'You: ':'')+String(last.msg).slice(0,110)):'')+'</div>'+
+    var lastPublic=null; if(t.messages){ for(var i=t.messages.length-1;i>=0;i--){ if(!t.messages[i].internal){ lastPublic=t.messages[i]; break; } } }
+    var lastAny=(t.messages&&t.messages.length)?t.messages[t.messages.length-1]:null;
+    return '<div class="bug'+(t.unread?' tk-unread':'')+'" style="cursor:pointer" onclick="tkOpen('+_oa(t.id)+')"><div class="bug-top">'+(t.unread?'<span class="tk-dot"></span>':'')+_tkNo(t)+'<b style="font-size:13.5px">'+esc(t.subject||'(no subject)')+'</b><div class="sp" style="flex:1"></div>'+_tkAssignBadge(t)+' '+(t.work_state?_wsPill(t.work_state):_tkPill(t.status))+(t.priority==='high'?' <span class="pill past">Urgent</span>':'')+(_tkOverdue(t)?' <span class="pill past" title="past SLA">Overdue</span>':'')+'</div>'+
+      '<div class="bug-msg" style="font-size:12.5px">'+(lastPublic?esc((lastPublic.by==='owner'?'You: ':'')+String(lastPublic.msg).slice(0,110)):(lastAny&&lastAny.internal?'<i>Internal note only</i>':''))+'</div>'+
       '<div class="bug-meta">'+esc(t.email||t.tenant_id||'')+' &middot; '+esc(t.category||'')+' &middot; '+ago(t.updated_at)+'</div></div>';
   }).join('');
 }
 function tkOpen(id){ var t=(DATA.tickets||[]).filter(function(x){return x.id===id;})[0]; if(!t)return;
-  var thread=(t.messages||[]).map(function(m){ var own=(m.by==='owner'); return '<div class="tkm '+(own?'tkm-own':'tkm-cust')+'"><div class="tkm-who">'+esc(own?'You (Atlas)':(m.name||t.email||'Customer'))+' &middot; '+dstr(m.at)+'</div><div>'+esc(m.msg).replace(/\n/g,'<br>')+'</div></div>'; }).join('');
+  var thread=(t.messages||[]).map(function(m){ if(m.internal){ return '<div class="tkm" style="background:rgba(224,180,80,.10);border:1px dashed rgba(224,180,80,.5)"><div class="tkm-who" style="color:#c99a3a">Internal note &middot; '+esc(m.name||'Staff')+' &middot; '+dstr(m.at)+'</div><div>'+esc(m.msg).replace(/\n/g,'<br>')+'</div></div>'; } var own=(m.by==='owner'); return '<div class="tkm '+(own?'tkm-own':'tkm-cust')+'"><div class="tkm-who">'+esc(own?'You (Atlas)':(m.name||t.email||'Customer'))+' &middot; '+dstr(m.at)+'</div><div>'+esc(m.msg).replace(/\n/g,'<br>')+'</div></div>'; }).join('');
+  var mine=_tkMine(t), claimed=!!t.assignee_staff_id, sup=!!(DATA.you&&DATA.you.can_supervise);
+  var ownLine='<div class="mut" style="font-size:12px;margin:2px 0 8px">'+(claimed?('Owner: <b>'+(mine?'You':esc(t.assignee_name))+'</b>'):'<i>Unclaimed</i>')+(t.ticket_no?(' &middot; #'+t.ticket_no):'')+(_tkOverdue(t)?' &middot; <span style="color:#d9534f">Overdue (past SLA)</span>':'')+'</div>';
+  var wsOpts=['new','claimed','investigating','pending','escalated','resolved','closed'];
+  var wsSel='<select id="tkWsSel" style="padding:5px 8px;border-radius:7px;border:1px solid rgba(128,140,160,.35);background:transparent;color:inherit;font-size:12px">'+wsOpts.map(function(w){return '<option value="'+w+'"'+((t.work_state||'new')===w?' selected':'')+'>'+w.charAt(0).toUpperCase()+w.slice(1)+'</option>';}).join('')+'</select>';
+  var claimBtn=claimed?((mine||sup)?('<button class="btn ghost" onclick="tkClaim('+_oa(id)+',\'release\')">'+(mine?'Release':'Unassign')+'</button>'):''):('<button class="btn ghost" onclick="tkClaim('+_oa(id)+',\'claim\')">Claim</button>');
   $('modal').innerHTML =
-    '<div class="modal-h"><h3 style="min-width:0;overflow:hidden;text-overflow:ellipsis;max-width:66%">'+esc(t.subject)+'</h3><div class="sp" style="flex:1"></div>'+_tkPill(t.status)+'<button class="icon-btn" onclick="closeModal()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>'+
-    '<div class="modal-b"><div class="desc">'+esc(t.email||'')+' &middot; '+esc(t.category||'')+'</div>'+
+    '<div class="modal-h"><h3 style="min-width:0;overflow:hidden;text-overflow:ellipsis;max-width:58%">'+esc(t.subject)+'</h3><div class="sp" style="flex:1"></div>'+(t.work_state?_wsPill(t.work_state):_tkPill(t.status))+'<button class="icon-btn" onclick="closeModal()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button></div>'+
+    '<div class="modal-b"><div class="desc">'+esc(t.email||'')+' &middot; '+esc(t.category||'')+'</div>'+ownLine+
       '<div class="tk-thread-a">'+thread+'</div>'+
+      '<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap"><span class="mut" style="font-size:11.5px">Internal status</span>'+wsSel+'<button class="btn ghost" style="padding:5px 10px" onclick="tkWorkstate('+_oa(id)+')">Set</button></div>'+
+      '<textarea id="tkNoteBox" rows="2" placeholder="Internal note - staff only, the customer never sees this..." style="width:100%;margin-top:10px;padding:9px;border-radius:8px;border:1px dashed rgba(224,180,80,.5);background:rgba(224,180,80,.05);color:inherit;font-family:inherit;font-size:12.5px;box-sizing:border-box"></textarea><div style="text-align:right;margin-top:4px"><button class="btn ghost" style="padding:5px 10px" onclick="tkNote('+_oa(id)+')">Add internal note</button></div>'+
       '<textarea id="tkReplyBox" rows="3" placeholder="Reply to the customer..." style="width:100%;margin-top:10px;padding:10px;border-radius:8px;border:1px solid rgba(128,140,160,.35);background:transparent;color:inherit;font-family:inherit;font-size:13px;box-sizing:border-box"></textarea><div id="tkAiMeta" class="mut" style="font-size:11.5px;margin-top:6px"></div></div>'+
-    '<div class="modal-f">'+((DATA.aiCfg&&DATA.aiCfg.ai_hq_enabled)?('<button class="btn ghost" onclick="aiDraft('+_oa(id)+')">Draft with AI</button>'):'')+(t.status==='resolved'?('<button class="btn ghost" onclick="tkStatus('+_oa(id)+',\'open\')">Reopen</button>'):('<button class="btn ghost" onclick="tkStatus('+_oa(id)+',\'resolved\')">Mark resolved</button>'))+'<button class="btn gold" onclick="tkReply('+_oa(id)+')">Send reply</button></div>';
+    '<div class="modal-f">'+claimBtn+((DATA.aiCfg&&DATA.aiCfg.ai_hq_enabled)?('<button class="btn ghost" onclick="aiDraft('+_oa(id)+')">Draft with AI</button>'):'')+(t.status==='resolved'?('<button class="btn ghost" onclick="tkStatus('+_oa(id)+',\'open\')">Reopen</button>'):('<button class="btn ghost" onclick="tkStatus('+_oa(id)+',\'resolved\')">Mark resolved</button>'))+'<button class="btn gold" onclick="tkReply('+_oa(id)+')">Send reply</button></div>';
   $('scrim').classList.add('on'); }
 function tkReply(id){ var el=$('tkReplyBox'); var msg=el?(el.value||'').trim():''; if(msg.length<1){ toast('Write a reply'); return; }
   api('/api/admin/ticket-reply',{method:'POST',body:{id:id,message:msg}}).then(function(r){ var j=r.json||{}; if(j.ok){ closeModal(); loadAll(true); if(j.emailed===false){ toast('Reply saved - email nudge failed ('+(j.email_reason||'error')+'). Follow up another way.'); } else { toast('Reply sent'); } } else toast(j.error||'Could not send'); }); }
 function tkStatus(id,status){ api('/api/admin/ticket-status',{method:'POST',body:{id:id,status:status}}).then(function(r){ if(r.json&&r.json.ok){ closeModal(); toast('Marked '+status); loadAll(true); } else toast('Could not update'); }); }
+function tkClaim(id,action){ api('/api/admin/ticket-claim',{method:'POST',body:{id:id,action:action}}).then(function(r){ var j=r.json||{}; if(j.ok){ closeModal(); toast(action==='release'?'Released':'Claimed'); loadAll(true); } else if(j.already){ toast('Already claimed by '+(j.claimed_by||'another agent')); closeModal(); loadAll(true); } else toast(j.error||'Could not update'); }); }
+function tkWorkstate(id){ var sel=$('tkWsSel'); var ws=sel?sel.value:''; if(!ws) return; api('/api/admin/ticket-workstate',{method:'POST',body:{id:id,work_state:ws}}).then(function(r){ var j=r.json||{}; if(j.ok){ closeModal(); toast('Status: '+ws); loadAll(true); } else toast(j.error||'Could not update'); }); }
+function tkNote(id){ var el=$('tkNoteBox'); var note=el?(el.value||'').trim():''; if(note.length<1){ toast('Write a note'); return; } api('/api/admin/ticket-note',{method:'POST',body:{id:id,message:note}}).then(function(r){ var j=r.json||{}; if(j.ok){ closeModal(); toast('Internal note added'); loadAll(true); } else toast(j.error||'Could not save note'); }); }
 
 /* ================= delete account (frees the login email so it can re-register) ================= */
 function delMember(tid){
@@ -1342,7 +1369,7 @@ $('scrim').addEventListener('click', function(e){ if(e.target===$('scrim')) clos
 /* ================= AI Command Center ================= */
 var _xI='<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function _mdLite(s){ return esc(s).replace(/\n{2,}/g,'<br><br>').replace(/\n/g,'<br>').replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/(Do this first:)/i,'<b style="color:var(--gold2)">$1</b>'); }
-var ATLAS_EXPECT_BUILD='2026.11.14jb';
+var ATLAS_EXPECT_BUILD='2026.11.14jc';
 function renderBuildBanner(){ var el=$('buildBanner'); if(!el) return; var c=DATA.aiCfg||{}; if(c.build===ATLAS_EXPECT_BUILD){ el.innerHTML=''; return; } if(!c.build){ el.innerHTML='<div style="background:rgba(224,180,80,.12);border:1px solid rgba(224,180,80,.5);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#d0a53f">Your live worker is <b>out of date</b>. Competitor delete, Deep-read, Generate-brief and the newest features will not work until you paste the latest <b>worker.js</b> into Cloudflare, then reload this page.</div>'; return; } el.innerHTML='<div style="background:rgba(224,180,80,.10);border:1px solid rgba(224,180,80,.4);border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:12.5px;color:#d0a53f">Live worker build <b>'+esc(c.build)+'</b>; this dashboard expects <b>'+ATLAS_EXPECT_BUILD+'</b>. Paste the latest worker.js to update.</div>'; }
 /* ===== Atlas Counsel: what deserves your attention today ===== */
 function loadCounsel(){ return api('/api/admin/counsel').then(function(r){ if(r.status===404){ DATA.counsel={needsDeploy:true}; } else { DATA.counsel=r.json||{}; } renderCounsel(); }).catch(function(){ var el=$('cxBody'); if(el) el.innerHTML='<div class="mut">Could not reach the platform.</div>'; }); }
