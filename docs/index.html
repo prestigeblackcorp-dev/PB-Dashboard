@@ -9655,6 +9655,9 @@ function _bookingTabFor(b){
   var end=tripEndDate(b);
   if(end && end<today) return 'previous';
   if(start && start>today) return 'upcoming';
+  // CHECK-IN GATE (mirrors isCurrentTrip): a not-yet-checked-in trip is held in Upcoming, not
+  // Current, so a search/jump lands on the tab that actually holds its card.
+  if(st!=='in-progress' && !checkInDone(b)) return 'upcoming';
   return 'current';
 }
 function goToTripCard(bid){
@@ -11233,6 +11236,13 @@ function renderUpcoming(){
     var start=normDateStr(b.pickupDate||b.date);
     if(!start) return false;
     if(start > today) return true;  // future trips always in upcoming
+    // CHECK-IN GATE: a trip whose pickup has arrived but that has NOT been checked in is HELD here
+    // in Upcoming (it cannot flip into Current without a check-in). Keep it until its end day passes,
+    // then it files into Previous. (in-progress / checked-in trips were already excluded above.)
+    if(!checkInDone(b)){
+      var _end=tripEndDate(b);
+      return !(_end && _end < today);
+    }
     if(start < today) return false; // past start dates never in upcoming
     // start === today: stay in upcoming until 1 hour after scheduled pickup
     var parts=(b.pickupTime||'00:00').split(':');
@@ -11260,6 +11270,12 @@ function renderUpcoming(){
     }
   }
 
+  // "Awaiting Check-In": trips whose pickup time has passed but that are NOT yet checked in. They
+  // are held out of the Current tab by the check-in gate -- surface them in a dedicated flagged
+  // group at the top so the owner sees a car is out and the handover check-in still needs doing.
+  var _awaitCI=upcoming.filter(function(b){ return _pickupPassed(b) && !checkInDone(b); }).sort(sortByTime);
+  var _awaitSet={}; _awaitCI.forEach(function(b){ _awaitSet[b.id]=1; });
+
   var groups=[
     {label:'Today',      items:[]},
     {label:'This Week',  items:[]},
@@ -11269,6 +11285,7 @@ function renderUpcoming(){
   ];
   var now=new Date(); now.setHours(0,0,0,0);
   upcoming.forEach(function(b){
+    if(_awaitSet[b.id]) return;   // shown in the Awaiting Check-In group below, not twice
     var d=parseLocalDate(normDateStr(b.pickupDate||b.date))||now;
     var diff=Math.round((d-now)/(1000*60*60*24));
     if(diff<=0) groups[0].items.push(b);            // scheduled to START today
@@ -11279,10 +11296,15 @@ function renderUpcoming(){
   });
 
   _repeatSetCache=buildRepeatSet();
-  $d('upcomingList').innerHTML=groups.filter(function(g){return g.items.length;}).map(function(g){
+  var _awaitHtml = _awaitCI.length ? ('<div class="trip-group">'+
+    '<div class="trip-group-label" style="color:#ef4444">\u26A0 Awaiting Check-In ('+_awaitCI.length+') \u2014 pickup time passed; complete the check-in to start the trip</div>'+
+    _awaitCI.map(function(b){ return tripCard(b,true); }).join('')+
+    '</div>') : '';
+  var _groupsHtml = groups.filter(function(g){return g.items.length;}).map(function(g){
     return '<div class="trip-group"><div class="trip-group-label">'+g.label+'  ('+g.items.length+')</div>'+
       g.items.map(function(b){ return tripCard(b,true); }).join('')+'</div>';
-  }).join('')||'<div style="padding:40px;text-align:center;color:var(--muted)">No upcoming bookings</div>';
+  }).join('');
+  $d('upcomingList').innerHTML=(_awaitHtml+_groupsHtml)||'<div style="padding:40px;text-align:center;color:var(--muted)">No upcoming bookings</div>';
   _repeatSetCache=null;
   // Update nav badge
   var ub=$d('tabBadgeUpcoming');
@@ -13063,6 +13085,26 @@ function tripReturnMs(b){
   }
   return 0; // no return time known \u2014 stay in Current until midnight
 }
+// ---- Check-in gate helpers --------------------------------------------------
+// A trip's handover check-in is "done" once any check-in data has been recorded. Mirrors the
+// Check-In button's completed-state indicator (odomIn/fuelIn/condIn/checkInNotes) and also
+// counts check-in photos or an explicit checkInDoneAt marker.
+function checkInDone(b){
+  return !!(b && (b.checkInDoneAt || b.odomIn || b.fuelIn || b.condIn || b.checkInNotes ||
+    (b.checkInPhotoIds && b.checkInPhotoIds.length)));
+}
+// True once a trip's scheduled pickup moment has passed (started on a prior day, or today
+// at/after the pickup time). Used to flag not-yet-checked-in trips as "Awaiting Check-In".
+function _pickupPassed(b){
+  if(!b) return false;
+  var today=todayStr(), start=normDateStr(b.pickupDate||b.date);
+  if(!start) return false;
+  if(start < today) return true;
+  if(start > today) return false;
+  var parts=(b.pickupTime||'00:00').split(':');
+  var pickup=new Date(); pickup.setHours(parseInt(parts[0])||0,parseInt(parts[1])||0,0,0);
+  return Date.now() >= pickup.getTime();
+}
 function isCurrentTrip(b){
   if(b.status==='cancelled'||b.status==='completed'||b.status==='voided') return false;   // #void: a voided/terminated trip is no longer current -> frees the vehicle same day
   if(b.status==='in-progress') return true;   // checked-in = active NOW -> always Current, regardless of the scheduled pickup date/time (early check-in or a future-dated start no longer strands it in Upcoming)
@@ -13082,6 +13124,12 @@ function isCurrentTrip(b){
   // silently removed just because the clock passed drop-off. It remains here (flagged
   // "Awaiting completion") until the owner marks it complete, or it rolls fully past its end
   // day and files into Previous. This guarantees a booking can never disappear after drop-off.
+  // CHECK-IN GATE: a date-current trip may NOT go active (enter Current) until its handover
+  // check-in is completed. A checked-in trip is status==='in-progress' and already returned
+  // Current at the top of this function, so reaching here means the trip is pre-check-in: hold it
+  // out of Current (it stays in Upcoming, flagged "Awaiting Check-In") until the owner checks it
+  // in. This is the "no trip goes from upcoming to current without a check-in" guarantee.
+  if(!checkInDone(b)) return false;
   return true;
 }
 // A started, not-yet-completed trip whose drop-off/return time has already passed.
