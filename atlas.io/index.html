@@ -2532,7 +2532,7 @@ const Atlas = (function(){
   function _fbSel(key){ _fbPending=key||''; try{ Array.prototype.forEach.call(document.querySelectorAll('.fbpick'),function(el){ var on=el.getAttribute('data-fbkey')===key; el.style.borderColor=on?'rgba(201,169,98,.9)':'rgba(201,169,98,.25)'; el.style.boxShadow=on?'0 0 0 1px rgba(201,169,98,.6)':'none'; }); }catch(e){} var c=document.getElementById('fbpickConfirm'); if(!c) return; if(!key||!_FB_META[key]){ c.innerHTML=''; return; } c.innerHTML='<button class="btn btn--primary" style="width:100%" onclick="Atlas._fbCommit()">Make '+esc(_FB_META[key].name)+' my mark &mdash; permanently</button>'; }
   function _fbCommit(){ var key=_fbPending; if(!key||!_FB_META[key]) return; var cb=document.querySelector('#fbpickConfirm .btn'); if(cb){ cb.disabled=true; cb.textContent='Saving...'; } _api('/api/founder/badge',{method:'POST',body:{badge:key}}).then(function(res){ var j=res&&res.json; if(res.status>=200&&res.status<300&&j&&j.ok){ _founderInfo.badge=j.badge||key; try{ if(typeof S!=='undefined'&&S){ S.founderBadge=j.badge||key; save(); } }catch(e){} try{ closeModal(); }catch(e){} try{ toast('Your founder badge is set: '+((_FB_META[j.badge||key]||{}).name||'')); }catch(e){} try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } else { if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast((j&&j.error)||'Could not save your badge.'); }catch(e){} } }).catch(function(){ if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast('Network error -- try again.'); }catch(e){} }); }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.15jx';
+  var APP_VERSION='2026.11.15jy';
   var APP_CHANGELOG=[
     'Rent by the hour, day, week AND month on the same item: set a price for each duration you offer (Settings &rarr; Money), and your booking site shows a clean Hourly / Daily / Weekly / Monthly toggle so each customer picks how long they want and watches the exact price update live. The duration they pick is the price they pay &mdash; your weekly rate is your weekly deal, with nothing re-added at checkout. Extending one of these bookings now adds time in that same unit: extend a weekly booking and it moves the return date by the week and bills your weekly rate, not a day. And when you take a booking yourself from the dashboard, the booking form shows the same Hourly / Daily / Weekly / Monthly picker for a multi-rate item &mdash; so an owner-created booking is reserved and charged at the exact duration you choose, not your default one.',
     'Clearer setup &amp; help: the Connect step now shows every way to get paid (Stripe, Square, PayPal &mdash; or let Atlas process &amp; pay you out) and lists Live GPS tracking as a $29/mo add-on; every integration now links its own step-by-step Atlas guide right where you connect it; and the setup tips are bigger and easier to read.',
@@ -3509,7 +3509,7 @@ const Atlas = (function(){
   }
 
   /* ============================== ONBOARDING ============================== */
-  let step=0; const STEPS=['welcome','identity','fleet','money','connect','asset','founder','invite','explain','done'];   // Wave1: 'founder' (badge pick, shown only to founders while the program is open) + 'explain' ("Here's your Atlas" dashboard tour). 'founder' auto-drops out via _steps() when not a founder.
+  let step=0; const STEPS=['welcome','identity','fleet','profile','money','connect','asset','founder','invite','explain','done'];   // Wave1: 'founder' (badge pick, shown only to founders while the program is open) + 'explain' ("Here's your Atlas" dashboard tour). 'founder' auto-drops out via _steps() when not a founder.
   var _authMode='signup';
   var _inviteToken='';                 // set when arriving via /?invite=<token> (teammate accepting an invite)
   var _selfActor=null;                 // RUNTIME-ONLY (never persisted to the shared tenant blob): the gating actor for a logged-in NON-owner. null = owner / full access.
@@ -4036,6 +4036,29 @@ const Atlas = (function(){
   // POST it once (set-once server-side). Settings > Billing stays the change-later/fallback path. Decoupled from the modal
   // picker (_founderBadgePick) so there's no closeModal/buildApp side effect mid-onboarding.
   function _obFbPick(key){ if(!key||!_FB_META[key]) return; S.founderBadge=key; save(); renderStep(); }
+  // ---- WAVE-PROFILE (Onboarding Wave 2): the "deep adaptive profiling" step. After picking WHAT they rent, the owner answers a
+  // handful of questions tailored to that exact business type; the answers pre-tune the setup so the app arrives configured, not
+  // generic -- the rate model (so the money step opens on the right cadence), the usage/fuel capture on the check-in/return flow
+  // (S.flowCfg, evidence-only -- my WAVE-FLOWCFG layer), an optional refundable security deposit (S.money.hold, via setMoney), and
+  // scale/operator METADATA in S.profile (AI context + portal + future). Invariants: every question defaults to the TYPE'S PRESET,
+  // so a click-through creates NO flowCfg override and changes no money vs today; only an explicit answer seeds config. S.profile is
+  // an ordinary top-level key -> persists to localStorage + syncs server-side per-key newest-wins, exactly like flowCfg/money.
+  var _PROFILE_RATE={ units:'month', salon:'month', air:'hour' };   // main-type -> smart rate-model default (every other type stays 'day'); applied ONCE per type on first entry, fully visible + changeable on the very next (money) step
+  function _profileEnsure(){ if(!S.profile||typeof S.profile!=='object') S.profile={}; return S.profile; }
+  function _profileMainType(){ return (S&&S.fleet&&S.fleet.id)||'custom'; }
+  function _profileDepSuggest(){ var id=_profileMainType(); return ({cars:500,boats:1000,rv:1000,air:2000,construction:750,power:500,equip:300,property:500,units:500,trailer:300,camera:500,av:500,medical:200,events:300,party:200,salon:250,furniture:200,custom:250})[id]||250; }
+  // apply the type-smart rate-model default ONCE per main type (idempotent; re-applies only if the main type itself changed, and
+  // never clobbers a rate the owner later sets in the money step -- the per-type flag is set the first time and gates re-entry)
+  function _profileSmartApply(){ var id=_profileMainType(), p=_profileEnsure(); if(p._rateFor===id) return; var rm=_PROFILE_RATE[id]; if(rm){ S.money.rateModel=rm; if(rm==='hour'&&S.money.booking&&!S.money.booking.time) S.money.booking.time=true; } p._rateFor=id; save(); }
+  function profileSet(k,v){ _profileEnsure()[k]=v; save(); renderStep(); }   // metadata answer -> store + re-render (updates selected state)
+  function profileRate(v){ setMoney('rateModel',v); _profileEnsure().cadence=v; save(); renderStep(); }
+  function profileDeposit(v){ var n=Math.max(0,parseFloat(String(v).replace(/[^0-9.]/g,''))||0); setMoney('hold.value',String(n)); _profileEnsure().deposit=n; save(); }   // oninput: NO re-render (keeps focus). setMoney turns the hold on (fixed) when n>0, off when 0.
+  function profileDepositToggle(on){ if(on){ var amt=(_profileEnsure().deposit>0?S.profile.deposit:_profileDepSuggest()); profileDeposit(amt); } else { setMoney('hold.value','0'); } renderStep(); }
+  // usage + fuel write the MAIN type's flow capture, but only create an override when the answer DIFFERS from the Atlas preset
+  // (a click-through that accepts the preset stays pristine -- no override, no Reset button later). Direct writes: this is the
+  // owner's own first-run setup, so no _canMod gate and no renderSet (that renders Settings); renderStep re-renders the wizard.
+  function profileUsage(on){ var id=_profileMainType(), base=_FLOW[id]||_FLOW.custom; _profileEnsure().usage=!!on; var wantU=on?(base.u||'odo'):''; if(wantU!==(base.u||'')) _flowCfgEnsure(id).u=wantU; else if(S.flowCfg&&S.flowCfg[id]) S.flowCfg[id].u=wantU; save(); renderStep(); }
+  function profileFuel(on){ var id=_profileMainType(), base=_FLOW[id]||_FLOW.custom; _profileEnsure().fuel=!!on; var wantF=on?1:0; if(wantF!==(base.f?1:0)) _flowCfgEnsure(id).f=wantF; else if(S.flowCfg&&S.flowCfg[id]) S.flowCfg[id].f=wantF; save(); renderStep(); }
   const OB={
     welcome:()=>`
       <div style="text-align:center;padding:6px 0 4px">
@@ -4084,6 +4107,37 @@ const Atlas = (function(){
       <div class="bk-lenhint" style="margin:8px 0 0">${_fleetSel().length>1?('Renting <b>'+_fleetSel().length+'</b> types &middot; main is <b>'+esc(S.fleet.label)+'</b> &middot; tap another to make more, tap again to remove.'):'Tip: renting more than one thing? Tap them all &mdash; the first is your main type.'}</div>
       ${S.fleet.id==='custom'?`<div class="field" style="margin-top:14px;margin-bottom:0"><label>Name what you rent</label><input class="input" value="${esc(S.fleet.noun==='asset'?'':S.fleet.noun)}" placeholder="e.g. bull, booth, costume, drone" oninput="Atlas._customNounPreview(this.value)" onchange="Atlas.setCustomNounSolo(this.value)"><div class="bk-lenhint" id="customNounHint" style="margin:6px 0 0">${(S.fleet.noun&&S.fleet.noun!=='asset')?('Atlas will label everything &ldquo;'+esc(S.fleet.noun)+'&rdquo; (one) / &ldquo;'+esc(S.fleet.nouns||_pluralize(S.fleet.noun))+'&rdquo; (many).'):'Just type the singular &mdash; Atlas fills in the plural automatically (box &rarr; boxes, party &rarr; parties).'}</div></div>`:''}
       ${obNav()}`,
+
+    profile:()=>{
+      _profileSmartApply();
+      var id=_profileMainType(), t=_typeById(id)||{}, base=_FLOW[id]||_FLOW.custom, p=_profileEnsure();
+      var nouns=esc((S.fleet&&S.fleet.nouns)||t.nouns||'items'), noun=esc((S.fleet&&S.fleet.noun)||t.noun||'item');
+      var biz=esc((S.brand&&S.brand.name&&String(S.brand.name).trim())||'your business');
+      var rm=S.money.rateModel||'day';
+      var sel=function(cur,opts,on){ return '<select class="select" onchange="'+on+'">'+opts.map(function(o){ return '<option value="'+o[0]+'"'+(cur===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join('')+'</select>'; };
+      var H='<h2>How you run your '+esc(t.label||'rentals')+'</h2>'
+        +'<p class="ob-card__lead">A few quick questions so Atlas pre-sets '+noun+' pricing, deposits and your check-in flow the way '+biz+' actually works &mdash; all changeable later.</p>';
+      H+='<div class="field"><label>How do customers usually pay for a '+noun+'?</label>'
+        +sel(rm,[['hour','By the hour'],['day','By the day'],['week','By the week'],['month','By the month']],'Atlas.profileRate(this.value)')
+        +'<div class="hint">Sets your default rate model. You set the exact rate on the next step.</div></div>';
+      H+='<div class="field"><label>About how many '+nouns+' will you rent out?</label>'
+        +sel(p.scale||'',[['','Choose&hellip;'],['solo','Just 1'],['small','2 to 9'],['mid','10 to 25'],['large','More than 25']],'Atlas.profileSet(\'scale\',this.value)')
+        +'</div>';
+      if(base.u){ var uWord=(base.u==='hrs')?'engine / run hours':'mileage'; var overWord=(base.u==='hrs')?'hour':'mile'; var uOn=(p.usage!=null)?!!p.usage:true;
+        H+='<label class="cfg-check" style="margin-top:4px"><input type="checkbox"'+(uOn?' checked':'')+' onchange="Atlas.profileUsage(this.checked)"> Track '+uWord+' &mdash; record it at pickup &amp; return</label>'
+          +'<div class="hint" style="margin:-2px 0 10px">Turns usage capture on in your check-in / return flow. Add a per-'+overWord+' overage rate per '+noun+' anytime.</div>'; }
+      if(base.f){ var fOn=(p.fuel!=null)?!!p.fuel:true;
+        H+='<label class="cfg-check"><input type="checkbox"'+(fOn?' checked':'')+' onchange="Atlas.profileFuel(this.checked)"> Check fuel / charge level at return &mdash; meter any shortfall</label>'; }
+      if(id==='boats'||id==='air'||id==='construction'){ var opV=p.operator||'self';
+        H+='<div class="field" style="margin-top:12px"><label>Who operates it during the rental?</label>'
+          +sel(opV,[['self','The customer operates it'],['crew',(id==='construction')?'You send a trained operator':'You provide a captain / crew']],'Atlas.profileSet(\'operator\',this.value)')+'</div>'; }
+      var depOn=!!(S.money.hold&&S.money.hold.type&&S.money.hold.type!=='none'&&Number(S.money.hold.value)>0);
+      var depAmt=depOn?Number(S.money.hold.value):(p.deposit>0?p.deposit:_profileDepSuggest());
+      H+='<div style="margin-top:12px"><label class="cfg-check"><input type="checkbox"'+(depOn?' checked':'')+' onchange="Atlas.profileDepositToggle(this.checked)"> Hold a refundable security deposit</label>'
+        +(depOn?('<div class="rule-input" style="margin-top:8px;padding:0 12px"><span>$</span><input class="tnum" style="width:auto;flex:1;text-align:left" value="'+esc(String(depAmt))+'" oninput="Atlas.profileDeposit(this.value)"><span>hold</span></div><div class="hint">Authorized at pickup and released at return &mdash; not charged unless there is damage.</div>'):'')
+        +'</div>';
+      return H + obNav('Continue');
+    },
 
     money:()=>`
       <h2>Your money rules</h2><p class="ob-card__lead">Just the basics to start &mdash; sensible defaults so revenue and profit work from day one. Fine-tune and add your own rules anytime in Settings.</p>
@@ -16300,7 +16354,7 @@ const Atlas = (function(){
 
   return {startTrial,demo,demoStart,demoSkip,exitDemo,_demoSeePricing,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,saveMoneyRules,setDisplayCurrency,setNotify,togglePush,setTypeRate,setTypeCfg,setCard,setCancelPolicy,setSenderAddress,connect,doConnect,disconnectIntegration,connectQuickbooks,connectXero,connectPaypal,connectSquare,connectCoinbase,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,setTaxTripCharges,syncTax,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
-    openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,_obAddAsset,_obDelAsset,_obFbPick,setupFinish,
+    openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,_obAddAsset,_obDelAsset,_obFbPick,profileSet,profileRate,profileUsage,profileFuel,profileDeposit,profileDepositToggle,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
     setBrandName,setBizTz,setBrandColor,setBrandColorHex,setLogo,renderSetSoft,toggleRule,setRule,removeRule,addRule,setSmartPricing,spAddSeason,spSetSeason,spRmSeason,obRefresh,setField,revOptApply,revOptAsk,setAutoPrice,autoPriceRevertAll,autoPriceRevertOne,
     goAuth,authSubmit,authTogglePass,ssoLogin,setMoneyStack,bkSaveCard,bkChargeCard,_bkChargeCardSubmit,_askModal,_askOk,_bkRecordPaySubmit,bkRecordPayment,setTipping,logout,deleteAccount,deleteAccountConfirm,_doAccountDelete,_stepUpPrompt,_stepUpSubmit,policyAccept,verifyContinue,verifyResend,verifyStartOver,forgotPassword,sendResetLink,changePassword,_changePwGo,goHome,leadSubmit,subscribe,confirmSubscribe,cancelPlan,billingPortal,_openWeb,openPlans,openCredits,buyCredits,openEmailPacks,buyEmails,buyEmailAddon,buyAddon,removeAddon,renderExtras,buyLocation,buySite,buyAssetBlock,buyTracking,_cryptoCheckout,_cryptoPlanPrompt,_cryptoPlanGo,_squarePlanCheckout,_squarePayGo,_sqBackupAdd,_sqBackupGo,_sqBackupRemove,_stBackupAdd,_stBackupRemove,paywallUpdatePayment,paywallChoosePlan,paywallStartTrial,paywallRetryPayment,paywallCancelPlan,showSignupPlans,_hideSignupPlans,_signupPickPlan,_founderBadgePick,_fbSel,_fbCommit,
