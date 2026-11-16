@@ -24,7 +24,7 @@
  *    this equivalence route-by-route.
  */
 
-export const ATLAS_CAPS_VERSION = '2026.11.14-f0a';
+export const ATLAS_CAPS_VERSION = '2026.11.16-rbac-anchor';
 
 // def: which role presets include this cap by DEFAULT (when a staffer has no
 // explicit caps). 'both' = support+analyst; 'support' = support only (the write
@@ -66,9 +66,9 @@ export const STAFF_CAPS = [
   { key: 'members.view', group: 'Members', label: 'Members directory (no revenue column unless money.view)', sens: 'pii', def: 'none',
     routes: [{ m: 'GET', p: '^/api/admin/members$' }] },
   { key: 'ops.system', group: 'System', label: 'System health, uptime, SEO, error log', sens: 'pii', def: 'none',
-    routes: [{ m: 'GET', p: '^/api/admin/errors$' }, { m: 'GET', p: '^/api/admin/seo-health$' }, { m: 'GET', p: '^/api/admin/site-uptime$' }, { m: 'GET', p: '^/api/admin/monitor/' }, { m: 'GET', p: '^/api/admin/ai-selftest$' }] },
+    routes: [{ m: 'GET', p: '^/api/admin/errors$' }, { m: 'GET', p: '^/api/admin/seo-health$' }, { m: 'GET', p: '^/api/admin/site-uptime$' }, { m: 'GET', p: '^/api/admin/monitor/uptime$' }, { m: 'GET', p: '^/api/admin/ai-selftest$' }] },   // WAVE-RBAC-ANCHOR (audit #9): monitor/ pinned to the EXACT route that exists today (was the open prefix ^/api/admin/monitor/) -- a NEW monitor/* route must be added here explicitly, so a held cap can never auto-reach a future (possibly sensitive) route. Defense-in-depth; non-exploitable today (only monitor/uptime exists, read-only).
   { key: 'security.reports', group: 'Security', label: 'Compliance & audit reports (read-only)', sens: 'safe', def: 'none',
-    routes: [{ m: 'GET', p: '^/api/admin/report/' }] },
+    routes: [{ m: 'GET', p: '^/api/admin/report/(audit-findings|compliance)$' }] },   // WAVE-RBAC-ANCHOR (audit #9): report/ pinned to the EXACT routes that exist today (was the open prefix ^/api/admin/report/) -- a NEW report/* route must be added here explicitly. Same defense-in-depth as ops.system above.
   { key: 'ai.assist', group: 'AI', label: 'AI copilots (ticket/inbox/bug drafts, churn, onboarding, release notes)', sens: 'pii', def: 'none',
     routes: [{ m: 'POST', p: '^/api/admin/ai/(copilot|churn|onboarding-nudges|release-notes|ticket-draft|inbox-draft|triage-bugs)$' }] },
 
