@@ -6279,6 +6279,7 @@ function cloudLoad(callback) {
         try { _healStrandedBookings(); } catch(e){ try{ console.warn('heal stranded bookings skipped:', e); }catch(_e){} } // once/session: re-push any booking stranded by a transient reject / stale pushed flag (was SHADOWED by a duplicate fn name -> stranded bookings only recovered on a manual sync = "took really long")
         try { _healExtsyncFrozen(); } catch(e){ try{ console.warn('extsync heal skipped:', e); }catch(_e){} } // one-time (gated): re-push bookings the old dedup guard froze on the server
         try { _reconcileAllPhotos(); } catch(e){ try{ console.warn('photo reconcile skipped:', e); }catch(_e){} } // ensure every booking-referenced photo present on THIS device is confirmed in the cloud, tied to its booking
+        try { _reconcileSquarePayments(); } catch(e){ try{ console.warn('square reconcile skipped:', e); }catch(_e){} } // auto-mark a balance paid once the worker has captured a matching Square payment (conservative full-balance match)
         try { _autoMigrateSigsIfEnabled(); } catch(e){ try{ console.warn('sig auto-migrate skipped:', e); }catch(_e){} } // when sigsOffload is ON: one-time backfill of /sigs + re-push stripped so the sync blob shrinks
       }
       setSyncStatus('ok');
@@ -9113,7 +9114,14 @@ function _paymentsReceived(b){
   // other card lines (charges, extensions, driver pay) compute the processed total; non-card lines = base.
   out.forEach(function(p){
     if(p.label==='Date Lock' && Number(b.dateLockGross)>0) p.gross=Number(b.dateLockGross);
-    else if(/^Balance/.test(p.label)) p.gross=Number(p.amount)||0;
+    else if(/^Balance/.test(p.label)){
+      // Square-collected balance: balancePaidAmount holds the BASE (the Stripe amount_total webhook never
+      // fired), but the worker captured the exact card-charged GROSS in squarePayments[kind~balance]. Surface
+      // that gross so Total Collected reflects what the card was actually charged (base + card surcharge).
+      // Stripe/manual balances have NO matching squarePayment -> fall back to p.amount (amount_total or base).
+      var _sqBalGross=(Array.isArray(b.squarePayments)?b.squarePayments:[]).reduce(function(mx,s){ return (s && /balance/i.test(String(s.kind||'')) && Number(s.amount)>0) ? Math.max(mx,Number(s.amount)) : mx; },0);
+      p.gross=(_sqBalGross>(Number(p.amount)||0)+0.005)?_sqBalGross:(Number(p.amount)||0);
+    }
     else p.gross = p.card ? _stripeGross(p.amount) : (Number(p.amount)||0);
   });
   out.sort(function(x,y){ return (x.ts||0)-(y.ts||0); });
@@ -9135,6 +9143,32 @@ function _recordBalancePayment(b, amount, method){
   var _keys=Object.keys(_seen);
   b.balancePaidMethod=_keys.length>1?'Multiple':(_keys[0]||String(method||'').trim());
 }
+
+// Autonomously mark a balance paid when the worker has already captured a matching Square balance payment,
+// so a Square-collected balance no longer needs a manual "Mark Paid". CONSERVATIVE: only fires when the
+// booking still owes AND the Square gross matches the outstanding balance grossed up 13.25% within $1 (a
+// clean full-balance match). Partials / ambiguous amounts stay manual. Base stays base (the display gross is
+// surfaced separately from squarePayments), so revenue / P&L are unchanged.
+function _reconcileSquarePayments(){
+  if(typeof bookings==='undefined' || !Array.isArray(bookings)) return 0;
+  var changed=0;
+  bookings.forEach(function(b){
+    if(!b || b._deleted || !Array.isArray(b.squarePayments) || !b.squarePayments.length) return;
+    if(b.balancePaidAt) return;
+    var due=(typeof getRemainingBalance==='function')?Number(getRemainingBalance(b))||0:0;
+    if(!(due>0)) return;
+    var sq=b.squarePayments.reduce(function(mx,s){ return (s && /balance/i.test(String(s.kind||'')) && Number(s.amount)>0) ? Math.max(mx,Number(s.amount)) : mx; },0);
+    if(sq>0 && Math.abs(sq-due*1.1325)<=1.00){
+      if(typeof _recordBalancePayment==='function') _recordBalancePayment(b,due,'Card'); else { b.balancePaidAmount=due; b.balancePaidMethod='Card'; }
+      b.balancePaidAt=Date.now(); b.remainingBalance=0;
+      if(b.status==='pending'){ b._history=(b._history||[]).concat([{at:Date.now(),by:'auto-square',changes:['status: "pending"->"confirmed" (Square balance reconciled)']}]); b.status='confirmed'; }
+      b._t=Date.now(); changed++;
+    }
+  });
+  if(changed>0 && typeof save==='function'){ save(); if(typeof flushCloudSave==='function') flushCloudSave(); }
+  return changed;
+}
+
 // Base rental cash collected on a specific calendar day (dayStr='YYYY-MM-DD'), PARTIAL-AWARE. Returns
 // {base, stripe} where base = base cash collected that day (clamped to the base balance) and stripe = the
 // Stripe-collected portion (carries the 5%+8.25% card gross-up; Zelle/cash never does). When the booking
@@ -21399,10 +21433,40 @@ function _saveMarkBalancePaid(id){
 }
 function markDateLockPaid(id){
   var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
-  if(!confirm('Mark $100 date lock as paid for '+b.name+'?')) return;
+  var _old=$d('mdlModalOverlay'); if(_old) _old.remove();
+  // Ask HOW the date lock was paid so the 13.25% card fee applies ONLY to card methods (a Cash/Zelle/CashApp
+  // date lock was silently defaulting to card before). If the worker already captured a Square date-lock
+  // payment, default the picker to Card; otherwise reuse any stored method, else force an explicit choice.
+  var _sqDL=(Array.isArray(b.squarePayments)?b.squarePayments:[]).some(function(s){ return s && /lock/i.test(String(s.kind||'')); });
+  var _def=b.dateLockMethod||(_sqDL?'Card':'');
+  var methods=['','Cash','Zelle','Venmo','CashApp','Square','Stripe','Card','Apple Pay','Wire','Check','Other'];
+  var ov=document.createElement('div');
+  ov.id='mdlModalOverlay';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML=
+    '<div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;width:100%;max-width:420px">'+
+      '<div style="font-size:16px;font-weight:800;margin-bottom:4px">Mark $100 Date Lock Paid</div>'+
+      '<div style="font-size:12px;color:var(--muted);margin-bottom:18px">'+esc(b.name||'')+' \u00b7 '+esc(b.vehicle||'')+'</div>'+
+      '<div style="margin-bottom:18px"><div class="flabel">How was the date lock paid?</div>'+
+        '<select id="mdlMethod" class="finput" style="width:100%">'+
+          methods.map(function(m){ return '<option value="'+m+'"'+(m===_def?' selected':'')+'>'+(m||'\u2014 select method \u2014')+'</option>'; }).join('')+
+        '</select>'+
+        '<div style="font-size:11px;color:var(--muted);margin-top:6px">Card / Stripe / Square add the 13.25% card fee; Cash / Zelle / Venmo / CashApp do not.</div></div>'+
+      '<div style="display:flex;gap:10px;justify-content:flex-end">'+
+        '<button class="btn" onclick="$d(\'mdlModalOverlay\').remove()" style="border-color:var(--border)">Cancel</button>'+
+        '<button class="btn" onclick="_saveMarkDateLockPaid(\''+b.id+'\')" style="background:var(--green);color:#000;border-color:var(--green);font-weight:700">Mark Paid</button>'+
+      '</div>'+
+    '</div>';
+  document.body.appendChild(ov);
+}
+function _saveMarkDateLockPaid(id){
+  var b=bookings.find(function(x){return x.id===id;}); if(!b) return;
+  var method=($d('mdlMethod')||{}).value||'';
+  if(!method){ alert('Please select how the date lock was paid.'); return; }
   var _wasPaid = !!b.dateLockPaidAt;
   b.dateLock=100;
   b.dateLockPaidAt = b.dateLockPaidAt || Date.now();
+  b.dateLockMethod = method;   // drives the 13.25% card fee (Card/Stripe/Square) vs none (Cash/Zelle/Venmo/CashApp)
   var dep=Number(b.deposit)||0;
   var rev=Number(b.revenue)||0;
   if(b.remainingBalance!=null){
@@ -21422,9 +21486,10 @@ function markDateLockPaid(id){
     if(typeof sendConfirmationEmail==='function') sendConfirmationEmail(b);
     if(typeof autoSendVerification==='function') autoSendVerification(b);
   }
+  var ov=$d('mdlModalOverlay'); if(ov) ov.remove();
   render();
   showBookingDetail(id);
-  showToast('\u2705 $100 date lock marked as paid for '+b.name);
+  showToast('\u2705 $100 date lock marked paid for '+b.name+' via '+method);
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
