@@ -387,6 +387,15 @@ function _trapCapture(env, ectx, req, email, action, fingerprint, typed) {
 // at the session read). Retry a READ up to 2 extra times with a short backoff; a bound D1 statement is single-use, so the
 // caller passes a FACTORY that re-prepares each attempt. Reads only (idempotent); writes stay best-effort at their call sites.
 async function _d1read(mk) { var last; for (var i = 0; i < 3; i++) { try { return await mk().first(); } catch (e) { last = e; if (i < 2) await new Promise(function (r) { setTimeout(r, 90 + i * 140); }); } } throw last; }
+// WAVE-D1 (scale): comp_grants is read on EVERY authenticated request (resolveSession -- the single hottest
+// auth query, ~0.5M reads/day). Cache the resolved role per email IN-ISOLATE with a short TTL, busted on any
+// comp grant/revoke. SAFE: _d1read THROWS on a persistent D1 error (it never returns a silent null), so a
+// cached null is ALWAYS a genuine "no comp" -- never a mistaken lock-out of a comped tenant. Staleness is
+// bounded by _COMP_TTL; a same-isolate grant/revoke busts immediately; a cross-isolate change propagates
+// within the TTL (benign -- a grant just lands a few seconds later, a revoke lingers a few seconds).
+var _compCache = {};               // rawEmail -> { role, exp }
+var _COMP_TTL = 30000;             // 30s
+function _compBust(email) { if (email) { try { delete _compCache[String(email)]; } catch (e) {} } else { _compCache = {}; } }   // writes call _compBust() (bust-all) -- comp writes are rare/admin-only, so a full bust is simplest + always correct
 async function resolveSession(env, req) {
   const sid = parseCookies(req).atlas_sid;
   if (!sid) return null;
@@ -412,8 +421,14 @@ async function resolveSession(env, req) {
   const user = await _d1read(function () { return env.DB.prepare('SELECT (SELECT deleted_at FROM tenants WHERE id=users.tenant_id) AS _tdel,id,email,tenant_id,role,caps FROM users WHERE id=?').bind(s.user_id); });
   if (!user) return null;
   if (user._tdel) return null;   // cycle-4 #13: BACKSTOP -- a SOFT-DELETED tenant's sessions are dead even if the delete-time `UPDATE sessions SET revoked_at WHERE tenant_id` failed (it is best-effort/swallowed). Folded into the existing user load as a correlated subquery (NO extra round-trip; the base `... FROM users WHERE id=?` shape is preserved). Fail-open on an orphan/read error (subquery just yields NULL).
-  const comp = await _d1read(function () { return env.DB.prepare('SELECT role FROM comp_grants WHERE email=?').bind(user.email); });
-  const compRole = comp ? (comp.role === 'admin' ? 'gold' : comp.role) : null;   // read-time coercion: a legacy 'admin' comp row reads as 'gold' -- safe even before the ensurePlatformSchema migration runs
+  // WAVE-D1 hot-path cache (see _compCache near _d1read): this comp read fires on EVERY authenticated request.
+  var _ceK = String(user.email || ''), _ccEnt = _compCache[_ceK], compRole;
+  if (_ccEnt && _ccEnt.exp > Date.now()) { compRole = _ccEnt.role; }   // cached. A cached null is a genuine "no comp": _d1read THROWS on a real D1 error, so a null here never means "read failed" -- a comped tenant can never be mistakenly cached as un-comped.
+  else {
+    const comp = await _d1read(function () { return env.DB.prepare('SELECT role FROM comp_grants WHERE email=?').bind(user.email); });
+    compRole = comp ? (comp.role === 'admin' ? 'gold' : comp.role) : null;   // read-time coercion: a legacy 'admin' comp row reads as 'gold' -- safe even before the ensurePlatformSchema migration runs
+    _compCache[_ceK] = { role: compRole, exp: Date.now() + _COMP_TTL };
+  }
   const isOwner = _isOwnerEmail(env, user.email);   // THE ONE INVARIANT: platform-owner authority is EMAIL-ONLY (OWNER_EMAIL or the hidden OWNER_EMAIL_2 backup). comp_grants can never confer it (see /api/admin/comp, which only accepts role in {gold, free}).
   return { session: s, user, tenant_id: s.tenant_id, isOwner: !!isOwner, comp: compRole };
 }
@@ -6023,7 +6038,7 @@ async function _sendTrialExtended(env, em, tid, days, newEnd) {
 // Schema version = a hash of ensurePlatformSchema's OWN source, so ANY change to a CREATE/INDEX/ALTER auto-invalidates it
 // -> a cold isolate whose DB is already at this version skips the ~138 serial statements, with no manual version bump to forget.
 function _schemaVer() { if (_schemaVerCache) return _schemaVerCache; try { const s = ensurePlatformSchema.toString(); let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; _schemaVerCache = 'sv1.' + (h >>> 0).toString(36) + '.' + s.length; } catch (e) { _schemaVerCache = 'sv1.err'; } return _schemaVerCache; }
-function __resetSchemaReady() { _pReady = false; _schemaVerCache = null; }   // test hook only: simulate a cold isolate
+function __resetSchemaReady() { _pReady = false; _schemaVerCache = null; _compCache = {}; }   // test hook only: simulate a cold isolate (also clears the comp hot-path cache so a fresh-isolate test never reads a prior test's comp)
 async function ensurePlatformSchema(env) {
   if (_pReady) return;
   try { if ((await _pcfgGet(env, '_schema_ver', '')) === _schemaVer()) { _pReady = true; return; } } catch (e) {}   // PERF: DB already at THIS schema version -> skip the ~138 serial CREATE/INDEX/ALTER statements on this cold isolate
@@ -6373,12 +6388,14 @@ async function ensurePlatformSchema(env) {
   // never confer it, so any pre-existing role='admin' grant is retroactively downgraded to 'gold' (no data/access
   // loss: 'gold' still means every feature, comped). Idempotent -- a no-op once every row has already migrated.
   try { await env.DB.prepare("UPDATE comp_grants SET role='gold' WHERE role='admin'").run(); } catch (e) {}
+  _compBust();   // WAVE-D1: the admin->gold self-heal rewrote roles -- clear the comp hot-path cache so no isolate serves a stale pre-migration role
   // #253 observability: server-error tracking (B2) + a security-log lookup index (B3). Same self-heal pattern as
   // admin_staff above -- CREATE ... IF NOT EXISTS, each its OWN try/catch, so a paste-only worker deploy still
   // creates these with zero separate migration step.
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS platform_errors (sig TEXT PRIMARY KEY, name TEXT, message TEXT, path TEXT, method TEXT, status INTEGER DEFAULT 500, count INTEGER DEFAULT 1, first_at INTEGER, last_at INTEGER, ip TEXT, actor TEXT, last_emailed_at INTEGER)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_perr_last ON platform_errors(last_at)").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_audit_action_at ON audit_log(action, at)").run(); } catch (e) {}
+  try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_audit_tenant_at ON audit_log(tenant_id, at)").run(); } catch (e) {}   // WAVE-D1: the team/audit view runs WHERE tenant_id=? AND (action LIKE ...) ORDER BY at DESC LIMIT/OFFSET -- without a (tenant_id, at) index every page full-scans audit_log for that tenant, a heavy D1 read that compounds the 10s-window write pressure
   // #286 AI-spend metering: exact real token cost per (day, model), upserted by _meterAI right after every AI call
   // parses its response. cost_micros is integer MICRO-dollars (1,000,000ths of a USD) so a single call's fractional-
   // cent cost never needs a float; day is a UTC 'YYYY-MM-DD' string (same convention as page_views/visit_geo above)
@@ -10463,6 +10480,7 @@ function doReset(){
         try { const _aur = ((await env.DB.prepare('SELECT id,email FROM users WHERE tenant_id=?').bind(_atid).all()).results) || [];
           for (let i = 0; i < _aur.length; i++) { const u = _aur[i]; if (!u.email || String(u.email).indexOf('_deleted.') === 0) continue; try { await env.DB.prepare('DELETE FROM comp_grants WHERE email=?').bind(String(u.email).toLowerCase()).run(); } catch (e) {} const tomb = ('_deleted.' + _astamp + '.' + u.email).slice(0, 254); try { await env.DB.prepare('UPDATE users SET email=? WHERE id=?').bind(tomb, u.id).run(); } catch (e) {} }   // WAVE13 MED: scrub each tenant email's comp_grant on SELF-delete too (admin-delete already does, 9824). comp_grants is email-keyed and survives a later purge (WHERE tenant_id=?), so a dangling grant let the owner re-signup with the same email and inherit permanent free/gold platform access (_billingState returns 'ok' for a comp, never locked). Done before the email is tombstoned.
         } catch (e) {}
+        _compBust();   // WAVE-D1: this tenant's comp grant(s) were just scrubbed -- bust the hot-path cache so a re-signup with the same email can't inherit a stale comp
         await audit(env, { tenant_id: _atid, actor: _actx.user.email }, req, 'account.self_delete', { email: _actx.user.email, reason: _areason });
         return json({ ok: true, deleted: _atid });
       }
@@ -11104,6 +11122,7 @@ function doReset(){
             if (!em) return err(400, 'This member has no owner email to comp.');
             await env.DB.prepare('INSERT INTO comp_grants (email,role,granted_by,granted_at) VALUES (?,?,?,?) ON CONFLICT(email) DO UPDATE SET role=?,granted_at=?').bind(em, act, 'atlas-hq', Date.now(), act, Date.now()).run();
             await env.DB.prepare("UPDATE tenants SET plan='active', tier='unlimited', stripe_sub=NULL, square_tier=NULL, square_period_end=NULL, credits_week=0, email_month=0, updated_at=? WHERE id=?").bind(Date.now(), tid).run();   // WAVE78: comp = full access -> reset the credit/email period markers so the next metering touch refills at the Unlimited tier (10,000 credits/wk + 100,000 emails/mo), not the pre-comp tier   // comped Gold OR Free = full access -> tier 'unlimited' so BOTH asset + location caps are uncapped (freecomp/gold both grant unlimited). DATA INTEGRITY: also CLEAR the subscription id so a comped tenant can never count as a PAYING member / pollute MRR (active + no-sub falls into the 'comped' bucket, never 'paid'). comp_grants records the true gold/free role.
+            _compBust();   // WAVE-D1: a comp was just granted -- bust the hot-path cache so the member gets gold/free access immediately, not up to _COMP_TTL later
           } else if (act === 'tier') {
             const tier = String(b.tier || ''); if (!PLAN_PRICE_CENTS[tier]) return err(400, 'Unknown tier.');
             await env.DB.prepare("UPDATE tenants SET plan='active', tier=?, updated_at=? WHERE id=?").bind(tier, Date.now(), tid).run();
@@ -11160,6 +11179,7 @@ function doReset(){
           }
           try { await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE tenant_id=?').bind(stamp, tid).run(); } catch (e) {}
           if (em) { try { await env.DB.prepare('DELETE FROM comp_grants WHERE email=?').bind(em).run(); } catch (e) {} }
+          _compBust();   // WAVE-D1: comp grant removed on soft-delete -- bust the hot-path cache so the revoke takes effect at once
           await audit(env, { tenant_id: tid, actor: _actor, staff_id: _staffId }, req, 'admin.soft_delete', { email: em, cancelled_sub: !!t.stripe_sub });
           return json({ ok: true, email: em, deleted: tid, soft: true });
         }
@@ -15773,6 +15793,7 @@ function doReset(){
           try { await env.DB.prepare("UPDATE tenants SET plan='canceled', tier='starter', updated_at=? WHERE id=(SELECT tenant_id FROM users WHERE email=? AND role='owner' ORDER BY created_at LIMIT 1) AND plan='active' AND (stripe_sub IS NULL OR stripe_sub='')").bind(Date.now(), body.email.toLowerCase()).run(); } catch (e) {}   // Wave1 LOW-MED: a comp set plan='active'/tier='unlimited' with no real sub -> revoking must also drop that free access (else permanent free unlimited); only a tenant with NO paying sub is downgraded
           await audit(env, ctx, req, 'comp.revoke', { email: body.email });
         }
+        _compBust();   // WAVE-D1: /api/admin/comp just granted or revoked a comp -- bust the hot-path cache so the change is effective immediately for the affected owner's next request
         return json({ ok: true });
       }
 
