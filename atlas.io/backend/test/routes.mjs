@@ -7029,6 +7029,17 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/arr\[idx\]=_flowCkReq\(arr\[idx\]\)\?\{t:v,req:true\}:v;/.test(_ATLAS_SRC), 'WAVE-FLOWREQ: editing a required item LABEL preserves its Required flag (does not silently demote it to optional)');
   ok(/data-req="1"/.test(_ATLAS_SRC) && /color:var\(--danger\)" title="Required before you can complete this">\*/.test(_ATLAS_SRC), 'WAVE-FLOWREQ: required items render with a red * in the actual check-in / close-out modal');
   ok(/flowSetCheck,flowSetCheckReq,flowAddCheck/.test(_ATLAS_SRC) && /doConnect,disconnectIntegration,_stripeTest,/.test(_ATLAS_SRC), 'WAVE-FLOWREQ + WAVE-STRIPE-VERIFY: flowSetCheckReq + _stripeTest are exported on the Atlas object (referenced by onclick handlers)');
+
+  // ===== WAVE-IDV-NOTIFY: the RENTER is now told when their ID passes (chip + email), and ID-verify + the checklist flow into the dispute docs =====
+  ok((_WORKER_SRC.match(/subject: 'Your ID is verified'/g) || []).length >= 2, 'WAVE-IDV-NOTIFY: the renter gets a "Your ID is verified" receipt on BOTH completion paths (the live /idvstatus poll AND the scheduled reconcile backstop)');
+  ok(/to: _rvE, tenant: brow\.tenant_id, transactional: true/.test(_WORKER_SRC) && /to: _rvE2, tenant: tid, transactional: true/.test(_WORKER_SRC), 'WAVE-IDV-NOTIFY: the renter receipt is a transactional send to the renter address (both paths), mirroring the invite email');
+  ok((_WORKER_SRC.match(/>ID verified<\/span>/g) || []).length >= 2, 'WAVE-IDV-NOTIFY: the renter portal shows a real "ID verified" chip in BOTH the on-load (j.idv.done) and live-poll states');
+  ok(!/&#10003; Your ID is verified &mdash; thank you\./.test(_WORKER_SRC), 'WAVE-IDV-NOTIFY: the old plain-text renter confirmation was fully replaced by the chip (no leftover copy)');
+  ok(/_rr\+=_ckRow\('Pickup checklist',_ci\.checks,_F\.ci\); _rr\+=_ckRow\('Return checklist',_co\.checks,_F\.co\);/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: the chargeback EVIDENCE report now reproduces the ticked pickup + return checklist items');
+  ok(/defs\.forEach\(function\(it\)\{ if\(_flowCkReq\(it\)\) reqS\[_flowCkT\(it\)\]=1; \}\);/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: the evidence checklist rows flag which items were REQUIRED');
+  ok(/L\.push\('Identity verification\. Before hand-over, the cardholder completed identity verification through Stripe Identity/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: the rebuttal COVER LETTER cites Stripe Identity verification (the strong "not me" rebuttal) when it is a REAL document check');
+  ok(/else if\(b\.idVerified\)\{ L\.push\('Identity\. Our staff confirmed the renter/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: a MANUAL "mark verified" is stated modestly in the letter -- never dressed up as a Stripe-grade check (fraud/misrepresentation safe)');
+  ok(/if\(_ciN\+_coN>0\)\{ L\.push\('Condition and hand-over\. We completed and time-stamped a documented inspection checklist'/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: the cover letter cites the documented inspection checklist when items were ticked');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
