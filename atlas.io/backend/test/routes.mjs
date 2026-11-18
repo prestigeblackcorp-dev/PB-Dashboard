@@ -5945,6 +5945,8 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(_coinbasePaidCents({ payments: [{ status: 'CONFIRMED', value: { local: { amount: '20.00' } } }, { status: 'COMPLETED', value: { local: { amount: '29.99' } } }] }) === 4999, 'PA1: multiple confirmed/completed legs sum');
   ok(_coinbasePaidCents({ payments: [{ status: 'PENDING', value: { local: { amount: '49.99' } } }] }) === 0, 'PA1: a PENDING leg is NOT money in hand -> 0 (caller then proceeds, trusting the charge type)');
   ok(_coinbasePaidCents({}) === 0 && _coinbasePaidCents(null) === 0, 'PA1: null/empty-safe -> 0');
+  ok(_coinbasePaidCents({ payments: [{ status: '', value: { local: { amount: '49.99' } } }] }) === 0, 'AUDIT-WAVE97 (money): a MISSING/EMPTY-status leg is NOT money in hand -> 0 (was summed because the old "st && ..." guard short-circuited on st==="", counting unconfirmed money against the fn contract)');
+  ok(_coinbasePaidCents({ payments: [{ status: 'CONFIRMED', value: { local: { amount: '10.00' } } }, { status: '', value: { local: { amount: '40.00' } } }] }) === 1000, 'AUDIT-WAVE97 (money): a confirmed leg still counts while an empty-status leg alongside it does NOT (mixed case)');
   ok(3000 < Math.floor(4999 * 0.98) && !(4900 < Math.floor(4999 * 0.98)), 'PA1: $30 of $49.99 is underpaid; $49.00 is within the 2% fx tolerance');
   // --- D3: an unparseable/zero registrar price can never collapse the floor to $1 (both the quote and the checkout re-quote) ---
   ok(/if \(!\(Number\(_s\.costCents\) > 0\)\) return err\(502,/.test(_WORKER_SRC), 'D3: domain checkout refuses to price when the registrar cost is unparseable (<=0) -- no $1 registration of a real-cost name');
@@ -6795,7 +6797,7 @@ ok(/'admin\.ticket\.assign', \{ id: id, to: _toId, notified: _notified, notify_r
 // ==== WAVE-RBAC1: granular per-staff capability model (caps.mjs) layered over the role gate -- default-deny, curated-delegable only ====
 ok(/import \{[^}]*_staffCan[^}]*\} from '\.\/caps\.mjs';/.test(_WORKER_SRC), 'RBAC1: worker imports the pure capability model from caps.mjs (the same module test/staff_caps.mjs simulates)');
 ok(/ALTER TABLE admin_staff ADD COLUMN caps TEXT/.test(_WORKER_SRC), 'RBAC1: admin_staff gains a caps column (NULL = role preset -> back-compat)');
-ok(/SELECT id,email,role,active,revoked_at,caps FROM admin_staff WHERE token_hash=\?/.test(_WORKER_SRC), 'RBAC1: _adminIdentity selects caps so the gate can resolve them');
+ok(/SELECT id,email,role,active,revoked_at,caps,last_seen_at,expires_at FROM admin_staff WHERE token_hash=\?/.test(_WORKER_SRC), 'RBAC1 + AUDIT-WAVE97: _adminIdentity selects caps (role gate) + last_seen_at/expires_at (TTL check)');
 ok(/_parseCaps\(_scaps\) !== null/.test(_WORKER_SRC) && /const _eff = _effectiveStaffCaps\(_role, _scaps\);/.test(_WORKER_SRC) && /if \(!_staffCan\(_eff, method, path\)\)/.test(_WORKER_SRC), 'RBAC1: an EXPLICITLY-configured staffer is gated by _staffCan (default-deny); a capless staffer falls through to the UNCHANGED role gate');
 ok(/path === '\/api\/admin\/staff\/caps' && method === 'POST'/.test(_WORKER_SRC), "RBAC1: owner endpoint POST /api/admin/staff/caps sets a staffer's capabilities (owner-only -- /staff is OWNER_ONLY)");
 ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC), 'RBAC1: GET /staff ships the full capability taxonomy (+ owner-only list) for the owner-panel checklist');
@@ -7041,6 +7043,20 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/L\.push\('Identity verification\. Before hand-over, the cardholder completed identity verification through Stripe Identity/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: the rebuttal COVER LETTER cites Stripe Identity verification (the strong "not me" rebuttal) when it is a REAL document check');
   ok(/else if\(b\.idVerified\)\{ L\.push\('Identity\. Our staff confirmed the renter/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: a MANUAL "mark verified" is stated modestly in the letter -- never dressed up as a Stripe-grade check (fraud/misrepresentation safe)');
   ok(/if\(_ciN\+_coN>0\)\{ L\.push\('Condition and hand-over\. We completed and time-stamped a documented inspection checklist'/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: the cover letter cites the documented inspection checklist when items were ticked');
+
+  // ===== AUDIT-WAVE97 (worker): full-audit fixes -- Coinbase leg contract, staff-token TTL, portal /data DoS cap, sanctioned un-void route =====
+  ok(!/if \(st && st !== 'CONFIRMED'/.test(_WORKER_SRC) && /if \(st !== 'CONFIRMED' && st !== 'COMPLETED'\) continue;/.test(_WORKER_SRC), 'AUDIT-WAVE97 (money): _coinbasePaidCents drops the "st &&" short-circuit so an EMPTY-status leg is treated as UNPAID (CONFIRMED/COMPLETED only), matching the fn contract + not weakening the underpayment block');
+  ok(/ALTER TABLE admin_staff ADD COLUMN expires_at INTEGER/.test(_WORKER_SRC), 'AUDIT-WAVE97 (auth TTL): admin_staff gains an expires_at column');
+  ok(/SELECT id,email,role,active,revoked_at,caps,last_seen_at,expires_at FROM admin_staff WHERE token_hash=\?/.test(_WORKER_SRC), 'AUDIT-WAVE97 (auth TTL): the staff-token resolver reads last_seen_at + expires_at for the TTL check');
+  ok(/row\.expires_at && _nowT > Number\(row\.expires_at\)/.test(_WORKER_SRC) && /row\.last_seen_at && \(_nowT - Number\(row\.last_seen_at\)\) > 2592000000/.test(_WORKER_SRC), 'AUDIT-WAVE97 (auth TTL): _adminIdentity rejects a staff token past its absolute expiry OR idle > 30 days (tenant sessions already enforce idle+max-age; staff enforced neither)');
+  ok(/INSERT INTO admin_staff \(id,email,name,role,token_hash,token_prefix,active,created_by,created_at,expires_at\)/.test(_WORKER_SRC), 'AUDIT-WAVE97 (auth TTL): minting a staff token stamps expires_at (default 90d, settable 1-365)');
+  ok(/UPDATE admin_staff SET token_hash=\?, token_prefix=\?, active=1, revoked_at=NULL, expires_at=\?, last_seen_at=NULL WHERE id=\?/.test(_WORKER_SRC), 'AUDIT-WAVE97 (auth TTL): rotating a staff token resets expires_at + clears last_seen_at (fresh credential)');
+  ok(/rateLimit\(env, 'pdata:' \+ token, 120, 60000\)/.test(_WORKER_SRC), 'AUDIT-WAVE97 (DoS): the portal /data GET is rate-limited (120/min/token) like every other portal action -> no unthrottled 6-8-D1-read + 2-AES-decrypt flood');
+  ok(/path === '\/api\/booking\/unvoid' && method === 'POST'/.test(_WORKER_SRC), 'AUDIT-WAVE97 (data-integrity): a dedicated server /api/booking/unvoid route exists (the sanctioned revive path, replacing the silently-reverted generic-mirror push)');
+  ok(/_can\(_uvctx, 'bookEdit'\)/.test(_WORKER_SRC), 'AUDIT-WAVE97: un-void requires the bookEdit capability (not the viewer read-only floor)');
+  ok(/if \(String\(_uvrow\.status \|\| ''\)\.toLowerCase\(\) !== 'voided'\) return err\(409/.test(_WORKER_SRC), 'AUDIT-WAVE97: un-void only acts on a currently-voided booking');
+  ok(/await _confirmSlotFull\(env, _uvctx\.tenant_id, _uvid, _uvd, _uvs, _uve\)\) return err\(409/.test(_WORKER_SRC), 'AUDIT-WAVE97: un-void re-checks slot availability server-side before reviving (no silent double-book)');
+  ok(/UPDATE bookings SET status=\? WHERE id=\? AND tenant_id=\? AND LOWER\(status\)='voided'/.test(_WORKER_SRC), 'AUDIT-WAVE97: un-void lifts the scalar status COLUMN (availability / public /book / reports read it), not just the blob -> client + server agree');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
