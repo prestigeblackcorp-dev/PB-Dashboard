@@ -5731,7 +5731,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
 {
   const _ATLAS_SRC13L = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
   const _INDEX_SRC13L = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-  ok(/var _cr=Number\(capRate\)\|\|0, _rm=\(S\.money&&S\.money\.rateModel\)\|\|'day', _ch=\(_rm==='week'\?168:_rm==='month'\?720:24\)/.test(_ATLAS_SRC13L), 'G12: the hourly late fee caps at one extra PERIOD for day/week/month (period length derived from the rate model) -- week/month were uncapped before');
+  ok(/var _cr=Number\(capRate\)\|\|0, _rm=rm\|\|\(\(S\.money&&S\.money\.rateModel\)\|\|'day'\), _ch=\(_rm==='week'\?168:_rm==='month'\?720:24\)/.test(_ATLAS_SRC13L), 'G12 + AUDIT-WAVE97: the hourly late fee caps at one extra PERIOD whose length comes from the BOOKING\'s own rate model (threaded as rm), falling back to the tenant global -- week/month were uncapped before, and the tenant global could mis-price the cap after a model switch');
   ok((_ATLAS_SRC13L.match(/==='hour'\)\?0:_bkPeriodRate\(b\)/g) || []).length === 2, 'G12: BOTH the standalone late-fee tool and the close-out wizard pass the booking period rate as the cap (0 only for the hour model, which stays purely hourly)');
   ok(_ATLAS_SRC13L === _INDEX_SRC13L, 'G12: atlas.html and index.html remain byte-identical');
 }
@@ -7041,7 +7041,7 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/var _ckRow=function\(lbl,happened,ticked,defs\)\{[\s\S]{0,140}?if\(!happened\|\|\(!ticked\.length&&!defs\.length\)\) return '';/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY fix: a checklist row renders ONLY when that phase actually happened (gated on b.checkIn / b.closeOut) -- never a spurious "recorded, none ticked" on a booking that was never checked in/out (chargeback-doc accuracy)');
   ok(/defs\.forEach\(function\(it\)\{ if\(_flowCkReq\(it\)\) reqS\[_flowCkT\(it\)\]=1; \}\);/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: the evidence checklist rows flag which items were REQUIRED');
   ok(/L\.push\('Identity verification\. Before hand-over, the cardholder completed identity verification through Stripe Identity/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: the rebuttal COVER LETTER cites Stripe Identity verification (the strong "not me" rebuttal) when it is a REAL document check');
-  ok(/else if\(b\.idVerified\)\{ L\.push\('Identity\. Our staff confirmed the renter/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: a MANUAL "mark verified" is stated modestly in the letter -- never dressed up as a Stripe-grade check (fraud/misrepresentation safe)');
+  ok(/else if\(_rbM==='manual'\)\{ L\.push\('Identity\. Our staff confirmed the renter/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY + AUDIT-WAVE97: a MANUAL "mark verified" is stated modestly in the letter -- never dressed up as a Stripe-grade check (fraud/misrepresentation safe)');
   ok(/if\(_ciN\+_coN>0\)\{ L\.push\('Condition and hand-over\. We completed and time-stamped a documented inspection checklist'/.test(_ATLAS_SRC), 'WAVE-IDV-NOTIFY: the cover letter cites the documented inspection checklist when items were ticked');
 
   // ===== AUDIT-WAVE97 (worker): full-audit fixes -- Coinbase leg contract, staff-token TTL, portal /data DoS cap, sanctioned un-void route =====
@@ -7057,6 +7057,35 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/if \(String\(_uvrow\.status \|\| ''\)\.toLowerCase\(\) !== 'voided'\) return err\(409/.test(_WORKER_SRC), 'AUDIT-WAVE97: un-void only acts on a currently-voided booking');
   ok(/await _confirmSlotFull\(env, _uvctx\.tenant_id, _uvid, _uvd, _uvs, _uve\)\) return err\(409/.test(_WORKER_SRC), 'AUDIT-WAVE97: un-void re-checks slot availability server-side before reviving (no silent double-book)');
   ok(/UPDATE bookings SET status=\? WHERE id=\? AND tenant_id=\? AND LOWER\(status\)='voided'/.test(_WORKER_SRC), 'AUDIT-WAVE97: un-void lifts the scalar status COLUMN (availability / public /book / reports read it), not just the blob -> client + server agree');
+}
+
+// ===== AUDIT-WAVE97 (client): IDV letter/evidence truthfulness, late-fee booking-model cap, overage genuine-zero, security clamp, sanctioned un-void wiring =====
+{
+  const _ATLAS_SRCW97 = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCW97 = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  // IDV verify row (void legal report + chargeback evidence): 4 honest buckets -- never claim a Stripe document check on an empty or carried method
+  ok(/if\(b\.idVerifiedCarriedAt\) return 'Returning customer &middot; identity previously verified via Stripe Identity on '/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (IDV): a CARRIED verification renders as a returning-customer record, not a this-booking Stripe document check');
+  ok(/return 'Verified '\+when\(b\.idVerifiedAt\)\+' &middot; Stripe Identity \(government-ID document \+ selfie liveness\)'/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (IDV): only a REAL stripe_identity method claims a document + liveness check');
+  ok(/return 'Verified '\+when\(b\.idVerifiedAt\)\+' &middot; method not recorded'/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (IDV): an empty/unknown method says "method not recorded", never a fabricated Stripe claim');
+  // rebuttal cover letter: carried + neutral buckets added alongside the preserved stripe (7043) + manual (7044) branches
+  ok(/if\(b\.idVerifiedCarriedAt\)\{ L\.push\('Identity\. This renter is a returning customer whose identity was verified through Stripe Identity/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (IDV letter): a carried verification is stated as a returning-customer record, not "completed before this hand-over"');
+  ok(/identity was verified and recorded on the booking\.'\); L\.push\(''\); \}/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (IDV letter): an empty/unknown method falls back to a neutral true statement, never a fabricated Stripe document+liveness claim');
+  // IDV checklist denominator: X of N uses max(defined, ticked) so it never reads "3 of 2"
+  ok(/var tot=Math\.max\(defs\.length, ticked\.length\);/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (IDV evidence): the checklist completion denominator is max(defined, ticked), never fewer than the ticked count');
+  // late fee: the booking's OWN rate model threads into _lateFee as the cap period
+  ok(/function _lateFee\(schedMs, actualMs, graceHrs, hourlyRate, capRate, rm\)\{/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (late fee): _lateFee takes the booking rate model (rm) so the cap period matches the booking, not the tenant global');
+  ok(/data-rm="'\+esc\(rmU\)\+'"/.test(_ATLAS_SRCW97) && /rmU=cfg\.getAttribute\('data-rm'\)\|\|''/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (late fee): the close-out wizard carries the booking rate model through data-rm into the shared compute');
+  ok((_ATLAS_SRCW97.match(/var rmU=_bkUnitRm\(b\)/g) || []).length >= 2, 'AUDIT-WAVE97 (late fee): both the standalone late-fee tool and the close-out derive rmU from the booking (_bkUnitRm), not the tenant global');
+  // overage: a GENUINE zero pickup reading still meters (was blocked by out>0)
+  ok(/var _outGiven=\(String\(_outRaw\)\.trim\(\)!==''&&isFinite\(parseFloat\(_outRaw\)\)\);/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (overage): _outGiven distinguishes a blank field from a genuine 0 baseline');
+  ok(/var over=\(allow>0&&ov>0&&_outGiven&&inn>=out\)\?/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (overage): metering gates on _outGiven (field filled), not out>0 -- a real 0 odometer/hours baseline still bills');
+  ok(/c\.hasOv&&!c\.outGiven&&c\.innReading>0/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (overage): the "no out reading" hint keys off !outGiven, so a genuine 0 reads as metered');
+  // security hold: clamp the percent at the compute site too (byte-aligned to worker securityFor)
+  ok(/holdAmt=\(h\.type==='percent'\)\? total\*Math\.min\(100,Math\.max\(0,h\.value\|\|0\)\)\/100/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (security): the percent security hold is clamped to [0,100] at the quote compute site, aligned to worker securityFor');
+  // un-void: the button calls the sanctioned server route and applies local state only on success
+  ok(/_api\('\/api\/booking\/unvoid',\{method:'POST',body:\{id:id\}\}\)/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (un-void): the client Un-void button calls the dedicated server route, not the silently-reverted generic mirror');
+  ok(/if\(j\.ok\)\{ _uvApply\(j\.status\); \}/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (un-void): local state is applied only AFTER the server confirms the revive (no optimistic double-book)');
+  ok(_ATLAS_SRCW97 === _INDEX_SRCW97, 'AUDIT-WAVE97: atlas.html and index.html remain byte-identical');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
