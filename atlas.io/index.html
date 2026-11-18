@@ -2533,8 +2533,10 @@ const Atlas = (function(){
   function _fbSel(key){ _fbPending=key||''; try{ Array.prototype.forEach.call(document.querySelectorAll('.fbpick'),function(el){ var on=el.getAttribute('data-fbkey')===key; el.style.borderColor=on?'rgba(201,169,98,.9)':'rgba(201,169,98,.25)'; el.style.boxShadow=on?'0 0 0 1px rgba(201,169,98,.6)':'none'; }); }catch(e){} var c=document.getElementById('fbpickConfirm'); if(!c) return; if(!key||!_FB_META[key]){ c.innerHTML=''; return; } c.innerHTML='<button class="btn btn--primary" style="width:100%" onclick="Atlas._fbCommit()">Make '+esc(_FB_META[key].name)+' my mark &mdash; permanently</button>'; }
   function _fbCommit(){ var key=_fbPending; if(!key||!_FB_META[key]) return; var cb=document.querySelector('#fbpickConfirm .btn'); if(cb){ cb.disabled=true; cb.textContent='Saving...'; } _api('/api/founder/badge',{method:'POST',body:{badge:key}}).then(function(res){ var j=res&&res.json; if(res.status>=200&&res.status<300&&j&&j.ok){ _founderInfo.badge=j.badge||key; try{ if(typeof S!=='undefined'&&S){ S.founderBadge=j.badge||key; save(); } }catch(e){} try{ closeModal(); }catch(e){} try{ toast('Your founder badge is set: '+((_FB_META[j.badge||key]||{}).name||'')); }catch(e){} try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } else { if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast((j&&j.error)||'Could not save your badge.'); }catch(e){} } }).catch(function(){ if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast('Network error -- try again.'); }catch(e){} }); }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.17ke';
+  var APP_VERSION='2026.11.17kf';
   var APP_CHANGELOG=[
+    'Set up Stripe with confidence: connecting Stripe now has its own guided screen with a <b>Test connection</b> button that checks your keys against Stripe live &mdash; so you know for sure your account is accepting your key and that charges are enabled <i>before</i> you take a real booking (a mistyped or test key used to save quietly and only fail at charge time). Your Payments screen shows a &ldquo;Verified&rdquo; badge once it passes, or tells you exactly what to finish.',
+    'A real check-in &amp; return flow: in Settings &rarr; Bookings you can now mark any pickup or return checklist item as <b>Required</b> &mdash; your team then cannot complete the hand-over or the close-out until those boxes are ticked, so the must-do steps actually get done and are time-stamped on the booking as your record.',
     'Accounting accuracy pass: your Profit &amp; Loss views (summary, 12-month trend and by-type) now always foot to your Net Profit even when a cancelled booking kept a non-refundable, taxable charge, and the sales tax shown on a part-paid rental that also collected a paid add-on is now figured on the rental portion alone. Founding Members: your 50%-off-for-life credit is now itemized on your receipt when you re-subscribe after cancelling or change plans, and it is no longer mis-shown on a mid-cycle plan-change (proration) charge &mdash; those now print as a clean single line.',
     'Clearer Analytics labels: your Net Profit tile now spells out what it is net of (owner/broker payouts, booking costs and sales tax owed), so it reads right even when your logged Expenses are $0; and the Forecast panel&rsquo;s count of not-yet-started bookings no longer reuses the word &ldquo;Upcoming&rdquo; &mdash; the Overview already uses that for your Confirmed/Pending pipeline, so two different numbers no longer look like they disagree.',
     'Rent by the hour, day, week AND month on the same item: set a price for each duration you offer (Settings &rarr; Money), and your booking site shows a clean Hourly / Daily / Weekly / Monthly toggle so each customer picks how long they want and watches the exact price update live. The duration they pick is the price they pay &mdash; your weekly rate is your weekly deal, with nothing re-added at checkout. Extending one of these bookings now adds time in that same unit: extend a weekly booking and it moves the return date by the week and bills your weekly rate, not a day. And when you take a booking yourself from the dashboard, the booking form shows the same Hourly / Daily / Weekly / Monthly picker for a multi-rate item &mdash; so an owner-created booking is reserved and charged at the exact duration you choose, not your default one.',
@@ -4959,6 +4961,61 @@ const Atlas = (function(){
       +'<button class="btn btn--primary btn--full" onclick="Atlas.connectSquare()">'+(conn?'Update Square':'Connect Square')+'</button>'
       +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">'+(conn?('Currently connected'+(_sqState.sandbox?' in sandbox (test) mode.':' \u2014 taking live Square payments.')):'\u{1F512} Your Access token is encrypted at rest and never stored in the browser. Disconnect anytime.')+'</p>'
       +'</div>');
+  }
+
+  // ---- Stripe (BYO per-tenant): the tenant pastes their OWN Stripe keys and Atlas charges renters directly with them. The connect
+  // SAVE path stays doConnect (shared, battle-tested: pk rides in meta, the raw sk_ is the encrypted secret, MFA step-up, optimistic
+  // undo). WAVE-STRIPE-VERIFY adds the missing proof: a dedicated guided modal (matching PayPal/Square) + a real VERIFY -- a read-only
+  // /api/integrations/stripe/status?verify=1 that calls the tenant's Stripe account so the owner KNOWS the key works and charges are
+  // enabled before taking a real booking (a typo'd/revoked/test key used to save as "Connected" and fail silently at charge time). The
+  // same honest "it works" experience the HQ platform self-test gives. _stripeState is a display cache; the server is authoritative.
+  var _stripeState={loaded:false,connected:false,mode:'',pkHint:'',verified:null,charges:null,live_ready:false,note:'',acctName:''};
+  function _stripeConnected(){ return !!(S.integrations&&S.integrations.stripe); }
+  function _stripeStatusLoad(verify,toastOnDone){
+    if(!(ATLAS_BACKEND && _apiCsrf)) return;
+    _api('/api/integrations/stripe/status'+(verify?'?verify=1':''),{method:'GET'}).then(function(res){
+      var j=(res&&res.json)||{}; if(!j.ok) return;
+      var was=_stripeState.connected;
+      _stripeState.loaded=true; _stripeState.connected=!!j.connected; if(j.mode)_stripeState.mode=j.mode; if(j.pkHint)_stripeState.pkHint=j.pkHint;
+      if(verify){ _stripeState.verified=(j.verified===true)?true:(j.verified===false?false:null); _stripeState.charges=(j.charges_enabled===true); _stripeState.live_ready=!!j.live_ready; _stripeState.note=(j.notes&&j.notes[0])||''; _stripeState.acctName=j.acctName||''; }
+      try{ var _sm=document.getElementById('stripeStat'); if(_sm) _sm.innerHTML=_stripeStatHtml(); }catch(e){}
+      try{ if((was!==_stripeState.connected||verify) && document.querySelector('.panel[data-panel="settings"]') && document.querySelector('.panel[data-panel="settings"]').classList.contains('active')) renderSet(); }catch(e){}
+      if(toastOnDone && verify && _stripeState.note){ try{ toast(_stripeState.note); }catch(e){} }
+    }).catch(function(){});
+  }
+  function _stripeStatHtml(){ var s=_stripeState;
+    if(s.verified===true && s.live_ready) return '<div class="bk-lenhint" style="margin:0;border-color:var(--ok,#12813f)"><b style="color:var(--ok,#12813f)">\u2713 Verified \u2014 live and ready to charge renters.</b>'+(s.acctName?(' <span style="color:var(--muted)">'+esc(s.acctName)+'</span>'):'')+'</div>';
+    if(s.verified===true && s.mode==='test') return '<div class="bk-lenhint" style="margin:0;border-color:#c9a227"><b>Test key connected.</b> '+esc(s.note||'Connect your live sk_live_ key to take real payments.')+'</div>';
+    if(s.verified===true && s.charges===false) return '<div class="bk-lenhint" style="margin:0;border-color:#c9a227"><b>Almost there.</b> '+esc(s.note||'Charges are not enabled yet \u2014 finish Stripe onboarding.')+'</div>';
+    if(s.verified===false) return '<div class="bk-lenhint" style="margin:0;border-color:var(--danger)"><b style="color:var(--danger)">Stripe rejected the key.</b> '+esc(s.note||'Re-check your Secret key and reconnect.')+'</div>';
+    if(s.connected) return '<div class="bk-lenhint" style="margin:0">Key saved. Tap <b>Test connection</b> to confirm Stripe accepts it and charges are enabled.</div>';
+    return '';
+  }
+  function _stripeChipHtml(){ var s=_stripeState; if(!s||!s.loaded||!s.connected||s.verified===null) return '';
+    if(s.verified===true && s.live_ready) return ' <span class="chip chip--ok" style="font-size:10px" title="Verified: Stripe accepts your key and charges are enabled">Verified</span>';
+    if(s.verified===true && s.mode==='test') return ' <span class="chip chip--muted" style="font-size:10px" title="A test key takes no real money">Test key</span>';
+    if(s.verified===true && s.charges===false) return ' <span class="chip chip--warn" style="font-size:10px" title="Finish Stripe onboarding to enable charges">Finish setup</span>';
+    if(s.verified===false) return ' <span class="chip chip--danger" style="font-size:10px" title="Stripe rejected the key \u2014 reconnect">Key rejected</span>';
+    return ''; }
+  function _stripeTest(){ var el=document.getElementById('stripeStat'); if(el) el.innerHTML='<div class="bk-lenhint" style="margin:0">Testing your Stripe connection\u2026</div>'; _stripeStatusLoad(true); }
+  function _modalStripe(){
+    var conn=_stripeConnected();
+    var skPh=conn?'Connected \u2014 paste to replace':'sk_live_...';
+    var pkPh=(conn&&_stripeState.pkHint)?('Connected '+esc(_stripeState.pkHint)+' \u2014 paste to replace'):'pk_live_...';
+    openModal('<div class="modal__head"><h3>Connect Stripe</h3>'+_xBtn()+'</div>'
+      +'<div class="modal__body">'
+      +'<ol class="step-list"><li>Create or sign in to <b>Stripe</b> at <code>stripe.com</code>.</li><li>Open <b>Developers &rarr; API keys</b>.</li><li>Copy your <b>Publishable key</b> (pk_live_&hellip;) and <b>Secret key</b> (sk_live_&hellip;).</li><li>Paste them in and Connect. Your secret is sent encrypted to your backend and never stored in this browser &mdash; then tap <b>Test connection</b> to confirm it works.</li></ol>'
+      +'<a class="btn btn--ghost btn--sm" href="https://dashboard.stripe.com/apikeys" target="_blank" rel="noopener" style="margin:0 0 12px;text-decoration:none">Open Stripe to get your keys &#8599;</a>'
+      +_helpGuideLink('stripe','Stripe')
+      +'<div class="field"><label>Publishable key</label><input class="input mono" id="connKey0" autocomplete="off" placeholder="'+pkPh+'"></div>'
+      +'<div class="field"><label>Secret key</label><input class="input mono" id="connKey1" type="password" autocomplete="off" placeholder="'+skPh+'"></div>'
+      +'<div id="stripeStat" style="margin:2px 0 10px">'+_stripeStatHtml()+'</div>'
+      +'<button class="btn btn--primary btn--full" onclick="Atlas.doConnect(\'stripe\',\'Stripe\')">'+(conn?'Update Stripe':'Connect Stripe')+'</button>'
+      +(conn?'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px" onclick="Atlas._stripeTest()">Test connection</button>':'')
+      +(conn?'<button class="btn btn--ghost btn--full btn--sm" style="margin-top:8px;color:var(--danger)" onclick="Atlas.disconnectIntegration(\'stripe\',\'Stripe\')">Disconnect Stripe</button>':'')
+      +'<p style="font-size:12px;color:var(--muted);text-align:center;margin-top:10px">\u{1F512} Your secret key is encrypted on your backend &mdash; never kept in the browser. Disconnect anytime.</p>'
+      +'</div>');
+    if(conn) _stripeStatusLoad(true);   // auto-verify when opening an already-connected account so the owner sees live truth
   }
 
   /* ---- Crypto (Coinbase Commerce, BYO per-tenant): renters pay bookings in crypto as an ADDITIVE rail alongside the card processor ---- */
@@ -8106,8 +8163,14 @@ const Atlas = (function(){
     return '<div class="field"><label>'+esc(f.label||'Field')+unit+req+'</label>'+inp+ref+'</div>'; }).join(''); }
   function _flowFieldsRead(flds,pfx){ var out={},missing=[]; (flds||[]).forEach(function(f){ var e=document.getElementById(pfx+f.id); if(!e) return; var v=(f.type==='check')?!!e.checked:String(e.value||'').trim(); if(f.req && (v===''||v===false)) missing.push(f.label||f.id); out[f.id]=v; }); return {vals:out,missing:missing}; }
   function _flowFieldLabel(F,fid){ var fs=(F&&Array.isArray(F.fields))?F.fields:[]; for(var i=0;i<fs.length;i++){ if(fs[i]&&fs[i].id===fid) return fs[i].label||fid; } return fid; }
-  function _flowChecks(list,pfx){ return (list||[]).map(function(t,i){ return '<label style="display:flex;align-items:center;gap:9px;padding:5px 0;font-size:13px;color:var(--ink)"><input type="checkbox" id="'+pfx+i+'">'+esc(t)+'</label>'; }).join(''); }
-  function _flowTicked(list,pfx){ var out=[]; (list||[]).forEach(function(t,i){ var e=document.getElementById(pfx+i); if(e&&e.checked) out.push(t); }); return out; }
+  // WAVE-FLOWREQ: a checklist item is EITHER a plain string (optional, as it has always been) OR {t:label, req:true} -- an item the
+  // team MUST tick before the hand-over / return can be completed. Presets stay string arrays (all optional -> behavior-preserving);
+  // an owner marks specific items Required in Settings. These two readers normalize either form, so old saved configs keep working.
+  function _flowCkT(it){ return (typeof it==='string')?it:((it&&it.t)||''); }   // the label of a checklist item
+  function _flowCkReq(it){ return !!(it&&typeof it==='object'&&it.req); }   // is this item REQUIRED (must be ticked to complete)?
+  function _flowChecks(list,pfx){ return (list||[]).map(function(it,i){ var t=_flowCkT(it), rq=_flowCkReq(it); return '<label style="display:flex;align-items:center;gap:9px;padding:5px 0;font-size:13px;color:var(--ink)"><input type="checkbox" id="'+pfx+i+'"'+(rq?' data-req="1"':'')+'>'+esc(t)+(rq?' <span style="color:var(--danger)" title="Required before you can complete this">*</span>':'')+'</label>'; }).join(''); }
+  function _flowTicked(list,pfx){ var out=[]; (list||[]).forEach(function(it,i){ var e=document.getElementById(pfx+i); if(e&&e.checked) out.push(_flowCkT(it)); }); return out; }
+  function _flowChecksMissing(list,pfx){ var miss=[]; (list||[]).forEach(function(it,i){ if(!_flowCkReq(it)) return; var e=document.getElementById(pfx+i); if(!(e&&e.checked)) miss.push(_flowCkT(it)||('item '+(i+1))); }); return miss; }   // required items not yet ticked
   // ---- WAVE-FLOWCFG Settings editor: the owner tailors the check-in / return flow per business type. The FULL effective
   // config is written into S.flowCfg[typeId] (an ordinary top-level profile key -> persists to localStorage + syncs server-side
   // with per-key newest-wins, for free, exactly like money/legal settings). Seeded from the preset on first edit so turning
@@ -8118,7 +8181,7 @@ const Atlas = (function(){
   function _flowCurType(){ var ts=_flowTypesInUse(); if(!_flowEditType||ts.indexOf(_flowEditType)<0) _flowEditType=ts[0]; return _flowEditType; }
   function flowPickType(id){ if(!_FLOW[id]) return; _flowEditType=id; renderSet(); }
   function _flowTypePickerHtml(){ var ts=_flowTypesInUse(); if(ts.length<2) return ''; var cur=_flowCurType(); return '<div class="set-tabs" style="margin:0 0 14px">'+ts.map(function(id){ var t=_typeById(id)||{}; return '<button class="set-tab'+(id===cur?' active':'')+'" onclick="Atlas.flowPickType(\''+id+'\')">'+esc(t.label||id)+'</button>'; }).join('')+'</div>'; }
-  function _flowChecklistEditHtml(id,phase,list){ var rows=(list||[]).map(function(t,i){ return '<div style="display:flex;gap:8px;margin-bottom:6px"><input class="input" style="flex:1" value="'+esc(t)+'" maxlength="80" oninput="Atlas.flowSetCheck(\''+id+'\',\''+phase+'\','+i+',this.value)"><button class="ex-rm" title="Remove" onclick="Atlas.flowRemoveCheck(\''+id+'\',\''+phase+'\','+i+')"><svg viewBox="0 0 16 16" fill="none" style="width:15px;height:15px"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>'; }).join(''); return rows+'<button class="btn btn--ghost btn--sm" onclick="Atlas.flowAddCheck(\''+id+'\',\''+phase+'\')">+ Add item</button>'; }
+  function _flowChecklistEditHtml(id,phase,list){ var rows=(list||[]).map(function(it,i){ var t=_flowCkT(it), rq=_flowCkReq(it); return '<div style="display:flex;gap:8px;margin-bottom:6px;align-items:center;flex-wrap:wrap"><input class="input" style="flex:1;min-width:140px" value="'+esc(t)+'" maxlength="80" oninput="Atlas.flowSetCheck(\''+id+'\',\''+phase+'\','+i+',this.value)"><label class="cfg-check" style="margin:0;white-space:nowrap" title="The team must tick this before they can complete the hand-over / return"><input type="checkbox"'+(rq?' checked':'')+' onchange="Atlas.flowSetCheckReq(\''+id+'\',\''+phase+'\','+i+',this.checked)">Required</label><button class="ex-rm" title="Remove" onclick="Atlas.flowRemoveCheck(\''+id+'\',\''+phase+'\','+i+')"><svg viewBox="0 0 16 16" fill="none" style="width:15px;height:15px"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div>'; }).join(''); return rows+'<button class="btn btn--ghost btn--sm" onclick="Atlas.flowAddCheck(\''+id+'\',\''+phase+'\')">+ Add item</button>'; }
   function _flowFieldsEditHtml(id,fields){ var typeOpt=function(cur){ return [['text','Text'],['number','Number'],['select','Dropdown'],['check','Checkbox']].map(function(o){ return '<option value="'+o[0]+'"'+(cur===o[0]?' selected':'')+'>'+o[1]+'</option>'; }).join(''); }; var phaseOpt=function(cur){ return [['both','Pickup + return'],['pickup','Pickup only'],['return','Return only']].map(function(o){ return '<option value="'+o[0]+'"'+(((cur||'both')===o[0])?' selected':'')+'>'+o[1]+'</option>'; }).join(''); };
     var rows=(fields||[]).map(function(f){ var fid=f.id;
       var unitLine=(f.type==='number')?('<input class="input" style="width:90px" value="'+esc(f.unit||'')+'" maxlength="16" placeholder="unit" oninput="Atlas.flowSetFieldProp(\''+id+'\',\''+fid+'\',\'unit\',this.value)">'):'';
@@ -8142,7 +8205,8 @@ const Atlas = (function(){
   function flowSetReading(id,v){ if(!_canMod('settings'))return; var o=_flowCfgEnsure(id); o.u=(v==='odo'||v==='hrs')?v:''; save(); renderSet(); }
   function flowSetFuel(id,v){ if(!_canMod('settings'))return; _flowCfgEnsure(id).f=v?1:0; save(); }
   function flowSetText(id,key,v){ if(!_canMod('settings'))return; var o=_flowCfgEnsure(id); v=String(v||'').slice(0,40); if(key==='readLabel') o.readLabel=v; else if(key==='unitWord') o.unitWord=v; save(); }
-  function flowSetCheck(id,phase,idx,v){ if(!_canMod('settings'))return; var o=_flowCfgEnsure(id), arr=(phase==='ci')?o.ci:o.co; if(arr&&idx>=0&&idx<arr.length){ arr[idx]=String(v||'').slice(0,80); save(); } }
+  function flowSetCheck(id,phase,idx,v){ if(!_canMod('settings'))return; var o=_flowCfgEnsure(id), arr=(phase==='ci')?o.ci:o.co; if(arr&&idx>=0&&idx<arr.length){ v=String(v||'').slice(0,80); arr[idx]=_flowCkReq(arr[idx])?{t:v,req:true}:v; save(); } }   // WAVE-FLOWREQ: preserve the Required flag when the label is edited
+  function flowSetCheckReq(id,phase,idx,v){ if(!_canMod('settings'))return; var o=_flowCfgEnsure(id), arr=(phase==='ci')?o.ci:o.co; if(arr&&idx>=0&&idx<arr.length){ var t=_flowCkT(arr[idx]); arr[idx]=v?{t:t,req:true}:t; save(); renderSet(); } }   // WAVE-FLOWREQ: mark/unmark a checklist item as must-be-ticked
   function flowAddCheck(id,phase){ if(!_canMod('settings'))return; var o=_flowCfgEnsure(id); (phase==='ci'?o.ci:o.co).push(''); save(); renderSet(); }
   function flowRemoveCheck(id,phase,idx){ if(!_canMod('settings'))return; var o=_flowCfgEnsure(id), arr=(phase==='ci')?o.ci:o.co; if(arr&&idx>=0&&idx<arr.length){ arr.splice(idx,1); save(); renderSet(); } }
   function _flowNewFid(){ return 'f'+Date.now().toString(36)+Math.random().toString(36).slice(2,5); }
@@ -8178,6 +8242,7 @@ const Atlas = (function(){
   function doCheckIn(id){ var b=_getBooking(id); if(!b)return;
     if(b.checkIn && b.checkIn.odoOut!=null && (b.status==='Returned'||b.status==='Completed'||b.status==='Voided'||b.status==='Cancelled')){ toast('The pickup baseline is locked once the '+_fterm('book')+' is returned -- it anchors the return readings, overage math and evidence. Void and re-book if it is genuinely wrong.'); return; }   // evidence integrity: the frozen pickup baseline must be write-once (immutable post-return) so overage/fuel can't be re-gamed; the Check-In button isn't shown post-return, so this is a defense-in-depth guard against any other caller
     var F=_flowFor(b), a=_bkAssetObj(b), odo=val('ciOdo'), fuel=val('ciFuel')||'', note=(val('ciNote')||'').trim();
+    var _ciMiss=_flowChecksMissing(F.ci,'ciChk'); if(_ciMiss.length){ toast('Check off before hand-over: '+_ciMiss.join(', ')); return; }   // WAVE-FLOWREQ: required checklist items must be ticked to complete the check-in
     var _cfRead=_flowFieldsRead(_flowFields(F,'pickup'),'ciCf_'); if(_cfRead.missing.length){ toast('Fill in: '+_cfRead.missing.join(', ')); return; }
     var _ciAllow=(a&&+a.usageAllow>0)?+a.usageAllow:0, _ciOv=(a&&+a.overageRate>0)?+a.overageRate:0, _ciPer=_bkPeriods(b)+_bkExtPeriods(b), _ciUnit=(a&&a.usageUnit)||_flowUnit(F);
     b.checkIn={ odoOut:(odo!==''&&odo!=null)?_r2(parseFloat(odo)||0):null, fuelOut:fuel||null, checks:_flowTicked(F.ci,'ciChk'), fields:_cfRead.vals, note:note.slice(0,300), at:Date.now(),
@@ -8235,6 +8300,7 @@ const Atlas = (function(){
       +'<button class="btn btn--primary btn--full btn--lg" onclick="Atlas.doCloseOut(\''+id+'\')">Record '+esc(back)+' &amp; bill selected</button></div>');
     setTimeout(function(){ _coCalc(); },20); }
   function doCloseOut(id){ var b=_getBooking(id); if(!b)return; var c=_coCompute(); if(!c){ closeModal(); return; } var F=_flowFor(b), applied=[];
+    var _coMiss=_flowChecksMissing(F.co,'coChk'); if(_coMiss.length){ toast('Check off before return: '+_coMiss.join(', ')); return; }   // WAVE-FLOWREQ: required checklist items must be ticked to complete the close-out
     var _cfRead=_flowFieldsRead(_flowFields(F,'return'),'coCf_'); if(_cfRead.missing.length){ toast('Fill in: '+_cfRead.missing.join(', ')); return; }
     var ck=function(rid){ var e=document.getElementById(rid); return !!(e&&e.checked); };
     var _coPaid=function(k){ return _charges(b).some(function(x){ return x.paidAt && (x.kind===k || (k==='meter'&&/^Usage:/.test(String(x.label||'')))); }); };   // cycle-10 c10[0]: never auto-re-bill a category already billed AND paid (re-opening Close out on a Returned booking) -- mirrors the standalone bkMeterBill guard
@@ -10596,7 +10662,7 @@ const Atlas = (function(){
         ${_payProvider()?(_payProvider()==='stripe'?`<div class="bk-lenhint" style="margin:0 0 12px;border-color:var(--brand);color:var(--ink)"><b>Active processor: ${esc(_payLabel())}</b> &mdash; portal payments, site checkout and charges run through it.</div>`:`<div class="bk-lenhint" style="margin:0 0 12px;border-color:var(--brand);color:var(--ink)"><b>Default checkout: ${esc(_payLabel())}.</b> Your portal and booking site take live payments through it; card-on-file charges run on Stripe.</div>`):`<div class="bk-lenhint" style="margin:0 0 12px">No processor connected yet &mdash; pick yours below. Nothing charges until you connect one.</div>`}
         ${PAY_PROVIDERS.map(p=>{ var isStripe=(p[0]==='stripe'), isPaypal=(p[0]==='paypal'), isSquare=(p[0]==='square'), conn=isPaypal?_ppConnected():(isSquare?_sqConnected():!!S.integrations[p[0]]), active=_payProvider()===p[0];
           return `<div class="conn-row">${_connBadge(p[0])}<div class="conn-row__t"><b>${p[1]}${active?(isStripe?' <span class="chip chip--brand" style="font-size:10px">Active</span>':' <span class="chip chip--muted" style="font-size:10px">Preferred</span>'):''}</b><small>${p[2]}</small></div>
-            <div class="conn-act">${conn ? (isPaypal ? `<span class="chip chip--ok"><span class="dot"></span>Connected</span>${_ppState.sandbox?` <span class="chip chip--muted" style="font-size:10px">Sandbox</span>`:``} <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('paypal','PayPal')">Manage</button>` : isSquare ? `<span class="chip chip--ok"><span class="dot"></span>Connected</span>${_sqState.sandbox?` <span class="chip chip--muted" style="font-size:10px">Sandbox</span>`:``} <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('square','Square')">Manage</button>` : `${isStripe?`<span class="chip ${PAYMENTS_LIVE?'chip--ok':'chip--muted'}"><span class="dot"></span>${PAYMENTS_LIVE?'Connected':'Saved'}</span>`:`<span class="chip chip--ok"><span class="dot"></span>Connected</span>`} ${isStripe?` <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('stripe','Stripe')">Manage</button>`:``} ${active?'':`<button class="btn btn--ghost btn--sm" onclick="Atlas.setActivePay('${p[0]}')">${isStripe?'Make active':'Set preferred'}</button>`}`) : `<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${p[0]}','${p[1]}')">Connect</button>`}</div></div>`;
+            <div class="conn-act">${conn ? (isPaypal ? `<span class="chip chip--ok"><span class="dot"></span>Connected</span>${_ppState.sandbox?` <span class="chip chip--muted" style="font-size:10px">Sandbox</span>`:``} <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('paypal','PayPal')">Manage</button>` : isSquare ? `<span class="chip chip--ok"><span class="dot"></span>Connected</span>${_sqState.sandbox?` <span class="chip chip--muted" style="font-size:10px">Sandbox</span>`:``} <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('square','Square')">Manage</button>` : `${isStripe?`<span class="chip ${PAYMENTS_LIVE?'chip--ok':'chip--muted'}"><span class="dot"></span>${PAYMENTS_LIVE?'Connected':'Saved'}</span>`:`<span class="chip chip--ok"><span class="dot"></span>Connected</span>`} ${isStripe?_stripeChipHtml():``}${isStripe?` <button class="btn btn--ghost btn--sm" onclick="Atlas.connect('stripe','Stripe')">Manage</button>`:``} ${active?'':`<button class="btn btn--ghost btn--sm" onclick="Atlas.setActivePay('${p[0]}')">${isStripe?'Make active':'Set preferred'}</button>`}`) : `<button class="btn btn--ghost btn--sm" onclick="Atlas.connect('${p[0]}','${p[1]}')">Connect</button>`}</div></div>`;
         }).join('')}
         <div class="bk-lenhint" style="margin:12px 0 0">You keep your processor and your money &mdash; Atlas routes the charge to your own account and never holds your funds.</div>
       </div>
@@ -10617,7 +10683,7 @@ const Atlas = (function(){
       </div>
       <div class="set-block"><h3>Webhooks</h3><div class="desc">Let your other tools react the moment something happens here. Atlas can ping your website, Zapier, or any app your developer builds the instant a booking is created or paid &mdash; no coding needed to set up.</div>
         <button class="btn btn--primary" onclick="Atlas.openWebhooks()">Set up webhooks</button>
-      </div>`; _qboStatusLoad(); _xeroStatusLoad(); _ppStatusLoad(); _sqStatusLoad(); _cbStatusLoad(); _idvStatusLoad(); }
+      </div>`; _qboStatusLoad(); _xeroStatusLoad(); _ppStatusLoad(); _sqStatusLoad(); _cbStatusLoad(); _stripeStatusLoad(); _idvStatusLoad(); }
     else if(setCur==='portal'){ var pc=_portalCfg(); b.innerHTML=`
       <div class="set-block"><h3>Member portal</h3><div class="desc">Your customers' branded self-service area &mdash; fully generated for you and yours to edit.</div>
         <div class="conn-row"><div class="conn-row__ic" style="background:var(--brand-100);color:var(--brand-700)">&#128279;</div><div class="conn-row__t"><b>${S.brand.subdomain}.atlasrental.io/portal</b><small>Live &middot; branded as ${esc(S.brand.name)}</small></div><button class="btn btn--primary btn--sm conn-act" onclick="Atlas.copyPortal()">Copy link</button></div>
@@ -12482,7 +12548,7 @@ const Atlas = (function(){
   function idvSetAutoSend(on){ if(!_canMod('settings'))return; if(!S.idv)S.idv={}; S.idv.autoSendOnConfirm=!!on; save(); toast(on?'Verify links will auto-send when a booking is confirmed':'Auto-send on confirm is off'); }   // WAVE34b
   function idvSetAutoCarry(on){ if(!_canMod('settings'))return; if(!S.idv)S.idv={}; S.idv.autoCarryReturning=!!on; save(); toast(on?'Returning verified customers will be remembered':'Returning-customer memory is off'); }   // WAVE34b (server reads settings.idv.autoCarryReturning for the auto-carry gate)
   const GUIDES={
-    stripe:['Create or sign in to your <b>Stripe</b> account at <code>stripe.com</code>.','In Stripe, open <b>Developers &rarr; API keys</b>.','Copy your <b>Publishable key</b> and <b>Secret key</b>.','Paste them below. At go-live your keys are sent encrypted to your backend and used for real charges &mdash; nothing is charged until then.'],
+    stripe:['Create or sign in to your <b>Stripe</b> account at <code>stripe.com</code>.','In Stripe, open <b>Developers &rarr; API keys</b>.','Copy your <b>Publishable key</b> and <b>Secret key</b>.','Paste them below. Your secret is sent encrypted to your backend and used to charge renters &mdash; then tap Test connection to confirm it works.'],
     email:['Choose your provider (Resend, SendGrid or SMTP).','Create an API key in your provider\'s dashboard.','Add a verified sender address (e.g. <code>bookings@yourco.com</code>).','Paste the API key below.','Send yourself a test confirmation email.'],
     maps:['Create a <b>Mapbox</b> or Google Maps API key.','Enable Geocoding &amp; Directions for the key.','Paste the key below to power delivery &amp; addresses.'],
     web:['Copy your Atlas booking embed snippet.','Paste it into any page on your website.','Bookings flow straight into this dashboard, branded as you.'],
@@ -12523,6 +12589,7 @@ const Atlas = (function(){
   function _helpGuideLink(id,name){ return '<a class="btn btn--ghost btn--sm" href="'+_helpGuideUrl(id)+'" target="_blank" rel="noopener" style="margin:0 0 12px;text-decoration:none">Read our '+esc(name||'setup')+' guide &#8599;</a>'; }
   function modalConnect(id,name){
     if(id==='web'){ return _modalEmbed(); }   // booking-embed connect shows a real, copyable snippet -- there is no key to paste
+    if(id==='stripe'){ return _modalStripe(); }   // Stripe has a DEDICATED guided modal (matching PayPal/Square) with a real Test connection -- the save path is still doConnect, but the owner can PROVE the key works + charges are enabled
     if(id==='paypal'){ return _modalPaypal(); }   // PayPal is REAL per-tenant: its own modal collects Client ID (meta) + Secret (transient) + a sandbox flag and truly wires payments
     if(id==='square'){ return _modalSquare(); }   // Square is REAL per-tenant: its own modal collects Location ID (meta) + Access Token (transient) + a sandbox flag and truly wires payments
     if(id==='coinbase'){ return _modalCoinbase(); }   // Crypto (Coinbase Commerce) BYO: its modal collects the API key + webhook shared secret (both encrypted) + shows the per-tenant webhook URL to paste into Coinbase
@@ -12889,11 +12956,11 @@ const Atlas = (function(){
     if(_connSecret && ATLAS_BACKEND && _apiCsrf){ var _connSend=function(proof){ var _b={provider:id,secret:_connSecret}; if(_connMeta)_b.meta=_connMeta; if(proof){ if(proof.code)_b.code=proof.code; if(proof.password)_b.password=proof.password; }
         _api('/api/integrations/connect',{method:'POST',body:_b}).then(function(res){ var j=(res&&res.json)||{};
           if(j.mfa_required){ try{ _stepUpPrompt(function(p){ _connSend(p); }); }catch(e){} return; }
-          if(!(res && res.status>=200 && res.status<300 && j.ok)){ S.integrations[id]=false; if(_setActive&&S.payments){ S.payments.provider=_prevProvider; } try{ save(); }catch(e){} try{ toast((j.error||j.reason)?('Could not connect '+esc(name)+': '+(j.error||j.reason)):('Could not connect '+esc(name)+' \u2014 please try again')); }catch(e){} try{ var _be=document.getElementById('conn-'+id); if(_be) _be.innerHTML='<span class="chip chip--muted"><span class="dot"></span>Not connected</span>'; }catch(e){} try{ if(document.querySelector('.panel[data-panel="settings"]')&&document.querySelector('.panel[data-panel="settings"]').classList.contains('active')) renderSet(); }catch(e){} }
+          if(!(res && res.status>=200 && res.status<300 && j.ok)){ S.integrations[id]=false; if(_setActive&&S.payments){ S.payments.provider=_prevProvider; } try{ save(); }catch(e){} try{ toast((j.error||j.reason)?('Could not connect '+esc(name)+': '+(j.error||j.reason)):('Could not connect '+esc(name)+' \u2014 please try again')); }catch(e){} try{ var _be=document.getElementById('conn-'+id); if(_be) _be.innerHTML='<span class="chip chip--muted"><span class="dot"></span>Not connected</span>'; }catch(e){} try{ if(document.querySelector('.panel[data-panel="settings"]')&&document.querySelector('.panel[data-panel="settings"]').classList.contains('active')) renderSet(); }catch(e){} } else if(id==='stripe'){ try{ _stripeStatusLoad(true,true); }catch(e){} }   // WAVE-STRIPE-VERIFY: on a good save, PROVE the key works (read-only Stripe account check) + toast the verdict
         }).catch(function(){}); }; _connSend(null); }
     save(); closeModal();
     var live=(PAYMENTS_LIVE && ATLAS_BACKEND), isStripe=(id==='stripe'), isPay=!!pf, connected=(isStripe?live:(id==='maps'));   // only Stripe (live) + Mapbox actually function per-tenant today; the rest are stored but not yet wired per-business
-    toast(isStripe ? (live?(name+' connected'):(name+' saved \u2014 live charging turns on at go-live')) : (id==='maps') ? (name+' connected') : isPay ? (name+' connected \u2014 now your active processor') : (name+' saved \u2014 we will use it once that connection is wired'));
+    toast(isStripe ? (live?(name+' connected \u2014 checking it works\u2026'):(name+' saved \u2014 live charging turns on at go-live')) : (id==='maps') ? (name+' connected') : isPay ? (name+' connected \u2014 now your active processor') : (name+' saved \u2014 we will use it once that connection is wired'));
     const el=document.getElementById('conn-'+id); if(el)el.innerHTML=connected?`<span class="chip chip--ok"><span class="dot"></span>Connected</span>`:`<span class="chip chip--muted"><span class="dot"></span>Saved</span>`;
     if(document.querySelector('.panel[data-panel="settings"]').classList.contains('active')) renderSet();
   }
@@ -16411,7 +16478,7 @@ const Atlas = (function(){
   }
   document.addEventListener('DOMContentLoaded',function(){ (window.__atlasStoreReady||Promise.resolve()).then(init).catch(function(){ init(); }); });   // wait for the IndexedDB big-store hydration so loaders read migrated data, not an empty localStorage
 
-  return {startTrial,demo,demoStart,demoSkip,exitDemo,_demoSeePricing,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,saveMoneyRules,setDisplayCurrency,setNotify,togglePush,setTypeRate,setTypeCfg,setCard,setCancelPolicy,setSenderAddress,connect,doConnect,disconnectIntegration,connectQuickbooks,connectXero,connectPaypal,connectSquare,connectCoinbase,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,setTaxTripCharges,syncTax,
+  return {startTrial,demo,demoStart,demoSkip,exitDemo,_demoSeePricing,next,back,brandLive,logoPick,pickColor,pickColorHex,pickFleet,toggleFleet,setMoney,saveMoneyRules,setDisplayCurrency,setNotify,togglePush,setTypeRate,setTypeCfg,setCard,setCancelPolicy,setSenderAddress,connect,doConnect,disconnectIntegration,_stripeTest,connectQuickbooks,connectXero,connectPaypal,connectSquare,connectCoinbase,setActivePay,connectAtlas,idvSetProvider,idvToggle,setTurnaround,setIdScanRetention,setAutoHold,setPassFee,setTaxOn,setTaxTripCharges,syncTax,
     playFilm,closeFilm,filmMute,filmSeek,filmTapStop,
     openDreaming,dreamToggle,dreamConnect,dreamSaveConn,dreamDisconnect,dreamLaunch,dreamOutreach,dreamSend,setupAssistant,_suGoal,_suPhoto,_obAssetPhoto,_obAddAsset,_obDelAsset,_obFbPick,profileSet,profileRate,profileUsage,profileFuel,profileDeposit,profileDepositToggle,setupFinish,
     finish,go,goSettings,setTab,renderSet,openAio,closeAio,openNotifications,aioSend,aioAsk,aioApply,aioUndo,aioCancel,aioBundleApply,aioBundleCancel,aioDiagnose,aioFix,aioWriteCopy,dismissQuicks,toggleCouncil,toast,copyPortal,referCopy,openModal,closeModal,
@@ -16425,7 +16492,7 @@ const Atlas = (function(){
     setProtection,protAddPlan,protSetPlan,protRmPlan,bkSetProtection,protectionDoc,
     bkToggleEx,bkQty,bkRmEx,bkAddCustom,bkSaveCustom,bkTour,tabTour,liveTour,tourNext,tourBack,tourEnd,
     setBookingCfg,catAddExtra,catSetExtra,catRemoveExtra,catSetView,catEdit,bkBuilderTour,addLocation,removeLocation,editLocation,saveLocationEdit,
-    flowPickType,flowSetReading,flowSetFuel,flowSetText,flowSetCheck,flowAddCheck,flowRemoveCheck,flowAddField,flowRemoveField,flowSetFieldType,flowSetFieldProp,flowResetType,
+    flowPickType,flowSetReading,flowSetFuel,flowSetText,flowSetCheck,flowSetCheckReq,flowAddCheck,flowRemoveCheck,flowAddField,flowRemoveField,flowSetFieldType,flowSetFieldProp,flowResetType,
     addVehicle,saveVehicle,vehFormHint,vehTypeChange,_vehPhotoPick,openAsset,saveAsset,delAsset,assetPhotoPick,assetPhotoRemove,assetPhotoAdd,assetPhotoRmGallery,assetLogService,saveService,assetRmService,assetAddDoc,assetDocOpen,assetRmDoc,promptUpgrade,doUpgrade,unlockAsset,relockAsset,openWebsite,
     importAssets,_impFile,previewImport,doImportAssets,exportSetup,exportMyData,importSetup,doImportSetup,
     drillKpi,ovCustomizeKpis,ovCustomizeAna,ovKpiToggle,ovKpiMove,ovKpiSave,ovKpiDragStart,ovKpiDrop,drillDeposits,drillUnpaid,drillCancelLoss,drillAddons,setOvRange,setOvScope,_anaDrillSet,gsDismiss,drillLog,drillLedger,logLedger,saveLedger,rmLedger,editLedger,saveLedgerEdit,logIncome,logExpense,openBudgets,saveBudgets,assetBlock,saveAssetBlock,assetUnblock,blockDaysQuick,maintUnblock,channelAddModal,_channelAddGo,channelSyncNow,channelRemove,channelFeedGet,

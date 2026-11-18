@@ -7006,6 +7006,29 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/onclick="Atlas\.openIngest\(\)">Set up inbound bookings<\/button>/.test(_ATLAS_SRC), 'WAVE5-INGEST: the Developer API modal links to the inbound-bookings setup');
   ok(/openIngest,ingestMint,ingestRevoke,/.test(_ATLAS_SRC), 'WAVE5-INGEST: the 3 inbound fns are exported on the Atlas object');
   ok(/A &ldquo;Book now&rdquo; button/.test(_ATLAS_SRC) && /function copyEmbed\(id\)\{/.test(_ATLAS_SRC), 'WAVE5 option-3: the embed modal offers full-embed + a Book-now button + a direct link (copyEmbed(id) generalized)');
+
+  // ===== WAVE-STRIPE-VERIFY: tenant BYO-Stripe setup now has a real VERIFY (the missing "does the key actually work" proof) =====
+  ok(/if \(path === '\/api\/integrations\/stripe\/status' && method === 'GET'\)/.test(_WORKER_SRC), 'WAVE-STRIPE-VERIFY: the tenant Stripe status/verify endpoint exists (the per-tenant twin of the HQ platform self-test)');
+  ok(/if \(!_verify\) return json\(out\);/.test(_WORKER_SRC), 'WAVE-STRIPE-VERIFY: the light read (no ?verify) returns WITHOUT any outbound Stripe call -- fired on every Settings render, so it stays cheap');
+  ok(/const acct = await stripeApi\(sk, 'GET', 'account', null\);/.test(_WORKER_SRC) && /out\.verified = !!acct\.ok;/.test(_WORKER_SRC), 'WAVE-STRIPE-VERIFY: ?verify=1 does a READ-ONLY Stripe GET /account to prove the key is valid (never moves money)');
+  ok(/out\.live_ready = out\.mode === 'live' && out\.verified && !!out\.charges_enabled;/.test(_WORKER_SRC), 'WAVE-STRIPE-VERIFY: live_ready is honest -- a LIVE key that Stripe accepts AND has charges enabled (a test key or charges-disabled account is not live-ready)');
+  ok(/This is a TEST key \(sk_test_\)\. It will not take real money/.test(_WORKER_SRC), 'WAVE-STRIPE-VERIFY: a connected sk_test_ key is called out as taking no real money (mirrors tenantStripeKey refusing test keys for live bookings)');
+  ok(/rateLimit\(env, 'stripestat:' \+ ctx\.tenant_id, 30, 3600000\)/.test(_WORKER_SRC), 'WAVE-STRIPE-VERIFY: the outbound verify is rate-limited (30/hr per tenant) so repeated Test-connection clicks cannot hammer Stripe');
+  ok(/if\(id==='stripe'\)\{ return _modalStripe\(\); \}/.test(_ATLAS_SRC), 'WAVE-STRIPE-VERIFY: modalConnect routes Stripe to its dedicated guided modal (matching PayPal/Square), not the generic key box');
+  ok(/_api\('\/api\/integrations\/stripe\/status'\+\(verify\?'\?verify=1':''\)/.test(_ATLAS_SRC), 'WAVE-STRIPE-VERIFY: _stripeStatusLoad calls the status endpoint, adding ?verify=1 for the on-demand Test connection + post-connect check');
+  ok(/else if\(id==='stripe'\)\{ try\{ _stripeStatusLoad\(true,true\); \}catch\(e\)\{\} \}/.test(_ATLAS_SRC), 'WAVE-STRIPE-VERIFY: a successful Stripe connect auto-verifies + toasts the verdict, so the owner learns immediately whether it works');
+  ok(/stripe:\['Create or sign in to your <b>Stripe<\/b>[\s\S]*?then tap Test connection to confirm it works\.'\]/.test(_ATLAS_SRC), 'WAVE-STRIPE-VERIFY: the Stripe guide copy no longer claims "nothing is charged until go-live" (stale since PAYMENTS_LIVE) -- it points to Test connection');
+  ok(/_qboStatusLoad\(\); _xeroStatusLoad\(\); _ppStatusLoad\(\); _sqStatusLoad\(\); _cbStatusLoad\(\); _stripeStatusLoad\(\); _idvStatusLoad\(\);/.test(_ATLAS_SRC), 'WAVE-STRIPE-VERIFY: the Settings render fires _stripeStatusLoad alongside the other processor status loads');
+
+  // ===== WAVE-FLOWREQ: pickup/return checklist items can be marked REQUIRED and then GATE check-in / close-out =====
+  ok(/function _flowChecksMissing\(list,pfx\)\{ var miss=\[\]; \(list\|\|\[\]\)\.forEach\(function\(it,i\)\{ if\(!_flowCkReq\(it\)\) return;/.test(_ATLAS_SRC), 'WAVE-FLOWREQ: _flowChecksMissing returns the REQUIRED checklist items not yet ticked (optional items never block)');
+  ok(/function _flowCkReq\(it\)\{ return !!\(it&&typeof it==='object'&&it\.req\); \}/.test(_ATLAS_SRC) && /function _flowCkT\(it\)\{ return \(typeof it==='string'\)\?it:\(\(it&&it\.t\)\|\|''\); \}/.test(_ATLAS_SRC), 'WAVE-FLOWREQ: a checklist item is a plain string (optional) OR {t,req:true}; the normalizers handle BOTH so old saved configs keep working');
+  ok(/var _ciMiss=_flowChecksMissing\(F\.ci,'ciChk'\); if\(_ciMiss\.length\)\{ toast\('Check off before hand-over: '/.test(_ATLAS_SRC), 'WAVE-FLOWREQ: doCheckIn BLOCKS the hand-over until every required pickup item is ticked');
+  ok(/var _coMiss=_flowChecksMissing\(F\.co,'coChk'\); if\(_coMiss\.length\)\{ toast\('Check off before return: '/.test(_ATLAS_SRC), 'WAVE-FLOWREQ: doCloseOut BLOCKS the close-out until every required return item is ticked');
+  ok(/function flowSetCheckReq\(id,phase,idx,v\)\{/.test(_ATLAS_SRC) && /onchange="Atlas\.flowSetCheckReq\(/.test(_ATLAS_SRC), 'WAVE-FLOWREQ: the Settings checklist editor has a per-item Required toggle (flowSetCheckReq)');
+  ok(/arr\[idx\]=_flowCkReq\(arr\[idx\]\)\?\{t:v,req:true\}:v;/.test(_ATLAS_SRC), 'WAVE-FLOWREQ: editing a required item LABEL preserves its Required flag (does not silently demote it to optional)');
+  ok(/data-req="1"/.test(_ATLAS_SRC) && /color:var\(--danger\)" title="Required before you can complete this">\*/.test(_ATLAS_SRC), 'WAVE-FLOWREQ: required items render with a red * in the actual check-in / close-out modal');
+  ok(/flowSetCheck,flowSetCheckReq,flowAddCheck/.test(_ATLAS_SRC) && /doConnect,disconnectIntegration,_stripeTest,/.test(_ATLAS_SRC), 'WAVE-FLOWREQ + WAVE-STRIPE-VERIFY: flowSetCheckReq + _stripeTest are exported on the Atlas object (referenced by onclick handlers)');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
