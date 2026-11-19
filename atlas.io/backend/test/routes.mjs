@@ -7132,5 +7132,14 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(!_WORKER_SRC.includes('if(p.minDays&&per<p.minDays)') && !_WORKER_SRC.includes('_promo.minDays&&p<_promo.minDays'), 'AUDIT-WAVE100 (promo page): the old unit-naive page minDays gates (applyPromo + quote) are gone');
 }
 
+{   // ===== WAVE-FLOWREQ2 (client): built-in capture fields (usage reading out/in + actual return time) can be marked Required by the owner, so overage/late capture is never silently skipped =====
+  ok(/function flowSetReq\(id,key,v\)\{/.test(_ATLAS_SRC) && /\['ro','ri','rt'\]\.indexOf\(key\)<0\) return;/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: flowSetReq stores the owner Required flags for the built-in reading/return-time fields (whitelisted keys ro/ri/rt only -- no unbounded key write)');
+  ok(/onchange="Atlas\.flowSetReq\(/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: the Settings flow editor exposes Required toggles that call flowSetReq (reading at pickup/return + the actual return time)');
+  ok(/flowSetText,flowSetReq,flowSetCheck,flowSetCheckReq,flowAddCheck/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: flowSetReq is exported on the Atlas object AND the WAVE-FLOWREQ flowSetCheck,flowSetCheckReq,flowAddCheck adjacency is preserved');
+  ok(/if\(ov\.req&&typeof ov\.req==='object'\) F\.req=ov\.req;/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: _flowMerge carries the Required-flags map onto the effective flow (default-absent req = byte-identical to pre-FLOWREQ2)');
+  ok(/if\(_rq\.ro && _showU && \(odo===''\|\|odo==null\|\|!isFinite\(parseFloat\(odo\)\)\)\)/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: doCheckIn blocks the hand-over when the reading-OUT is Required but blank (a genuine 0 reading still passes)');
+  ok(/if\(_rq\.ri && _rqShowU && \(val\('coOdoIn'\)===''/.test(_ATLAS_SRC) && /if\(_rq\.rt && !val\('coRet'\)\)/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: doCloseOut blocks the close-out when the Required reading-IN or the Required actual return time is blank');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
