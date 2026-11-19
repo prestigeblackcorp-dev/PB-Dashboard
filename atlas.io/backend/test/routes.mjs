@@ -7108,5 +7108,14 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(_ATLAS_SRCW98 === _INDEX_SRCW98, 'AUDIT-WAVE98: atlas.html and index.html remain byte-identical');
 }
 
+{   // ===== AUDIT-WAVE99: public-booking min/max LENGTH normalized across rate models (WAVE106 chosen-duration unit mismatch) =====
+  // --- worker (global _WORKER_SRC) ---
+  ok(/const _baseErm = \(_pa\.baseModel && \['hour', 'day', 'week', 'month'\]\.indexOf\(_pa\.baseModel\) >= 0\) \? _pa\.baseModel : _erm;/.test(_WORKER_SRC), 'AUDIT-WAVE99 (/book length): the base rate model for min/max length falls back to _erm when the asset has no published card -> byte-identical to the old periods<minLen for every single-rate site');
+  ok(/if \(Number\(_pa\.minLen\) > 0 && periods \* unitMs < Number\(_pa\.minLen\) \* _baseUnitMs\)/.test(_WORKER_SRC) && /if \(Number\(_pa\.maxLen\) > 0 && periods \* unitMs > Number\(_pa\.maxLen\) \* _baseUnitMs\)/.test(_WORKER_SRC), 'AUDIT-WAVE99 (/book length): min/max booking length compared in MS (periods*unitMs vs minLen/maxLen*_baseUnitMs) so a chosen non-base duration is not mis-measured (a 1-week booking vs a 7-DAY min; a 2-month booking slipped past a 30-day max)');
+  ok(/const _baseErmM = \(_pa\.baseModel && \['hour', 'day', 'week', 'month'\]\.indexOf\(_pa\.baseModel\) >= 0\) \? _pa\.baseModel : _ermM;/.test(_WORKER_SRC), 'AUDIT-WAVE99 (availability twin): same base-model fallback to _ermM -> byte-identical single-rate preview');
+  ok(/if \(Number\(_pa\.minLen\) > 0 && p \* unitMs < Number\(_pa\.minLen\) \* _baseUnitMsM\)/.test(_WORKER_SRC) && /if \(Number\(_pa\.maxLen\) > 0 && p \* unitMs > Number\(_pa\.maxLen\) \* _baseUnitMsM\)/.test(_WORKER_SRC), 'AUDIT-WAVE99 (availability twin): the read-only availability preview normalizes min/max length the SAME way as /book, so the preview matches the authoritative gate for a chosen duration');
+  ok(!_WORKER_SRC.includes('periods < Number(_pa.minLen)') && !_WORKER_SRC.includes('periods > Number(_pa.maxLen)') && !_WORKER_SRC.includes('p < Number(_pa.minLen)') && !_WORKER_SRC.includes('p > Number(_pa.maxLen)'), 'AUDIT-WAVE99: the old unit-naive length gates (periods<minLen / p<minLen and the max twins) are gone at BOTH the /book and availability sites');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
