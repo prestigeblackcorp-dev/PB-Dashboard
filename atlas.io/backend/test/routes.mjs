@@ -5583,6 +5583,12 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/CREATE TABLE IF NOT EXISTS push_subscriptions/.test(_WORKER_SRC), 'WEBPUSH: push_subscriptions table (endpoint UNIQUE so a re-subscribe upserts)');
   ok(/path === '\/api\/push\/vapid' && method === 'GET'/.test(_WORKER_SRC) && /publicKey: _vp\.enabled \? _vp\.pub : ''/.test(_WORKER_SRC), 'WEBPUSH: /api/push/vapid exposes ONLY the public key -- the private key never leaves the worker');
   ok(/path === '\/api\/push\/subscribe' && method === 'POST'/.test(_WORKER_SRC), 'WEBPUSH: owner subscribe endpoint is session-authed (tenant from the session, not client-supplied)');
+  // ===== D1 DOMAIN STOREFRONT (public search) -- the anonymous, IP-rate-limited twin of the tenant-authed /api/domain/quote =====
+  ok(/path === '\/api\/domain\/search' && method === 'GET'/.test(_WORKER_SRC), 'D1: public domain-search route exists (GET, anonymous -- sells domains to the open web, not only logged-in rental tenants)');
+  ok(/if \(!env\.DYNADOT_KEY\) return json\(\{ ok: true, live: false \}\);/.test(_WORKER_SRC), 'D1: honest -- no registrar key => {live:false}, so the storefront shows an estimate and never a fake "available"');
+  ok(/rateLimit\(env, 'dsearch:' \+ _dip/.test(_WORKER_SRC), 'D1: public search is per-IP rate-limited (no tenant on a public search; mirrors the /api/fx fxip limiter)');
+  ok(/_domainRetailCents\(_ds\.costCents \|\| 0, String\(_dq\)\.split\('\.'\)\.pop\(\), env\)/.test(_WORKER_SRC) && /priceCents: _dp, domain: _dq/.test(_WORKER_SRC), 'D1: public search returns the SAME retail floor as the authed quote + the real checkout (search price == buy price), and NEVER the wholesale cost');
+  ok(/if \(_ds\.available && !\(Number\(_ds\.costCents\) > 0\)\) return json\(\{ ok: true, live: true, available: false, domain: _dq, reason: 'price_unavailable' \}\)/.test(_WORKER_SRC), 'D1: an unparseable registrar price is treated as unavailable (never floor a real-cost name to $1 -- money parity with the authed quote)');
   ok(/psub === 'push' && method === 'POST'/.test(_WORKER_SRC), 'WEBPUSH: renter portal subscribe is token-bound to THIS booking + tenant');
   ok(/DELETE FROM push_subscriptions WHERE id=\?/.test(_WORKER_SRC), 'WEBPUSH: a gone (404/410) subscription is pruned so a dead endpoint is not retried forever');
   ok(/_pushFanout\(env, prof\.id, 'owner'/.test(_WORKER_SRC), 'WEBPUSH: a new booking fans out an OWNER push (waitUntil, inert until keys)');
