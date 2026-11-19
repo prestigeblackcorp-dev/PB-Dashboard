@@ -6548,7 +6548,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(/col='var\(--ok\)'; \} else \{[\s\S]*?col='var\(--danger\)'/.test(_ATLAS_SRC), 'WAVE-PA4: _pnlTrendSvg colors profit bars var(--ok) and loss bars var(--danger) (semantic, theme-tokened, matches the table net color)');
   ok(/var _maxNet=Math\.max\.apply\(null,byKind\.map\(function\(r\)\{return Math\.abs\(r\.net\|\|0\)\;\}\)\.concat\(\[1\]\)\)/.test(_ATLAS_SRC), 'WAVE-PA4: _pnlCardHtml computes a shared _maxNet scale (>=1) for the net-by-type bars');
   ok(/width:'\+_npct\+'%;background:'\+\(neg\?'var\(--danger\)':'var\(--ok\)'\)/.test(_ATLAS_SRC), 'WAVE-PA4: by-type table renders an in-cell net bar scaled to _maxNet, green profit / red loss');
-  ok(/BK_STATUSES\.filter\(function\(s\)\{ return \(s!=='Cancelled'&&s!=='Voided'\)\|\|s===b\.status; \}\)/.test(_ATLAS_SRC), 'WAVE96 P1: the Save-changes status dropdown hides Cancelled/Voided (unless already there) -- those transitions must run bkCancelFlow/bkVoidFlow, not raw b.status');
+  ok(/BK_STATUSES\.filter\(function\(s\)\{ return s!=='Cancelled'&&s!=='Voided'; \}\)/.test(_ATLAS_SRC), 'WAVE96 P1 + AUDIT-WAVE98: the Save-changes status dropdown lists active statuses only (Cancelled/Voided never selectable) -- cancel/void run their dedicated flows; a terminal booking additionally LOCKS this dropdown so reopen goes through the Un-cancel/Un-void server route (slot re-check + scalar-column write), never a silently-reverted generic-mirror flip');
   ok(/if\(v==='percent'\) m\.hold\.value=Math\.min\(100,Math\.max\(0,Number\(m\.hold\.value\)\|\|0\)\);/.test(_ATLAS_SRC), 'WAVE96 P1: switching the global hold to percent clamps a carried-over fixed amount to 100% (no runaway hold)');
   ok(/if\(m\.hold\.type==='percent'\) _hv=Math\.min\(100,_hv\);/.test(_ATLAS_SRC), 'WAVE96 P1: a global percent hold value is clamped to 100, mirroring the per-type setTypeCfg clamp');
   ok(/var wk=_shifts\(\)\.filter\(function\(x\)\{ return x\.date>=_ws && x\.date<=wkEnd; \}\)/.test(_ATLAS_SRC), 'WAVE96 A7: _shiftsHtml drives summary + body from the SAME viewed Mon-Sun week (week arrows move the whole panel)');
@@ -7086,6 +7086,25 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/_api\('\/api\/booking\/unvoid',\{method:'POST',body:\{id:id\}\}\)/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (un-void): the client Un-void button calls the dedicated server route, not the silently-reverted generic mirror');
   ok(/if\(j\.ok\)\{ _uvApply\(j\.status\); \}/.test(_ATLAS_SRCW97), 'AUDIT-WAVE97 (un-void): local state is applied only AFTER the server confirms the revive (no optimistic double-book)');
   ok(_ATLAS_SRCW97 === _INDEX_SRCW97, 'AUDIT-WAVE97: atlas.html and index.html remain byte-identical');
+}
+
+{   // ===== AUDIT-WAVE98: booking state/money integrity (terminal->active reopen divergence + gmv hold release + status-column on-rent) =====
+  // --- worker (global _WORKER_SRC) ---
+  ok(/path === '\/api\/booking\/uncancel' && method === 'POST'/.test(_WORKER_SRC), 'AUDIT-WAVE98 (data-integrity): a dedicated server /api/booking/uncancel route exists (twin of unvoid; the sanctioned reopen path for a cancelled booking)');
+  ok(/UPDATE bookings SET status=\? WHERE id=\? AND tenant_id=\? AND LOWER\(status\)='cancelled'/.test(_WORKER_SRC), 'AUDIT-WAVE98 (uncancel): the route lifts the scalar status COLUMN (guarded to a still-cancelled row) so availability / public /book / reports agree with the blob');
+  ok(/await _confirmSlotFull\(env, _ucctx\.tenant_id, _ucid/.test(_WORKER_SRC), 'AUDIT-WAVE98 (uncancel): re-checks the slot server-side before restoring -- never silently double-books a slot re-taken after the cancel');
+  ok(/note: 'Un-cancelled \(server\) -> ' \+ _ucback/.test(_WORKER_SRC), 'AUDIT-WAVE98 (uncancel): records an audit-trail history entry on the server reopen');
+  ok(/const _pkRel = \(sec\.gmv && env\.PLATFORM_STRIPE_KEY\) \? env\.PLATFORM_STRIPE_KEY : sk;/.test(_WORKER_SRC) && /stripePost\(_pkRel, '\/payment_intents\/' \+ sec\.pi \+ '\/cancel'/.test(_WORKER_SRC), 'AUDIT-WAVE98 (money HIGH): the cancel deposit-hold release cancels the PI on the key it lives on (gmv->platform key, else BYO) -- a bare sk was empty for a Connect tenant, leaving the hold unreleased');
+  ok((_WORKER_SRC.match(/\(_isCanx \|\| \/\^\(on rent\|return\|complet\)\/i\.test\(String\(row\.status \|\| ''\)\)\)/g) || []).length === 5, 'AUDIT-WAVE98 (status column): all 5 payment-credit column CAS writes preserve on-rent/returned/completed (regex aligned to the blob guard, so a payment never regresses an on-rent column to confirmed)');
+  // --- client (block-local _ATLAS_SRCW98 / _INDEX_SRCW98) ---
+  const _ATLAS_SRCW98 = readFileSync(new URL('../../atlas.html', import.meta.url), 'utf8');
+  const _INDEX_SRCW98 = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  ok(/\} else if\(b\.status==='Cancelled'\)\{/.test(_ATLAS_SRCW98) && /Atlas\.uncancelBooking\(/.test(_ATLAS_SRCW98), 'AUDIT-WAVE98 (reopen UX): a cancelled booking shows a dedicated Un-cancel button -- reopen is button-only, like Un-void');
+  ok(/<select class="select" id="bkStatusF" disabled title="Reopening is done with the Un-cancel/.test(_ATLAS_SRCW98), 'AUDIT-WAVE98 (reopen UX): the Edit-form status dropdown is LOCKED for a terminal booking (no dropdown terminal->active flip through the generic mirror)');
+  ok(/_api\('\/api\/booking\/uncancel',\{method:'POST',body:\{id:id\}\}\)/.test(_ATLAS_SRCW98), 'AUDIT-WAVE98 (uncancel): the client Un-cancel calls the dedicated server route, not the silently-reverted generic mirror');
+  ok(/if\(j\.ok\)\{ _ucApply\(j\.status\); \}/.test(_ATLAS_SRCW98), 'AUDIT-WAVE98 (uncancel): local state is applied only AFTER the server confirms the reopen (no optimistic double-book)');
+  ok(/if\(\/\^\(cancel\|void\)\/i\.test\(String\(b\.status\|\|''\)\)\) return \{ok:false,msg:'That booking is '\+b\.status/.test(_ATLAS_SRCW98), 'AUDIT-WAVE98 (AI assistant): booking.setStatus refuses to reopen a terminal (cancelled/voided) booking -- it would bypass the slot re-check and diverge; directs to the Un-cancel/Un-void button');
+  ok(_ATLAS_SRCW98 === _INDEX_SRCW98, 'AUDIT-WAVE98: atlas.html and index.html remain byte-identical');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
