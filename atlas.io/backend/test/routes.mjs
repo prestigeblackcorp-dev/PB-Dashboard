@@ -7104,6 +7104,7 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/_api\('\/api\/booking\/uncancel',\{method:'POST',body:\{id:id\}\}\)/.test(_ATLAS_SRCW98), 'AUDIT-WAVE98 (uncancel): the client Un-cancel calls the dedicated server route, not the silently-reverted generic mirror');
   ok(/if\(j\.ok\)\{ _ucApply\(j\.status\); \}/.test(_ATLAS_SRCW98), 'AUDIT-WAVE98 (uncancel): local state is applied only AFTER the server confirms the reopen (no optimistic double-book)');
   ok(/if\(\/\^\(cancel\|void\)\/i\.test\(String\(b\.status\|\|''\)\)\) return \{ok:false,msg:'That booking is '\+b\.status/.test(_ATLAS_SRCW98), 'AUDIT-WAVE98 (AI assistant): booking.setStatus refuses to reopen a terminal (cancelled/voided) booking -- it would bypass the slot re-check and diverge; directs to the Un-cancel/Un-void button');
+  ok(/unvoidBooking,uncancelBooking,/.test(_ATLAS_SRCW98), 'AUDIT-WAVE98 (wiring, caught live): uncancelBooking is registered in the public Atlas API map next to unvoidBooking, so the Un-cancel button onclick="Atlas.uncancelBooking(..)" resolves (the fn + the onclick existed but the export was missing -> button threw)');
   ok(_ATLAS_SRCW98 === _INDEX_SRCW98, 'AUDIT-WAVE98: atlas.html and index.html remain byte-identical');
 }
 
