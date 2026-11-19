@@ -7133,12 +7133,19 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
 }
 
 {   // ===== WAVE-FLOWREQ2 (client): built-in capture fields (usage reading out/in + actual return time) can be marked Required by the owner, so overage/late capture is never silently skipped =====
-  ok(/function flowSetReq\(id,key,v\)\{/.test(_ATLAS_SRC) && /\['ro','ri','rt'\]\.indexOf\(key\)<0\) return;/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: flowSetReq stores the owner Required flags for the built-in reading/return-time fields (whitelisted keys ro/ri/rt only -- no unbounded key write)');
+  ok(/function flowSetReq\(id,key,v\)\{/.test(_ATLAS_SRC) && /\['ro','ri','rt','po','pr'\]\.indexOf\(key\)<0\) return;/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2/3: flowSetReq stores the owner Required flags for the built-in reading/return-time/photo fields (whitelisted keys ro/ri/rt/po/pr only -- no unbounded key write)');
   ok(/onchange="Atlas\.flowSetReq\(/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: the Settings flow editor exposes Required toggles that call flowSetReq (reading at pickup/return + the actual return time)');
   ok(/flowSetText,flowSetReq,flowSetCheck,flowSetCheckReq,flowAddCheck/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: flowSetReq is exported on the Atlas object AND the WAVE-FLOWREQ flowSetCheck,flowSetCheckReq,flowAddCheck adjacency is preserved');
   ok(/if\(ov\.req&&typeof ov\.req==='object'\) F\.req=ov\.req;/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: _flowMerge carries the Required-flags map onto the effective flow (default-absent req = byte-identical to pre-FLOWREQ2)');
   ok(/if\(_rq\.ro && _showU && \(odo===''\|\|odo==null\|\|!isFinite\(parseFloat\(odo\)\)\)\)/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: doCheckIn blocks the hand-over when the reading-OUT is Required but blank (a genuine 0 reading still passes)');
   ok(/if\(_rq\.ri && _rqShowU && \(val\('coOdoIn'\)===''/.test(_ATLAS_SRC) && /if\(_rq\.rt && !val\('coRet'\)\)/.test(_ATLAS_SRC), 'WAVE-FLOWREQ2: doCloseOut blocks the close-out when the Required reading-IN or the Required actual return time is blank');
+}
+
+{   // ===== WAVE-FLOWREQ3 (client): condition PHOTO/video can be marked Required by the owner at pickup and/or return, so the damage-claim evidence set is never empty when it matters =====
+  ok(/\(_rq\.po\?' checked':''\)/.test(_ATLAS_SRC), 'WAVE-FLOWREQ3: the Settings flow editor exposes a Require-condition-photo-at-pickup toggle (bound to the _rq.po flag)');
+  ok(/\(_rq\.pr\?' checked':''\)/.test(_ATLAS_SRC), 'WAVE-FLOWREQ3: the Settings flow editor exposes a Require-condition-photo-at-return toggle (bound to the _rq.pr flag)');
+  ok(/if\(_rq\.po && _condMedia\(b\)\.filter\(function\(m\)\{return \(m\.phase\|\|'pickup'\)==='pickup';\}\)\.length<1\)/.test(_ATLAS_SRC), 'WAVE-FLOWREQ3: doCheckIn blocks the hand-over when a pickup condition photo is Required but none is on file');
+  ok(/if\(_rq\.pr && _condMedia\(b\)\.filter\(function\(m\)\{return m\.phase==='return';\}\)\.length<1\)/.test(_ATLAS_SRC), 'WAVE-FLOWREQ3: doCloseOut blocks the close-out when a return condition photo is Required but none is on file');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
