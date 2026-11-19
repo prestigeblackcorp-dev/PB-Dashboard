@@ -7117,5 +7117,20 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(!_WORKER_SRC.includes('periods < Number(_pa.minLen)') && !_WORKER_SRC.includes('periods > Number(_pa.maxLen)') && !_WORKER_SRC.includes('p < Number(_pa.minLen)') && !_WORKER_SRC.includes('p > Number(_pa.maxLen)'), 'AUDIT-WAVE99: the old unit-naive length gates (periods<minLen / p<minLen and the max twins) are gone at BOTH the /book and availability sites');
 }
 
+{   // ===== AUDIT-WAVE100: promo minDays normalized across rate models (same WAVE106 chosen-duration unit mismatch as WAVE99) =====
+  // --- worker server-side promo-apply (global _WORKER_SRC) ---
+  ok(/function _promoApply\(prof, code, periods, totalCents, ermUnitMs, baseUnitMs\)/.test(_WORKER_SRC), 'AUDIT-WAVE100 (promo server): _promoApply takes the effective + base unitMs so it can measure the booked length against minDays regardless of the chosen duration');
+  ok(/\(periods \|\| 0\) \* _eMs < p\.minDays \* _bMs/.test(_WORKER_SRC), 'AUDIT-WAVE100 (promo server): minDays is gated in MS (periods*ermUnitMs vs minDays*baseUnitMs) -- a 1-week booking is not wrongly failed against a 7-DAY minDays, nor a short chosen-unit booking gamed past it');
+  ok(/else if \(\(periods \|\| 0\) < p\.minDays\) return \{ ok: false, reason: 'min' \};/.test(_WORKER_SRC), 'AUDIT-WAVE100 (promo server): a legacy caller passing no unit info falls back to the old periods<minDays -> byte-identical');
+  ok(/_promoApply\(prof, b\.promo, periods, q\.subtotalCents, unitMs, \(_chosen \? _baseUnitMs : unitMs\)\)/.test(_WORKER_SRC), 'AUDIT-WAVE100 (promo server): the /book caller passes the effective unitMs + (chosen ? base : effective) so no-chosen is byte-identical and a chosen duration normalizes');
+  ok(!_WORKER_SRC.includes('if (p.minDays && (periods || 0) < p.minDays)'), 'AUDIT-WAVE100 (promo server): the old unit-naive minDays gate is gone');
+  // --- embedded booking page (served JS, inside _WORKER_SRC) ---
+  ok(/function _uMs\(m\)\{return \(\{hour:3600000,day:86400000,week:604800000,month:2592000000\}\)\[m\]\|\|86400000;\}/.test(_WORKER_SRC), 'AUDIT-WAVE100 (promo page): a unit->ms helper exists on the booking page');
+  ok(/function _promoDaysOk\(minD,per\)\{/.test(_WORKER_SRC) && /return \(per\|\|0\)\*_uMs\(em\) >= minD\*_uMs\(bm\);/.test(_WORKER_SRC), 'AUDIT-WAVE100 (promo page): _promoDaysOk compares the booked length vs minDays in ms (chosen vs base model); no chosen -> em==bm -> byte-identical');
+  ok(/if\(p\.minDays&&!_promoDaysOk\(p\.minDays,per\)\)\{/.test(_WORKER_SRC), 'AUDIT-WAVE100 (promo page): applyPromo gates minDays through _promoDaysOk, not a naive per<minDays');
+  ok(/!\(_promo\.minDays&&!_promoDaysOk\(_promo\.minDays,p\)\)/.test(_WORKER_SRC), 'AUDIT-WAVE100 (promo page): the live quote applies the discount via _promoDaysOk so the shown estimate matches the server redemption for a chosen duration');
+  ok(!_WORKER_SRC.includes('if(p.minDays&&per<p.minDays)') && !_WORKER_SRC.includes('_promo.minDays&&p<_promo.minDays'), 'AUDIT-WAVE100 (promo page): the old unit-naive page minDays gates (applyPromo + quote) are gone');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
