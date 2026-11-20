@@ -7217,6 +7217,10 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/ALTER TABLE tenants ADD COLUMN founder_locked TEXT/.test(_WORKER_SRC), 'WAVE-FOUNDERLOCK: tenants.founder_locked column (per-founder PLAN_PRICE_CENTS snapshot)');
   ok(/SELECT founder, founder_locked FROM tenants WHERE id=\?/.test(_WORKER_SRC) && /const locked = \(snap && Number\(snap\[tier\]\) > 0\) \? Number\(snap\[tier\]\) : \(FOUNDER_LOCKED_PRICES\[tier\] \|\| cur\)/.test(_WORKER_SRC), 'WAVE-FOUNDERLOCK: _founderPlanBase prefers the per-founder founder_locked snapshot, falling back to FOUNDER_LOCKED_PRICES for snapshot-less founders');
   ok(/UPDATE tenants SET founder=1, founder_at=\?, founder_no=\?, founder_locked=\?[\s\S]{0,80}JSON\.stringify\(PLAN_PRICE_CENTS\)/.test(_WORKER_SRC), 'WAVE-FOUNDERLOCK: a new founder claim stamps founder_locked = JSON.stringify(PLAN_PRICE_CENTS) so their locked base is frozen at the current list for life');
+  // WAVE-FOUNDERLOCK display (kk): the account's OWN locked founder price is surfaced to the client so an existing Starter founder SEES $25 (not list x 0.5 = $49.50); fail-safe null -> client uses list x 0.5 (correct for prospects).
+  ok(/function _founderPriceMap\(row, programOn\)/.test(_WORKER_SRC) && /out\[tier\] = Math\.round\(Math\.min\(locked, cur\) \* 0\.5\)/.test(_WORKER_SRC), 'WAVE-FOUNDERLOCK: _founderPriceMap(row,programOn) returns the per-tier ACTUAL founder price (min(locked,current) x 0.5) from a loaded row');
+  ok(/settings,tos_version,founder,founder_locked FROM tenants WHERE id=\?/.test(_WORKER_SRC), 'WAVE-FOUNDERLOCK: /api/tenant/profile reads founder_locked so founderPrices can reflect the per-account snapshot');
+  ok(/founderPrices: _founderPriceMap\(t, await _founderProgramOn\(env\)\)/.test(_WORKER_SRC), 'WAVE-FOUNDERLOCK: /api/tenant/profile emits founderPrices for the client to show each founder their own locked rate');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
