@@ -444,7 +444,7 @@ ok(r.status === 401 || r.status === 403, 'counsel rejects a bad admin token');
   ok(or_.status === 200 && oj.ok === true, '/api/admin/overview: 200 + ok:true after the SQL-aggregate rewrite');
   ok(oj.members && oj.members.total === 12 && oj.members.paid === 5 && oj.members.comped === 1 && oj.members.trials === 6 && oj.members.trials_with_card === 2, '/api/admin/overview: members bucket numbers come from the new SQL aggregate');
   ok(oj.members.by_tier && oj.members.by_tier.pro === 3 && oj.members.by_tier.starter === 2, '/api/admin/overview: by_tier comes from the new GROUP BY query');
-  ok(typeof oj.revenue.mrr_cents === 'number' && oj.revenue.mrr_cents === (19900 * 3 + 4999 * 2), '/api/admin/overview: mrr_cents computed from the SQL-derived by_tier (unchanged JS math)');
+  ok(typeof oj.revenue.mrr_cents === 'number' && oj.revenue.mrr_cents === (19900 * 3 + 9900 * 2), '/api/admin/overview: mrr_cents = SQL by_tier x PLAN_PRICE_CENTS (pro 19900, starter list 9900 post-WAVE-FOUNDERLOCK); fixture rows carry no founders col -> all priced at full list, no founder discount');
   ok('signups' in oj && oj.visits && oj.installs && oj.bugs && oj.inbox && Array.isArray(oj.recent), '/api/admin/overview: full response shape unchanged (signups/visits/installs/bugs/inbox/recent present)');
 }
 
@@ -7210,6 +7210,13 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/\.bind\(id, null, from \|\| null, _subj, kind\.cat, _pri, 'open', 'new'/.test(_WORKER_SRC), 'WAVE-SECMAIL: the ticket is filed untenanted (tenant_id NULL) with email=From so it shows in HQ and HQ replies route back to the reporter');
   ok(/function _emailLocalKind\(/.test(_WORKER_SRC) && /cat: 'security'/.test(_WORKER_SRC) && /cat: 'privacy'/.test(_WORKER_SRC), 'WAVE-SECMAIL: routed local-part maps to a security / privacy / abuse ticket category');
   ok(/try \{ await _inboundSupportEmail\(message, env, ctx\); \} catch/.test(_WORKER_SRC), 'WAVE-SECMAIL: the email() handler is guarded so a parse error never bounces the reporter');
+
+  // ---- WAVE-FOUNDERLOCK (2026-11-20): Starter list $49.99 -> $99; a per-founder price-lock snapshot so NEW founders lock to $99 (0.5 => $49.50) while the pre-raise founders keep $25 (Starter) / $99.50 (Pro) for life ----
+  ok(/const PLAN_PRICE_CENTS = \{ starter: 9900,/.test(_WORKER_SRC), 'WAVE-FOUNDERLOCK: Starter list price raised to 9900 ($99/mo)');
+  ok(/const FOUNDER_LOCKED_PRICES = \{ starter: 4999,/.test(_WORKER_SRC), 'WAVE-FOUNDERLOCK: FOUNDER_LOCKED_PRICES.starter stays 4999 -> pre-raise founders keep $25/mo (0.5 x 4999) for life via the fallback');
+  ok(/ALTER TABLE tenants ADD COLUMN founder_locked TEXT/.test(_WORKER_SRC), 'WAVE-FOUNDERLOCK: tenants.founder_locked column (per-founder PLAN_PRICE_CENTS snapshot)');
+  ok(/SELECT founder, founder_locked FROM tenants WHERE id=\?/.test(_WORKER_SRC) && /const locked = \(snap && Number\(snap\[tier\]\) > 0\) \? Number\(snap\[tier\]\) : \(FOUNDER_LOCKED_PRICES\[tier\] \|\| cur\)/.test(_WORKER_SRC), 'WAVE-FOUNDERLOCK: _founderPlanBase prefers the per-founder founder_locked snapshot, falling back to FOUNDER_LOCKED_PRICES for snapshot-less founders');
+  ok(/UPDATE tenants SET founder=1, founder_at=\?, founder_no=\?, founder_locked=\?[\s\S]{0,80}JSON\.stringify\(PLAN_PRICE_CENTS\)/.test(_WORKER_SRC), 'WAVE-FOUNDERLOCK: a new founder claim stamps founder_locked = JSON.stringify(PLAN_PRICE_CENTS) so their locked base is frozen at the current list for life');
 }
 
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
