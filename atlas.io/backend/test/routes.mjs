@@ -7204,5 +7204,13 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/if\(_rq\.pr && _condMedia\(b\)\.filter\(function\(m\)\{return m\.phase==='return';\}\)\.length<1\)/.test(_ATLAS_SRC), 'WAVE-FLOWREQ3: doCloseOut blocks the close-out when a return condition photo is Required but none is on file');
 }
 
+{   // ===== WAVE-SECMAIL (worker): inbound security@/privacy@ email (Cloudflare Email Routing) -> HQ support ticket =====
+  ok(/async email\(message, env, ctx\)/.test(_WORKER_SRC), 'WAVE-SECMAIL: the worker exports an email() handler (Cloudflare Email Routing entrypoint)');
+  ok(/async function _inboundSupportEmail\(message, env, ectx\)/.test(_WORKER_SRC), 'WAVE-SECMAIL: _inboundSupportEmail helper turns an inbound message into a support ticket');
+  ok(/\.bind\(id, null, from \|\| null, _subj, kind\.cat, _pri, 'open', 'new'/.test(_WORKER_SRC), 'WAVE-SECMAIL: the ticket is filed untenanted (tenant_id NULL) with email=From so it shows in HQ and HQ replies route back to the reporter');
+  ok(/function _emailLocalKind\(/.test(_WORKER_SRC) && /cat: 'security'/.test(_WORKER_SRC) && /cat: 'privacy'/.test(_WORKER_SRC), 'WAVE-SECMAIL: routed local-part maps to a security / privacy / abuse ticket category');
+  ok(/try \{ await _inboundSupportEmail\(message, env, ctx\); \} catch/.test(_WORKER_SRC), 'WAVE-SECMAIL: the email() handler is guarded so a parse error never bounces the reporter');
+}
+
 if (fails) { console.error('\nROUTE TESTS FAILED (' + fails + ') -- deploy blocked.'); process.exit(1); }
 console.log('\nROUTE TESTS PASSED.');
