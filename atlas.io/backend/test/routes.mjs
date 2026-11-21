@@ -6907,7 +6907,7 @@ ok(/caps_catalog: STAFF_CAPS, owner_only_caps: OWNER_ONLY_CAPS/.test(_WORKER_SRC
   ok(/style-src 'self' 'unsafe-inline' https:\/\/\*\.squarecdn\.com/.test(_ATLAS_SRC), 'WAVE98: CSP style-src allows Square card-wrapper.css from *.squarecdn.com (the exact resource the console showed blocked -> "Could not load the card form")');
   ok(!/style-src 'self' 'unsafe-inline'; font-src/.test(_ATLAS_SRC), 'WAVE98: the OLD style-src without a stylesheet host (which blocked Square) is gone');
   ok(/var _fOn=!!\(_founderInfo\.program \|\| \(typeof S!=='undefined'&&S&&S\.founder\)\);   \/\/ WAVE98/.test(_ATLAS_SRC), 'WAVE98: the Square checkout modal computes founder state from the SAME signal as the plan gate (_founderInfo.program || S.founder)');
-  ok(/\$'\+_fNum\(t\.price\)\+'\/mo \(50% off for life, was \$'/.test(_ATLAS_SRC), 'WAVE98: the Square plan dropdown shows the founder 50%-off price as PLAIN TEXT (HTML _fDisp does not render inside <option>, so "$49.99/mo" hid the discount)');
+  ok(/\$'\+_fNum\(t\.price\)\+'\/mo \(founding-member rate, locked for life\)/.test(_ATLAS_SRC), 'WAVE98: the Square plan dropdown shows the founder price as PLAIN TEXT via _fNum (HTML _fDisp does not render inside <option>); copy is the honest founder-lock wording "founding-member rate, locked for life" (not "50% off, was $X", which is inaccurate for a per-account locked price like the $25 Starter founders)');
   ok(/Card form unavailable/.test(_ATLAS_SRC), 'WAVE98: the Square card button no longer stays stuck on "Loading card form..." when the SDK errors -- it shows a clear failed state');
 
   // WAVE99: "stuck on the 7-day-trial tiers after the card went through". A FRESH signup has no local tenant blob yet
