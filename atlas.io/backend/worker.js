@@ -2066,7 +2066,7 @@ const HQ_QUERIES = {
   tickets_open_over: { desc: 'Open support tickets older than N hours.', params: ['hours'],
     run: async function (env, p) { var h = Math.min(2160, Math.max(1, parseInt(p.hours, 10) || 24)); return (await env.DB.prepare("SELECT id,tenant_id,email,subject,priority,created_at,updated_at FROM support_tickets WHERE status!='resolved' AND created_at<? ORDER BY created_at ASC LIMIT 100").bind(Date.now() - h * 3600000).all()).results || []; } },
   new_signups: { desc: 'Tenants that signed up in the last N days.', params: ['days'],
-    run: async function (env, p) { var days = Math.min(365, Math.max(1, parseInt(p.days, 10) || 7)); return (await env.DB.prepare("SELECT id,name,tier,plan,card_on_file,created_at,(SELECT email FROM users WHERE tenant_id=tenants.id AND role='owner' LIMIT 1) email FROM tenants WHERE deleted_at IS NULL AND created_at>=? ORDER BY created_at DESC LIMIT 100").bind(Date.now() - days * 86400000).all()).results || []; } },
+    run: async function (env, p) { var days = Math.min(365, Math.max(1, parseInt(p.days, 10) || 7)); return (await env.DB.prepare("SELECT id,name,tier,plan,card_on_file,created_at,acq_source,acq_campaign,acq_channel,(SELECT email FROM users WHERE tenant_id=tenants.id AND role='owner' LIMIT 1) email FROM tenants WHERE deleted_at IS NULL AND created_at>=? ORDER BY created_at DESC LIMIT 100").bind(Date.now() - days * 86400000).all()).results || []; } },   // P1-1: acq_* columns let the owner see which channel/campaign produced each recent signup
   past_due: { desc: 'Tenants in a failed-payment / past_due state.', params: [],
     run: async function (env, p) { return (await env.DB.prepare("SELECT id,name,tier,(SELECT email FROM users WHERE tenant_id=tenants.id AND role='owner' LIMIT 1) email FROM tenants WHERE deleted_at IS NULL AND plan='past_due' ORDER BY updated_at DESC LIMIT 100").all()).results || []; } },
   onboarding_stuck: { desc: 'Tenants older than N days with 0 assets (stuck onboarding).', params: ['days'],
@@ -5904,6 +5904,39 @@ async function _referralCapture(env, code, refereeTid) {
       .bind('rf' + randId(12), referrer, refereeTid, String(code || '').trim().toUpperCase().slice(0, 40), Date.now()).run();
   } catch (e) { /* never block a signup on a referral-capture error */ }
 }
+// P1-1 FIRST-TOUCH ACQUISITION (additive; a no-op unless the signup body carried an `acq` object the client persisted at
+// first visit). Stamps WHERE this new tenant came from (utm source/medium/campaign + a server-classified channel) on the
+// tenant row so the owner can see, per signup, which Google Ads campaign / channel produced it. Mirrors _referralCapture:
+// best-effort, NEVER blocks or fails a signup. Dims are bounded + sanitized with the SAME allow-list as the WAVE61
+// visit-ping attribution (referrer reduced to host-only -> no PII, no full URLs), and the channel is classified
+// SERVER-side (never trusted from the client) with the SAME rules as the visit-ping aggregate, so the per-tenant source
+// and the traffic dashboards can never disagree. Columns are ensured by ensurePlatformSchema (idempotent, cached).
+async function _signupAcqStore(env, body, tid) {
+  try {
+    if (!tid) return;
+    var a = (body && typeof body.acq === 'object' && body.acq) ? body.acq : null;
+    if (!a) return;
+    await ensurePlatformSchema(env);
+    var _an = function (s) { return String(s || '').toLowerCase().replace(/[^a-z0-9._\/:+ -]/g, '').slice(0, 80); };
+    var src = _an(a.utm_source), med = _an(a.utm_medium), camp = _an(a.utm_campaign);
+    var term = _an(a.utm_term), content = _an(a.utm_content), land = _an(a.landing).slice(0, 60);
+    var refh = ''; try { refh = String(a.ref || '').replace(/^https?:\/\//i, '').replace(/^www\./i, '').split(/[\/?#]/)[0].toLowerCase().slice(0, 80); } catch (e) { refh = ''; }
+    var ch;
+    if (med && /cpc|ppc|paid/.test(med)) ch = 'paid';
+    else if (med && /email|newsletter/.test(med)) ch = 'email';
+    else if (/(^|\.)(chatgpt\.com|openai\.com|perplexity\.ai|claude\.ai|anthropic\.com|gemini\.google\.com|bard\.google\.com|copilot\.microsoft\.com|you\.com|poe\.com|phind\.com)$/.test(refh)) ch = 'ai';
+    else if (/(^|\.)(google|bing|duckduckgo|yahoo|yandex|baidu|ecosia|brave|startpage)\./.test(refh)) ch = 'search';
+    else if (/(^|\.)(facebook\.com|instagram\.com|twitter\.com|x\.com|linkedin\.com|lnkd\.in|reddit\.com|youtube\.com|youtu\.be|tiktok\.com|t\.co|pinterest\.com)$/.test(refh)) ch = 'social';
+    else if (med && /social/.test(med)) ch = 'social';
+    else if (refh && refh !== 'atlasrental.io') ch = 'referral';
+    else ch = 'direct';
+    var blob = {}; if (term) blob.term = term; if (content) blob.content = content; if (refh && refh !== 'atlasrental.io') blob.referrer = refh; if (land) blob.landing = land;
+    var atn = Number(a.at) || 0; if (atn > 0) blob.first_at = atn;
+    var bj = Object.keys(blob).length ? JSON.stringify(blob).slice(0, 400) : null;
+    await env.DB.prepare('UPDATE tenants SET acq_source=?, acq_medium=?, acq_campaign=?, acq_channel=?, acq_json=? WHERE id=?')
+      .bind(src || null, med || null, camp || null, ch, bj, tid).run();
+  } catch (e) { /* never block a signup on an attribution-capture error */ }
+}
 // Is this tenant's owner comped (gold/free)? A comp pays nothing, so a "free month" is meaningless -> never credited.
 async function _tenantComped(env, tid) {
   try {
@@ -6647,6 +6680,15 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN founder_no INTEGER").run(); } catch (e) {}   // FOUNDER: the founder's signup number 1-1000 (their "Founding Member - User #N of 1000" badge)
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN founder_badge TEXT").run(); } catch (e) {}   // WAVE101 FOUNDERS BADGE COLLECTION: the ONE collectible medallion a founder picks (key: king/queen/boss/shark/money/legend/heart/gent/wild/immortal). Set-once via POST /api/founder/badge; null until chosen; only the first 1000 founders ever hold one.
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN founder_locked TEXT").run(); } catch (e) {}   // WAVE-FOUNDERLOCK: per-founder JSON snapshot of PLAN_PRICE_CENTS captured at claim -> freezes THIS founder's locked plan base even as list prices rise (the "50% off for life, locked in" promise, per-account). NULL for pre-2026-11-20 founders -> _founderPlanBase falls back to FOUNDER_LOCKED_PRICES.
+  // P1-1 ACQUISITION ATTRIBUTION (all nullable -> existing rows NULL -> zero behavior change). First-touch source of each
+  // NEW tenant, stamped at signup by _signupAcqStore, so the owner can see per signup WHICH channel / Google Ads campaign
+  // produced it (the WAVE61 visit-ping attribution is aggregate-only -- counts per day -- and can't tie a campaign to a
+  // specific tenant). Channel is server-classified with the SAME rules as the visit-ping aggregate so the two never drift.
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN acq_source TEXT").run(); } catch (e) {}      // utm_source (e.g. 'google', 'bing', 'facebook')
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN acq_medium TEXT").run(); } catch (e) {}      // utm_medium (e.g. 'cpc', 'email', 'social')
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN acq_campaign TEXT").run(); } catch (e) {}    // utm_campaign (the exact Google Ads / campaign name)
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN acq_channel TEXT").run(); } catch (e) {}     // server-classified bucket: paid / search / social / ai / email / referral / direct
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN acq_json TEXT").run(); } catch (e) {}        // JSON catch-all {term,content,referrer,landing,first_at} -- dims without their own column
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN first_name TEXT").run(); } catch (e) {}   // WAVE104: the signing-up PERSON's name (the business name stays tenants.name). Shown in HQ as the account's contact + used wherever a human name reads better than the business name.
   try { await env.DB.prepare("ALTER TABLE users ADD COLUMN last_name TEXT").run(); } catch (e) {}
   try { await env.DB.prepare("CREATE TABLE IF NOT EXISTS sync_tombstones (tenant_id TEXT, coll TEXT, id TEXT, deleted_at INTEGER, PRIMARY KEY(tenant_id, coll, id))").run(); } catch (e) {}   // flag sync_tombstones_enabled, ON by default (cycle-2 #10): records deletes so a lagging device cannot resurrect a deleted booking into an occupied slot
@@ -8501,6 +8543,7 @@ export default {
         // rewards both only when this tenant later converts to paid. Self-referral / unknown-code / already-referred
         // are all handled inside _referralCapture.
         try { await _referralCapture(env, (typeof body.ref === 'string' ? body.ref : ''), tid); } catch (e) {}
+        try { await _signupAcqStore(env, body, tid); } catch (e) {}   // P1-1: stamp first-touch acquisition (source/medium/campaign/channel) on the new tenant for owner attribution
         // #276: billing_state is only ever computed when the payment gate is ON (flag OFF -> always 'ok', so this
         // response is byte-identical to before the feature existed). A brand-new signup is always a fresh 7-day
         // trial, so this will read 'ok' in practice -- included for parity with login and forward-compat.

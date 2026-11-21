@@ -1957,6 +1957,34 @@ const Atlas = (function(){
   function _refStoredCode(){ try{ return localStorage.getItem('atlas_ref_code')||''; }catch(e){ return ''; } }
   function _refCaptureFromUrl(){ try{ var c=new URLSearchParams(location.search).get('ref'); if(c){ c=String(c).trim().slice(0,40); if(c) localStorage.setItem('atlas_ref_code',c); } }catch(e){} }
   _refCaptureFromUrl();
+  // P1-1 FIRST-TOUCH ATTRIBUTION (client half): persist the FIRST visit that carries a campaign signal (utm_* OR an
+  // external referrer) to localStorage so it survives navigation + a reload, then ride it along on the signup body so the
+  // worker can stamp WHERE this tenant came from. First-touch-wins: once stored it is never overwritten (a later direct /
+  // internal visit can't steal the credit). A pure-direct first visit stores NOTHING here -> the worker records
+  // channel='direct' at signup. No cookie, never auto-sent anywhere, all best-effort (a tracking failure never throws).
+  function _acqCapture(){ try{
+      if(localStorage.getItem('atlas_attrib')) return;                              // first-touch already locked in
+      var q; try{ q=new URLSearchParams(location.search); }catch(e){ q=null; }
+      function g(n){ try{ return (q&&q.get(n))||''; }catch(e){ return ''; } }
+      var s=g('utm_source'), m=g('utm_medium'), c=g('utm_campaign');
+      var ref=document.referrer||'', extRef=false;
+      try{ if(ref){ var rh=ref.replace(/^https?:\/\//i,'').split(/[\/?#]/)[0].toLowerCase(); extRef = !!rh && rh.indexOf(String(location.hostname||'').toLowerCase())<0; } }catch(e){ extRef=!!ref; }
+      if(!s && !m && !c && !extRef) return;                                         // no campaign signal yet -> wait (don't lock in 'direct' prematurely)
+      var a={utm_source:s,utm_medium:m,utm_campaign:c,utm_term:g('utm_term'),utm_content:g('utm_content'),ref:ref,landing:(location.pathname||''),at:Date.now()};
+      try{ localStorage.setItem('atlas_attrib', JSON.stringify(a)); }catch(e){}
+    }catch(e){} }
+  _acqCapture();
+  function _acqStored(){ try{ var v=localStorage.getItem('atlas_attrib'); return v?JSON.parse(v):null; }catch(e){ return null; } }
+  // At signup: ride the stored first-touch if one exists, else a last-resort "current" record built at the signup moment
+  // (document.referrer is still the ORIGINAL external referrer in a SPA, so a direct signup classifies as channel='direct').
+  // This way EVERY post-deploy signup gets a non-null acq_channel, so a NULL acq_* in HQ unambiguously means a tenant that
+  // signed up BEFORE attribution shipped -- never an untracked new signup.
+  function _acqForSignup(){ try{
+      var s=_acqStored(); if(s) return s;
+      var q; try{ q=new URLSearchParams(location.search); }catch(e){ q=null; }
+      function g(n){ try{ return (q&&q.get(n))||''; }catch(e){ return ''; } }
+      return {utm_source:g('utm_source'),utm_medium:g('utm_medium'),utm_campaign:g('utm_campaign'),utm_term:g('utm_term'),utm_content:g('utm_content'),ref:(document.referrer||''),landing:(location.pathname||''),at:Date.now()};
+    }catch(e){ return null; } }
   // #274: first-party, no-cookie visit ping for the master-dashboard "Website visits" KPI + world map (they only
   // ever saw a WORKER-SERVED tenant booking page -- this app is served by GitHub Pages and never hit the worker
   // at all, so real traffic here was invisible). vsid is a random id kept in localStorage ONLY -- never a cookie,
@@ -2012,7 +2040,7 @@ const Atlas = (function(){
     // A remembered device sends back its trusted_device token (see mfaSubmit) so the server can skip a repeat
     // 2FA challenge; sits in the JSON body (not a header) so it never needs a CORS allow-list change.
     var body = mode==='login' ? {email:email,password:pass,trusted_device:_mfaDeviceToken(email)}
-             : {email:email,password:pass,firstName:first||'',lastName:last||'',business:(S&&S.brand&&S.brand.name)||'My Rental Business',fleet:(S&&S.fleet&&S.fleet.id)||'cars',ref:_refStoredCode()};
+             : {email:email,password:pass,firstName:first||'',lastName:last||'',business:(S&&S.brand&&S.brand.name)||'My Rental Business',fleet:(S&&S.fleet&&S.fleet.id)||'cars',ref:_refStoredCode(),acq:_acqForSignup()};
     if(mode==='signup' && setupToken) body.setupToken=setupToken;   // owner-claim: the owner access code rides in the signup body (never a header) so the reserved owner email can be created/recovered on the website
     return _api('/api/auth/'+(mode==='login'?'login':'signup'),{method:'POST',body:body}).then(function(res){
       if(res.json && res.json.mfa_required){ return {mfa:true, method:res.json.method, challenge:res.json.challenge}; }
@@ -2533,7 +2561,7 @@ const Atlas = (function(){
   function _fbSel(key){ _fbPending=key||''; try{ Array.prototype.forEach.call(document.querySelectorAll('.fbpick'),function(el){ var on=el.getAttribute('data-fbkey')===key; el.style.borderColor=on?'rgba(201,169,98,.9)':'rgba(201,169,98,.25)'; el.style.boxShadow=on?'0 0 0 1px rgba(201,169,98,.6)':'none'; }); }catch(e){} var c=document.getElementById('fbpickConfirm'); if(!c) return; if(!key||!_FB_META[key]){ c.innerHTML=''; return; } c.innerHTML='<button class="btn btn--primary" style="width:100%" onclick="Atlas._fbCommit()">Make '+esc(_FB_META[key].name)+' my mark &mdash; permanently</button>'; }
   function _fbCommit(){ var key=_fbPending; if(!key||!_FB_META[key]) return; var cb=document.querySelector('#fbpickConfirm .btn'); if(cb){ cb.disabled=true; cb.textContent='Saving...'; } _api('/api/founder/badge',{method:'POST',body:{badge:key}}).then(function(res){ var j=res&&res.json; if(res.status>=200&&res.status<300&&j&&j.ok){ _founderInfo.badge=j.badge||key; try{ if(typeof S!=='undefined'&&S){ S.founderBadge=j.badge||key; save(); } }catch(e){} try{ closeModal(); }catch(e){} try{ toast('Your founder badge is set: '+((_FB_META[j.badge||key]||{}).name||'')); }catch(e){} try{ if(typeof buildApp==='function') buildApp(); }catch(e){} } else { if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast((j&&j.error)||'Could not save your badge.'); }catch(e){} } }).catch(function(){ if(cb){ cb.disabled=false; cb.textContent='Try again'; } try{ toast('Network error -- try again.'); }catch(e){} }); }
   /* ---- app version + owner-only feature flags (in-app upgrades) ---- */
-  var APP_VERSION='2026.11.20kz';
+  var APP_VERSION='2026.11.20la';
   var APP_CHANGELOG=[
     'Getting started now puts <b>your own domain</b> front and center &mdash; the "Get your own domain name" step is a primary action, and the domain search spells out exactly what a domain does for you and what it costs. A domain bought through Atlas connects to your booking site <b>instantly</b> (we point it and issue the SSL for you), so customers can book at your own address right away. Pricing is shown plainly: the domain is billed yearly at the price you see before you buy, and the booking website that runs on it is included on the Enterprise plan and up, or $19/month (or a one-time $199 build) on Starter and Pro &mdash; no surprises.',
     'Accounting fix: your <b>Net Profit</b>, Profit &amp; Loss and revenue charts now subtract an owner or broker fee the moment a booking is <b>confirmed</b> &mdash; matching the &ldquo;Your take&rdquo; figure shown on the booking itself &mdash; instead of waiting until the cash was collected. A confirmed-but-unpaid booking with a percentage split (for example a $1,600 rental where a broker keeps 85%) no longer shows its full rental as profit; the dashboard now agrees with each booking&rsquo;s own economics to the cent. Your Payouts report still lists only fees on money you have actually collected, since that is what you owe partners in cash.',
